@@ -1,0 +1,27 @@
+[package]
+name = "chaosbox-extract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+description = "Deterministic source parsing and candidate generation for Chaosbox"
+readme = "../../README.md"
+include = ["/crates/chaosbox-extract/src/**/*.rs", "/../../README.md"]
+
+[dependencies]
+chaosbox-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+regex = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

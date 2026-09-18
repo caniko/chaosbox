@@ -1,0 +1,55 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/chaosbox-core",
+  "crates/chaosbox-extract",
+  "crates/chaosbox-jev",
+  "crates/chaosbox-gel",
+  "crates/chaosbox",
+]
+default-members = [
+  "crates/chaosbox-core",
+  "crates/chaosbox-extract",
+  "crates/chaosbox-jev",
+  "crates/chaosbox-gel",
+  "crates/chaosbox",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/caniko/chaosbox"
+homepage = "https://github.com/caniko/chaosbox"
+documentation = "https://github.com/caniko/chaosbox#readme"
+
+[workspace.dependencies]
+chaosbox-core = { version = "0.1.0", path = "crates/chaosbox-core" }
+chaosbox-extract = { version = "0.1.0", path = "crates/chaosbox-extract" }
+chaosbox-jev = { version = "0.1.0", path = "crates/chaosbox-jev" }
+chaosbox-gel = { version = "0.1.0", path = "crates/chaosbox-gel" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+regex = "1"
+sha2 = "0.10"
+hex = "0.4"
+async-trait = "0.1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 16

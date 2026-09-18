@@ -1,0 +1,14 @@
+Chaosbox
+Copyright 2026 Can Koç and the Chaosbox contributors.
+
+This product is licensed under the MIT OR Apache-2.0 licenses
+(see LICENSE-MIT and LICENSE-APACHE).
+
+Upstream reference material: Graphify
+Copyright 2026 Safi Shamsi and the Graphify contributors.
+Licensed under the Apache License, Version 2.0.
+Source: https://github.com/Graphify-Labs/graphify
+Revision: 26b02b5e3430e4ab85dd7e72c7b98836d8e65c48
+
+Chaosbox is a native Rust rewrite/fork. No Graphify Python is executed,
+imported, or shipped in runtime/package paths.
