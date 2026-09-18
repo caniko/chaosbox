@@ -31,16 +31,24 @@ pub fn deterministic_id(prefix: &str, parts: &[&str]) -> String {
 /// Repository-relative source span (1-based lines/cols, 0-based byte offsets).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceSpan {
+    /// Repository-relative file path.
     pub file: String,
+    /// 1-based start line.
     pub start_line: u32,
+    /// 1-based start column.
     pub start_col: u32,
+    /// 1-based end line.
     pub end_line: u32,
+    /// 1-based end column.
     pub end_col: u32,
+    /// 0-based start byte offset.
     pub byte_start: u32,
+    /// 0-based end byte offset.
     pub byte_end: u32,
 }
 
 impl SourceSpan {
+    /// A zero-width span at one position (for file/module records).
     #[must_use]
     pub fn point(file: &str, line: u32, col: u32, byte: u32) -> Self {
         Self {
@@ -59,31 +67,49 @@ impl SourceSpan {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntityKind {
+    /// A source file itself.
     File,
+    /// A module / namespace unit.
     Module,
+    /// A named symbol (function, class, constant, ...).
     Symbol,
+    /// A definition site of a symbol.
     Definition,
+    /// An import statement.
     Import,
+    /// A Markdown heading.
     Heading,
+    /// A Markdown link.
     Link,
+    /// A Markdown inline code mention.
     CodeMention,
 }
 
 /// A possible entity: identity separate from occurrences/labels.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entity {
+    /// Deterministic `ent:<hex>` identity (repo + snapshot + kind + name + span).
     pub id: String,
+    /// What kind of thing this entity is.
     pub kind: EntityKind,
+    /// Owning repository name.
     pub repo: String,
+    /// Snapshot this identity belongs to; identities never cross snapshots.
     pub snapshot: String,
+    /// Repository-relative file path.
     pub file: String,
+    /// Short display name (copied from source).
     pub name: String,
+    /// Qualified name (copied from source or deterministic template).
     pub qualified_name: String,
+    /// Where the name occurs in source.
     pub span: SourceSpan,
+    /// Alternate labels observed in source.
     pub aliases: Vec<String>,
 }
 
 impl Entity {
+    /// Construct an entity with a deterministic scoped id.
     #[must_use]
     pub fn new(
         kind: EntityKind,
@@ -124,12 +150,19 @@ impl Entity {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationType {
+    /// Containment (file -> module -> definition).
     Contains,
+    /// A module/file defines a symbol.
     Defines,
+    /// An import statement targets a module.
     Imports,
+    /// A textual reference to a symbol.
     References,
+    /// A call from one symbol to another.
     Calls,
+    /// A Markdown link target.
     LinksTo,
+    /// A Markdown code mention of a symbol.
     Mentions,
 }
 
@@ -137,23 +170,33 @@ pub enum RelationType {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationScope {
+    /// Both endpoints in one file.
     File,
+    /// Both endpoints in one module.
     Module,
+    /// Endpoints span files.
     CrossFile,
 }
 
 /// A relationship is a first-class object with typed endpoints.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Relation {
+    /// Deterministic `rel:<hex>` identity (build + type + endpoints).
     pub id: String,
+    /// The relation vocabulary variant.
     pub rel_type: RelationType,
+    /// Source entity id (same build).
     pub from: String,
+    /// Target entity id (same build).
     pub to: String,
+    /// Observation scope.
     pub scope: RelationScope,
+    /// Supporting/contradicting evidence ids.
     pub evidence_ids: Vec<String>,
 }
 
 impl Relation {
+    /// Construct a relationship with a deterministic build-scoped id.
     #[must_use]
     pub fn new(
         rel_type: RelationType,
@@ -181,30 +224,43 @@ impl Relation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceClass {
+    /// Explicit source evidence.
     Extracted,
+    /// A supported inference; model confidence alone never produces this upgrade.
     Inferred,
+    /// Unresolved or uncertain.
     Ambiguous,
 }
 
 /// One supporting or contradicting observation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Evidence {
+    /// Deterministic `ev:<hex>` identity.
     pub id: String,
+    /// Evidence classification.
     pub class: EvidenceClass,
+    /// True when supporting the claim, false when contradicting.
     pub supports: bool,
     /// Verbatim source excerpt (copied span) or deterministic template text.
     pub text: String,
+    /// Source span the text was copied from, if any.
     pub span: Option<SourceSpan>,
+    /// Repository-relative path of the source file version.
     pub source_file_version: String,
 }
 
 /// A claim assembled from evidence; negative evidence survives merges.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Claim {
+    /// Deterministic `claim:<hex>` identity.
     pub id: String,
+    /// Relationship this claim is about.
     pub relation_id: String,
+    /// Supporting evidence ids.
     pub supporting: Vec<String>,
+    /// Contradicting evidence ids; never dropped during merges.
     pub contradicting: Vec<String>,
+    /// Whether the claim is currently accepted.
     pub accepted: bool,
 }
 
@@ -212,51 +268,78 @@ pub struct Claim {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DecisionOutcome {
+    /// Evidence supports the proposal.
     Accepted,
+    /// Evidence contradicts the proposal.
     Rejected,
+    /// The model abstained; recorded, never retried as a failure.
     Abstained,
+    /// Successful negative: no finding in source.
     Negative,
+    /// The decision itself failed (transport/validation); may be retried.
     Failed(String),
 }
 
 /// One validated Jev decision over a candidate.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Decision {
+    /// Deterministic `dec:<hex>` identity (candidate + question + model).
     pub id: String,
+    /// Candidate this decision judges.
     pub candidate_id: String,
+    /// Question id within the Jev request.
     pub question_id: String,
+    /// The outcome.
     pub outcome: DecisionOutcome,
+    /// Evidence classification (never upgraded by confidence alone).
     pub evidence_class: EvidenceClass,
+    /// Model identity requested.
     pub model_requested: String,
+    /// Model identity returned by the provider.
     pub model_returned: String,
+    /// Choice/Score confidence, if the answer type carries one.
     pub confidence: Option<f64>,
+    /// Noul probability or winning-option probability, if applicable.
     pub probability: Option<f64>,
 }
 
 /// A candidate relationship proposed deterministically for Jev review.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Candidate {
+    /// Deterministic `cand:<hex>` identity (relation + endpoints + reason).
     pub id: String,
+    /// Proposed relation type.
     pub rel_type: RelationType,
+    /// Source entity id.
     pub from_entity: String,
+    /// Target entity id.
     pub to_entity: String,
+    /// Why the candidate was proposed (structural, lexical-import, co-occurrence).
     pub reason: String,
+    /// Bounded source excerpt grounding the proposal.
     pub state_excerpt: String,
 }
 
+/// Validation failures for model-returned values, labels, and graph invariants.
 #[derive(Debug, Error)]
 pub enum ValidationError {
     #[error("probability {0} out of [0,1]")]
+    /// Probability outside the closed [0,1] interval.
     ProbabilityRange(f64),
     #[error("confidence {0} out of [0,1]")]
+    /// Confidence outside the closed [0,1] interval.
     ConfidenceRange(f64),
     #[error("non-finite value")]
+    /// NaN or infinite where a finite value is required.
     NonFinite,
     #[error("empty label")]
+    /// A label that is empty after trimming (generative fallback forbidden).
     EmptyLabel,
     #[error("cross-build edge: {0} not in build {1}")]
+    /// An edge endpoint that is not a member of the build.
     CrossBuildEdge(String, String),
     #[error("duplicate build member: {0}")]
+    /// A node or edge id inserted twice into one build.
     DuplicateMember(String),
 }
 
@@ -294,16 +377,24 @@ pub fn check_label(label: &str) -> Result<(), ValidationError> {
 /// One immutable published graph build.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GraphBuild {
+    /// Deterministic `build:<hex>` identity (repo + snapshots + generation).
     pub id: String,
+    /// Owning repository name.
     pub repo: String,
+    /// Pinned component snapshot ids.
     pub snapshot_ids: Vec<String>,
+    /// Member nodes by entity id.
     pub nodes: BTreeMap<String, Entity>,
+    /// Member edges by relation id.
     pub edges: BTreeMap<String, Relation>,
+    /// Monotonic generation; newer workers win publication races.
     pub generation: u64,
+    /// Previous build id, if any.
     pub predecessor: Option<String>,
 }
 
 impl GraphBuild {
+    /// Start an empty staging build with a deterministic id.
     #[must_use]
     pub fn new(repo: &str, snapshot_ids: Vec<String>, generation: u64) -> Self {
         let id = deterministic_id(
@@ -451,12 +542,17 @@ impl GraphBuild {
 /// Diff two builds: added/removed nodes and edges by id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildDiff {
+    /// Node ids present in the new build only.
     pub added_nodes: Vec<String>,
+    /// Node ids present in the old build only.
     pub removed_nodes: Vec<String>,
+    /// Edge ids present in the new build only.
     pub added_edges: Vec<String>,
+    /// Edge ids present in the old build only.
     pub removed_edges: Vec<String>,
 }
 
+/// Compute the member-id diff between two builds.
 #[must_use]
 pub fn diff_builds(old: &GraphBuild, new: &GraphBuild) -> BuildDiff {
     let old_n: BTreeSet<_> = old.nodes.keys().collect();

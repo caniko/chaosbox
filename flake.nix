@@ -67,11 +67,13 @@
       };
       db-migrate = pkgs.writeShellApplication {
         name = "chaosbox-db-migrate";
+        # Pinned Gel CLI (nixpkgs, locked in flake.lock) — never ambient PATH.
+        runtimeInputs = [chaosbox pkgs.gel];
         text = ''exec ${pkgs.lib.getExe chaosbox} db migrate --json "$@"'';
       };
       test-gel = pkgs.writeShellApplication {
         name = "chaosbox-test-gel";
-        runtimeInputs = [chaosbox];
+        runtimeInputs = [chaosbox pkgs.gel];
         text = builtins.readFile ./scripts/test-gel.sh;
       };
     in {

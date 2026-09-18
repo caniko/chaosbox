@@ -13,21 +13,27 @@ use chaosbox_core::{
 };
 use chaosbox_extract::{Extraction, Snapshot, build_candidates, extract_snapshot};
 use chaosbox_gel::{MemoryStore, Store};
-use chaosbox_jev::{Answer, ChoiceAnswer, NoulAnswer, Question, ScoreAnswer, SystemOneResponse};
+use chaosbox_jev::{Answer, ChoiceAnswer, JevClient, NoulAnswer, Question, ScoreAnswer, SystemOneResponse};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Pipeline failures across extraction, inference, validation, storage, and consumers.
 #[derive(Debug, Error)]
 pub enum PipelineError {
     #[error("extract: {0}")]
+    /// Deterministic extraction or snapshot capture failed.
     Extract(String),
     #[error("jev: {0}")]
+    /// The Jev decision step failed (transport, budget, or protocol).
     Jev(String),
     #[error("validation: {0}")]
+    /// A validated evidence/claim/decision check failed.
     Validation(String),
     #[error("store: {0}")]
+    /// Persistence or publication failed.
     Store(String),
     #[error("consumer: {0}")]
+    /// A read-only consumer query failed.
     Consumer(String),
 }
 
@@ -35,9 +41,13 @@ pub enum PipelineError {
 /// changing them reuses raw decisions.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Materialization {
+    /// Rubric version gating question semantics; part of cache identity.
     pub rubric_version: String,
+    /// Noul acceptance cutoff; also in the materialization identity.
     pub accept_noul: f64,
+    /// Choice/Score confidence acceptance cutoff; also in the identity.
     pub accept_confidence: f64,
+    /// Score acceptance cutoff; also in the identity.
     pub accept_score: f64,
 }
 
@@ -53,8 +63,19 @@ impl Default for Materialization {
 }
 
 impl Materialization {
+    /// Materialization identity: every threshold plus build inputs, so
+    /// threshold changes reuse valid raw decisions instead of re-asking Jev.
     pub fn identity(&self, build_inputs: &str) -> String {
-        deterministic_id("mat", &[&self.rubric_version, &self.accept_noul.to_string(), &self.accept_confidence.to_string(), build_inputs])
+        deterministic_id(
+            "mat",
+            &[
+                &self.rubric_version,
+                &self.accept_noul.to_string(),
+                &self.accept_confidence.to_string(),
+                &self.accept_score.to_string(),
+                build_inputs,
+            ],
+        )
     }
 }
 
@@ -62,19 +83,6 @@ impl Materialization {
 /// state/instructions; ids carry no inference meaning.
 #[must_use]
 pub fn questions_for(candidate: &Candidate, from: &Entity, to: &Entity) -> BTreeMap<String, Question> {
-    let state_desc = format!(
-        "Relation proposal {} from {} ({:?} in {}) to {} ({:?} in {}). Basis: {}. Excerpt: {}",
-        format!("{:?}", candidate.rel_type),
-        from.qualified_name,
-        from.kind,
-        from.file,
-        to.qualified_name,
-        to.kind,
-        to.file,
-        candidate.reason,
-        candidate.state_excerpt
-    );
-    let _ = state_desc;
     BTreeMap::from([(
         format!("rel_{}", candidate.id),
         Question::Choice {
@@ -100,6 +108,7 @@ pub fn questions_for(candidate: &Candidate, from: &Entity, to: &Entity) -> BTree
 /// local protocol fixture (no creds, no network).
 #[async_trait::async_trait]
 pub trait Responder: Send + Sync {
+    /// Answer one batch of questions; production uses the Jev HTTP client.
     async fn respond(
         &mut self,
         state: serde_json::Value,
@@ -109,11 +118,14 @@ pub trait Responder: Send + Sync {
 
 /// Deterministic fixture responder for tests and `test-gel`.
 pub struct FixtureResponder {
+    /// When true every Choice answer is `accept`; otherwise `none`.
     pub accept_all: bool,
+    /// Reported model identity (defaults to the pinned Jev model).
     pub model: String,
 }
 
 impl FixtureResponder {
+    /// A deterministic responder for tests and credential-free runs.
     #[must_use]
     pub fn new(accept_all: bool) -> Self {
         Self { accept_all, model: chaosbox_jev::JEV_MODEL_PINNED.into() }
@@ -135,7 +147,6 @@ impl Responder for FixtureResponder {
                     answers.insert(
                         id.clone(),
                         Answer::Choice(ChoiceAnswer {
-                            kind: "choice".into(),
                             choice: choice.into(),
                             probabilities: BTreeMap::from([
                                 ("accept".into(), if self.accept_all { 0.9 } else { 0.1 }),
@@ -149,14 +160,13 @@ impl Responder for FixtureResponder {
                 Question::Noul { .. } => {
                     answers.insert(
                         id.clone(),
-                        Answer::Noul(NoulAnswer { kind: "noul".into(), noul: 0.8 }),
+                        Answer::Noul(NoulAnswer { noul: 0.8 }),
                     );
                 }
                 Question::Score { .. } => {
                     answers.insert(
                         id.clone(),
                         Answer::Score(ScoreAnswer {
-                            kind: "score".into(),
                             score: 1.0,
                             probabilities: BTreeMap::from([("0".into(), 0.1), ("1".into(), 0.9)]),
                             confidence: 0.8,
@@ -174,13 +184,53 @@ impl Responder for FixtureResponder {
     }
 }
 
+/// Live responder: drives the real [`JevClient`] HTTP adapter.
+/// Valid options come from each question's own criteria keys, so candidate
+/// membership is enforced on live answers exactly as in tests.
+pub struct LiveResponder {
+    client: JevClient,
+}
+
+impl LiveResponder {
+    /// Wrap a configured client (endpoint, model, budgets, retries).
+    #[must_use]
+    pub fn new(client: JevClient) -> Self {
+        Self { client }
+    }
+}
+
+#[async_trait::async_trait]
+impl Responder for LiveResponder {
+    async fn respond(
+        &mut self,
+        state: serde_json::Value,
+        questions: BTreeMap<String, Question>,
+    ) -> Result<SystemOneResponse, String> {
+        let valid: BTreeMap<String, BTreeSet<String>> = questions
+            .iter()
+            .map(|(id, q)| match q {
+                Question::Choice { criteria, .. } => {
+                    (id.clone(), criteria.keys().cloned().collect())
+                }
+                Question::Noul { .. } | Question::Score { .. } => {
+                    (id.clone(), BTreeSet::new())
+                }
+            })
+            .collect();
+        self.client.evaluate(state, questions, &valid).await.map_err(|e| e.to_string())
+    }
+}
+
 /// Full pipeline state held by the operator commands.
 pub struct Pipeline {
+    /// Backing store (decisions, evidence, builds, active pointer).
     pub store: MemoryStore,
+    /// Local generation counter for builds published through this pipeline.
     pub generation: u64,
 }
 
 impl Pipeline {
+    /// A pipeline with an empty store at generation zero.
     #[must_use]
     pub fn new() -> Self {
         Self { store: MemoryStore::new(), generation: 0 }
@@ -200,11 +250,15 @@ impl Pipeline {
 
     /// Bounded decisions over candidates. Each candidate decided independently
     /// (multiple valid relations => independent decisions, never forced single-choice).
+    /// Preliminary outcome cutoffs come from `mat` so decision and
+    /// publication share one threshold source; the materialization identity
+    /// covers every threshold, keeping raw decisions reusable.
     pub async fn decide(
         candidates: &[Candidate],
         entities: &BTreeMap<String, Entity>,
         responder: &mut impl Responder,
         model_requested: &str,
+        mat: &Materialization,
     ) -> Result<Vec<(Candidate, Decision, Evidence)>, PipelineError> {
         let mut out = Vec::new();
         for cand in candidates {
@@ -245,7 +299,7 @@ impl Pipeline {
                     }
                     Answer::Noul(n) => {
                         check_probability(n.noul).map_err(|e| PipelineError::Validation(e.to_string()))?;
-                        if n.noul >= 0.7 {
+                        if n.noul >= mat.accept_noul {
                             (DecisionOutcome::Accepted, EvidenceClass::Inferred, None, Some(n.noul))
                         } else {
                             (DecisionOutcome::Negative, EvidenceClass::Ambiguous, None, Some(n.noul))
@@ -253,7 +307,7 @@ impl Pipeline {
                     }
                     Answer::Score(s) => {
                         check_confidence(s.confidence).map_err(|e| PipelineError::Validation(e.to_string()))?;
-                        if s.score >= 1.0 {
+                        if s.score >= mat.accept_score {
                             (DecisionOutcome::Accepted, EvidenceClass::Inferred, Some(s.confidence), None)
                         } else {
                             (DecisionOutcome::Negative, EvidenceClass::Ambiguous, Some(s.confidence), None)
@@ -334,9 +388,18 @@ impl Pipeline {
             };
             let mut rel = Relation::new(cand.rel_type.clone(), &cand.from_entity, &cand.to_entity, scope, &build.id);
             rel.evidence_ids.push(ev.id.clone());
-            // Parallel relations preserved: distinct (type, from, to) ids.
+            // Parallel relations preserved: distinct (type, from, to) ids get
+            // a deterministic numeric suffix so N-way collisions all survive.
             if build.edges.contains_key(&rel.id) {
-                rel.id.push('x');
+                let base = rel.id.clone();
+                let mut n = 2u32;
+                loop {
+                    rel.id = format!("{base}#{n}");
+                    if !build.edges.contains_key(&rel.id) {
+                        break;
+                    }
+                    n += 1;
+                }
             }
             build.add_edge(rel).map_err(|e| PipelineError::Validation(e.to_string()))?;
         }
@@ -354,7 +417,8 @@ impl Default for Pipeline {
 
 // ---- Shared read-only queries (CLI and MCP use these) ----
 
-/// Case-insensitive substring search over names. Bounded.
+/// Case-insensitive substring search over names. Bounded: sorts all matches
+/// by qualified name, then takes the first `limit`.
 #[must_use]
 pub fn search(build: &GraphBuild, query: &str, limit: usize) -> Vec<Entity> {
     let q = query.to_lowercase();
@@ -362,10 +426,10 @@ pub fn search(build: &GraphBuild, query: &str, limit: usize) -> Vec<Entity> {
         .nodes
         .values()
         .filter(|e| e.name.to_lowercase().contains(&q) || e.qualified_name.to_lowercase().contains(&q))
-        .take(limit)
         .cloned()
         .collect();
     out.sort_by(|a, b| a.qualified_name.cmp(&b.qualified_name));
+    out.truncate(limit);
     out
 }
 
@@ -422,17 +486,25 @@ pub fn explain_entity(build: &GraphBuild, id: &str) -> Option<serde_json::Value>
 /// Versioned JSON envelope. Diagnostics go to stderr; stdout is this JSON.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LifecycleReport {
+    /// Contract version (currently 1).
     pub contract_version: u32,
+    /// Storage backend label (`gel`).
     pub backend: String,
+    /// Operation name (`db check`, `db migrate`).
     pub operation: String,
+    /// `ready`, `pending`, `incompatible`, or `error`.
     pub status: String,
+    /// Schema compatibility marker.
     pub schema_version: u32,
+    /// Pinned Gel version the schema targets.
     pub gel_pinned: String,
+    /// Sanitized machine-readable detail (never secret values).
     #[serde(default)]
     pub detail: serde_json::Value,
 }
 
 impl LifecycleReport {
+    /// A ready report: exit 0 after the caller prints it.
     #[must_use]
     pub fn check_ready(detail: serde_json::Value) -> Self {
         Self {
@@ -445,6 +517,7 @@ impl LifecycleReport {
             detail,
         }
     }
+    /// A non-ready report: the caller prints it and exits nonzero.
     #[must_use]
     pub fn pending(operation: &str, reason: &str) -> Self {
         Self {
@@ -452,6 +525,34 @@ impl LifecycleReport {
             backend: "gel".into(),
             operation: operation.into(),
             status: "pending".into(),
+            schema_version: chaosbox_gel::SCHEMA_VERSION,
+            gel_pinned: chaosbox_gel::GEL_PINNED.into(),
+            detail: serde_json::json!({"reason": reason}),
+        }
+    }
+
+    /// An incompatible-history report: refuse rather than drop/recreate data.
+    #[must_use]
+    pub fn incompatible(operation: &str, reason: &str) -> Self {
+        Self {
+            contract_version: 1,
+            backend: "gel".into(),
+            operation: operation.into(),
+            status: "incompatible".into(),
+            schema_version: chaosbox_gel::SCHEMA_VERSION,
+            gel_pinned: chaosbox_gel::GEL_PINNED.into(),
+            detail: serde_json::json!({"reason": reason}),
+        }
+    }
+
+    /// An operational-error report: sanitized diagnostics, stdout stays parseable.
+    #[must_use]
+    pub fn error(operation: &str, reason: &str) -> Self {
+        Self {
+            contract_version: 1,
+            backend: "gel".into(),
+            operation: operation.into(),
+            status: "error".into(),
             schema_version: chaosbox_gel::SCHEMA_VERSION,
             gel_pinned: chaosbox_gel::GEL_PINNED.into(),
             detail: serde_json::json!({"reason": reason}),
@@ -480,6 +581,262 @@ pub fn claim_survives_source_removal(claim: &Claim, removed_evidence: &str) -> b
     let remaining_contra: Vec<_> =
         claim.contradicting.iter().filter(|e| *e != removed_evidence).collect();
     !remaining_support.is_empty() || !remaining_contra.is_empty() || claim.supporting.is_empty()
+}
+
+// ---- Gel-backed read-only consumer path (CLI and MCP share this) ----
+
+/// Relation vocabulary for Gel filters; an empty filter matches nothing, so
+/// callers pass [`all_relation_types`] for unfiltered neighborhoods.
+#[must_use]
+pub fn all_relation_types() -> Vec<String> {
+    ["contains", "defines", "imports", "references", "calls", "links_to", "mentions"]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
+}
+
+/// Hard cap for export projections; truncation is reported, never silent.
+pub const EXPORT_NODE_CAP: i64 = 10_000;
+/// Hard cap for exported edges.
+pub const EXPORT_EDGE_CAP: i64 = 20_000;
+
+/// Gel-backed read-only queries. One build id is pinned per reader from the
+/// active-build pointer; readers never mutate, migrate, or load Jev credentials.
+pub struct GelReader {
+    handle: chaosbox_gel::GelHandle,
+    /// Pinned active build id for every request this reader serves.
+    pub build_id: String,
+    /// Pinned generation (predecessor/generation checks on the read side).
+    pub generation: i64,
+}
+
+impl GelReader {
+    /// Connect and pin the active build for `repo`. Errors when no Gel is
+    /// reachable or no build is published (callers report pending/error).
+    pub async fn connect(repo: &str) -> Result<Self, PipelineError> {
+        let handle = chaosbox_gel::GelHandle::connect()
+            .await
+            .map_err(|e| PipelineError::Consumer(format!("gel connect: {e}")))?;
+        let build = handle
+            .active_build(repo)
+            .await
+            .map_err(|e| PipelineError::Consumer(format!("active build: {e}")))?
+            .ok_or_else(|| PipelineError::Consumer(format!("no active build for repo {repo}")))?;
+        Ok(Self { handle, build_id: build.build_id, generation: build.generation })
+    }
+
+    /// Bounded substring search over entity names.
+    pub async fn search(
+        &self,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<chaosbox_gel::EntityRow>, PipelineError> {
+        let like = format!("%{query}%");
+        self.handle
+            .search_entities(&like, limit)
+            .await
+            .map_err(|e| PipelineError::Consumer(e.to_string()))
+    }
+
+    /// Typed entity lookup.
+    pub async fn lookup(
+        &self,
+        id: &str,
+    ) -> Result<Option<chaosbox_gel::EntityRow>, PipelineError> {
+        self.handle.entity_by_id(id).await.map_err(|e| PipelineError::Consumer(e.to_string()))
+    }
+
+    /// Incoming/outgoing neighborhoods with an optional relation filter.
+    /// `None` means all relation types.
+    pub async fn neighbors(
+        &self,
+        id: &str,
+        filter: Option<Vec<String>>,
+    ) -> Result<(Vec<chaosbox_gel::RelRow>, Vec<chaosbox_gel::RelRow>), PipelineError> {
+        let types = filter.unwrap_or_else(all_relation_types);
+        let out = self
+            .handle
+            .neighbors_out(id, types.clone())
+            .await
+            .map_err(|e| PipelineError::Consumer(e.to_string()))?;
+        let inc = self
+            .handle
+            .neighbors_in(id, types)
+            .await
+            .map_err(|e| PipelineError::Consumer(e.to_string()))?;
+        Ok((out, inc))
+    }
+
+    /// Bounded BFS path using iterative Gel neighborhood expansion.
+    /// `ponytail: O(hops * degree) Gel round-trips; single-projection fetch if this dominates`.
+    pub async fn path(
+        &self,
+        from: &str,
+        to: &str,
+        max_hops: usize,
+    ) -> Result<Option<Vec<String>>, PipelineError> {
+        use std::collections::{BTreeMap, BTreeSet, VecDeque};
+        if from == to {
+            return Ok(Some(vec![from.to_owned()]));
+        }
+        let types = all_relation_types();
+        let mut prev: BTreeMap<String, String> = BTreeMap::new();
+        let mut seen: BTreeSet<String> = BTreeSet::from([from.to_owned()]);
+        let mut queue: VecDeque<(String, usize)> = VecDeque::from([(from.to_owned(), 0)]);
+        while let Some((cur, depth)) = queue.pop_front() {
+            if depth >= max_hops {
+                continue;
+            }
+            let (out, inc) = self.neighbors(&cur, Some(types.clone())).await?;
+            let mut nexts: Vec<String> = Vec::new();
+            for r in out.iter().chain(inc.iter()) {
+                nexts.push(r.from_entity.entity_id.clone());
+                nexts.push(r.to_entity.entity_id.clone());
+            }
+            for nxt in nexts {
+                if nxt == cur || !seen.insert(nxt.clone()) {
+                    continue;
+                }
+                prev.insert(nxt.clone(), cur.clone());
+                if nxt == to {
+                    let mut path = vec![to.to_owned()];
+                    let mut c = to.to_owned();
+                    while let Some(p) = prev.get(&c) {
+                        path.push(p.clone());
+                        c = p.clone();
+                    }
+                    path.reverse();
+                    return Ok(Some(path));
+                }
+                queue.push_back((nxt, depth + 1));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Deterministic export of the pinned build; truncation errors honestly.
+    pub async fn export(&self) -> Result<serde_json::Value, PipelineError> {
+        let entities = self
+            .handle
+            .build_entities(&self.build_id, EXPORT_NODE_CAP + 1)
+            .await
+            .map_err(|e| PipelineError::Consumer(e.to_string()))?;
+        if entities.len() as i64 > EXPORT_NODE_CAP {
+            return Err(PipelineError::Consumer(format!(
+                "export truncated at {EXPORT_NODE_CAP} nodes; narrow the repo"
+            )));
+        }
+        let rels = self
+            .handle
+            .build_relationships(&self.build_id, EXPORT_EDGE_CAP + 1)
+            .await
+            .map_err(|e| PipelineError::Consumer(e.to_string()))?;
+        if rels.len() as i64 > EXPORT_EDGE_CAP {
+            return Err(PipelineError::Consumer(format!(
+                "export truncated at {EXPORT_EDGE_CAP} edges; narrow the repo"
+            )));
+        }
+        let mut nodes: Vec<serde_json::Value> = entities
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "id": e.entity_id, "label": e.name, "kind": e.kind,
+                    "source_file": e.file, "qualified_name": e.qualified_name,
+                })
+            })
+            .collect();
+        nodes.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+        let mut links: Vec<serde_json::Value> = rels
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "id": r.rel_id, "source": r.from_entity.entity_id,
+                    "target": r.to_entity.entity_id, "rel_type": r.rel_type,
+                })
+            })
+            .collect();
+        links.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+        Ok(serde_json::json!({
+            "directed": true, "multigraph": true,
+            "nodes": nodes, "links": links,
+            "build_id": self.build_id, "generation": self.generation,
+        }))
+    }
+
+    /// Claim evidence and source locations for one relationship.
+    pub async fn evidence(
+        &self,
+        rel_id: &str,
+    ) -> Result<serde_json::Value, PipelineError> {
+        let rows = self
+            .handle
+            .evidence_for(rel_id)
+            .await
+            .map_err(|e| PipelineError::Consumer(e.to_string()))?;
+        Ok(serde_json::json!({"rel": rel_id, "evidence": rows}))
+    }
+
+    /// Source-backed entity explanation: structured info, no generated prose.
+    pub async fn explain(&self, id: &str) -> Result<serde_json::Value, PipelineError> {
+        let entity = self
+            .handle
+            .entity_by_id(id)
+            .await
+            .map_err(|e| PipelineError::Consumer(e.to_string()))?;
+        let Some(e) = entity else {
+            return Ok(serde_json::Value::Null);
+        };
+        let (out, inc) = self.neighbors(id, None).await?;
+        Ok(serde_json::json!({
+            "id": e.entity_id, "kind": e.kind, "file": e.file,
+            "qualified_name": e.qualified_name,
+            "outgoing": out.len(), "incoming": inc.len(),
+        }))
+    }
+
+    /// Node/edge id diff between two builds of one repo, bounded by the
+    /// export caps on each side.
+    pub async fn diff(
+        &self,
+        repo: &str,
+        from_build: &str,
+        to_build: &str,
+    ) -> Result<serde_json::Value, PipelineError> {
+        use std::collections::BTreeSet;
+        async fn members(
+            reader: &GelReader,
+            build: &str,
+        ) -> Result<(BTreeSet<String>, BTreeSet<String>), PipelineError> {
+            let ents = reader
+                .handle
+                .build_entities(build, EXPORT_NODE_CAP + 1)
+                .await
+                .map_err(|e| PipelineError::Consumer(e.to_string()))?;
+            let rels = reader
+                .handle
+                .build_relationships(build, EXPORT_EDGE_CAP + 1)
+                .await
+                .map_err(|e| PipelineError::Consumer(e.to_string()))?;
+            if ents.len() as i64 > EXPORT_NODE_CAP || rels.len() as i64 > EXPORT_EDGE_CAP {
+                return Err(PipelineError::Consumer("diff truncated at export caps".into()));
+            }
+            Ok((
+                ents.iter().map(|e| e.entity_id.clone()).collect(),
+                rels.iter().map(|r| r.rel_id.clone()).collect(),
+            ))
+        }
+        let (old_n, old_e) = members(self, from_build).await?;
+        let (new_n, new_e) = members(self, to_build).await?;
+        let added_nodes: Vec<_> = new_n.difference(&old_n).cloned().collect();
+        let removed_nodes: Vec<_> = old_n.difference(&new_n).cloned().collect();
+        let added_edges: Vec<_> = new_e.difference(&old_e).cloned().collect();
+        let removed_edges: Vec<_> = old_e.difference(&new_e).cloned().collect();
+        Ok(serde_json::json!({
+            "repo": repo, "from_build": from_build, "to_build": to_build,
+            "added_nodes": added_nodes, "removed_nodes": removed_nodes,
+            "added_edges": added_edges, "removed_edges": removed_edges,
+        }))
+    }
 }
 
 #[cfg(test)]
@@ -539,10 +896,35 @@ mod tests {
     #[test]
     fn threshold_change_reuses_decisions() {
         // Same decisions, different materialization => different accepted sets.
-        // Identity covers thresholds so raw decisions are reusable.
+        // Identity covers every threshold so raw decisions are reusable.
         let m1 = Materialization { accept_noul: 0.95, ..Default::default() };
         let m2 = Materialization::default();
         assert_ne!(m1.identity("x"), m2.identity("x"));
+        let m3 = Materialization { accept_score: 2.0, ..Default::default() };
+        assert_ne!(m3.identity("x"), m2.identity("x"));
+        let m4 = Materialization { accept_confidence: 0.99, ..Default::default() };
+        assert_ne!(m4.identity("x"), m2.identity("x"));
+    }
+
+    #[test]
+    fn search_returns_sorted_top_n() {
+        let mut b = GraphBuild::new("r", vec!["s".into()], 1);
+        for name in ["zeta", "alpha", "gamma"] {
+            b.add_node(Entity::new(
+                chaosbox_core::EntityKind::Symbol,
+                "r",
+                "s",
+                "a.rs",
+                name,
+                name,
+                SourceSpan::point("a.rs", 1, 1, 0),
+            ))
+            .unwrap();
+        }
+        let hits = search(&b, "a", 2);
+        let names: Vec<_> = hits.iter().map(|e| e.name.clone()).collect();
+        // Sorted by qualified name first, then truncated: alpha, gamma.
+        assert_eq!(names, vec!["alpha".to_owned(), "gamma".to_owned()]);
     }
 
     #[test]

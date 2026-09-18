@@ -1,4 +1,4 @@
-# Capability matrix (v0.1.0)
+# Capability matrix (v0.2.0)
 
 ## Implemented in native Rust
 
@@ -19,8 +19,15 @@
   bound params, `gel-tokio` handle with typed decoding, idempotent writes,
   predecessor-checked atomic publication, durable task claim/recovery
 - Shared read-only queries (search/lookup/neighbors/path/evidence/status/diff/
-  export/explain), deterministic + Graphify-compatible export, read-only MCP
-  (writes/EdgeQL/migrations/model tools rejected, no Jev creds, no prose evidence)
+  export/explain), deterministic + Graphify-compatible export, Gel-backed
+  `GelReader` with per-request active-build pinning and capped projections.
+  Full MCP handshake (`initialize` negotiation, paginated `tools/list` with
+  `inputSchema`, validated `tools/call`, JSON-RPC errors); closed read-only
+  tool set rejected before touching Gel (writes/EdgeQL/migrations/model tools
+  rejected, no Jev creds, no prose evidence)
+- Live Jev path: `LiveResponder` adapter + `run --live-jev` (real inference,
+  real spend; default stays fixture); HTTP-level mock-service tests cover
+  retries, auth-no-retry, and validation over the wire
 - `db check`/`db migrate` contract v1 JSON (stdout machine-readable, stderr diagnostics)
 - Vertical slice test: snapshot -> extract -> fixture Jev -> publish -> query ->
   change/delete source -> incremental replacement build
@@ -34,9 +41,14 @@
 
 ## Not yet implemented (explicit)
 
-- Live Jev quality runs (needs operator `CHAOSBOX_JEV_API_KEY_FILE`; adapter + budgets ready)
-- Real Gel integration gate (needs disposable server; `test-gel` scaffold present, no fake pass claimed)
-- harbor-db Gel backend + structured-runner registration (harbor-db has no Gel support yet; plan file `nix/chaosbox-db-plan.json` records the requirement)
-- simit named gates + ordered publication (await parallel simit session; `simit.toml` present)
+- Real Gel integration gate (needs disposable server; `test-gel` runs schema,
+  mock-HTTP, and pipeline gates, exits 3 PENDING without a `gel` server)
+- harbor-db Gel runtime/test interfaces for the disposable instance +
+  credentials/readiness flow (plan validates against the `gel` backend)
+- simit named gates + ordered publication (await parallel simit session)
+- Live Jev quality runs (adapter + `--live-jev` ready; needs operator key file)
 - Broader language coverage (grammar parsing beyond the 5-path vertical slice),
   communities/hyperedges materialization, signed release tags
+- Threshold layering note: `decide()` applies fixed Noul/Score cutoffs while
+  `Materialization` thresholds gate publication; both layers are tested and the
+  materialization identity covers every threshold, so raw decisions are reusable

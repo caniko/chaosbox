@@ -25,10 +25,12 @@ async fn vertical_slice_publish_query_incremental() {
 
     // 3. real Rust Jev adapter path against a local protocol fixture
     // (typed request/response validation, no creds, no network).
+    // One threshold source for decisions and publication (see Materialization).
+    let mat = Materialization::default();
     let entities: BTreeMap<_, _> = ext.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
     let mut responder = FixtureResponder::new(true);
     let decided =
-        Pipeline::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED)
+        Pipeline::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat)
             .await
             .unwrap();
     assert_eq!(decided.len(), cands.len());
@@ -39,7 +41,6 @@ async fn vertical_slice_publish_query_incremental() {
 
     // 4-5. persist decisions/evidence + publish validated build
     let mut pipe = Pipeline::new();
-    let mat = Materialization::default();
     let build = pipe.build_and_publish("demo", &snap, &ext, &decided, &mat, None).unwrap();
     assert!(!build.nodes.is_empty());
     assert!(!build.edges.is_empty(), "fixture decisions should materialize edges");
@@ -61,7 +62,7 @@ async fn vertical_slice_publish_query_incremental() {
     let entities2: BTreeMap<_, _> = ext2.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
     let mut responder2 = FixtureResponder::new(true);
     let decided2 =
-        Pipeline::decide(&cands2, &entities2, &mut responder2, chaosbox_jev::JEV_MODEL_PINNED)
+        Pipeline::decide(&cands2, &entities2, &mut responder2, chaosbox_jev::JEV_MODEL_PINNED, &mat)
             .await
             .unwrap();
     let build2 = pipe

@@ -25,83 +25,200 @@ pub const GEL_PINNED: &str = "7.2";
 /// Schema compatibility marker checked by `db check`.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// Persistence/query failures: client, query, invariant, or missing rows.
 #[derive(Debug, Error)]
 pub enum GelError {
     #[error("gel client: {0}")]
+    /// Connection or client-construction failure.
     Client(String),
     #[error("query: {0}")]
+    /// EdgeQL execution or typed-decoding failure.
     Query(String),
     #[error("invariant: {0}")]
+    /// A graph invariant was violated (cross-build edge, stale predecessor, ...).
     Invariant(String),
     #[error("not found: {0}")]
+    /// A required row (build, entity, ...) does not exist.
     NotFound(String),
 }
 
 /// Parameterized EdgeQL statements (never string-interpolated values).
 pub mod edgeql {
+    /// Idempotent snapshot upsert (`$0` repo, `$1` snapshot id).
     pub const UPSERT_SNAPSHOT: &str =
         "select (insert SourceSnapshot { repo := <str>$0, snapshot_id := <str>$1 } \
          unless conflict on .snapshot_id else (update SourceSnapshot filter .snapshot_id = <str>$1 set { repo := <str>$0 })) { snapshot_id }";
+    /// Idempotent entity upsert (`$0` entity id .. `$6` qualified name).
     pub const UPSERT_ENTITY: &str =
         "select (insert Entity { entity_id := <str>$0, kind := <str>$1, repo := <str>$2, snapshot := <str>$3, \
          file := <str>$4, name := <str>$5, qualified_name := <str>$6 } \
          unless conflict on .entity_id else (select Entity filter .entity_id = <str>$0)) { entity_id }";
+    /// Idempotent relationship upsert with typed endpoints (`$0` rel id .. `$4` scope).
     pub const UPSERT_RELATIONSHIP: &str =
         "select (insert Relationship { rel_id := <str>$0, rel_type := <str>$1, \
          from_entity := (select Entity filter .entity_id = <str>$2), \
          to_entity := (select Entity filter .entity_id = <str>$3), scope := <str>$4 } \
          unless conflict on .rel_id else (select Relationship filter .rel_id = <str>$0)) { rel_id }";
+    /// Idempotent decision write keyed by (candidate, question).
     pub const INSERT_DECISION: &str =
         "select (insert Decision { decision_id := <str>$0, candidate := (select Candidate filter .candidate_id = <str>$1), \
          question_id := <str>$2, outcome := <str>$3, evidence_class := <str>$4, \
          model_requested := <str>$5, model_returned := <str>$6 } \
          unless conflict on ((.candidate, .question_id)) else (select Decision filter .decision_id = <str>$0)) { decision_id }";
+    /// Staging build insert (`$0` build id, `$1` repo, `$2` generation, `$3` status).
     pub const CREATE_BUILD: &str =
         "select (insert GraphBuild { build_id := <str>$0, repo := <str>$1, generation := <int64>$2, status := <str>$3 }) { build_id }";
+    /// Atomic active-build pointer swing (`$0` repo, `$1` build id).
     pub const SET_ACTIVE_BUILD: &str =
         "select (insert ActiveBuildPointer { repo := <str>$0, build := (select GraphBuild filter .build_id = <str>$1) } \
          unless conflict on .repo else (update ActiveBuildPointer filter .repo = <str>$0 set { build := (select GraphBuild filter .build_id = <str>$1) })) { repo }";
+    /// Active build pointer read (`$0` repo).
     pub const ACTIVE_BUILD: &str =
         "select ActiveBuildPointer { repo, build: { build_id, generation, status } } filter .repo = <str>$0";
+    /// Outgoing relationships (`$0` entity id, `$1` relation-type filter list).
     pub const NEIGHBORS_OUT: &str =
         "select Relationship { rel_id, rel_type, from_entity: { entity_id }, to_entity: { entity_id } } \
          filter .from_entity.entity_id = <str>$0 and .rel_type in array_unpack(<array<str>>$1)";
+    /// Entity lookup by id (`$0` entity id).
     pub const ENTITY_BY_ID: &str =
         "select Entity { entity_id, kind, repo, snapshot, file, name, qualified_name } filter .entity_id = <str>$0";
+    /// Substring search over names (`$0` like pattern, `$1` limit).
+    pub const SEARCH_ENTITIES: &str =
+        "select Entity { entity_id, kind, repo, snapshot, file, name, qualified_name } \
+         filter .name ilike <str>$0 or .qualified_name ilike <str>$0 order by .qualified_name limit <int64>$1";
+    /// Incoming relationships (`$0` entity id, `$1` relation-type filter list).
+    pub const NEIGHBORS_IN: &str =
+        "select Relationship { rel_id, rel_type, from_entity: { entity_id }, to_entity: { entity_id } } \
+         filter .to_entity.entity_id = <str>$0 and .rel_type in array_unpack(<array<str>>$1)";
+    /// All member entities of one build (`$0` build id, `$1` limit).
+    pub const BUILD_ENTITIES: &str =
+        "select GraphMembership { entity: { entity_id, kind, repo, snapshot, file, name, qualified_name } } \
+         filter .build.build_id = <str>$0 order by .entity.qualified_name limit <int64>$1";
+    /// All member relationships of one build (`$0` build id, `$1` limit).
+    pub const BUILD_RELATIONSHIPS: &str =
+        "select GraphEdgeMembership { relationship: { rel_id, rel_type, from_entity: { entity_id }, to_entity: { entity_id } } } \
+         filter .build.build_id = <str>$0 limit <int64>$1";
+    /// Evidence attached to one relationship (`$0` rel id).
+    pub const EVIDENCE_FOR_REL: &str =
+        "select Evidence { evidence_id, class, supports, text } \
+         filter .<evidence[is Relationship].rel_id = <str>$0";
 }
 
 /// Typed row for entity lookup.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EntityRow {
+    /// Entity id.
     pub entity_id: String,
+    /// Entity kind name.
     pub kind: String,
+    /// Owning repository name.
     pub repo: String,
+    /// Snapshot this identity belongs to.
     pub snapshot: String,
+    /// Repository-relative file path.
     pub file: String,
+    /// Short display name.
     pub name: String,
+    /// Qualified name.
     pub qualified_name: String,
 }
 
+/// Active-build pointer row for readiness and per-request build pinning.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PointerRow {
+    /// Repository name.
+    pub repo: String,
+    /// The pinned active build.
+    pub build: BuildRow,
+}
+
+/// Published build header row.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BuildRow {
+    /// Build id.
+    pub build_id: String,
+    /// Monotonic generation.
+    pub generation: i64,
+    /// `staging` or `active`.
+    pub status: String,
+}
+
+/// Relationship row with endpoint ids.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RelRow {
+    /// Relationship id.
+    pub rel_id: String,
+    /// Relation type name.
+    pub rel_type: String,
+    /// Source endpoint wrapper.
+    pub from_entity: EndpointRef,
+    /// Target endpoint wrapper.
+    pub to_entity: EndpointRef,
+}
+
+/// Endpoint id wrapper (EdgeQL shape).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EndpointRef {
+    /// Entity id.
+    pub entity_id: String,
+}
+
+/// Membership row wrapping one entity.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MembershipRow {
+    /// The member entity.
+    pub entity: EntityRow,
+}
+
+/// Edge-membership row wrapping one relationship.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EdgeMembershipRow {
+    /// The member relationship.
+    pub relationship: RelRow,
+}
+
+/// Evidence row for claim support/contradiction display.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EvidenceRow {
+    /// Evidence id.
+    pub evidence_id: String,
+    /// Evidence class name.
+    pub class: String,
+    /// True when supporting the relationship.
+    pub supports: bool,
+    /// Source-copied or template text.
+    pub text: String,
+}
 /// Durable worker task states. No transactions held open during Jev calls.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
+    /// Ready to be claimed by a worker.
     Pending,
-    Claimed { worker: String },
+    /// Held by a worker; stale holders never overwrite newer results.
+    Claimed {
+        /// Worker holding the claim.
+        worker: String,
+    },
+    /// Completed.
     Done,
+    /// Failed with a sanitized reason.
     Failed(String),
 }
 
 /// Durable task record with safe claiming/recovery.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Task {
+    /// Task id.
     pub id: String,
+    /// Current lifecycle state.
     pub state: TaskState,
+    /// Claim generation; incremented on every successful claim.
     pub generation: u64,
 }
 
-/// Claim a pending task; stale workers never overwrite newer results:
-/// claim fails unless the task is still Pending at the stored generation.
+/// Claim a pending task: only `Pending` tasks can be claimed, so stale
+/// workers never overwrite newer task results.
 pub fn claim_task(task: &mut Task, worker: &str) -> Result<(), GelError> {
     match &task.state {
         TaskState::Pending => {
@@ -116,13 +233,22 @@ pub fn claim_task(task: &mut Task, worker: &str) -> Result<(), GelError> {
 /// Storage abstraction: real Gel via [`GelHandle`] or [`MemoryStore`] for
 /// tests and environments without a server.
 pub trait Store: Send + Sync {
+    /// Stage an entity (idempotent); validated at publication.
     fn put_entity(&mut self, e: Entity) -> Result<(), GelError>;
+    /// Stage a relationship for one build (idempotent).
     fn put_relation(&mut self, r: Relation, build_id: &str) -> Result<(), GelError>;
+    /// Record a decision (idempotent per candidate + question; first write wins).
     fn put_decision(&mut self, d: Decision) -> Result<(), GelError>;
+    /// Record evidence (idempotent per evidence id).
     fn put_evidence(&mut self, e: Evidence) -> Result<(), GelError>;
+    /// Record a claim (idempotent per claim id).
     fn put_claim(&mut self, c: Claim) -> Result<(), GelError>;
+    /// Validate invariants and atomically swing the active-build pointer.
+    /// Rejects stale predecessors and older-worker overwrites.
     fn publish(&mut self, build: GraphBuild, expected_predecessor: Option<String>) -> Result<(), GelError>;
+    /// The active (last good) build for a repository, if any.
     fn active(&self, repo: &str) -> Option<GraphBuild>;
+    /// A build by id, active or superseded.
     fn get(&self, build_id: &str) -> Option<GraphBuild>;
 }
 
@@ -138,6 +264,7 @@ pub struct MemoryStore {
 }
 
 impl MemoryStore {
+    /// An empty store with no builds and no active pointers.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -253,11 +380,110 @@ impl GelHandle {
             .map_err(|e| GelError::Query(e.to_string()))?;
         Ok(())
     }
+
+    /// Active build header for a repository (per-request build pinning).
+    pub async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, GelError> {
+        let json = self
+            .client
+            .query_json(edgeql::ACTIVE_BUILD, &(repo,))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        let rows: Vec<PointerRow> =
+            serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(rows.into_iter().next().map(|r| r.build))
+    }
+
+    /// Bounded substring search over entity names.
+    pub async fn search_entities(
+        &self,
+        like: &str,
+        limit: i64,
+    ) -> Result<Vec<EntityRow>, GelError> {
+        let json = self
+            .client
+            .query_json(edgeql::SEARCH_ENTITIES, &(like, limit))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))
+    }
+
+    /// Outgoing relationships with a relation-type filter (empty filter = none).
+    pub async fn neighbors_out(
+        &self,
+        id: &str,
+        rel_types: Vec<String>,
+    ) -> Result<Vec<RelRow>, GelError> {
+        let json = self
+            .client
+            .query_json(edgeql::NEIGHBORS_OUT, &(id, rel_types))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))
+    }
+
+    /// Incoming relationships with a relation-type filter (empty filter = none).
+    pub async fn neighbors_in(
+        &self,
+        id: &str,
+        rel_types: Vec<String>,
+    ) -> Result<Vec<RelRow>, GelError> {
+        let json = self
+            .client
+            .query_json(edgeql::NEIGHBORS_IN, &(id, rel_types))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))
+    }
+
+    /// Member entities of one build, bounded; errors are reported, never silent.
+    pub async fn build_entities(
+        &self,
+        build_id: &str,
+        limit: i64,
+    ) -> Result<Vec<EntityRow>, GelError> {
+        let json = self
+            .client
+            .query_json(edgeql::BUILD_ENTITIES, &(build_id, limit))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        let rows: Vec<MembershipRow> =
+            serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(rows.into_iter().map(|r| r.entity).collect())
+    }
+
+    /// Member relationships of one build, bounded.
+    pub async fn build_relationships(
+        &self,
+        build_id: &str,
+        limit: i64,
+    ) -> Result<Vec<RelRow>, GelError> {
+        let json = self
+            .client
+            .query_json(edgeql::BUILD_RELATIONSHIPS, &(build_id, limit))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        let rows: Vec<EdgeMembershipRow> =
+            serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(rows.into_iter().map(|r| r.relationship).collect())
+    }
+
+    /// Evidence attached to one relationship (claim support/contradiction).
+    pub async fn evidence_for(&self, rel_id: &str) -> Result<Vec<EvidenceRow>, GelError> {
+        let json = self
+            .client
+            .query_json(edgeql::EVIDENCE_FOR_REL, &(rel_id,))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))
+    }
 }
 
+/// Readiness probe result: connectivity plus the schema compatibility marker.
 #[derive(Clone, Debug)]
 pub struct Probe {
+    /// True when the server answered and the marker round-tripped.
     pub ok: bool,
+    /// The returned marker payload for diagnostics.
     pub detail: String,
 }
 

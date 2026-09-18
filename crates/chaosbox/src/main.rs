@@ -1,19 +1,19 @@
 //! `chaosbox` CLI + read-only MCP server.
 //!
 //! Consumers (CLI queries, MCP tools) share one query implementation in the
-//! library. MCP is read-only: no mutation, ingestion, annotations, arbitrary
-//! EdgeQL/SQL, migrations, or model configuration tools. The read-only server
-//! never loads Jev credentials. Indexing/administration are operator commands.
+//! library, served Gel-backed through [`chaosbox::GelReader`]. MCP is
+//! read-only: no mutation, ingestion, annotations, arbitrary EdgeQL/SQL,
+//! migrations, or model configuration tools. The read-only server never loads
+//! Jev credentials. Indexing/administration are operator commands.
 
-use std::{
-    collections::BTreeMap,
-    io::{BufRead, Write as _},
-    path::PathBuf,
+use std::{collections::BTreeMap, path::PathBuf};
+
+use chaosbox::{
+    EXPORT_EDGE_CAP, EXPORT_NODE_CAP, GelReader, LifecycleReport, Materialization,
+    Pipeline, all_relation_types,
 };
-
-use chaosbox::{FixtureResponder, LifecycleReport, Materialization, Pipeline, db_check_report, explain_entity, export_json, search};
+use chaosbox::{FixtureResponder, LiveResponder};
 use chaosbox_extract::Snapshot;
-use chaosbox_gel::MemoryStore;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
@@ -28,14 +28,21 @@ enum Command {
     /// Snapshot a fixture repository.
     Snapshot { path: PathBuf, #[arg(long, default_value = "demo")] repo: String },
     /// Extract deterministic facts + candidates.
-    Extract { path: PathBuf, #[arg(long, default_value = "demo")] repo: String },
-    /// Run the full pipeline against a local protocol fixture (no creds).
-    Run {
+    Extract {
         path: PathBuf,
         #[arg(long, default_value = "demo")] repo: String,
         #[arg(long, default_value_t = 200)] max_candidates: usize,
     },
-    /// Query helpers (read-only; share lib implementation with MCP).
+    /// Run the full pipeline (fixture decisions unless --live-jev).
+    Run {
+        path: PathBuf,
+        #[arg(long, default_value = "demo")] repo: String,
+        #[arg(long, default_value_t = 200)] max_candidates: usize,
+        /// Use the live Jev API (needs CHAOSBOX_JEV_API_KEY_FILE) instead of
+        /// the deterministic fixture. Real inference, real spend.
+        #[arg(long, default_value_t = false)] live_jev: bool,
+    },
+    /// Query helpers (read-only; Gel-backed, shared with MCP).
     Query {
         #[command(subcommand)]
         q: QueryCmd,
@@ -51,23 +58,59 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum QueryCmd {
-    Search { query: String, #[arg(long, default_value_t = 20)] limit: usize },
-    Lookup { id: String },
-    Neighbors { id: String, #[arg(long)] rel: Option<String> },
-    Path { from: String, to: String, #[arg(long, default_value_t = 4)] max_hops: usize },
-    Export {},
+    /// Substring search over entity names (sorted, bounded).
+    Search {
+        query: String,
+        #[arg(long, default_value = "demo")] repo: String,
+        #[arg(long, default_value_t = 20)] limit: i64,
+    },
+    /// Typed entity lookup by id.
+    Lookup {
+        id: String,
+        #[arg(long, default_value = "demo")] repo: String,
+    },
+    /// Incoming/outgoing neighborhoods with optional relation filter.
+    Neighbors {
+        id: String,
+        #[arg(long, default_value = "demo")] repo: String,
+        #[arg(long)] rel: Option<String>,
+    },
+    /// Bounded path between two entities (successful negative => null).
+    Path {
+        from: String,
+        to: String,
+        #[arg(long, default_value = "demo")] repo: String,
+        #[arg(long, default_value_t = 4)] max_hops: usize,
+    },
+    /// Deterministic export of the pinned active build.
+    Export {
+        #[arg(long, default_value = "demo")] repo: String,
+    },
+    /// Source-backed entity explanation (no generated prose).
+    Explain {
+        id: String,
+        #[arg(long, default_value = "demo")] repo: String,
+    },
+    /// Active-build status, coverage, and generation.
+    Status {
+        #[arg(long, default_value = "demo")] repo: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 enum DbCmd {
     /// Read-only readiness check. Exit 0 only when ready.
     Check {
-        #[arg(long)] json: bool,
+        /// Emit the versioned JSON envelope (contract v1; always on).
+        #[arg(long, default_value_t = true)]
+        json: bool,
         #[arg(long, default_value = "demo")] repo: String,
     },
     /// Apply committed migrations idempotently via pinned Gel tooling.
     Migrate {
-        #[arg(long)] json: bool,
+        /// Emit the versioned JSON envelope (contract v1; always on).
+        #[arg(long, default_value_t = true)]
+        json: bool,
     },
 }
 
@@ -84,8 +127,8 @@ async fn main() {
                 }
             }
         }
-        Command::Extract { path, repo } => {
-            match Pipeline::snapshot_extract(&repo, &path, 200) {
+        Command::Extract { path, repo, max_candidates } => {
+            match Pipeline::snapshot_extract(&repo, &path, max_candidates) {
                 Ok((snap, ext, cands)) => println!(
                     r#"{{"snapshot":"{}","entities":{},"candidates":{}}}"#,
                     snap.id,
@@ -98,22 +141,16 @@ async fn main() {
                 }
             }
         }
-        Command::Run { path, repo, max_candidates } => {
-            let code = run_pipeline(&path, &repo, max_candidates).await;
+        Command::Run { path, repo, max_candidates, live_jev } => {
+            let code = run_pipeline(&path, &repo, max_candidates, live_jev).await;
             std::process::exit(code);
         }
-        Command::Query { q } => {
-            eprintln!("query needs a published build; use `chaosbox run` output or MCP with a build file");
-            let _ = q;
-            std::process::exit(2);
-        }
-        Command::Mcp => serve_mcp(),
+        Command::Query { q } => std::process::exit(run_query(q).await),
+        Command::Mcp => serve_mcp().await,
         Command::Db { op } => match op {
             DbCmd::Check { json: _, repo } => {
-                // Read-only: never init/migrate/repair. No active build in a
-                // fresh process => pending (nonzero), diagnostics to stderr.
-                let store = MemoryStore::new();
-                let report = db_check_report(&store, &repo);
+                // Read-only: never init/migrate/repair. Exit 0 only when ready.
+                let report = db_check_gel(&repo).await;
                 println!("{}", serde_json::to_string(&report).unwrap());
                 if report.status == "ready" {
                     std::process::exit(0);
@@ -142,7 +179,146 @@ async fn main() {
     }
 }
 
-async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize) -> i32 {
+/// Gel-backed readiness: connectivity + probe + active build for the repo.
+async fn db_check_gel(repo: &str) -> LifecycleReport {
+    let handle = match chaosbox_gel::GelHandle::connect().await {
+        Ok(h) => h,
+        Err(e) => return LifecycleReport::error("db check", &format!("gel connect: {e}")),
+    };
+    if let Err(e) = handle.probe().await {
+        return LifecycleReport::error("db check", &format!("gel probe: {e}"));
+    }
+    match handle.active_build(repo).await {
+        Err(e) => LifecycleReport::error("db check", &format!("active build: {e}")),
+        Ok(None) => LifecycleReport::pending("db check", "no active build for repo"),
+        Ok(Some(b)) => LifecycleReport::check_ready(serde_json::json!({
+            "repo": repo, "active_build": b.build_id, "generation": b.generation,
+            "status": b.status, "schema_assets": "packaged",
+        })),
+    }
+}
+
+fn consumer_err(op: &str, e: impl std::fmt::Display) -> i32 {
+    let report = LifecycleReport::error(op, &e.to_string());
+    println!("{}", serde_json::to_string(&report).unwrap());
+    eprintln!("{op} failed: {e}");
+    1
+}
+
+async fn run_query(q: QueryCmd) -> i32 {
+    match q {
+        QueryCmd::Search { query, repo, limit } => {
+            let reader = match GelReader::connect(&repo).await {
+                Ok(r) => r,
+                Err(e) => return consumer_err("query search", e),
+            };
+            match reader.search(&query, limit).await {
+                Ok(rows) => {
+                    println!("{}", serde_json::to_string(&rows).unwrap());
+                    0
+                }
+                Err(e) => consumer_err("query search", e),
+            }
+        }
+        QueryCmd::Lookup { id, repo } => {
+            let reader = match GelReader::connect(&repo).await {
+                Ok(r) => r,
+                Err(e) => return consumer_err("query lookup", e),
+            };
+            match reader.lookup(&id).await {
+                Ok(row) => {
+                    println!("{}", serde_json::to_string(&row).unwrap());
+                    0
+                }
+                Err(e) => consumer_err("query lookup", e),
+            }
+        }
+        QueryCmd::Neighbors { id, repo, rel } => {
+            let reader = match GelReader::connect(&repo).await {
+                Ok(r) => r,
+                Err(e) => return consumer_err("query neighbors", e),
+            };
+            let filter = rel.map(|r| vec![r]);
+            match reader.neighbors(&id, filter).await {
+                Ok((out, inc)) => {
+                    println!("{}", serde_json::to_string(&serde_json::json!({
+                        "id": id, "outgoing": out, "incoming": inc,
+                    })).unwrap());
+                    0
+                }
+                Err(e) => consumer_err("query neighbors", e),
+            }
+        }
+        QueryCmd::Path { from, to, repo, max_hops } => {
+            let reader = match GelReader::connect(&repo).await {
+                Ok(r) => r,
+                Err(e) => return consumer_err("query path", e),
+            };
+            match reader.path(&from, &to, max_hops).await {
+                // Successful negative (no path) is a null result, exit 0.
+                Ok(path) => {
+                    println!("{}", serde_json::to_string(&serde_json::json!({
+                        "from": from, "to": to, "path": path,
+                    })).unwrap());
+                    0
+                }
+                Err(e) => consumer_err("query path", e),
+            }
+        }
+        QueryCmd::Export { repo } => {
+            let reader = match GelReader::connect(&repo).await {
+                Ok(r) => r,
+                Err(e) => return consumer_err("query export", e),
+            };
+            match reader.export().await {
+                Ok(v) => {
+                    println!("{}", serde_json::to_string(&v).unwrap());
+                    0
+                }
+                Err(e) => consumer_err("query export", e),
+            }
+        }
+        QueryCmd::Explain { id, repo } => {
+            let reader = match GelReader::connect(&repo).await {
+                Ok(r) => r,
+                Err(e) => return consumer_err("query explain", e),
+            };
+            match reader.lookup(&id).await {
+                Ok(None) => {
+                    println!("null");
+                    0
+                }
+                Ok(Some(e)) => {
+                    let (out, inc) = match reader.neighbors(&id, None).await {
+                        Ok(n) => n,
+                        Err(e) => return consumer_err("query explain", e),
+                    };
+                    println!("{}", serde_json::to_string(&serde_json::json!({
+                        "id": e.entity_id, "kind": e.kind, "file": e.file,
+                        "qualified_name": e.qualified_name,
+                        "outgoing": out.len(), "incoming": inc.len(),
+                    })).unwrap());
+                    0
+                }
+                Err(e) => consumer_err("query explain", e),
+            }
+        }
+        QueryCmd::Status { repo } => {
+            let reader = match GelReader::connect(&repo).await {
+                Ok(r) => r,
+                Err(e) => return consumer_err("query status", e),
+            };
+            println!("{}", serde_json::to_string(&serde_json::json!({
+                "repo": repo, "build_id": reader.build_id,
+                "generation": reader.generation,
+                "export_caps": {"nodes": EXPORT_NODE_CAP, "edges": EXPORT_EDGE_CAP},
+            })).unwrap());
+            0
+        }
+    }
+}
+
+async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_jev: bool) -> i32 {
     let (snap, ext, cands) = match Pipeline::snapshot_extract(repo, path, max_candidates) {
         Ok(v) => v,
         Err(e) => {
@@ -151,19 +327,38 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize) -> i32 
         }
     };
     let entities: BTreeMap<_, _> = ext.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
-    let mut responder = FixtureResponder::new(true);
-    let decided = match Pipeline::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED).await {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("decide: {e}");
-            return 1;
+    let mat = Materialization::default();
+    let mut pipe = Pipeline::new();
+    let decided = if live_jev {
+        let policy = chaosbox_jev::JevPolicy::default();
+        let client = match chaosbox_jev::JevClient::new(policy) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("jev client: {e}");
+                return 1;
+            }
+        };
+        let mut responder = LiveResponder::new(client);
+        match Pipeline::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat).await {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("decide: {e}");
+                return 1;
+            }
+        }
+    } else {
+        let mut responder = FixtureResponder::new(true);
+        match Pipeline::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat).await {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("decide: {e}");
+                return 1;
+            }
         }
     };
-    let mut pipe = Pipeline::new();
-    let mat = Materialization::default();
     match pipe.build_and_publish(repo, &snap, &ext, &decided, &mat, None) {
         Ok(build) => {
-            let v = export_json(&build);
+            let v = chaosbox::export_json(&build);
             println!("{}", serde_json::to_string(&v).unwrap());
             0
         }
@@ -176,8 +371,11 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize) -> i32 
 
 async fn run_migrate() -> Result<LifecycleReport, String> {
     let creds = std::env::var("CHAOSBOX_GEL_CREDENTIALS_FILE").map_err(|_| "CHAOSBOX_GEL_CREDENTIALS_FILE unset".to_owned())?;
-    // Never log secret values; only reference the file.
-    let out = tokio::process::Command::new("gel")
+    // Pinned binary under Nix (`db-migrate` app); ambient `gel` only for
+    // cargo-run development. Never log secret values; only reference the file.
+    // GEL_CREDENTIALS_FILE is a documented Gel connection parameter.
+    let gel_bin = std::env::var("CHAOSBOX_GEL_BIN").unwrap_or_else(|_| "gel".to_owned());
+    let out = tokio::process::Command::new(gel_bin)
         .args(["migration", "apply", "--non-interactive"])
         .env("GEL_CREDENTIALS_FILE", &creds)
         .output()
@@ -190,56 +388,321 @@ async fn run_migrate() -> Result<LifecycleReport, String> {
     }
 }
 
-/// Minimal read-only MCP (JSON-RPC over stdio).
-///
-/// Tools: search, lookup, neighbors, path, evidence, status, diff, export,
-/// explain. Any write/mutation/EdgeQL/migration/model tool is rejected.
-/// No Jev credential is loaded here by construction.
-fn serve_mcp() {
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    // Note: serving without a loaded build answers status only; a full
-    // deployment injects the pinned active build. Never accepts prose as evidence.
-    for line in stdin.lock().lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
+// ---- Read-only MCP (JSON-RPC over stdio, full handshake) ----
+
+/// MCP protocol version served here.
+const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
+/// Older protocol versions still accepted from clients.
+const MCP_PROTOCOL_FALLBACKS: &[&str] = &["2024-11-05", "2025-03-26"];
+/// Tools per `tools/list` page.
+const MCP_PAGE_SIZE: usize = 5;
+
+fn mcp_tool_defs() -> Vec<serde_json::Value> {
+    vec![
+        mcp_tool("search", "Substring search over entity names (sorted, bounded).",
+            serde_json::json!({"query": {"type": "string"}, "limit": {"type": "integer", "default": 20}}),
+            vec!["query"]),
+        mcp_tool("lookup", "Typed entity lookup by id.",
+            serde_json::json!({"id": {"type": "string"}}), vec!["id"]),
+        mcp_tool("neighbors", "Incoming/outgoing neighborhoods with optional relation filter.",
+            serde_json::json!({"id": {"type": "string"}, "rel": {"type": "string"}}), vec!["id"]),
+        mcp_tool("path", "Bounded path between two entities (null when absent).",
+            serde_json::json!({"from": {"type": "string"}, "to": {"type": "string"},
+                "max_hops": {"type": "integer", "default": 4}}), vec!["from", "to"]),
+        mcp_tool("evidence", "Claim evidence and source locations for a relationship.",
+            serde_json::json!({"rel": {"type": "string"}}), vec!["rel"]),
+        mcp_tool("status", "Active-build status, coverage, and generation.",
+            serde_json::json!({}), Vec::<&str>::new()),
+        mcp_tool("diff", "Node/edge id diff between two builds of one repo.",
+            serde_json::json!({"from_build": {"type": "string"}, "to_build": {"type": "string"}}),
+            vec!["from_build", "to_build"]),
+        mcp_tool("export", "Deterministic export of the pinned active build.",
+            serde_json::json!({}), Vec::<&str>::new()),
+        mcp_tool("explain", "Source-backed entity explanation (no generated prose).",
+            serde_json::json!({"id": {"type": "string"}}), vec!["id"]),
+    ]
+}
+
+fn mcp_tool(
+    name: &str,
+    description: &str,
+    properties: serde_json::Value,
+    required: Vec<&str>,
+) -> serde_json::Value {
+    let mut schema = serde_json::json!({
+        "type": "object",
+        "properties": properties,
+        "required": required,
+    });
+    // Every tool accepts an optional repo; the pinned active build serves reads.
+    if let Some(props) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
+        props.insert("repo".to_owned(), serde_json::json!({"type": "string", "default": "demo"}));
+    }
+    serde_json::json!({
+        "name": name, "description": description,
+        "inputSchema": schema,
+        "annotations": {"readOnlyHint": true},
+    })
+}
+
+fn mcp_text_result(id: &serde_json::Value, payload: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0", "id": id,
+        "result": {"content": [{"type": "text", "text": serde_json::to_string(payload).unwrap_or_default()}]},
+    })
+}
+
+fn mcp_error(
+    id: &serde_json::Value,
+    code: i64,
+    message: String,
+    data: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let mut error = serde_json::json!({"code": code, "message": message});
+    if let Some(d) = data {
+        error["data"] = d;
+    }
+    serde_json::json!({"jsonrpc": "2.0", "id": id, "error": error})
+}
+
+/// Validate tool arguments against required fields (types are checked per tool).
+fn mcp_args(
+    name: &str,
+    params: &serde_json::Value,
+) -> Result<serde_json::Map<String, serde_json::Value>, serde_json::Value> {
+    let args = params.get("arguments").unwrap_or(&serde_json::Value::Null);
+    let map = args.as_object().cloned().unwrap_or_default();
+    let required: &[&str] = match name {
+        "search" => &["query"],
+        "lookup" | "neighbors" | "explain" => &["id"],
+        "path" => &["from", "to"],
+        "evidence" => &["rel"],
+        "diff" => &["from_build", "to_build"],
+        _ => &[],
+    };
+    for key in required {
+        if map.get(*key).and_then(|v| v.as_str()).map(|s| s.is_empty()).unwrap_or(true) {
+            return Err(serde_json::json!({"code": -32602, "message": format!("missing required argument: {key}")}));
+        }
+    }
+    Ok(map)
+}
+
+async fn mcp_call_tool(
+    id: &serde_json::Value,
+    name: &str,
+    params: &serde_json::Value,
+) -> serde_json::Value {
+    let args = match mcp_args(name, params) {
+        Ok(a) => a,
+        Err(e) => {
+            let code = e["code"].as_i64().unwrap_or(-32602);
+            let msg = e["message"].as_str().unwrap_or("invalid params").to_owned();
+            return mcp_error(id, code, msg, None);
+        }
+    };
+    // Closed read-only tool set: reject unknown (write/mutation) tools before
+    // touching Gel or credentials of any kind.
+    if !matches!(name, "search" | "lookup" | "neighbors" | "path" | "evidence" | "status" | "diff" | "export" | "explain") {
+        return mcp_error(
+            id, -32601,
+            format!("read-only MCP: no such tool (rejected): {name}"),
+            None,
+        );
+    }
+    let repo = args.get("repo").and_then(|r| r.as_str()).unwrap_or("demo");
+    let reader = match GelReader::connect(repo).await {
+        Ok(r) => r,
+        Err(e) => {
+            let report = LifecycleReport::error(&format!("mcp {name}"), &e.to_string());
+            return mcp_error(id, -32603, e.to_string(), Some(serde_json::to_value(&report).unwrap()));
+        }
+    };
+    let payload: Result<serde_json::Value, String> = match name {
+        "search" => {
+            let q = args["query"].as_str().unwrap_or_default();
+            let limit = args.get("limit").and_then(|l| l.as_i64()).unwrap_or(20);
+            reader.search(q, limit).await
+                .map(|rows| serde_json::to_value(&rows).unwrap())
+                .map_err(|e| e.to_string())
+        }
+        "lookup" => {
+            let eid = args["id"].as_str().unwrap_or_default();
+            reader.lookup(eid).await
+                .map(|row| serde_json::to_value(&row).unwrap())
+                .map_err(|e| e.to_string())
+        }
+        "neighbors" => {
+            let eid = args["id"].as_str().unwrap_or_default();
+            let filter = args.get("rel").and_then(|r| r.as_str()).map(|r| vec![r.to_owned()]);
+            reader.neighbors(eid, filter).await
+                .map(|(out, inc)| serde_json::json!({"id": eid, "outgoing": out, "incoming": inc}))
+                .map_err(|e| e.to_string())
+        }
+        "path" => {
+            let from = args["from"].as_str().unwrap_or_default();
+            let to = args["to"].as_str().unwrap_or_default();
+            let hops = args.get("max_hops").and_then(|h| h.as_u64()).unwrap_or(4) as usize;
+            reader.path(from, to, hops).await
+                .map(|path| serde_json::json!({"from": from, "to": to, "path": path}))
+                .map_err(|e| e.to_string())
+        }
+        "evidence" => {
+            let rel = args["rel"].as_str().unwrap_or_default();
+            reader.evidence(rel).await.map_err(|e| e.to_string())
+        }
+        "status" => Ok(serde_json::json!({
+            "repo": repo, "build_id": reader.build_id, "generation": reader.generation,
+        })),
+        "diff" => {
+            let from = args["from_build"].as_str().unwrap_or_default();
+            let to = args["to_build"].as_str().unwrap_or_default();
+            reader.diff(repo, from, to).await.map_err(|e| e.to_string())
+        }
+        "export" => reader.export().await.map_err(|e| e.to_string()),
+        "explain" => {
+            let eid = args["id"].as_str().unwrap_or_default();
+            reader.explain(eid).await.map_err(|e| e.to_string())
+        }
+        _ => {
+            return mcp_error(
+                id, -32601,
+                format!("read-only MCP: no such tool (rejected): {name}"),
+                None,
+            );
+        }
+    };
+    match payload {
+        Ok(v) => mcp_text_result(id, &v),
+        Err(e) => mcp_error(id, -32603, e, None),
+    }
+}
+
+/// Read-only MCP over stdio: full handshake, paginated tools, validated calls.
+/// Never loads Jev credentials; never accepts prose as evidence.
+async fn serve_mcp() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let stdin = tokio::io::stdin();
+    let mut stdout = tokio::io::stdout();
+    let mut lines = BufReader::new(stdin).lines();
+    let mut initialized = false;
+    while let Ok(Some(line)) = lines.next_line().await {
         if line.trim().is_empty() {
             continue;
         }
         let req: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
-            Err(e) => {
-                let _ = writeln!(stdout, r#"{{"error":"parse: {e}"}}"#);
+            Err(_) => {
+                let resp = mcp_error(&serde_json::Value::Null, -32700, "parse error".to_owned(), None);
+                let _ = stdout.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes()).await;
                 continue;
             }
         };
+        if req.is_array() {
+            let resp = mcp_error(&serde_json::Value::Null, -32600, "batch requests not supported".to_owned(), None);
+            let _ = stdout.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes()).await;
+            continue;
+        }
+        // Notifications carry no id and get no response.
+        let id = match req.get("id") {
+            Some(i) => i.clone(),
+            None => continue,
+        };
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
-        let id = req.get("id").cloned().unwrap_or(serde_json::Value::Null);
+        let params = req.get("params").cloned().unwrap_or(serde_json::Value::Null);
         let resp = match method {
-            "tools/list" => serde_json::json!({
-                "jsonrpc": "2.0", "id": id, "result": {"tools": [
-                    {"name": "search"}, {"name": "lookup"}, {"name": "neighbors"},
-                    {"name": "path"}, {"name": "evidence"}, {"name": "status"},
-                    {"name": "diff"}, {"name": "export"}, {"name": "explain"},
-                ]}}),
-            "tools/call" => {
-                let name = req.pointer("/params/name").and_then(|n| n.as_str()).unwrap_or("");
-                match name {
-                    "search" | "lookup" | "neighbors" | "path" | "evidence" | "status" | "diff" | "export" | "explain" => serde_json::json!({
-                        "jsonrpc": "2.0", "id": id,
-                        "result": {"status": "ok", "note": "read-only; no build loaded in this demo invocation"}}),
-                    _ => serde_json::json!({
-                        "jsonrpc": "2.0", "id": id,
-                        "error": {"code": -32601, "message": format!("read-only MCP: no such tool (rejected): {name}")}}),
+            "initialize" => {
+                let requested = params.get("protocolVersion").and_then(|v| v.as_str()).unwrap_or("");
+                let version = if requested == MCP_PROTOCOL_VERSION || MCP_PROTOCOL_FALLBACKS.contains(&requested) {
+                    requested.to_owned()
+                } else {
+                    MCP_PROTOCOL_VERSION.to_owned()
+                };
+                initialized = true;
+                serde_json::json!({
+                    "jsonrpc": "2.0", "id": id, "result": {
+                        "protocolVersion": version,
+                        "capabilities": {"tools": {"listChanged": false}},
+                        "serverInfo": {"name": "chaosbox", "version": env!("CARGO_PKG_VERSION")},
+                    },
+                })
+            }
+            "notifications/initialized" => continue,
+            "ping" => serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {}}),
+            "tools/list" => {
+                if !initialized {
+                    mcp_error(&id, -32600, "server not initialized".to_owned(), None)
+                } else {
+                    let defs = mcp_tool_defs();
+                    let cursor = params.get("cursor").and_then(|c| c.as_str()).and_then(|c| c.parse::<usize>().ok()).unwrap_or(0);
+                    let page: Vec<_> = defs.into_iter().skip(cursor).take(MCP_PAGE_SIZE).collect();
+                    let next = if page.len() == MCP_PAGE_SIZE { Some((cursor + MCP_PAGE_SIZE).to_string()) } else { None };
+                    let mut result = serde_json::json!({"tools": page});
+                    if let Some(n) = next {
+                        result["nextCursor"] = serde_json::Value::String(n);
+                    }
+                    serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result})
                 }
             }
-            _ => serde_json::json!({
-                "jsonrpc": "2.0", "id": id,
-                "error": {"code": -32601, "message": "unknown method"}}),
+            "tools/call" => {
+                if !initialized {
+                    mcp_error(&id, -32600, "server not initialized".to_owned(), None)
+                } else {
+                    let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    mcp_call_tool(&id, name, &params).await
+                }
+            }
+            _ => mcp_error(&id, -32601, format!("unknown method (rejected): {method}"), None),
         };
-        let _ = writeln!(stdout, "{}", serde_json::to_string(&resp).unwrap());
+        let _ = stdout.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes()).await;
     }
-    let _ = (search, explain_entity);
+    let _ = all_relation_types;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_defs_are_read_only_with_schemas() {
+        let defs = mcp_tool_defs();
+        assert_eq!(defs.len(), 9);
+        for d in &defs {
+            assert_eq!(d["annotations"]["readOnlyHint"], true);
+            assert!(d["inputSchema"]["properties"].is_object(), "{d}");
+            assert!(d.get("_required").is_none(), "no internal fields leak: {d}");
+        }
+    }
+
+    #[test]
+    fn missing_args_rejected_before_gel() {
+        let err = mcp_args("search", &serde_json::json!({})).unwrap_err();
+        assert_eq!(err["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn unknown_tools_rejected_without_gel() {
+        // No Gel needed: the closed tool set rejects first.
+        for name in ["migrate", "evaluate", "db", "edgeql", "ingest", "annotate"] {
+            let resp = mcp_call_tool(
+                &serde_json::json!(1),
+                name,
+                &serde_json::json!({"name": name}),
+            )
+            .await;
+            assert_eq!(resp["error"]["code"], -32601, "{name}: {resp}");
+        }
+    }
+
+    #[tokio::test]
+    async fn calls_require_initialization_shape() {
+        // Malformed (non-object) params fail arg validation, not Gel.
+        let resp = mcp_call_tool(
+            &serde_json::json!(1),
+            "search",
+            &serde_json::json!({"arguments": "not-an-object"}),
+        )
+        .await;
+        assert_eq!(resp["error"]["code"], -32602, "{resp}");
+    }
 }

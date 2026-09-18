@@ -21,29 +21,39 @@ use thiserror::Error;
 
 /// Pinned reproducible model. Never a moving alias in production.
 pub const JEV_MODEL_PINNED: &str = "jev-1.13.0";
-/// Documented ceilings (tokens).
+/// Documented ceiling: total tokens per request.
 pub const CTX_TOTAL_MAX: usize = 64_000;
+/// Documented ceiling: state plus longest-question tokens.
 pub const CTX_STATE_PLUS_LONGEST_MAX: usize = 32_000;
 /// Response size cap (bytes).
 pub const MAX_RESPONSE_BYTES: u64 = 2_000_000;
 
+/// Failures across budgets, transport, auth/schema (never retried), and protocol.
 #[derive(Debug, Error)]
 pub enum JevError {
     #[error("budget exceeded: {0}")]
+    /// A deadline/concurrency/spend/request budget was exceeded.
     Budget(String),
     #[error("context limit: {0}")]
+    /// A documented context ceiling would be exceeded; never silently truncate.
     Context(String),
     #[error("transport: {0}")]
+    /// HTTP client or connection failure.
     Transport(String),
     #[error("auth (no retry): {0}")]
+    /// 401/403 or missing credentials; never retried.
     Auth(String),
     #[error("schema (no retry): {0}")]
+    /// 400/404/422 or unparseable envelope; never retried.
     Schema(String),
     #[error("transient after {0} attempts: {1}")]
+    /// Retryable failure (429/529/5xx/timeout) past the retry budget.
     Transient(u32, String),
     #[error("protocol: {0}")]
+    /// Answer-id mismatch, type mismatch, oversize response, etc.
     Protocol(String),
     #[error("cancelled")]
+    /// The request was cancelled.
     Cancelled,
 }
 
@@ -51,98 +61,139 @@ pub enum JevError {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Question {
+    /// Yes/no question; answer is a Noul probability.
     Noul {
+        /// What is being asked; entity descriptions, never bare ids.
         instructions: String,
+        /// Optional yes/no criteria text.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         criteria: Option<NoulCriteria>,
     },
+    /// Single-choice question; answer selects one option plus a distribution.
     Choice {
+        /// What is being asked; entity descriptions, never bare ids.
         instructions: String,
+        /// Option name -> optional description.
         criteria: BTreeMap<String, Option<String>>,
     },
+    /// Scored question over ordered levels; answer is a weighted value.
     Score {
+        /// What is being asked; entity descriptions, never bare ids.
         instructions: String,
+        /// Ordered level descriptions.
         criteria: Vec<String>,
     },
 }
 
+/// Optional yes/no criteria text for a Noul question.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct NoulCriteria {
+    /// Description of the `true` outcome.
     #[serde(default, rename = "true", skip_serializing_if = "Option::is_none")]
     pub yes: Option<String>,
+    /// Description of the `false` outcome.
     #[serde(default, rename = "false", skip_serializing_if = "Option::is_none")]
     pub no: Option<String>,
 }
 
 /// Noul answer: probability yes. No confidence field.
+/// (The `"type"` discriminant is handled by the [`Answer`] enum.)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NoulAnswer {
-    #[serde(rename = "type")]
-    pub kind: String,
+    /// Probability of yes, in [0,1].
     pub noul: f64,
 }
 
 /// Choice answer: selected option + full distribution + confidence.
+/// (The `"type"` discriminant is handled by the [`Answer`] enum.)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChoiceAnswer {
-    #[serde(rename = "type")]
-    pub kind: String,
+    /// The selected option; always a member of the asked criteria.
     pub choice: String,
+    /// Full option distribution (sums to ~1).
     pub probabilities: BTreeMap<String, f64>,
+    /// Model confidence in [0,1]; distinct from the distribution.
     pub confidence: f64,
 }
 
 /// Score answer: weighted value + per-level distribution + confidence.
+/// (The `"type"` discriminant is handled by the [`Answer`] enum.)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ScoreAnswer {
-    #[serde(rename = "type")]
-    pub kind: String,
+    /// Weighted value across levels.
     pub score: f64,
+    /// Per-level distribution.
     pub probabilities: BTreeMap<String, f64>,
+    /// Model confidence in [0,1]; distinct from the value.
     pub confidence: f64,
+    /// Per-level results backing the weighted value.
     #[serde(default)]
     pub results: Vec<f64>,
 }
 
+/// A typed answer; the variant must match the asked question type.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Answer {
+    /// Yes/no probability answer.
     Noul(NoulAnswer),
+    /// Single-choice answer.
     Choice(ChoiceAnswer),
+    /// Scored answer.
     Score(ScoreAnswer),
 }
 
+/// The `POST /v1/systemone` request body.
 #[derive(Clone, Debug, Serialize)]
 pub struct SystemOneRequest {
+    /// Shared context: entity/relation descriptions, never bare ids.
     pub state: serde_json::Value,
+    /// Pinned model identity (never a moving alias in production).
     pub model: String,
+    /// Questions by arbitrary id; evaluated independently.
     pub questions: BTreeMap<String, Question>,
 }
 
+/// The `POST /v1/systemone` response body.
 #[derive(Clone, Debug, Deserialize)]
 pub struct SystemOneResponse {
+    /// Model identity that actually served the request.
     pub model: String,
+    /// Answers keyed by the asked question ids.
     pub answers: BTreeMap<String, Answer>,
+    /// Token accounting for budgets.
     pub usage: Usage,
 }
 
+/// Token accounting returned with every response.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Usage {
+    /// Input tokens consumed.
     pub input_tokens: u64,
+    /// Output tokens consumed.
     pub output_tokens: u64,
 }
 
 /// Endpoint + deadline + concurrency + spending/request budgets.
 #[derive(Clone, Debug)]
 pub struct JevPolicy {
+    /// Full `POST /v1/systemone` endpoint URL (explicit TLS host).
     pub endpoint: String,
+    /// Pinned model identity.
     pub model: String,
+    /// Per-request deadline (also bounds cancellation).
     pub deadline: Duration,
+    /// Max questions evaluated together (independent decisions only).
     pub max_questions_per_request: usize,
+    /// Max in-flight requests.
     pub max_concurrent_requests: usize,
+    /// Max requests per client lifetime (spending/request budget).
     pub max_requests: u32,
+    /// Max input tokens per client lifetime (spending budget).
     pub max_input_tokens: u64,
+    /// Bounded retries for transient failures only.
     pub max_retries: u32,
+    /// Response size cap in bytes.
     pub max_response_bytes: u64,
 }
 
@@ -165,11 +216,17 @@ impl Default for JevPolicy {
 /// Durable per-attempt accounting (no secret values).
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct AttemptRecord {
+    /// 1-based attempt number within one `evaluate` call.
     pub attempt: u32,
+    /// Question ids covered by the attempt.
     pub question_ids: Vec<String>,
+    /// HTTP status, if a response was received.
     pub http_status: Option<u16>,
+    /// Honored `retry-after` seconds, if the server sent one.
     pub retry_after_secs: Option<u64>,
+    /// Input tokens reported, if the call succeeded.
     pub input_tokens: Option<u64>,
+    /// Sanitized failure text (no secret values).
     pub error: Option<String>,
 }
 
@@ -224,12 +281,14 @@ pub fn cache_key(
 pub struct JevClient {
     http: reqwest::Client,
     policy: JevPolicy,
+    /// Durable per-attempt accounting for every `evaluate` call.
     pub attempts: Vec<AttemptRecord>,
     spent_tokens: u64,
     sent_requests: u32,
 }
 
 impl JevClient {
+    /// Build a client from an explicit policy (timeouts from its deadline).
     pub fn new(policy: JevPolicy) -> Result<Self, JevError> {
         let http = reqwest::Client::builder()
             .timeout(policy.deadline)
@@ -480,7 +539,7 @@ mod tests {
         asked.insert("a".into(), Question::Noul { instructions: "y?".into(), criteria: None });
         let resp = SystemOneResponse {
             model: JEV_MODEL_PINNED.into(),
-            answers: BTreeMap::from([("a".into(), Answer::Noul(NoulAnswer { kind: "noul".into(), noul: 0.7 }))]),
+            answers: BTreeMap::from([("a".into(), Answer::Noul(NoulAnswer { noul: 0.7 }))]),
             usage: Usage { input_tokens: 10, output_tokens: 0 },
         };
         assert!(validate_response(&resp, &asked, &BTreeMap::new()).is_ok());
@@ -496,7 +555,6 @@ mod tests {
         let resp = SystemOneResponse {
             model: JEV_MODEL_PINNED.into(),
             answers: BTreeMap::from([("c".into(), Answer::Choice(ChoiceAnswer {
-                kind: "choice".into(),
                 choice: "invented".into(),
                 probabilities: BTreeMap::from([("invented".into(), 1.0)]),
                 confidence: 0.9,
@@ -522,9 +580,303 @@ mod tests {
     }
 
     #[test]
+    fn answer_wire_shape_round_trips() {
+        // The "type" discriminant appears exactly once; variant structs must
+        // not carry their own copy (serde consumes the tag before decoding).
+        let a = Answer::Choice(ChoiceAnswer {
+            choice: "accept".into(),
+            probabilities: BTreeMap::from([("accept".into(), 1.0)]),
+            confidence: 0.9,
+        });
+        let s = serde_json::to_string(&a).unwrap();
+        assert_eq!(s.matches("\"type\"").count(), 1, "{s}");
+        let back: Answer = serde_json::from_str(&s).unwrap();
+        assert!(matches!(back, Answer::Choice(_)));
+    }
+
+    #[test]
     fn no_ambient_provider_fallback() {
         for v in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OLLAMA_HOST"] {
             assert!(!format!("{:?}", JevClient::api_key()).contains(v));
         }
+    }
+}
+
+#[cfg(test)]
+mod http_tests {
+    //! Wire-level tests for [`super::JevClient::evaluate`] against a scripted
+    //! mock `POST /v1/systemone` server on 127.0.0.1 (raw `tokio` TCP, no new
+    //! dependencies, no credentials, no network beyond loopback).
+    use super::*;
+    use std::sync::{Arc, Mutex, OnceLock};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Process-global credential env is shared by threads: serialize the
+    /// wire tests so each sees its own test key.
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// One scripted HTTP response.
+    struct Script {
+        status: u16,
+        retry_after: Option<u64>,
+        body: String,
+    }
+
+    fn find_crlf2(buf: &[u8]) -> Option<usize> {
+        buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
+    }
+
+    fn content_len(head: &[u8]) -> usize {
+        let s = String::from_utf8_lossy(head).to_lowercase();
+        s.lines()
+            .find_map(|l| {
+                l.strip_prefix("content-length:")
+                    .and_then(|v| v.trim().parse::<usize>().ok())
+            })
+            .unwrap_or(0)
+    }
+
+    fn reason(status: u16) -> &'static str {
+        match status {
+            200 => "OK",
+            401 => "Unauthorized",
+            429 => "Too Many Requests",
+            500 => "Internal Server Error",
+            _ => "Error",
+        }
+    }
+
+    /// Serve the scripts in order; records raw request heads; returns the
+    /// endpoint URL and the join handle resolving to requests served.
+    async fn serve(
+        scripts: Vec<Script>,
+        heads: Arc<Mutex<Vec<String>>>,
+    ) -> (String, tokio::task::JoinHandle<usize>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let h = tokio::spawn(async move {
+            let mut served = 0usize;
+            for s in scripts {
+                let Ok((mut sock, _)) = listener.accept().await else { break };
+                let mut buf = Vec::new();
+                let mut tmp = [0u8; 4096];
+                loop {
+                    let Ok(n) = sock.read(&mut tmp).await else { break };
+                    if n == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                    if let Some(h) = find_crlf2(&buf) {
+                        if buf.len() >= h + content_len(&buf[..h]) {
+                            heads
+                                .lock()
+                                .unwrap()
+                                .push(String::from_utf8_lossy(&buf[..h]).into_owned());
+                            break;
+                        }
+                    }
+                    if buf.len() > 4_000_000 {
+                        break;
+                    }
+                }
+                let mut resp = format!(
+                    "HTTP/1.1 {} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n",
+                    s.status,
+                    reason(s.status),
+                    s.body.len()
+                );
+                if let Some(ra) = s.retry_after {
+                    resp.push_str(&format!("retry-after: {ra}\r\n"));
+                }
+                resp.push_str("\r\n");
+                resp.push_str(&s.body);
+                if sock.write_all(resp.as_bytes()).await.is_err() {
+                    break;
+                }
+                served += 1;
+            }
+            served
+        });
+        (format!("http://{addr}/v1/systemone"), h)
+    }
+
+    fn test_policy(endpoint: String) -> JevPolicy {
+        JevPolicy {
+            endpoint,
+            deadline: Duration::from_secs(10),
+            max_questions_per_request: 4,
+            max_retries: 3,
+            ..JevPolicy::default()
+        }
+    }
+
+    fn choice_questions() -> BTreeMap<String, Question> {
+        BTreeMap::from([(
+            "q1".to_owned(),
+            Question::Choice {
+                instructions: "pick one".to_owned(),
+                criteria: BTreeMap::from([
+                    ("accept".to_owned(), None),
+                    ("reject".to_owned(), None),
+                    ("none".to_owned(), None),
+                ]),
+            },
+        )])
+    }
+
+    fn valid_options() -> BTreeMap<String, BTreeSet<String>> {
+        BTreeMap::from([(
+            "q1".to_owned(),
+            BTreeSet::from(["accept".to_owned(), "reject".to_owned(), "none".to_owned()]),
+        )])
+    }
+
+    fn accept_body() -> String {
+        serde_json::json!({
+            "model": JEV_MODEL_PINNED,
+            "answers": {"q1": {
+                "type": "choice", "choice": "accept",
+                "probabilities": {"accept": 0.9, "reject": 0.05, "none": 0.05},
+                "confidence": 0.85,
+            }},
+            "usage": {"input_tokens": 10, "output_tokens": 0},
+        })
+        .to_string()
+    }
+
+    fn use_test_key(name: &str) {
+        std::env::remove_var("CHAOSBOX_JEV_API_KEY_FILE");
+        std::env::set_var("TYPESAFE_API_KEY", format!("test-key-{name}"));
+    }
+
+    #[tokio::test]
+    async fn retry_after_honored_then_success_over_http() {
+        let _guard = env_lock().lock().unwrap();
+        use_test_key("retry");
+        let heads = Arc::new(Mutex::new(Vec::new()));
+        let (url, server) = serve(
+            vec![
+                Script { status: 429, retry_after: Some(0), body: "{}".to_owned() },
+                Script { status: 200, retry_after: None, body: accept_body() },
+            ],
+            heads.clone(),
+        )
+        .await;
+        let mut client = JevClient::new(test_policy(url)).unwrap();
+        let resp = client
+            .evaluate(serde_json::json!({"repo": "demo"}), choice_questions(), &valid_options())
+            .await
+            .unwrap();
+        assert_eq!(resp.model, JEV_MODEL_PINNED);
+        assert_eq!(client.attempts.len(), 2);
+        assert_eq!(client.attempts[0].http_status, Some(429));
+        assert_eq!(client.attempts[0].retry_after_secs, Some(0));
+        assert_eq!(client.attempts[1].http_status, Some(200));
+        // Bearer auth on the wire, never a query param or log line.
+        let heads = heads.lock().unwrap();
+        assert_eq!(heads.len(), 2);
+        assert!(heads[0].contains("authorization: Bearer test-key-retry"));
+        assert!(!heads[0].contains("test-key-retry\""));
+        assert_eq!(server.await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn auth_failure_never_retried() {
+        let _guard = env_lock().lock().unwrap();
+        use_test_key("auth");
+        let heads = Arc::new(Mutex::new(Vec::new()));
+        let (url, server) =
+            serve(vec![Script { status: 401, retry_after: None, body: "{}".to_owned() }], heads)
+                .await;
+        let mut client = JevClient::new(test_policy(url)).unwrap();
+        let err = client
+            .evaluate(serde_json::json!({}), choice_questions(), &valid_options())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, JevError::Auth(_)), "got {err:?}");
+        assert_eq!(server.await.unwrap(), 1, "auth errors must not be retried");
+    }
+
+    #[tokio::test]
+    async fn out_of_scope_choice_rejected_over_http() {
+        let _guard = env_lock().lock().unwrap();
+        use_test_key("scope");
+        let body = serde_json::json!({
+            "model": JEV_MODEL_PINNED,
+            "answers": {"q1": {
+                "type": "choice", "choice": "invented",
+                "probabilities": {"invented": 1.0},
+                "confidence": 0.9,
+            }},
+            "usage": {"input_tokens": 5, "output_tokens": 0},
+        })
+        .to_string();
+        let (url, server) = serve(
+            vec![Script { status: 200, retry_after: None, body }],
+            Arc::new(Mutex::new(Vec::new())),
+        )
+        .await;
+        let mut client = JevClient::new(test_policy(url)).unwrap();
+        let err = client
+            .evaluate(serde_json::json!({}), choice_questions(), &valid_options())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, JevError::Schema(_)), "got {err:?}");
+        assert_eq!(server.await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn missing_answer_is_protocol_error() {
+        let _guard = env_lock().lock().unwrap();
+        use_test_key("missing");
+        let body = serde_json::json!({
+            "model": JEV_MODEL_PINNED,
+            "answers": {},
+            "usage": {"input_tokens": 5, "output_tokens": 0},
+        })
+        .to_string();
+        let (url, server) = serve(
+            vec![Script { status: 200, retry_after: None, body }],
+            Arc::new(Mutex::new(Vec::new())),
+        )
+        .await;
+        let mut client = JevClient::new(test_policy(url)).unwrap();
+        let err = client
+            .evaluate(serde_json::json!({}), choice_questions(), &valid_options())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, JevError::Protocol(_)), "got {err:?}");
+        assert_eq!(server.await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn malformed_probability_rejected_over_http() {
+        let _guard = env_lock().lock().unwrap();
+        use_test_key("badprob");
+        let body = serde_json::json!({
+            "model": JEV_MODEL_PINNED,
+            "answers": {"q1": {"type": "noul", "noul": 7.5}},
+            "usage": {"input_tokens": 5, "output_tokens": 0},
+        })
+        .to_string();
+        let questions = BTreeMap::from([(
+            "q1".to_owned(),
+            Question::Noul { instructions: "y?".to_owned(), criteria: None },
+        )]);
+        let (url, server) = serve(
+            vec![Script { status: 200, retry_after: None, body }],
+            Arc::new(Mutex::new(Vec::new())),
+        )
+        .await;
+        let mut client = JevClient::new(test_policy(url)).unwrap();
+        let err = client
+            .evaluate(serde_json::json!({}), questions, &BTreeMap::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, JevError::Schema(_)), "got {err:?}");
+        assert_eq!(server.await.unwrap(), 1);
     }
 }

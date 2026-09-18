@@ -17,6 +17,9 @@ if ! command -v gel >/dev/null 2>&1; then
   exit 3
 fi
 
+echo "== mock Jev HTTP service gate (no credentials, loopback only) =="
+cargo test -p chaosbox-jev http_tests --offline
+
 echo "== schema assets =="
 test -f "${CHAOSBOX_SCHEMA_DIR:-dbschema}/default.esdl" || test -f dbschema/default.esdl
 ls dbschema/migrations/*.edgeql >/dev/null

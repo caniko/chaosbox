@@ -20,28 +20,39 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Extraction failures: filesystem IO, or an unsupported file that was
+/// reported rather than interpreted.
 #[derive(Debug, Error)]
 pub enum ExtractError {
     #[error("io: {0}")]
+    /// Filesystem read error.
     Io(String),
     #[error("unsupported file reported, not interpreted: {0}")]
+    /// A file whose format is reported, never silently interpreted or omitted.
     Unsupported(String),
 }
 
 /// One source file at a pinned version.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileVersion {
+    /// Repository-relative path.
     pub path: String,
+    /// SHA-256 hex of the file text.
     pub sha256: String,
+    /// File size in bytes.
     pub bytes: u64,
 }
 
 /// A snapshot of a fixture repository (content-addressed).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Snapshot {
+    /// Deterministic `snap:<hex>` identity over repo + file hashes.
     pub id: String,
+    /// Repository name.
     pub repo: String,
+    /// Pinned file versions in deterministic path order.
     pub files: Vec<FileVersion>,
+    /// File texts by repository-relative path.
     pub contents: BTreeMap<String, String>,
 }
 
@@ -95,6 +106,7 @@ impl Snapshot {
         Ok(Self { id, repo: repo.to_owned(), files, contents })
     }
 
+    /// Look up a pinned file version by repository-relative path.
     #[must_use]
     pub fn file_version(&self, path: &str) -> Option<&FileVersion> {
         self.files.iter().find(|f| f.path == path)
@@ -135,7 +147,9 @@ pub fn report_unsupported(root: &Path) -> Vec<String> {
 /// Deterministic extraction output.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Extraction {
+    /// All entities found, in deterministic file order.
     pub entities: Vec<Entity>,
+    /// Explicit `(from_id, to_id, kind)` structural references.
     pub explicit_refs: Vec<(String, String, String)>,
 }
 
