@@ -1,4 +1,4 @@
-# Capability matrix (v0.2.0)
+# Capability matrix (v0.3.0)
 
 ## Implemented in native Rust
 
@@ -14,7 +14,16 @@
   attempt accounting, sanitized diagnostics, cache identity incl. all decision
   inputs (thresholds excluded — materialization identity)
 - Evidence classes EXTRACTED/INFERRED/AMBIGUOUS (confidence never upgrades);
-  rejected/abstained/negative/failed recorded separately, never retried as empty
+  below-floor confidence abstains (recorded, never retried); responder faults
+  become recorded `Failed` decisions with catch-and-continue (fault text never
+  copied into evidence); `Failed` rows are supersedable once, other outcomes
+  immutable
+- Storage seams: `Pipeline` generic over `Store`, `GelReader` generic over
+  `GelQueries` (live `GelHandle` + in-memory fake + conformance suite proving
+  parity); all reads scoped to the pinned build (leakage-tested), LIKE
+  wildcards escaped
+- Durable worker leases: `WorkerTask` SDL + `m2` migration; claim/heartbeat/
+  reclaim with injected clocks and generation guards; stale holders recognizable
 - Gel SDL + migration, first-class Relationship objects, typed EdgeQL ops with
   bound params, `gel-tokio` handle with typed decoding, idempotent writes,
   predecessor-checked atomic publication, durable task claim/recovery
@@ -42,13 +51,15 @@
 ## Not yet implemented (explicit)
 
 - Real Gel integration gate (needs disposable server; `test-gel` runs schema,
-  mock-HTTP, and pipeline gates, exits 3 PENDING without a `gel` server)
+  mock-HTTP, and pipeline gates, exits 3 PENDING without a `gel` server);
+  Gel write-path integration (`Pipeline` through a Gel-backed `Store`,
+  candidate/decision/evidence inserts) and decision-cache reuse/invalidation
 - harbor-db Gel runtime/test interfaces for the disposable instance +
   credentials/readiness flow (plan validates against the `gel` backend)
 - simit named gates + ordered publication (await parallel simit session)
 - Live Jev quality runs (adapter + `--live-jev` ready; needs operator key file)
 - Broader language coverage (grammar parsing beyond the 5-path vertical slice),
   communities/hyperedges materialization, signed release tags
-- Threshold layering note: `decide()` applies fixed Noul/Score cutoffs while
-  `Materialization` thresholds gate publication; both layers are tested and the
-  materialization identity covers every threshold, so raw decisions are reusable
+- Single threshold source: `Materialization` carries every cutoff
+  (Noul/Score/confidence); its identity covers all of them, so threshold
+  changes reuse valid raw decisions instead of re-asking Jev

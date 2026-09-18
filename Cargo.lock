@@ -259,6 +259,7 @@ dependencies = [
 name = "chaosbox-gel"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chaosbox-core",
  "gel-tokio",
  "serde",

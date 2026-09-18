@@ -228,4 +228,20 @@ module default {
         required entity: Entity;
         constraint exclusive on ((.hyperedge, .entity));
     }
+
+    # Durable worker task with a lease: a crashed holder's task becomes
+    # reclaimable after expiry, but the generation guard means a stale
+    # holder can never overwrite newer results.
+    type WorkerTask {
+        required task_id: str {
+            constraint exclusive;
+        };
+        required state: str;
+        required holder: str;
+        required expires_at: datetime;
+        required generation: int64;
+        required updated_at: datetime {
+            default := datetime_current();
+        };
+    }
 }

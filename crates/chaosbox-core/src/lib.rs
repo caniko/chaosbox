@@ -147,6 +147,7 @@ impl Entity {
 }
 
 /// Relation vocabulary. Each variant is a first-class edge type.
+/// Canonical storage name is the serde snake_case form (see [`relation_type_name`]).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationType {
@@ -164,6 +165,16 @@ pub enum RelationType {
     LinksTo,
     /// A Markdown code mention of a symbol.
     Mentions,
+}
+
+/// Canonical storage name for a relation type (serde snake_case).
+/// Both the in-memory projection and future Gel inserts must use this.
+#[must_use]
+pub fn relation_type_name(r: &RelationType) -> String {
+    serde_json::to_value(r)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("{r:?}"))
 }
 
 /// Scope of a relationship observation.
@@ -221,6 +232,7 @@ impl Relation {
 }
 
 /// Evidence classification. Model probability never upgrades INFERRED.
+/// Canonical storage name is the serde snake_case form (see [`evidence_class_name`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceClass {
@@ -230,6 +242,15 @@ pub enum EvidenceClass {
     Inferred,
     /// Unresolved or uncertain.
     Ambiguous,
+}
+
+/// Canonical storage name for an evidence class (serde snake_case).
+#[must_use]
+pub fn evidence_class_name(c: EvidenceClass) -> String {
+    serde_json::to_value(c)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("{c:?}"))
 }
 
 /// One supporting or contradicting observation.
@@ -573,6 +594,14 @@ mod tests {
 
     fn span(file: &str) -> SourceSpan {
         SourceSpan::point(file, 1, 1, 0)
+    }
+
+    #[test]
+    fn canonical_storage_names_are_snake_case() {
+        assert_eq!(relation_type_name(&RelationType::LinksTo), "links_to");
+        assert_eq!(relation_type_name(&RelationType::Calls), "calls");
+        assert_eq!(evidence_class_name(EvidenceClass::Extracted), "extracted");
+        assert_eq!(evidence_class_name(EvidenceClass::Ambiguous), "ambiguous");
     }
 
     #[test]

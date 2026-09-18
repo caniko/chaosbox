@@ -20,10 +20,13 @@ pub const SCHEMA_SDL: &str = include_str!("../../../dbschema/default.esdl");
 /// Committed migration asset.
 pub const MIGRATION_00001: &str = include_str!("../../../dbschema/migrations/00001.edgeql");
 
+/// Committed migration asset: worker-task leases.
+pub const MIGRATION_00002: &str = include_str!("../../../dbschema/migrations/00002.edgeql");
+
 /// Pinned Gel version this schema is tested against.
 pub const GEL_PINNED: &str = "7.2";
 /// Schema compatibility marker checked by `db check`.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Persistence/query failures: client, query, invariant, or missing rows.
 #[derive(Debug, Error)]
@@ -75,21 +78,29 @@ pub mod edgeql {
     /// Active build pointer read (`$0` repo).
     pub const ACTIVE_BUILD: &str =
         "select ActiveBuildPointer { repo, build: { build_id, generation, status } } filter .repo = <str>$0";
-    /// Outgoing relationships (`$0` entity id, `$1` relation-type filter list).
+    /// Outgoing relationships of the pinned build (`$0` build, `$1` entity,
+    /// `$2` relation-type filter list).
     pub const NEIGHBORS_OUT: &str =
-        "select Relationship { rel_id, rel_type, from_entity: { entity_id }, to_entity: { entity_id } } \
-         filter .from_entity.entity_id = <str>$0 and .rel_type in array_unpack(<array<str>>$1)";
-    /// Entity lookup by id (`$0` entity id).
+        "select GraphEdgeMembership { relationship: { rel_id, rel_type, from_entity: { entity_id }, to_entity: { entity_id } } } \
+         filter .build.build_id = <str>$0 and .relationship.from_entity.entity_id = <str>$1 \
+         and .relationship.rel_type in array_unpack(<array<str>>$2)";
+    /// Entity lookup within the pinned build (`$0` build, `$1` entity id).
     pub const ENTITY_BY_ID: &str =
-        "select Entity { entity_id, kind, repo, snapshot, file, name, qualified_name } filter .entity_id = <str>$0";
-    /// Substring search over names (`$0` like pattern, `$1` limit).
+        "select GraphMembership { entity: { entity_id, kind, repo, snapshot, file, name, qualified_name } } \
+         filter .build.build_id = <str>$0 and .entity.entity_id = <str>$1";
+    /// Substring search over the pinned build's names (`$0` build, `$1` like
+    /// pattern with `\` escapes, `$2` limit).
     pub const SEARCH_ENTITIES: &str =
-        "select Entity { entity_id, kind, repo, snapshot, file, name, qualified_name } \
-         filter .name ilike <str>$0 or .qualified_name ilike <str>$0 order by .qualified_name limit <int64>$1";
-    /// Incoming relationships (`$0` entity id, `$1` relation-type filter list).
+        "select GraphMembership { entity: { entity_id, kind, repo, snapshot, file, name, qualified_name } } \
+         filter .build.build_id = <str>$0 \
+         and (.entity.name ilike <str>$1 or .entity.qualified_name ilike <str>$1) \
+         order by .entity.qualified_name limit <int64>$2";
+    /// Incoming relationships of the pinned build (`$0` build, `$1` entity,
+    /// `$2` relation-type filter list).
     pub const NEIGHBORS_IN: &str =
-        "select Relationship { rel_id, rel_type, from_entity: { entity_id }, to_entity: { entity_id } } \
-         filter .to_entity.entity_id = <str>$0 and .rel_type in array_unpack(<array<str>>$1)";
+        "select GraphEdgeMembership { relationship: { rel_id, rel_type, from_entity: { entity_id }, to_entity: { entity_id } } } \
+         filter .build.build_id = <str>$0 and .relationship.to_entity.entity_id = <str>$1 \
+         and .relationship.rel_type in array_unpack(<array<str>>$2)";
     /// All member entities of one build (`$0` build id, `$1` limit).
     pub const BUILD_ENTITIES: &str =
         "select GraphMembership { entity: { entity_id, kind, repo, snapshot, file, name, qualified_name } } \
@@ -98,10 +109,11 @@ pub mod edgeql {
     pub const BUILD_RELATIONSHIPS: &str =
         "select GraphEdgeMembership { relationship: { rel_id, rel_type, from_entity: { entity_id }, to_entity: { entity_id } } } \
          filter .build.build_id = <str>$0 limit <int64>$1";
-    /// Evidence attached to one relationship (`$0` rel id).
+    /// Evidence attached to one relationship of the pinned build
+    /// (`$0` build, `$1` rel id).
     pub const EVIDENCE_FOR_REL: &str =
-        "select Evidence { evidence_id, class, supports, text } \
-         filter .<evidence[is Relationship].rel_id = <str>$0";
+        "select GraphEdgeMembership { ev := .relationship.evidence: { evidence_id, class, supports, text } } \
+         filter .build.build_id = <str>$0 and .relationship.rel_id = <str>$1";
 }
 
 /// Typed row for entity lookup.
@@ -177,6 +189,13 @@ pub struct EdgeMembershipRow {
     pub relationship: RelRow,
 }
 
+/// Evidence bundle nested under one edge membership.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EvidenceBundleRow {
+    /// Evidence rows attached to the membership's relationship.
+    pub ev: Vec<EvidenceRow>,
+}
+
 /// Evidence row for claim support/contradiction display.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EvidenceRow {
@@ -190,15 +209,20 @@ pub struct EvidenceRow {
     pub text: String,
 }
 /// Durable worker task states. No transactions held open during Jev calls.
+/// Clocks are injected as unix seconds (callers read the real clock);
+/// persistence of these records lands with the Gel write path.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskState {
     /// Ready to be claimed by a worker.
     Pending,
-    /// Held by a worker; stale holders never overwrite newer results.
+    /// Held by a worker under a lease; stale holders never overwrite newer
+    /// results, and expired holders become reclaimable.
     Claimed {
         /// Worker holding the claim.
         worker: String,
+        /// Unix timestamp when the lease expires.
+        expires_at: i64,
     },
     /// Completed.
     Done,
@@ -213,20 +237,69 @@ pub struct Task {
     pub id: String,
     /// Current lifecycle state.
     pub state: TaskState,
-    /// Claim generation; incremented on every successful claim.
+    /// Claim generation; incremented on every successful claim or reclaim.
     pub generation: u64,
 }
 
-/// Claim a pending task: only `Pending` tasks can be claimed, so stale
-/// workers never overwrite newer task results.
-pub fn claim_task(task: &mut Task, worker: &str) -> Result<(), GelError> {
+/// Claim a pending task with a lease: only `Pending` tasks can be claimed,
+/// so stale workers never overwrite newer task results.
+pub fn claim_task(
+    task: &mut Task,
+    worker: &str,
+    now_unix: i64,
+    lease_secs: i64,
+) -> Result<(), GelError> {
     match &task.state {
         TaskState::Pending => {
-            task.state = TaskState::Claimed { worker: worker.to_owned() };
+            task.state = TaskState::Claimed {
+                worker: worker.to_owned(),
+                expires_at: now_unix + lease_secs.max(1),
+            };
             task.generation += 1;
             Ok(())
         }
         other => Err(GelError::Invariant(format!("claim non-pending task {:?} as {worker}", other))),
+    }
+}
+
+/// Renew the caller's own lease (heartbeat). Any other holder, or any
+/// non-claimed state, is rejected.
+pub fn heartbeat_task(
+    task: &mut Task,
+    worker: &str,
+    now_unix: i64,
+    lease_secs: i64,
+) -> Result<(), GelError> {
+    match &task.state {
+        TaskState::Claimed { worker: holder, .. } if holder == worker => {
+            task.state = TaskState::Claimed {
+                worker: worker.to_owned(),
+                expires_at: now_unix + lease_secs.max(1),
+            };
+            Ok(())
+        }
+        other => Err(GelError::Invariant(format!("heartbeat not holder: {other:?} as {worker}"))),
+    }
+}
+
+/// Reclaim an expired claim for a new worker, bumping the generation so a
+/// stale holder's late write is recognizable. Live claims cannot be taken.
+pub fn reclaim_task(
+    task: &mut Task,
+    worker: &str,
+    now_unix: i64,
+    lease_secs: i64,
+) -> Result<(), GelError> {
+    match &task.state {
+        TaskState::Claimed { expires_at, .. } if now_unix >= *expires_at => {
+            task.state = TaskState::Claimed {
+                worker: worker.to_owned(),
+                expires_at: now_unix + lease_secs.max(1),
+            };
+            task.generation += 1;
+            Ok(())
+        }
+        other => Err(GelError::Invariant(format!("reclaim live task {other:?} as {worker}"))),
     }
 }
 
@@ -237,7 +310,8 @@ pub trait Store: Send + Sync {
     fn put_entity(&mut self, e: Entity) -> Result<(), GelError>;
     /// Stage a relationship for one build (idempotent).
     fn put_relation(&mut self, r: Relation, build_id: &str) -> Result<(), GelError>;
-    /// Record a decision (idempotent per candidate + question; first write wins).
+    /// Record a decision (idempotent per candidate + question; first write
+    /// wins, except a recorded `Failed` decision may be superseded once).
     fn put_decision(&mut self, d: Decision) -> Result<(), GelError>;
     /// Record evidence (idempotent per evidence id).
     fn put_evidence(&mut self, e: Evidence) -> Result<(), GelError>;
@@ -279,9 +353,19 @@ impl Store for MemoryStore {
         Ok(())
     }
     fn put_decision(&mut self, d: Decision) -> Result<(), GelError> {
-        // Idempotent: first write wins per (candidate, question).
+        // Idempotent per (candidate, question): first write wins, except a
+        // recorded Failed decision may be superseded by a later outcome.
+        // Non-Failed outcomes are never overwritten.
         let key = format!("{}:{}", d.candidate_id, d.question_id);
-        self.decisions.entry(key).or_insert(d);
+        let supersede = matches!(
+            self.decisions.get(&key).map(|old| &old.outcome),
+            Some(chaosbox_core::DecisionOutcome::Failed(_))
+        );
+        if supersede {
+            self.decisions.insert(key, d);
+        } else {
+            self.decisions.entry(key).or_insert(d);
+        }
         Ok(())
     }
     fn put_evidence(&mut self, e: Evidence) -> Result<(), GelError> {
@@ -325,6 +409,462 @@ impl Store for MemoryStore {
     }
 }
 
+/// Read-only query surface shared by the live [`GelHandle`] and the
+/// in-memory fake. Every read is scoped to one pinned build id: readers can
+/// never observe entities or relationships outside the active build.
+/// Ordering: entity lists come back ordered by qualified name; relationship
+/// and evidence lists have unspecified order (conformance compares as sets).
+/// An empty relation-type filter matches nothing (mirrors `array_unpack([])`).
+#[async_trait::async_trait]
+pub trait GelQueries: Send + Sync {
+    /// Active build header for a repository (per-request build pinning).
+    async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, GelError>;
+    /// Bounded substring search over the pinned build's entity names
+    /// (`like` carries `%` wrappers; `\` escapes `%` and `_`).
+    async fn search_entities(
+        &self,
+        build_id: &str,
+        like: &str,
+        limit: i64,
+    ) -> Result<Vec<EntityRow>, GelError>;
+    /// Typed entity lookup within the pinned build.
+    async fn entity_by_id(&self, build_id: &str, id: &str) -> Result<Option<EntityRow>, GelError>;
+    /// Outgoing relationships within the pinned build, with a type filter.
+    async fn neighbors_out(
+        &self,
+        build_id: &str,
+        id: &str,
+        rel_types: Vec<String>,
+    ) -> Result<Vec<RelRow>, GelError>;
+    /// Incoming relationships within the pinned build, with a type filter.
+    async fn neighbors_in(
+        &self,
+        build_id: &str,
+        id: &str,
+        rel_types: Vec<String>,
+    ) -> Result<Vec<RelRow>, GelError>;
+    /// Member entities of one build, bounded.
+    async fn build_entities(
+        &self,
+        build_id: &str,
+        limit: i64,
+    ) -> Result<Vec<EntityRow>, GelError>;
+    /// Member relationships of one build, bounded.
+    async fn build_relationships(
+        &self,
+        build_id: &str,
+        limit: i64,
+    ) -> Result<Vec<RelRow>, GelError>;
+    /// Evidence attached to one relationship of the pinned build.
+    async fn evidence_for(&self, build_id: &str, rel_id: &str) -> Result<Vec<EvidenceRow>, GelError>;
+}
+
+/// Project one entity into its row form (canonical storage names).
+fn entity_row(e: &Entity) -> EntityRow {
+    EntityRow {
+        entity_id: e.id.clone(),
+        kind: format!("{:?}", e.kind),
+        repo: e.repo.clone(),
+        snapshot: e.snapshot.clone(),
+        file: e.file.clone(),
+        name: e.name.clone(),
+        qualified_name: e.qualified_name.clone(),
+    }
+}
+
+/// Project one relationship into its row form (canonical storage names).
+fn rel_row(r: &Relation) -> RelRow {
+    RelRow {
+        rel_id: r.id.clone(),
+        rel_type: chaosbox_core::relation_type_name(&r.rel_type),
+        from_entity: EndpointRef { entity_id: r.from.clone() },
+        to_entity: EndpointRef { entity_id: r.to.clone() },
+    }
+}
+
+/// In-memory [`GelQueries`] fake: same method surface and ordering as the
+/// live path, so conformance tests prove parity. Live Gel runs the same
+/// suite once a server is available (see `check_conformance`).
+#[derive(Default)]
+pub struct MemoryReader {
+    builds: BTreeMap<String, GraphBuild>,
+    active: BTreeMap<String, String>,
+    evidence: BTreeMap<String, Vec<EvidenceRow>>,
+}
+
+impl MemoryReader {
+    /// An empty reader with no builds and no active pointers.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Insert a build (indexed by its id).
+    pub fn insert_build(&mut self, build: GraphBuild) {
+        self.builds.insert(build.id.clone(), build);
+    }
+
+    /// Point a repository at one of the inserted builds.
+    pub fn set_active(&mut self, repo: &str, build_id: &str) {
+        self.active.insert(repo.to_owned(), build_id.to_owned());
+    }
+
+    /// Attach evidence rows to a relationship id.
+    pub fn attach_evidence(&mut self, rel_id: &str, rows: Vec<EvidenceRow>) {
+        self.evidence.insert(rel_id.to_owned(), rows);
+    }
+
+    /// Member entities of one build, ordered by qualified name.
+    fn members(&self, build_id: &str) -> Vec<EntityRow> {
+        self.builds.get(build_id).map_or_else(Vec::new, |b| {
+            let mut v: Vec<EntityRow> = b.nodes.values().map(entity_row).collect();
+            v.sort_by(|a, b| a.qualified_name.cmp(&b.qualified_name));
+            v
+        })
+    }
+
+    /// Member relationships of one build.
+    fn member_relations(&self, build_id: &str) -> Vec<RelRow> {
+        self.builds.get(build_id).map_or_else(Vec::new, |b| b.edges.values().map(rel_row).collect())
+    }
+}
+
+/// Undo `%`-wrapping and `\` escapes of a LIKE pattern into a literal
+/// substring needle (mirrors the live `ilike` with backslash escapes).
+fn unescape_like(like: &str) -> String {
+    let mut out = String::with_capacity(like.len());
+    let mut chars = like.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            if let Some(n) = chars.next() {
+                out.push(n);
+            }
+        } else if c != '%' {
+            out.push(c);
+        }
+    }
+    out
+}
+
+#[async_trait::async_trait]
+impl GelQueries for MemoryReader {
+    async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, GelError> {
+        Ok(self.active.get(repo).and_then(|id| self.builds.get(id)).map(|b| BuildRow {
+            build_id: b.id.clone(),
+            generation: b.generation as i64,
+            status: "active".to_owned(),
+        }))
+    }
+
+    async fn search_entities(
+        &self,
+        build_id: &str,
+        like: &str,
+        limit: i64,
+    ) -> Result<Vec<EntityRow>, GelError> {
+        let needle = unescape_like(like).to_lowercase();
+        let limit = limit.max(0) as usize;
+        Ok(self
+            .members(build_id)
+            .into_iter()
+            .filter(|e| {
+                e.name.to_lowercase().contains(&needle)
+                    || e.qualified_name.to_lowercase().contains(&needle)
+            })
+            .take(limit)
+            .collect())
+    }
+
+    async fn entity_by_id(
+        &self,
+        build_id: &str,
+        id: &str,
+    ) -> Result<Option<EntityRow>, GelError> {
+        Ok(self.members(build_id).into_iter().find(|e| e.entity_id == id))
+    }
+
+    async fn neighbors_out(
+        &self,
+        build_id: &str,
+        id: &str,
+        rel_types: Vec<String>,
+    ) -> Result<Vec<RelRow>, GelError> {
+        Ok(self
+            .member_relations(build_id)
+            .into_iter()
+            .filter(|r| r.from_entity.entity_id == id && rel_types.contains(&r.rel_type))
+            .collect())
+    }
+
+    async fn neighbors_in(
+        &self,
+        build_id: &str,
+        id: &str,
+        rel_types: Vec<String>,
+    ) -> Result<Vec<RelRow>, GelError> {
+        Ok(self
+            .member_relations(build_id)
+            .into_iter()
+            .filter(|r| r.to_entity.entity_id == id && rel_types.contains(&r.rel_type))
+            .collect())
+    }
+
+    async fn build_entities(
+        &self,
+        build_id: &str,
+        limit: i64,
+    ) -> Result<Vec<EntityRow>, GelError> {
+        let limit = limit.max(0) as usize;
+        Ok(self
+            .builds
+            .get(build_id)
+            .map(|b| {
+                let mut v: Vec<EntityRow> = b.nodes.values().map(entity_row).collect();
+                v.sort_by(|a, b| a.qualified_name.cmp(&b.qualified_name));
+                v.into_iter().take(limit).collect()
+            })
+            .unwrap_or_default())
+    }
+
+    async fn build_relationships(
+        &self,
+        build_id: &str,
+        limit: i64,
+    ) -> Result<Vec<RelRow>, GelError> {
+        let limit = limit.max(0) as usize;
+        Ok(self
+            .builds
+            .get(build_id)
+            .map(|b| b.edges.values().map(rel_row).take(limit).collect())
+            .unwrap_or_default())
+    }
+
+    async fn evidence_for(
+        &self,
+        build_id: &str,
+        rel_id: &str,
+    ) -> Result<Vec<EvidenceRow>, GelError> {
+        if self.builds.get(build_id).is_none_or(|b| !b.edges.contains_key(rel_id)) {
+            return Ok(Vec::new());
+        }
+        Ok(self.evidence.get(rel_id).cloned().unwrap_or_default())
+    }
+}
+
+#[async_trait::async_trait]
+impl GelQueries for GelHandle {
+    async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, GelError> {
+        GelHandle::active_build(self, repo).await
+    }
+
+    async fn search_entities(
+        &self,
+        build_id: &str,
+        like: &str,
+        limit: i64,
+    ) -> Result<Vec<EntityRow>, GelError> {
+        GelHandle::search_entities(self, build_id, like, limit).await
+    }
+
+    async fn entity_by_id(
+        &self,
+        build_id: &str,
+        id: &str,
+    ) -> Result<Option<EntityRow>, GelError> {
+        GelHandle::entity_by_id(self, build_id, id).await
+    }
+
+    async fn neighbors_out(
+        &self,
+        build_id: &str,
+        id: &str,
+        rel_types: Vec<String>,
+    ) -> Result<Vec<RelRow>, GelError> {
+        GelHandle::neighbors_out(self, build_id, id, rel_types).await
+    }
+
+    async fn neighbors_in(
+        &self,
+        build_id: &str,
+        id: &str,
+        rel_types: Vec<String>,
+    ) -> Result<Vec<RelRow>, GelError> {
+        GelHandle::neighbors_in(self, build_id, id, rel_types).await
+    }
+
+    async fn build_entities(
+        &self,
+        build_id: &str,
+        limit: i64,
+    ) -> Result<Vec<EntityRow>, GelError> {
+        GelHandle::build_entities(self, build_id, limit).await
+    }
+
+    async fn build_relationships(
+        &self,
+        build_id: &str,
+        limit: i64,
+    ) -> Result<Vec<RelRow>, GelError> {
+        GelHandle::build_relationships(self, build_id, limit).await
+    }
+
+    async fn evidence_for(
+        &self,
+        build_id: &str,
+        rel_id: &str,
+    ) -> Result<Vec<EvidenceRow>, GelError> {
+        GelHandle::evidence_for(self, build_id, rel_id).await
+    }
+}
+
+/// Seed fixture for conformance: two builds of repo `conf`, the second
+/// active, sharing a symbol name across snapshots plus one evidence row.
+/// Returns the reader plus the ids the suite asserts on.
+pub struct ConformanceSeed {
+    /// The seeded reader.
+    pub reader: MemoryReader,
+    /// First-build entity ids (a1 calls b1).
+    pub a1: String,
+    /// First-build entity ids (a1 calls b1).
+    pub b1: String,
+    /// First-build `calls` relationship id.
+    pub rel1: String,
+    /// Second-build entity id sharing `a1`'s name in a new snapshot.
+    pub a2: String,
+    /// First and second build ids.
+    pub builds: (String, String),
+}
+
+/// Build the conformance seed (repo `conf`).
+#[must_use]
+pub fn conformance_seed() -> ConformanceSeed {
+    use chaosbox_core::{EntityKind, RelationScope, RelationType, SourceSpan};
+    let span = |f: &str| SourceSpan::point(f, 1, 1, 0);
+    let ent = |repo: &str, snap: &str, file: &str, name: &str| {
+        Entity::new(EntityKind::Symbol, repo, snap, file, name, name, span(file))
+    };
+    let mut b1 = GraphBuild::new("conf", vec!["s1".into()], 1);
+    let a1 = ent("conf", "s1", "f.rs", "Alpha");
+    let b1e = ent("conf", "s1", "f.rs", "Beta");
+    b1.add_node(a1.clone()).unwrap();
+    b1.add_node(b1e.clone()).unwrap();
+    let mut r1 = Relation::new(RelationType::Calls, &a1.id, &b1e.id, RelationScope::File, &b1.id);
+    r1.evidence_ids.push("ev1".into());
+    b1.add_edge(r1.clone()).unwrap();
+    let mut b2 = GraphBuild::new("conf", vec!["s2".into()], 2);
+    b2.predecessor = Some(b1.id.clone());
+    let a2 = ent("conf", "s2", "f.rs", "Alpha");
+    let c2 = ent("conf", "s2", "g.rs", "Gamma");
+    b2.add_node(a2.clone()).unwrap();
+    b2.add_node(c2.clone()).unwrap();
+    let r2 = Relation::new(RelationType::References, &a2.id, &c2.id, RelationScope::CrossFile, &b2.id);
+    b2.add_edge(r2).unwrap();
+    let mut reader = MemoryReader::new();
+    reader.insert_build(b1.clone());
+    reader.insert_build(b2.clone());
+    reader.set_active("conf", &b2.id);
+    reader.attach_evidence(
+        &r1.id,
+        vec![EvidenceRow {
+            evidence_id: "ev1".into(),
+            class: "extracted".into(),
+            supports: true,
+            text: "[structural] Alpha -> Beta".into(),
+        }],
+    );
+    ConformanceSeed {
+        a1: a1.id,
+        b1: b1e.id,
+        rel1: r1.id.clone(),
+        a2: a2.id,
+        builds: (b1.id, b2.id),
+        reader,
+    }
+}
+
+/// Conformance assertions over any [`GelQueries`] impl seeded like
+/// [`conformance_seed`]. Every read is scoped to one pinned build: the suite
+/// asserts cross-build leakage is impossible, not just that members resolve.
+/// Relationship/evidence lists compare as sets (live order is unspecified);
+/// entity lists compare ordered by qualified name. A future live-Gel test
+/// seeds the same fixture through the insert path and calls this function.
+pub async fn check_conformance<R: GelQueries>(
+    r: &R,
+    a1: &str,
+    b1: &str,
+    rel1: &str,
+    a2: &str,
+    builds: &(String, String),
+) {
+    use std::collections::BTreeSet;
+    // Active pointer pins the second build.
+    let active = r.active_build("conf").await.unwrap().unwrap();
+    assert_eq!(active.build_id, builds.1);
+    assert_eq!(active.generation, 2);
+    assert!(r.active_build("missing-repo").await.unwrap().is_none());
+    // Search is scoped: each build sees only its own Alpha.
+    let hits: Vec<_> =
+        r.search_entities(&builds.0, "%alpha%", 10).await.unwrap().into_iter().map(|e| e.entity_id).collect();
+    assert_eq!(hits, vec![a1.to_owned()]);
+    let hits: Vec<_> =
+        r.search_entities(&builds.1, "%alpha%", 10).await.unwrap().into_iter().map(|e| e.entity_id).collect();
+    assert_eq!(hits, vec![a2.to_owned()]);
+    assert_eq!(r.search_entities(&builds.1, "%alpha%", 0).await.unwrap().len(), 0);
+    // Escaped wildcards match literally, not as patterns (same on live Gel,
+    // where backslash is the LIKE escape).
+    assert!(r.search_entities(&builds.1, "%alp\\_ha%", 10).await.unwrap().is_empty());
+    // Lookup is scoped: a1 is invisible from the second build.
+    assert_eq!(r.entity_by_id(&builds.0, a1).await.unwrap().unwrap().entity_id, a1);
+    assert!(r.entity_by_id(&builds.1, a1).await.unwrap().is_none());
+    assert!(r.entity_by_id(&builds.0, "ent:missing").await.unwrap().is_none());
+    // Neighborhoods honor the type filter and the build scope; empty filter
+    // matches nothing.
+    let out: BTreeSet<_> = r
+        .neighbors_out(&builds.0, a1, vec!["calls".into()])
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|x| x.rel_id)
+        .collect();
+    assert_eq!(out, BTreeSet::from([rel1.to_owned()]));
+    assert!(r.neighbors_out(&builds.1, a1, vec!["calls".into()]).await.unwrap().is_empty());
+    assert!(r.neighbors_out(&builds.0, a1, vec![]).await.unwrap().is_empty());
+    assert!(r.neighbors_out(&builds.0, a1, vec!["references".into()]).await.unwrap().is_empty());
+    let inc: BTreeSet<_> = r
+        .neighbors_in(&builds.0, b1, vec!["calls".into()])
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|x| x.rel_id)
+        .collect();
+    assert_eq!(inc, BTreeSet::from([rel1.to_owned()]));
+    // Build projections are membership-scoped.
+    let e1: BTreeSet<_> = r
+        .build_entities(&builds.0, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.entity_id)
+        .collect();
+    assert_eq!(e1, BTreeSet::from([a1.to_owned(), b1.to_owned()]));
+    assert!(r.build_entities("build:missing", 100).await.unwrap().is_empty());
+    let r1: BTreeSet<_> = r
+        .build_relationships(&builds.0, 100)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|x| x.rel_id)
+        .collect();
+    assert_eq!(r1, BTreeSet::from([rel1.to_owned()]));
+    // Evidence attaches to the relationship within its own build only.
+    let ev = r.evidence_for(&builds.0, rel1).await.unwrap();
+    assert_eq!(ev.len(), 1);
+    assert_eq!(ev[0].evidence_id, "ev1");
+    assert!(ev[0].supports);
+    assert!(r.evidence_for(&builds.1, rel1).await.unwrap().is_empty());
+    assert!(r.evidence_for(&builds.0, "rel:missing").await.unwrap().is_empty());
+}
+
 /// Native Gel handle: typed decoding over `query_json` with bound params.
 ///
 /// Connection comes from the environment / instance config (never from
@@ -356,18 +896,23 @@ impl GelHandle {
     }
 
     /// Typed entity lookup with a bound parameter.
-    pub async fn entity_by_id(&self, id: &str) -> Result<Option<EntityRow>, GelError> {
+    /// Typed entity lookup within the pinned build, with a bound parameter.
+    pub async fn entity_by_id(
+        &self,
+        build_id: &str,
+        id: &str,
+    ) -> Result<Option<EntityRow>, GelError> {
         let json = self
             .client
-            .query_single_json(edgeql::ENTITY_BY_ID, &(id,))
+            .query_single_json(edgeql::ENTITY_BY_ID, &(build_id, id))
             .await
             .map_err(|e| GelError::Query(e.to_string()))?;
         match json {
             None => Ok(None),
             Some(j) => {
-                let row: EntityRow = serde_json::from_str(j.as_ref())
+                let row: MembershipRow = serde_json::from_str(j.as_ref())
                     .map_err(|e| GelError::Query(e.to_string()))?;
-                Ok(Some(row))
+                Ok(Some(row.entity))
             }
         }
     }
@@ -393,46 +938,57 @@ impl GelHandle {
         Ok(rows.into_iter().next().map(|r| r.build))
     }
 
-    /// Bounded substring search over entity names.
+    /// Bounded substring search over the pinned build's entity names.
     pub async fn search_entities(
         &self,
+        build_id: &str,
         like: &str,
         limit: i64,
     ) -> Result<Vec<EntityRow>, GelError> {
         let json = self
             .client
-            .query_json(edgeql::SEARCH_ENTITIES, &(like, limit))
+            .query_json(edgeql::SEARCH_ENTITIES, &(build_id, like, limit))
             .await
             .map_err(|e| GelError::Query(e.to_string()))?;
-        serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))
+        let rows: Vec<MembershipRow> =
+            serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(rows.into_iter().map(|r| r.entity).collect())
     }
 
-    /// Outgoing relationships with a relation-type filter (empty filter = none).
+    /// Outgoing relationships of the pinned build with a type filter
+    /// (empty filter = none).
     pub async fn neighbors_out(
         &self,
+        build_id: &str,
         id: &str,
         rel_types: Vec<String>,
     ) -> Result<Vec<RelRow>, GelError> {
         let json = self
             .client
-            .query_json(edgeql::NEIGHBORS_OUT, &(id, rel_types))
+            .query_json(edgeql::NEIGHBORS_OUT, &(build_id, id, rel_types))
             .await
             .map_err(|e| GelError::Query(e.to_string()))?;
-        serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))
+        let rows: Vec<EdgeMembershipRow> =
+            serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(rows.into_iter().map(|r| r.relationship).collect())
     }
 
-    /// Incoming relationships with a relation-type filter (empty filter = none).
+    /// Incoming relationships of the pinned build with a type filter
+    /// (empty filter = none).
     pub async fn neighbors_in(
         &self,
+        build_id: &str,
         id: &str,
         rel_types: Vec<String>,
     ) -> Result<Vec<RelRow>, GelError> {
         let json = self
             .client
-            .query_json(edgeql::NEIGHBORS_IN, &(id, rel_types))
+            .query_json(edgeql::NEIGHBORS_IN, &(build_id, id, rel_types))
             .await
             .map_err(|e| GelError::Query(e.to_string()))?;
-        serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))
+        let rows: Vec<EdgeMembershipRow> =
+            serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(rows.into_iter().map(|r| r.relationship).collect())
     }
 
     /// Member entities of one build, bounded; errors are reported, never silent.
@@ -467,14 +1023,20 @@ impl GelHandle {
         Ok(rows.into_iter().map(|r| r.relationship).collect())
     }
 
-    /// Evidence attached to one relationship (claim support/contradiction).
-    pub async fn evidence_for(&self, rel_id: &str) -> Result<Vec<EvidenceRow>, GelError> {
+    /// Evidence attached to one relationship of the pinned build.
+    pub async fn evidence_for(
+        &self,
+        build_id: &str,
+        rel_id: &str,
+    ) -> Result<Vec<EvidenceRow>, GelError> {
         let json = self
             .client
-            .query_json(edgeql::EVIDENCE_FOR_REL, &(rel_id,))
+            .query_json(edgeql::EVIDENCE_FOR_REL, &(build_id, rel_id))
             .await
             .map_err(|e| GelError::Query(e.to_string()))?;
-        serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))
+        let rows: Vec<EvidenceBundleRow> =
+            serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(rows.into_iter().flat_map(|r| r.ev).collect())
     }
 }
 
@@ -500,8 +1062,11 @@ mod tests {
     fn schema_assets_packaged() {
         assert!(SCHEMA_SDL.contains("type Relationship"));
         assert!(SCHEMA_SDL.contains("ActiveBuildPointer"));
+        assert!(SCHEMA_SDL.contains("type WorkerTask"));
         assert!(!SCHEMA_SDL.contains("json;") || SCHEMA_SDL.contains("raw_envelope"));
         assert!(MIGRATION_00001.contains("m1_chaosbox_init"));
+        assert!(MIGRATION_00002.contains("m2_worker_tasks"));
+        assert!(MIGRATION_00002.contains("m1_chaosbox_init"), "migration chain must link");
     }
 
     #[test]
@@ -526,6 +1091,30 @@ mod tests {
     }
 
     #[test]
+    fn failed_decisions_superseded_once() {
+        use chaosbox_core::{DecisionOutcome, EvidenceClass};
+        let mut s = MemoryStore::new();
+        let mk = |id: &str, outcome| Decision {
+            id: id.into(),
+            candidate_id: "c1".into(),
+            question_id: "q1".into(),
+            outcome,
+            evidence_class: EvidenceClass::Ambiguous,
+            model_requested: "jev-1.13.0".into(),
+            model_returned: "jev-1.13.0".into(),
+            confidence: None,
+            probability: None,
+        };
+        s.put_decision(mk("d1", DecisionOutcome::Failed("down".into()))).unwrap();
+        s.put_decision(mk("d2", DecisionOutcome::Accepted)).unwrap();
+        let key = "c1:q1";
+        assert_eq!(s.decisions[key].id, "d2", "retry supersedes a recorded failure");
+        // Non-failed outcomes are never overwritten.
+        s.put_decision(mk("d3", DecisionOutcome::Rejected)).unwrap();
+        assert_eq!(s.decisions[key].id, "d2", "accepted outcomes stick");
+    }
+
+    #[test]
     fn decisions_idempotent() {
         let mut s = MemoryStore::new();
         let d = Decision {
@@ -547,8 +1136,33 @@ mod tests {
     #[test]
     fn task_claim_recovery() {
         let mut t = Task { id: "t".into(), state: TaskState::Pending, generation: 0 };
-        claim_task(&mut t, "w1").unwrap();
-        assert!(claim_task(&mut t, "w2").is_err(), "stale worker must not overwrite");
+        claim_task(&mut t, "w1", 1_000, 60).unwrap();
+        assert!(claim_task(&mut t, "w2", 1_001, 60).is_err(), "stale worker must not overwrite");
+        // Heartbeats renew the holder's own lease; others are rejected.
+        heartbeat_task(&mut t, "w1", 1_050, 60).unwrap();
+        assert!(heartbeat_task(&mut t, "w2", 1_050, 60).is_err());
+        // Live claims cannot be reclaimed, even by a third worker.
+        assert!(reclaim_task(&mut t, "w3", 1_051, 60).is_err());
+        // After expiry the task is reclaimable with a bumped generation.
+        reclaim_task(&mut t, "w3", 2_000, 60).unwrap();
+        assert_eq!(t.generation, 2);
+        assert!(matches!(&t.state, TaskState::Claimed { worker, .. } if worker == "w3"));
+        // The stale holder's heartbeat now fails: its write is recognizable.
+        assert!(heartbeat_task(&mut t, "w1", 2_001, 60).is_err());
+    }
+
+    #[tokio::test]
+    async fn memory_reader_passes_conformance() {
+        let seed = conformance_seed();
+        check_conformance(
+            &seed.reader,
+            &seed.a1,
+            &seed.b1,
+            &seed.rel1,
+            &seed.a2,
+            &seed.builds,
+        )
+        .await;
     }
 
     #[test]

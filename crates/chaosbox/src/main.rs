@@ -14,6 +14,7 @@ use chaosbox::{
 };
 use chaosbox::{FixtureResponder, LiveResponder};
 use chaosbox_extract::Snapshot;
+use chaosbox_gel::MemoryStore;
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
@@ -128,7 +129,7 @@ async fn main() {
             }
         }
         Command::Extract { path, repo, max_candidates } => {
-            match Pipeline::snapshot_extract(&repo, &path, max_candidates) {
+            match Pipeline::<MemoryStore>::snapshot_extract(&repo, &path, max_candidates) {
                 Ok((snap, ext, cands)) => println!(
                     r#"{{"snapshot":"{}","entities":{},"candidates":{}}}"#,
                     snap.id,
@@ -319,7 +320,7 @@ async fn run_query(q: QueryCmd) -> i32 {
 }
 
 async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_jev: bool) -> i32 {
-    let (snap, ext, cands) = match Pipeline::snapshot_extract(repo, path, max_candidates) {
+    let (snap, ext, cands) = match Pipeline::<MemoryStore>::snapshot_extract(repo, path, max_candidates) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("extract: {e}");
@@ -328,7 +329,7 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_je
     };
     let entities: BTreeMap<_, _> = ext.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
     let mat = Materialization::default();
-    let mut pipe = Pipeline::new();
+    let mut pipe = Pipeline::<MemoryStore>::new();
     let decided = if live_jev {
         let policy = chaosbox_jev::JevPolicy::default();
         let client = match chaosbox_jev::JevClient::new(policy) {
@@ -339,7 +340,7 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_je
             }
         };
         let mut responder = LiveResponder::new(client);
-        match Pipeline::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat).await {
+        match Pipeline::<MemoryStore>::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat).await {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("decide: {e}");
@@ -348,7 +349,7 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_je
         }
     } else {
         let mut responder = FixtureResponder::new(true);
-        match Pipeline::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat).await {
+        match Pipeline::<MemoryStore>::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat).await {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("decide: {e}");

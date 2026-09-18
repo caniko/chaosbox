@@ -49,6 +49,10 @@ pub struct Materialization {
     pub accept_confidence: f64,
     /// Score acceptance cutoff; also in the identity.
     pub accept_score: f64,
+    /// Confidence floor: Choice/Score answers below it become `Abstained`
+    /// (recorded, never retried as failures). Also in the identity.
+    /// Must not exceed `accept_confidence` (checked by [`Materialization::validate`]).
+    pub abstain_confidence: f64,
 }
 
 impl Default for Materialization {
@@ -58,6 +62,7 @@ impl Default for Materialization {
             accept_noul: 0.7,
             accept_confidence: 0.6,
             accept_score: 1.0,
+            abstain_confidence: 0.4,
         }
     }
 }
@@ -73,9 +78,33 @@ impl Materialization {
                 &self.accept_noul.to_string(),
                 &self.accept_confidence.to_string(),
                 &self.accept_score.to_string(),
+                &self.abstain_confidence.to_string(),
                 build_inputs,
             ],
         )
+    }
+
+    /// Check threshold coherence: the abstain floor must not exceed the
+    /// accept floor, otherwise the overlap region has no defined outcome.
+    /// Precedence elsewhere is abstain-first.
+    pub fn validate(&self) -> Result<(), PipelineError> {
+        if self.abstain_confidence > self.accept_confidence {
+            return Err(PipelineError::Validation(format!(
+                "abstain_confidence {} exceeds accept_confidence {}",
+                self.abstain_confidence, self.accept_confidence
+            )));
+        }
+        for (name, v) in [
+            ("accept_noul", self.accept_noul),
+            ("accept_confidence", self.accept_confidence),
+            ("accept_score", self.accept_score),
+            ("abstain_confidence", self.abstain_confidence),
+        ] {
+            if !v.is_finite() {
+                return Err(PipelineError::Validation(format!("{name} non-finite")));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -222,18 +251,19 @@ impl Responder for LiveResponder {
 }
 
 /// Full pipeline state held by the operator commands.
-pub struct Pipeline {
+/// Generic over [`chaosbox_gel::Store`] with [`MemoryStore`] as the default.
+pub struct Pipeline<S = MemoryStore> {
     /// Backing store (decisions, evidence, builds, active pointer).
-    pub store: MemoryStore,
+    pub store: S,
     /// Local generation counter for builds published through this pipeline.
     pub generation: u64,
 }
 
-impl Pipeline {
+impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
     /// A pipeline with an empty store at generation zero.
     #[must_use]
     pub fn new() -> Self {
-        Self { store: MemoryStore::new(), generation: 0 }
+        Self { store: S::default(), generation: 0 }
     }
 
     /// Snapshot -> extract -> candidates.
@@ -260,6 +290,7 @@ impl Pipeline {
         model_requested: &str,
         mat: &Materialization,
     ) -> Result<Vec<(Candidate, Decision, Evidence)>, PipelineError> {
+        mat.validate()?;
         let mut out = Vec::new();
         for cand in candidates {
             let from = entities.get(&cand.from_entity).ok_or_else(|| PipelineError::Validation("missing from".into()))?;
@@ -273,7 +304,35 @@ impl Pipeline {
                 "reason": cand.reason,
                 "excerpt": cand.state_excerpt,
             });
-            let resp = responder.respond(state, questions.clone()).await.map_err(PipelineError::Jev)?;
+            // Per-candidate faults become recorded Failed decisions (retryable),
+            // never batch aborts and never retried blindly as empty responses.
+            // The error text is NOT copied into evidence (untrusted responder).
+            let resp = match responder.respond(state, questions.clone()).await {
+                Ok(r) => r,
+                Err(_) => {
+                    let decision = Decision {
+                        id: deterministic_id("dec", &[&cand.id, "failed", model_requested]),
+                        candidate_id: cand.id.clone(),
+                        question_id: format!("rel_{}", cand.id),
+                        outcome: DecisionOutcome::Failed("responder fault".into()),
+                        evidence_class: EvidenceClass::Ambiguous,
+                        model_requested: model_requested.to_owned(),
+                        model_returned: String::new(),
+                        confidence: None,
+                        probability: None,
+                    };
+                    let ev = Evidence {
+                        id: deterministic_id("ev", &[&decision.id, "failed"]),
+                        class: EvidenceClass::Ambiguous,
+                        supports: false,
+                        text: "decision attempt failed; see attempt accounting".into(),
+                        span: None,
+                        source_file_version: from.file.clone(),
+                    };
+                    out.push((cand.clone(), decision, ev));
+                    continue;
+                }
+            };
             // Record requested vs returned model identities.
             if resp.model.is_empty() {
                 return Err(PipelineError::Validation("empty returned model".into()));
@@ -285,16 +344,22 @@ impl Pipeline {
             )]);
             chaosbox_jev::validate_response(&resp, &questions, &valid).map_err(|e| PipelineError::Validation(e.to_string()))?;
             for (qid, ans) in &resp.answers {
+                // Abstain-first precedence: below-floor confidence abstains
+                // regardless of the selected option or score.
                 let (outcome, class, conf, prob) = match ans {
                     Answer::Choice(c) => {
                         check_confidence(c.confidence).map_err(|e| PipelineError::Validation(e.to_string()))?;
                         for p in c.probabilities.values() {
                             check_probability(*p).map_err(|e| PipelineError::Validation(e.to_string()))?;
                         }
-                        match c.choice.as_str() {
-                            "accept" => (DecisionOutcome::Accepted, EvidenceClass::Inferred, Some(c.confidence), c.probabilities.get("accept").copied()),
-                            "reject" => (DecisionOutcome::Rejected, EvidenceClass::Ambiguous, Some(c.confidence), c.probabilities.get("reject").copied()),
-                            _ => (DecisionOutcome::Negative, EvidenceClass::Ambiguous, Some(c.confidence), c.probabilities.get("none").copied()),
+                        if c.confidence < mat.abstain_confidence {
+                            (DecisionOutcome::Abstained, EvidenceClass::Ambiguous, Some(c.confidence), None)
+                        } else {
+                            match c.choice.as_str() {
+                                "accept" => (DecisionOutcome::Accepted, EvidenceClass::Inferred, Some(c.confidence), c.probabilities.get("accept").copied()),
+                                "reject" => (DecisionOutcome::Rejected, EvidenceClass::Ambiguous, Some(c.confidence), c.probabilities.get("reject").copied()),
+                                _ => (DecisionOutcome::Negative, EvidenceClass::Ambiguous, Some(c.confidence), c.probabilities.get("none").copied()),
+                            }
                         }
                     }
                     Answer::Noul(n) => {
@@ -307,7 +372,9 @@ impl Pipeline {
                     }
                     Answer::Score(s) => {
                         check_confidence(s.confidence).map_err(|e| PipelineError::Validation(e.to_string()))?;
-                        if s.score >= mat.accept_score {
+                        if s.confidence < mat.abstain_confidence {
+                            (DecisionOutcome::Abstained, EvidenceClass::Ambiguous, Some(s.confidence), None)
+                        } else if s.score >= mat.accept_score {
                             (DecisionOutcome::Accepted, EvidenceClass::Inferred, Some(s.confidence), None)
                         } else {
                             (DecisionOutcome::Negative, EvidenceClass::Ambiguous, Some(s.confidence), None)
@@ -409,7 +476,7 @@ impl Pipeline {
     }
 }
 
-impl Default for Pipeline {
+impl<S: chaosbox_gel::Store + Default> Default for Pipeline<S> {
     fn default() -> Self {
         Self::new()
     }
@@ -585,6 +652,19 @@ pub fn claim_survives_source_removal(claim: &Claim, removed_evidence: &str) -> b
 
 // ---- Gel-backed read-only consumer path (CLI and MCP share this) ----
 
+/// Escape LIKE wildcards (`\`, `%`, `_`) so user input matches literally.
+/// Shared by both backends: the live path relies on backslash LIKE escapes.
+fn escape_like(query: &str) -> String {
+    let mut out = String::with_capacity(query.len());
+    for c in query.chars() {
+        if c == '\\' || c == '%' || c == '_' {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Relation vocabulary for Gel filters; an empty filter matches nothing, so
 /// callers pass [`all_relation_types`] for unfiltered neighborhoods.
 #[must_use]
@@ -602,21 +682,31 @@ pub const EXPORT_EDGE_CAP: i64 = 20_000;
 
 /// Gel-backed read-only queries. One build id is pinned per reader from the
 /// active-build pointer; readers never mutate, migrate, or load Jev credentials.
-pub struct GelReader {
-    handle: chaosbox_gel::GelHandle,
+/// Generic over [`chaosbox_gel::GelQueries`] with [`chaosbox_gel::GelHandle`]
+/// as the live backend and [`chaosbox_gel::MemoryReader`] for tests.
+pub struct GelReader<R = chaosbox_gel::GelHandle> {
+    handle: R,
     /// Pinned active build id for every request this reader serves.
     pub build_id: String,
     /// Pinned generation (predecessor/generation checks on the read side).
     pub generation: i64,
 }
 
-impl GelReader {
+impl GelReader<chaosbox_gel::GelHandle> {
     /// Connect and pin the active build for `repo`. Errors when no Gel is
     /// reachable or no build is published (callers report pending/error).
     pub async fn connect(repo: &str) -> Result<Self, PipelineError> {
         let handle = chaosbox_gel::GelHandle::connect()
             .await
             .map_err(|e| PipelineError::Consumer(format!("gel connect: {e}")))?;
+        Self::pinned(handle, repo).await
+    }
+}
+
+impl<R: chaosbox_gel::GelQueries> GelReader<R> {
+    /// Pin the active build for `repo` on an existing query backend.
+    /// Used by tests with [`chaosbox_gel::MemoryReader`].
+    pub async fn pinned(handle: R, repo: &str) -> Result<Self, PipelineError> {
         let build = handle
             .active_build(repo)
             .await
@@ -625,29 +715,33 @@ impl GelReader {
         Ok(Self { handle, build_id: build.build_id, generation: build.generation })
     }
 
-    /// Bounded substring search over entity names.
+    /// Bounded substring search over the pinned build's entity names.
+    /// LIKE wildcards in the query are escaped: they match literally.
     pub async fn search(
         &self,
         query: &str,
         limit: i64,
     ) -> Result<Vec<chaosbox_gel::EntityRow>, PipelineError> {
-        let like = format!("%{query}%");
+        let like = format!("%{}%", escape_like(query));
         self.handle
-            .search_entities(&like, limit)
+            .search_entities(&self.build_id, &like, limit)
             .await
             .map_err(|e| PipelineError::Consumer(e.to_string()))
     }
 
-    /// Typed entity lookup.
+    /// Typed entity lookup within the pinned build.
     pub async fn lookup(
         &self,
         id: &str,
     ) -> Result<Option<chaosbox_gel::EntityRow>, PipelineError> {
-        self.handle.entity_by_id(id).await.map_err(|e| PipelineError::Consumer(e.to_string()))
+        self.handle
+            .entity_by_id(&self.build_id, id)
+            .await
+            .map_err(|e| PipelineError::Consumer(e.to_string()))
     }
 
-    /// Incoming/outgoing neighborhoods with an optional relation filter.
-    /// `None` means all relation types.
+    /// Incoming/outgoing neighborhoods within the pinned build, with an
+    /// optional relation filter. `None` means all relation types.
     pub async fn neighbors(
         &self,
         id: &str,
@@ -656,12 +750,12 @@ impl GelReader {
         let types = filter.unwrap_or_else(all_relation_types);
         let out = self
             .handle
-            .neighbors_out(id, types.clone())
+            .neighbors_out(&self.build_id, id, types.clone())
             .await
             .map_err(|e| PipelineError::Consumer(e.to_string()))?;
         let inc = self
             .handle
-            .neighbors_in(id, types)
+            .neighbors_in(&self.build_id, id, types)
             .await
             .map_err(|e| PipelineError::Consumer(e.to_string()))?;
         Ok((out, inc))
@@ -763,14 +857,15 @@ impl GelReader {
         }))
     }
 
-    /// Claim evidence and source locations for one relationship.
+    /// Claim evidence and source locations for one relationship of the
+    /// pinned build.
     pub async fn evidence(
         &self,
         rel_id: &str,
     ) -> Result<serde_json::Value, PipelineError> {
         let rows = self
             .handle
-            .evidence_for(rel_id)
+            .evidence_for(&self.build_id, rel_id)
             .await
             .map_err(|e| PipelineError::Consumer(e.to_string()))?;
         Ok(serde_json::json!({"rel": rel_id, "evidence": rows}))
@@ -780,7 +875,7 @@ impl GelReader {
     pub async fn explain(&self, id: &str) -> Result<serde_json::Value, PipelineError> {
         let entity = self
             .handle
-            .entity_by_id(id)
+            .entity_by_id(&self.build_id, id)
             .await
             .map_err(|e| PipelineError::Consumer(e.to_string()))?;
         let Some(e) = entity else {
@@ -803,8 +898,8 @@ impl GelReader {
         to_build: &str,
     ) -> Result<serde_json::Value, PipelineError> {
         use std::collections::BTreeSet;
-        async fn members(
-            reader: &GelReader,
+        async fn members<R2: chaosbox_gel::GelQueries>(
+            reader: &GelReader<R2>,
             build: &str,
         ) -> Result<(BTreeSet<String>, BTreeSet<String>), PipelineError> {
             let ents = reader
@@ -904,6 +999,111 @@ mod tests {
         assert_ne!(m3.identity("x"), m2.identity("x"));
         let m4 = Materialization { accept_confidence: 0.99, ..Default::default() };
         assert_ne!(m4.identity("x"), m2.identity("x"));
+        let m5 = Materialization { abstain_confidence: 0.1, ..Default::default() };
+        assert_ne!(m5.identity("x"), m2.identity("x"));
+        assert!(m2.validate().is_ok());
+        let bad = Materialization { abstain_confidence: 0.9, accept_confidence: 0.6, ..Default::default() };
+        assert!(bad.validate().is_err(), "abstain floor above accept floor is incoherent");
+    }
+
+    /// Responder with tunable Choice confidence for abstain tests.
+    struct ConfResponder {
+        confidence: f64,
+    }
+
+    #[async_trait::async_trait]
+    impl Responder for ConfResponder {
+        async fn respond(
+            &mut self,
+            _state: serde_json::Value,
+            questions: BTreeMap<String, Question>,
+        ) -> Result<SystemOneResponse, String> {
+            let mut answers = BTreeMap::new();
+            for (id, _) in &questions {
+                answers.insert(
+                    id.clone(),
+                    Answer::Choice(ChoiceAnswer {
+                        choice: "accept".into(),
+                        probabilities: BTreeMap::from([
+                            ("accept".into(), 0.9),
+                            ("reject".into(), 0.05),
+                            ("none".into(), 0.05),
+                        ]),
+                        confidence: self.confidence,
+                    }),
+                );
+            }
+            Ok(SystemOneResponse {
+                model: chaosbox_jev::JEV_MODEL_PINNED.into(),
+                answers,
+                usage: chaosbox_jev::Usage { input_tokens: 1, output_tokens: 0 },
+            })
+        }
+    }
+
+    /// Responder that fails every call (transport fault simulation).
+    struct FailResponder;
+
+    #[async_trait::async_trait]
+    impl Responder for FailResponder {
+        async fn respond(
+            &mut self,
+            _state: serde_json::Value,
+            _questions: BTreeMap<String, Question>,
+        ) -> Result<SystemOneResponse, String> {
+            Err("transport down".into())
+        }
+    }
+
+    fn one_candidate() -> (Candidate, BTreeMap<String, Entity>) {
+        use chaosbox_core::{EntityKind, RelationType, SourceSpan};
+        let span = SourceSpan::point("a.rs", 1, 1, 0);
+        let from = Entity::new(EntityKind::Symbol, "r", "s", "a.rs", "a", "a", span.clone());
+        let to = Entity::new(EntityKind::Symbol, "r", "s", "a.rs", "b", "b", span);
+        let cand = Candidate {
+            id: "cand:1".into(),
+            rel_type: RelationType::Calls,
+            from_entity: from.id.clone(),
+            to_entity: to.id.clone(),
+            reason: "structural".into(),
+            state_excerpt: "a calls b".into(),
+        };
+        let entities = BTreeMap::from([(from.id.clone(), from), (to.id.clone(), to)]);
+        (cand, entities)
+    }
+
+    #[tokio::test]
+    async fn below_floor_confidence_abstains() {
+        let (cand, entities) = one_candidate();
+        let mat = Materialization::default();
+        let mut low = ConfResponder { confidence: 0.1 };
+        let decided =
+            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut low, "jev-1.13.0", &mat)
+                .await
+                .unwrap();
+        assert_eq!(decided[0].1.outcome, DecisionOutcome::Abstained);
+        // Above the accept floor the same answer is accepted.
+        let mut high = ConfResponder { confidence: 0.95 };
+        let decided =
+            Pipeline::<MemoryStore>::decide(&[cand], &entities, &mut high, "jev-1.13.0", &mat)
+                .await
+                .unwrap();
+        assert_eq!(decided[0].1.outcome, DecisionOutcome::Accepted);
+    }
+
+    #[tokio::test]
+    async fn responder_faults_become_failed_decisions() {
+        let (cand, entities) = one_candidate();
+        let mat = Materialization::default();
+        let mut failing = FailResponder;
+        let decided =
+            Pipeline::<MemoryStore>::decide(&[cand], &entities, &mut failing, "jev-1.13.0", &mat)
+                .await
+                .unwrap();
+        assert_eq!(decided.len(), 1, "batch continues past one fault");
+        assert!(matches!(decided[0].1.outcome, DecisionOutcome::Failed(_)));
+        // The fault text is never copied into evidence.
+        assert!(!decided[0].2.text.contains("transport"));
     }
 
     #[test]
@@ -937,5 +1137,30 @@ mod tests {
             accepted: true,
         };
         assert!(claim_survives_source_removal(&c, "ev1"));
+    }
+
+    #[tokio::test]
+    async fn gel_reader_serves_fake_backend() {
+        // The Phase 0 seam: the same reader code serves the in-memory fake.
+        let seed = chaosbox_gel::conformance_seed();
+        let reader: GelReader<chaosbox_gel::MemoryReader> =
+            GelReader::pinned(seed.reader, "conf").await.unwrap();
+        assert_eq!(reader.build_id, seed.builds.1);
+        // Reads are scoped to the pinned build: only the second Alpha shows.
+        let hits = reader.search("alpha", 10).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].entity_id, seed.a2);
+        assert!(reader.lookup(&seed.a1).await.unwrap().is_none());
+        let path = reader.path(&seed.a2, &seed.b1, 4).await.unwrap();
+        assert_eq!(path, None, "cross-build entities never connect");
+        let explained = reader.explain(&seed.a2).await.unwrap();
+        assert_eq!(explained["outgoing"], 1);
+        // rel1 belongs to the first build, invisible from the pinned one.
+        let ev = reader.evidence(&seed.rel1).await.unwrap();
+        assert_eq!(ev["evidence"].as_array().unwrap().len(), 0);
+        let v = reader.export().await.unwrap();
+        assert_eq!(v["build_id"], serde_json::Value::String(seed.builds.1.clone()));
+        let d = reader.diff("conf", &seed.builds.0, &seed.builds.1).await.unwrap();
+        assert!(!d["added_nodes"].as_array().unwrap().is_empty());
     }
 }

@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use chaosbox::{FixtureResponder, Materialization, Pipeline, export_json, search};
 use chaosbox_core::diff_builds;
 use chaosbox_extract::Snapshot;
-use chaosbox_gel::Store as _;
+use chaosbox_gel::{MemoryStore, Store as _};
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo-repo")
@@ -19,7 +19,7 @@ async fn vertical_slice_publish_query_incremental() {
     assert!(root.exists(), "fixture repo missing at {root:?}");
 
     // 1-2. snapshot + deterministic extraction/candidates
-    let (snap, ext, cands) = Pipeline::snapshot_extract("demo", &root, 200).unwrap();
+    let (snap, ext, cands) = Pipeline::<MemoryStore>::snapshot_extract("demo", &root, 200).unwrap();
     assert!(ext.entities.len() > 10, "expected entities, got {}", ext.entities.len());
     assert!(!cands.is_empty(), "expected candidates");
 
@@ -30,7 +30,7 @@ async fn vertical_slice_publish_query_incremental() {
     let entities: BTreeMap<_, _> = ext.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
     let mut responder = FixtureResponder::new(true);
     let decided =
-        Pipeline::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat)
+        Pipeline::<MemoryStore>::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat)
             .await
             .unwrap();
     assert_eq!(decided.len(), cands.len());
@@ -40,7 +40,7 @@ async fn vertical_slice_publish_query_incremental() {
     }
 
     // 4-5. persist decisions/evidence + publish validated build
-    let mut pipe = Pipeline::new();
+    let mut pipe = Pipeline::<MemoryStore>::new();
     let build = pipe.build_and_publish("demo", &snap, &ext, &decided, &mat, None).unwrap();
     assert!(!build.nodes.is_empty());
     assert!(!build.edges.is_empty(), "fixture decisions should materialize edges");
@@ -57,12 +57,12 @@ async fn vertical_slice_publish_query_incremental() {
     copy_dir(&root, tmp_root);
     std::fs::remove_file(tmp_root.join("greeter.py")).unwrap();
     std::fs::write(tmp_root.join("notes.txt"), "changed notes about hello\n").unwrap();
-    let (snap2, ext2, cands2) = Pipeline::snapshot_extract("demo", tmp_root, 200).unwrap();
+    let (snap2, ext2, cands2) = Pipeline::<MemoryStore>::snapshot_extract("demo", tmp_root, 200).unwrap();
     assert_ne!(snap.id, snap2.id, "changed sources => new snapshot");
     let entities2: BTreeMap<_, _> = ext2.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
     let mut responder2 = FixtureResponder::new(true);
     let decided2 =
-        Pipeline::decide(&cands2, &entities2, &mut responder2, chaosbox_jev::JEV_MODEL_PINNED, &mat)
+        Pipeline::<MemoryStore>::decide(&cands2, &entities2, &mut responder2, chaosbox_jev::JEV_MODEL_PINNED, &mat)
             .await
             .unwrap();
     let build2 = pipe
