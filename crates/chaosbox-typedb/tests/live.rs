@@ -1,15 +1,15 @@
-//! Live TypeDB backend tests: full write/publish/readback cycle, decision
+//! Live `TypeDB` backend tests: full write/publish/readback cycle, decision
 //! supersedure, predecessor guards, and concurrent-publication races against
 //! a real server.
 //!
-//! Requires a reachable TypeDB server: address from `TYPEDB_ADDR`
+//! Requires a reachable `TypeDB` server: address from `TYPEDB_ADDR`
 //! (default `127.0.0.1:1729`). Without one the tests report a skip and pass;
 //! a skip is NOT conformance evidence (see the execution ledger). The named
 //! CI gate runs these with a server present.
 
 use chaosbox_core::{
     Candidate, Claim, Decision, DecisionOutcome, Entity, EntityKind, Evidence, EvidenceClass,
-    GraphBuild, Relation, RelationScope, RelationType, SourceSpan,
+    GraphBuild, Relation, RelationScope, RelationType, SnapshotFile, SourceSpan,
 };
 use chaosbox_gel::{Store, check_conformance};
 use chaosbox_typedb::reader::TypeDbReader;
@@ -73,12 +73,7 @@ fn candidate(id: &str, from: &str, to: &str) -> Candidate {
     }
 }
 
-async fn seed_files_run(
-    s: &mut TypeDbStore,
-    repo: &str,
-    snap: &str,
-) -> (String, String, String) {
-    use chaosbox_core::SnapshotFile;
+async fn seed_files_run(s: &mut TypeDbStore, repo: &str, snap: &str) -> (String, String, String) {
     let files = vec![SnapshotFile {
         snapshot: snap.into(),
         path: "a.rs".into(),
@@ -113,8 +108,12 @@ async fn publish_readback_and_predecessor_guards() {
 
     let a = ent(repo, "s1", "a.rs", "a");
     let b = ent(repo, "s1", "a.rs", "b");
-    s.put_candidate(&set, &candidate("cand:1", &a.id, &b.id)).await.unwrap();
-    s.put_decision(decision("cand:1", "q1", "key-1")).await.unwrap();
+    s.put_candidate(&set, &candidate("cand:1", &a.id, &b.id))
+        .await
+        .unwrap();
+    s.put_decision(decision("cand:1", "q1", "key-1"))
+        .await
+        .unwrap();
     s.put_evidence(Evidence {
         id: "ev:1".into(),
         class: EvidenceClass::Extracted,
@@ -169,7 +168,10 @@ async fn publish_readback_and_predecessor_guards() {
     // Stale predecessor and older generation both fail; last good stands.
     let mut stale = GraphBuild::new(repo, vec!["s1".into()], 3);
     stale.add_node(a.clone()).unwrap();
-    let err = s.publish(stale, Some("build:stale".into())).await.unwrap_err();
+    let err = s
+        .publish(stale, Some("build:stale".into()))
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("predecessor mismatch"), "{err}");
     let mut older = GraphBuild::new(repo, vec!["s1".into()], 1);
     older.predecessor = Some(build2.id.clone());
@@ -192,7 +194,9 @@ async fn concurrent_publishers_from_same_generation_exactly_one_wins() {
     s1.publish(gen1.clone(), None).await.unwrap();
 
     // Same build published twice is idempotent, not a conflict.
-    s1.publish(gen1.clone(), Some(gen1.id.clone())).await.unwrap();
+    s1.publish(gen1.clone(), Some(gen1.id.clone()))
+        .await
+        .unwrap();
     let mut retry = TypeDbStore::new(config("t_race"));
     retry.migrate().await.unwrap();
     retry.publish(gen1.clone(), None).await.unwrap();
@@ -215,14 +219,20 @@ async fn concurrent_publishers_from_same_generation_exactly_one_wins() {
         w1.publish(b1.clone(), Some(gen1.id.clone())),
         w2.publish(b2.clone(), Some(gen1.id.clone()))
     );
-    assert!(r1.is_ok() ^ r2.is_ok(), "exactly one publisher wins: {r1:?} vs {r2:?}");
+    assert!(
+        r1.is_ok() ^ r2.is_ok(),
+        "exactly one publisher wins: {r1:?} vs {r2:?}"
+    );
 
     // The loser retrying with its stale predecessor fails without moving
     // the pointer; last good build stays active.
     let mut late = TypeDbStore::new(config("t_race"));
     late.migrate().await.unwrap();
     let stale = if r1.is_ok() { b2 } else { b1 };
-    let err = late.publish(stale, Some(gen1.id.clone())).await.unwrap_err();
+    let err = late
+        .publish(stale, Some(gen1.id.clone()))
+        .await
+        .unwrap_err();
     assert!(
         err.to_string().contains("predecessor mismatch")
             || err.to_string().contains("concurrent publisher"),
@@ -235,7 +245,6 @@ async fn reader_passes_reference_conformance_against_live_backend() {
     let Some(mut s) = connected_store("t_conf").await else {
         return;
     };
-    use chaosbox_core::SnapshotFile;
     // Seed the reference fixture through the write path: two builds of repo
     // `conf`, the second active, sharing a symbol name across snapshots.
     for snap in ["s1", "s2"] {
@@ -253,14 +262,28 @@ async fn reader_passes_reference_conformance_against_live_backend() {
         .unwrap();
     }
     let ent = |snap: &str, file: &str, name: &str| {
-        Entity::new(EntityKind::Symbol, "conf", snap, file, name, name, span(file))
+        Entity::new(
+            EntityKind::Symbol,
+            "conf",
+            snap,
+            file,
+            name,
+            name,
+            span(file),
+        )
     };
     let mut b1 = GraphBuild::new("conf", vec!["s1".into()], 1);
     let a1 = ent("s1", "f.rs", "Alpha");
     let b1e = ent("s1", "f.rs", "Beta");
     b1.add_node(a1.clone()).unwrap();
     b1.add_node(b1e.clone()).unwrap();
-    let r1 = Relation::new(RelationType::Calls, &a1.id, &b1e.id, RelationScope::File, &b1.id);
+    let r1 = Relation::new(
+        RelationType::Calls,
+        &a1.id,
+        &b1e.id,
+        RelationScope::File,
+        &b1.id,
+    );
     b1.add_edge(r1.clone()).unwrap();
     let mut b2 = GraphBuild::new("conf", vec!["s2".into()], 2);
     b2.predecessor = Some(b1.id.clone());

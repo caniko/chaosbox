@@ -548,7 +548,7 @@ pub struct MemoryStore {
 }
 
 /// Staged write-ahead contents for backends that flush at publication
-/// (TypeDB port): everything the staging [`MemoryStore`] validated, in
+/// (`TypeDB` port): everything the staging [`MemoryStore`] validated, in
 /// deterministic key order, ready for idempotent row inserts.
 #[derive(Clone, Debug, Default)]
 pub struct StagedData {
@@ -570,12 +570,20 @@ pub struct StagedData {
 
 impl MemoryStore {
     /// Export the staged contents for a publication flush. Ordering is
-    /// deterministic (BTreeMap key order) so retries replay identically.
+    /// deterministic (`BTreeMap` key order) so retries replay identically.
     #[must_use]
     pub fn export_staged(&self) -> StagedData {
         StagedData {
-            runs: self.runs.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-            sets: self.sets.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            runs: self
+                .runs
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            sets: self
+                .sets
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
             candidates: self
                 .candidates
                 .iter()
@@ -584,7 +592,11 @@ impl MemoryStore {
             decisions: self.decisions.values().cloned().collect(),
             evidence: self.evidence.values().cloned().collect(),
             claims: self.claims.values().cloned().collect(),
-            files: self.files.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            files: self
+                .files
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         }
     }
 

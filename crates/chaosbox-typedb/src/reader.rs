@@ -1,4 +1,4 @@
-//! Read-only TypeDB [`GelQueries`](chaosbox_gel::GelQueries) implementation.
+//! Read-only `TypeDB` [`GelQueries`](chaosbox_gel::GelQueries) implementation.
 //!
 //! Every read is scoped to one pinned build id through the membership
 //! relations: rows outside the build are invisible by construction. Read
@@ -9,15 +9,13 @@
 //!
 //! Search preserves the Gel `ilike` contract through the `name-fold`
 //! columns: the caller-side `like` pattern is unescaped to a literal
-//! needle, folded, and matched with `contains` (TypeQL `like` is
+//! needle, folded, and matched with `contains` (`TypeQL` `like` is
 //! case-sensitive and has no case-insensitive form). An empty relation-type
 //! filter matches nothing.
 
 use std::collections::BTreeMap;
 
-use chaosbox_gel::{
-    BuildRow, EntityRow, EndpointRef, EvidenceRow, GelError, GelQueries, RelRow,
-};
+use chaosbox_gel::{BuildRow, EntityRow, EndpointRef, EvidenceRow, GelError, GelQueries, RelRow};
 use typedb_driver::{Address, Addresses, Credentials, DriverOptions, DriverTlsConfig, TypeDBDriver};
 
 use crate::common::{TypeDbConfig, col_bool, col_int, col_string, driver_error, read_rows};
@@ -29,7 +27,9 @@ const ENTITY_COLS: &[&str] = &["id", "kind", "repo", "snap", "file", "name", "qn
 const REL_COLS: &[&str] = &["r", "rt", "fid", "tid"];
 
 /// Project an attribute column map into an [`EntityRow`].
-fn row_to_entity(row: &BTreeMap<String, typedb_driver::concept::Value>) -> Result<EntityRow, GelError> {
+fn row_to_entity(
+    row: &BTreeMap<String, typedb_driver::concept::Value>,
+) -> Result<EntityRow, GelError> {
     Ok(EntityRow {
         entity_id: col_string(row, "id")?,
         kind: col_string(row, "kind")?,
@@ -72,7 +72,7 @@ fn unescape_like(like: &str) -> String {
     out
 }
 
-/// Read-only TypeDB query handle: one pinned database, read transactions.
+/// Read-only `TypeDB` query handle: one pinned database, read transactions.
 pub struct TypeDbReader {
     config: TypeDbConfig,
     driver: Option<TypeDBDriver>,
@@ -139,7 +139,9 @@ impl TypeDbReader {
             str_lit(build_id)
         );
         if let Some(n) = limit {
-            q.push_str(&format!(" limit {};", int_lit(n.max(0))));
+            q.push_str(" limit ");
+            q.push_str(&int_lit(n.max(0)));
+            q.push(';');
         }
         let rows = read_rows(self.driver()?, &self.config.database, &q, ENTITY_COLS).await?;
         rows.iter().map(row_to_entity).collect()
@@ -156,7 +158,9 @@ impl TypeDbReader {
             str_lit(build_id)
         );
         if let Some(n) = limit {
-            q.push_str(&format!(" limit {};", int_lit(n.max(0))));
+            q.push_str(" limit ");
+            q.push_str(&int_lit(n.max(0)));
+            q.push(';');
         }
         let rows = read_rows(self.driver()?, &self.config.database, &q, REL_COLS).await?;
         rows.iter().map(row_to_rel).collect()
@@ -170,7 +174,13 @@ impl GelQueries for TypeDbReader {
             "match $p isa active-pointer, has repo-name {}, has build-id $b; $g isa graph-build, has build-id $b, has generation $gen, has status $st; select $b, $gen, $st;",
             str_lit(repo)
         );
-        let rows = read_rows(self.driver()?, &self.config.database, &q, &["b", "gen", "st"]).await?;
+        let rows = read_rows(
+            self.driver()?,
+            &self.config.database,
+            &q,
+            &["b", "gen", "st"],
+        )
+        .await?;
         let Some(row) = rows.into_iter().next() else {
             return Ok(None);
         };
@@ -198,8 +208,7 @@ impl GelQueries for TypeDbReader {
                 str_lit(build_id),
                 str_lit(&needle)
             );
-            let rows =
-                read_rows(self.driver()?, &self.config.database, &q, ENTITY_COLS).await?;
+            let rows = read_rows(self.driver()?, &self.config.database, &q, ENTITY_COLS).await?;
             for row in &rows {
                 let e = row_to_entity(row)?;
                 merged.insert(e.entity_id.clone(), e);
@@ -212,11 +221,7 @@ impl GelQueries for TypeDbReader {
         Ok(v)
     }
 
-    async fn entity_by_id(
-        &self,
-        build_id: &str,
-        id: &str,
-    ) -> Result<Option<EntityRow>, GelError> {
+    async fn entity_by_id(&self, build_id: &str, id: &str) -> Result<Option<EntityRow>, GelError> {
         // The id is known from the argument; select the remaining columns.
         let q = format!(
             "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id {}, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; select $kind, $repo, $snap, $file, $name, $qn;",
@@ -262,11 +267,7 @@ impl GelQueries for TypeDbReader {
         self.neighbors(build_id, id, rel_types, false).await
     }
 
-    async fn build_entities(
-        &self,
-        build_id: &str,
-        limit: i64,
-    ) -> Result<Vec<EntityRow>, GelError> {
+    async fn build_entities(&self, build_id: &str, limit: i64) -> Result<Vec<EntityRow>, GelError> {
         self.members(build_id, Some(limit)).await
     }
 
@@ -293,9 +294,13 @@ impl GelQueries for TypeDbReader {
                 str_lit(rel_id),
                 str_lit(rel_id)
             );
-            let rows =
-                read_rows(self.driver()?, &self.config.database, &q, &["id", "cl", "s", "t"])
-                    .await?;
+            let rows = read_rows(
+                self.driver()?,
+                &self.config.database,
+                &q,
+                &["id", "cl", "s", "t"],
+            )
+            .await?;
             for row in &rows {
                 let ev = EvidenceRow {
                     evidence_id: col_string(row, "id")?,

@@ -1,11 +1,11 @@
-//! Driver-backed TypeDB [`Store`](chaosbox_gel::Store) implementation.
+//! Driver-backed `TypeDB` [`Store`](chaosbox_gel::Store) implementation.
 //!
 //! Write path mirrors [`chaosbox_gel::GelStore`]: every `put_*` validates
 //! into an in-memory [`MemoryStore`](chaosbox_gel::MemoryStore) staging
 //! area with identical semantics, and [`TypeDbStore::publish`] flushes the
 //! staged rows idempotently before swinging the active-build pointer.
 //!
-//! Transaction discipline (all proven against TypeDB 3.13.0):
+//! Transaction discipline (all proven against `TypeDB` 3.13.0):
 //! - One short write transaction per row insert; ingestion never holds a
 //!   whole repository in one transaction.
 //! - Duplicate `@key` inserts fail with the `@unique` violation (`CNT9`),
@@ -34,9 +34,9 @@ use typedb_driver::{
 };
 
 use crate::common::{
-    FLUSH_RETRIES, WRITE_TIMEOUT, col_double_opt, col_int, col_string, decision_key,
-    driver_error, drain, edge_membership_id, file_version_id, fold, is_conflict,
-    is_unique_violation, link_id, membership_id, now_millis, read_rows, span_id_of,
+    FLUSH_RETRIES, WRITE_TIMEOUT, col_double_opt, col_int, col_string, decision_key, driver_error,
+    drain, edge_membership_id, file_version_id, fold, is_conflict, is_unique_violation, link_id,
+    membership_id, now_millis, read_rows, span_id_of,
 };
 /// Connection config re-exported for backend constructors.
 pub use crate::common::TypeDbConfig;
@@ -45,7 +45,7 @@ use crate::encode::{bool_lit, double_lit, int_lit, str_lit};
 // TypeDbConfig and shared driver plumbing live in [`crate::common`].
 
 /// TypeDB-backed [`Store`]: staging validation in memory, durable rows in
-/// TypeDB, publication through the active-build pointer.
+/// `TypeDB`, publication through the active-build pointer.
 pub struct TypeDbStore {
     config: TypeDbConfig,
     driver: Option<TypeDBDriver>,
@@ -155,10 +155,7 @@ impl TypeDbStore {
 
     /// Insert the repository row (idempotent).
     async fn flush_repository(&self, repo: &str) -> Result<(), GelError> {
-        let q = format!(
-            "insert $x isa repository, has repo-name {};",
-            str_lit(repo)
-        );
+        let q = format!("insert $x isa repository, has repo-name {};", str_lit(repo));
         self.insert_ignoring_duplicates(&q).await
     }
 
@@ -181,7 +178,8 @@ impl TypeDbStore {
         sha: &str,
         bytes: u64,
     ) -> Result<(), GelError> {
-        let bytes = i64::try_from(bytes).map_err(|_| GelError::Invariant("file size overflows i64".into()))?;
+        let bytes = i64::try_from(bytes)
+            .map_err(|_| GelError::Invariant("file size overflows i64".into()))?;
         let q = format!(
             "insert $x isa file-version, has file-version-id {}, has snapshot-id {}, has path {}, has sha256 {}, has bytes {};",
             str_lit(&file_version_id(snapshot_id, path)),
@@ -194,27 +192,26 @@ impl TypeDbStore {
     }
 
     /// Insert one span row (idempotent by deterministic key).
-    async fn flush_span(
-        &self,
-        file: &str,
-        start_line: u32,
-        start_col: u32,
-        end_line: u32,
-        end_col: u32,
-        byte_start: u32,
-        byte_end: u32,
-    ) -> Result<(), GelError> {
+    async fn flush_span(&self, span: &chaosbox_core::SourceSpan) -> Result<(), GelError> {
         let conv = |v: u32| int_lit(i64::from(v));
         let q = format!(
             "insert $x isa source-span, has span-id {}, has file {}, has start-line {}, has start-col {}, has end-line {}, has end-col {}, has byte-start {}, has byte-end {};",
-            str_lit(&span_id_of(file, start_line, start_col, end_line, end_col, byte_start, byte_end)),
-            str_lit(file),
-            conv(start_line),
-            conv(start_col),
-            conv(end_line),
-            conv(end_col),
-            conv(byte_start),
-            conv(byte_end)
+            str_lit(&span_id_of(
+                &span.file,
+                span.start_line,
+                span.start_col,
+                span.end_line,
+                span.end_col,
+                span.byte_start,
+                span.byte_end
+            )),
+            str_lit(&span.file),
+            conv(span.start_line),
+            conv(span.start_col),
+            conv(span.end_line),
+            conv(span.end_col),
+            conv(span.byte_start),
+            conv(span.byte_end)
         );
         self.insert_ignoring_duplicates(&q).await
     }
@@ -222,17 +219,7 @@ impl TypeDbStore {
     /// Insert one entity row with its span (idempotent; first write wins,
     /// matching the Gel upsert that keeps the existing row on conflict).
     async fn flush_entity(&self, e: &Entity) -> Result<(), GelError> {
-        let s = &e.span;
-        self.flush_span(
-            &s.file,
-            s.start_line,
-            s.start_col,
-            s.end_line,
-            s.end_col,
-            s.byte_start,
-            s.byte_end,
-        )
-        .await?;
+        self.flush_span(&e.span).await?;
         let kind = serde_json::to_value(&e.kind)
             .ok()
             .and_then(|v| v.as_str().map(str::to_owned))
@@ -248,7 +235,15 @@ impl TypeDbStore {
             str_lit(&fold(&e.name)),
             str_lit(&e.qualified_name),
             str_lit(&fold(&e.qualified_name)),
-            str_lit(&span_id_of(&s.file, s.start_line, s.start_col, s.end_line, s.end_col, s.byte_start, s.byte_end))
+            str_lit(&span_id_of(
+                &e.span.file,
+                e.span.start_line,
+                e.span.start_col,
+                e.span.end_line,
+                e.span.end_col,
+                e.span.byte_start,
+                e.span.byte_end
+            ))
         );
         self.insert_ignoring_duplicates(&q).await
     }
@@ -272,11 +267,7 @@ impl TypeDbStore {
     }
 
     /// Insert one node-membership relation (idempotent by deterministic key).
-    async fn flush_node_membership(
-        &self,
-        build_id: &str,
-        entity_id: &str,
-    ) -> Result<(), GelError> {
+    async fn flush_node_membership(&self, build_id: &str, entity_id: &str) -> Result<(), GelError> {
         let q = format!(
             "match $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id {}; insert (build: $b, member: $e) isa node-membership, has membership-id {};",
             str_lit(build_id),
@@ -287,11 +278,7 @@ impl TypeDbStore {
     }
 
     /// Insert one edge-membership relation (idempotent by deterministic key).
-    async fn flush_edge_membership(
-        &self,
-        build_id: &str,
-        rel_id: &str,
-    ) -> Result<(), GelError> {
+    async fn flush_edge_membership(&self, build_id: &str, rel_id: &str) -> Result<(), GelError> {
         let q = format!(
             "match $b isa graph-build, has build-id {}; $rel isa relationship, has rel-id {}; insert (build: $b, edge: $rel) isa edge-membership, has edge-membership-id {};",
             str_lit(build_id),
@@ -302,12 +289,7 @@ impl TypeDbStore {
     }
 
     /// Insert one extraction-run row (idempotent).
-    async fn flush_run(
-        &self,
-        run_id: &str,
-        repo: &str,
-        snapshot_id: &str,
-    ) -> Result<(), GelError> {
+    async fn flush_run(&self, run_id: &str, repo: &str, snapshot_id: &str) -> Result<(), GelError> {
         let q = format!(
             "insert $x isa extraction-run, has run-id {}, has repo-name {}, has snapshot-id {}, has created {};",
             str_lit(run_id),
@@ -389,10 +371,12 @@ impl TypeDbStore {
             str_lit(&d.cache_key)
         );
         if let Some(c) = d.confidence {
-            owns.push_str(&format!(", has confidence {}", double_lit(c).map_err(|e| GelError::Query(e.to_string()))?));
+            owns.push_str(", has confidence ");
+            owns.push_str(&double_lit(c).map_err(|e| GelError::Query(e.to_string()))?);
         }
         if let Some(p) = d.probability {
-            owns.push_str(&format!(", has probability {}", double_lit(p).map_err(|e| GelError::Query(e.to_string()))?));
+            owns.push_str(", has probability ");
+            owns.push_str(&double_lit(p).map_err(|e| GelError::Query(e.to_string()))?);
         }
         let q = format!("insert $d isa decision, {owns};");
         self.insert_ignoring_duplicates(&q).await
@@ -454,10 +438,16 @@ impl TypeDbStore {
             str_lit(&file_version_id(&e.snapshot, &e.source_file_version))
         );
         if let Some(s) = &e.span {
-            owns.push_str(&format!(
-                ", has span-id {}",
-                str_lit(&span_id_of(&s.file, s.start_line, s.start_col, s.end_line, s.end_col, s.byte_start, s.byte_end))
-            ));
+            owns.push_str(", has span-id ");
+            owns.push_str(&str_lit(&span_id_of(
+                &s.file,
+                s.start_line,
+                s.start_col,
+                s.end_line,
+                s.end_col,
+                s.byte_start,
+                s.byte_end,
+            )));
         }
         let q = format!("insert $x isa evidence, {owns};");
         self.insert_ignoring_duplicates(&q).await
@@ -509,10 +499,12 @@ impl TypeDbStore {
             int_lit(now_millis())
         );
         for snapshot_id in &build.snapshot_ids {
-            owns.push_str(&format!(", has snapshot-id {}", str_lit(snapshot_id)));
+            owns.push_str(", has snapshot-id ");
+            owns.push_str(&str_lit(snapshot_id));
         }
         if let Some(pred) = &build.predecessor {
-            owns.push_str(&format!(", has predecessor {}", str_lit(pred)));
+            owns.push_str(", has predecessor ");
+            owns.push_str(&str_lit(pred));
         }
         self.insert_ignoring_duplicates(&format!("insert $b isa graph-build, {owns};"))
             .await?;
@@ -563,10 +555,7 @@ impl TypeDbStore {
     }
 
     /// Live pointer read: (build id, generation, status) for a repository.
-    async fn live_pointer(
-        &self,
-        repo: &str,
-    ) -> Result<Option<(String, i64, String)>, GelError> {
+    async fn live_pointer(&self, repo: &str) -> Result<Option<(String, i64, String)>, GelError> {
         let q = format!(
             "match $p isa active-pointer, has repo-name {}, has build-id $b; $g isa graph-build, has build-id $b, has generation $gen, has status $st; select $b, $gen, $st;",
             str_lit(repo)
@@ -627,7 +616,9 @@ impl TypeDbStore {
                 stream.try_collect().await.map_err(driver_error)?
             }
             other => {
-                return Err(GelError::Query(format!("guard expected rows, got {other:?}")));
+                return Err(GelError::Query(format!(
+                    "guard expected rows, got {other:?}"
+                )));
             }
         };
         if guard_rows.is_empty() {
@@ -719,7 +710,14 @@ impl Store for TypeDbStore {
         rubric_version: &str,
     ) -> Result<(), GelError> {
         self.staging
-            .ensure_run(run_id, repo, snapshot_id, set_id, catalog_digest, rubric_version)
+            .ensure_run(
+                run_id,
+                repo,
+                snapshot_id,
+                set_id,
+                catalog_digest,
+                rubric_version,
+            )
             .await
     }
 

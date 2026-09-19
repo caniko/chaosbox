@@ -1,4 +1,4 @@
-//! Shared driver plumbing for the TypeDB backend: connection config,
+//! Shared driver plumbing for the `TypeDB` backend: connection config,
 //! bounded timeouts, error classification, row collection, and the
 //! deterministic key helpers that replace Gel's exclusive constraints.
 
@@ -23,7 +23,7 @@ pub struct TypeDbConfig {
     pub username: String,
     /// Application password (delivered via credential file upstream).
     pub password: String,
-    /// TypeDB database name holding the Chaosbox schema and rows.
+    /// `TypeDB` database name holding the Chaosbox schema and rows.
     pub database: String,
 }
 
@@ -50,7 +50,9 @@ pub(crate) fn is_conflict(e: &typedb_driver::Error) -> bool {
 }
 
 /// Classify a driver failure for the [`Store`](chaosbox_gel::Store) and
-/// [`GelQueries`](chaosbox_gel::GelQueries) surfaces.
+/// [`GelQueries`](chaosbox_gel::GelQueries) surfaces. Takes ownership for
+/// direct use as `map_err(driver_error)` across the backend.
+#[allow(clippy::needless_pass_by_value)]
 pub(crate) fn driver_error(e: typedb_driver::Error) -> GelError {
     match &e {
         typedb_driver::Error::Connection(_) => GelError::Client(e.to_string()),
@@ -63,8 +65,7 @@ pub(crate) fn now_millis() -> i64 {
     i64::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
+            .map_or(0, |d| d.as_millis()),
     )
     .unwrap_or(i64::MAX)
 }
@@ -191,10 +192,7 @@ pub(crate) async fn read_rows(
 }
 
 /// Required string column.
-pub(crate) fn col_string(
-    row: &BTreeMap<String, Value>,
-    col: &str,
-) -> Result<String, GelError> {
+pub(crate) fn col_string(row: &BTreeMap<String, Value>, col: &str) -> Result<String, GelError> {
     row.get(col)
         .and_then(Value::get_string)
         .map(str::to_owned)

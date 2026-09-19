@@ -1,14 +1,14 @@
-//! Centralized TypeQL literal encoding.
+//! Centralized `TypeQL` literal encoding.
 //!
 //! All query values flow through here; user-controlled text is never
-//! concatenated into TypeQL syntax elsewhere. Mirrors the discipline of the
+//! concatenated into `TypeQL` syntax elsewhere. Mirrors the discipline of the
 //! `edgeql` constants in `chaosbox-gel`: queries are fixed strings, values
 //! are encoded by these functions (the driver has no bound-parameter API
 //! for inline literals, so encoding correctness is load-bearing).
 
 use thiserror::Error;
 
-/// Literal encoding failures: non-finite doubles have no TypeQL form.
+/// Literal encoding failures: non-finite doubles have no `TypeQL` form.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum EncodeError {
     /// NaN or infinite double.
@@ -16,7 +16,7 @@ pub enum EncodeError {
     NonFiniteDouble,
 }
 
-/// Encode a string as a TypeQL double-quoted literal.
+/// Encode a string as a `TypeQL` double-quoted literal.
 ///
 /// Escapes `"`, `\` and C0 controls (`\n`, `\r`, `\t` short forms,
 /// remaining controls as `\u00XX`). Printable Unicode passes through
@@ -33,7 +33,15 @@ pub fn str_lit(s: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             c if (c as u32) < 0x20 => {
-                out.push_str(&format!("\\u{:04x}", c as u32));
+                // Fixed `\u00XX` escape without an intermediate allocation.
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                let n = c as u32;
+                out.push('\\');
+                out.push('u');
+                out.push(HEX[(n >> 12) as usize & 0xf] as char);
+                out.push(HEX[(n >> 8) as usize & 0xf] as char);
+                out.push(HEX[(n >> 4) as usize & 0xf] as char);
+                out.push(HEX[n as usize & 0xf] as char);
             }
             c => out.push(c),
         }
@@ -48,7 +56,7 @@ pub fn int_lit(v: i64) -> String {
     v.to_string()
 }
 
-/// Encode a double literal. Rejects NaN/infinite (no TypeQL form).
+/// Encode a double literal. Rejects NaN/infinite (no `TypeQL` form).
 /// Integral values render with `.0` so the server reads a double.
 pub fn double_lit(v: f64) -> Result<String, EncodeError> {
     if !v.is_finite() {
