@@ -61,17 +61,19 @@
           programs.rustfmt.edition = "2021";
           programs.taplo.enable = true;
     }).config.build;
-    # Cargo source plus the non-Cargo trees Rust embeds (dbschema via
-    # include_str!) or reads at test time (fixtures/). cleanCargoSource
-    # alone strips them and breaks nix builds while cargo works.
-    workspaceSrc = {pkgs, craneLib}:
-      pkgs.lib.cleanSourceWith {
-        src = ./.;
-        filter = path: type:
-          craneLib.filterCargoSources path type
-          || pkgs.lib.hasPrefix (toString ./dbschema + "/") (toString path)
-          || pkgs.lib.hasPrefix (toString ./fixtures + "/") (toString path);
-      };
+      # Cargo source plus the non-Cargo trees Rust embeds (dbschema via
+      # include_str!) or reads at test time (fixtures/). cleanCargoSource
+      # alone strips them and breaks nix builds while cargo works.
+      workspaceSrc =
+        { pkgs, craneLib }:
+        pkgs.lib.cleanSourceWith {
+          src = ./.;
+          filter =
+            path: type:
+            craneLib.filterCargoSources path type
+            || pkgs.lib.hasPrefix (toString ./dbschema + "/") (toString path)
+            || pkgs.lib.hasPrefix (toString ./fixtures + "/") (toString path);
+        };
   in
     {
       nixosModules.chaosbox = import ./nix/chaosbox.nix;
