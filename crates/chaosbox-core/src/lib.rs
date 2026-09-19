@@ -126,7 +126,7 @@ impl Entity {
                 repo,
                 snapshot,
                 file,
-                &format!("{:?}", kind),
+                &format!("{kind:?}"),
                 qualified_name,
                 &span.start_line.to_string(),
                 &span.start_col.to_string(),
@@ -216,7 +216,7 @@ impl Relation {
         scope: RelationScope,
         build: &str,
     ) -> Self {
-        let id = deterministic_id("rel", &[build, &format!("{:?}", rel_type), from, to]);
+        let id = deterministic_id("rel", &[build, &format!("{rel_type:?}"), from, to]);
         Self {
             id,
             rel_type,
