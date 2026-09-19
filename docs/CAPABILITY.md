@@ -1,4 +1,4 @@
-# Capability matrix (v0.3.0)
+# Capability matrix (v0.4.0)
 
 ## Implemented in native Rust
 
@@ -22,6 +22,10 @@
   `GelQueries` (live `GelHandle` + in-memory fake + conformance suite proving
   parity); all reads scoped to the pinned build (leakage-tested), LIKE
   wildcards escaped
+- Decisions, evidence, and claims persist in-pipeline: `decide()` writes each
+  record as produced; `build_and_publish()` assembles one claim per
+  materialized relation (same-triple rejections as contradicting evidence);
+  relation filters validated loudly against the vocabulary
 - Durable worker leases: `WorkerTask` SDL + `m2` migration; claim/heartbeat/
   reclaim with injected clocks and generation guards; stale holders recognizable
 - Gel SDL + migration, first-class Relationship objects, typed EdgeQL ops with

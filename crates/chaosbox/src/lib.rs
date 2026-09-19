@@ -12,7 +12,7 @@ use chaosbox_core::{
     Relation, RelationScope, check_confidence, check_probability, deterministic_id,
 };
 use chaosbox_extract::{Extraction, Snapshot, build_candidates, extract_snapshot};
-use chaosbox_gel::{MemoryStore, Store};
+use chaosbox_gel::MemoryStore;
 use chaosbox_jev::{Answer, ChoiceAnswer, JevClient, NoulAnswer, Question, ScoreAnswer, SystemOneResponse};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -283,12 +283,16 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
     /// Preliminary outcome cutoffs come from `mat` so decision and
     /// publication share one threshold source; the materialization identity
     /// covers every threshold, keeping raw decisions reusable.
+    /// Every decision and its evidence is persisted to `store` as produced,
+    /// so a dead worker loses nothing already decided. Claims are assembled
+    /// later in [`Pipeline::build_and_publish`], where relation ids exist.
     pub async fn decide(
         candidates: &[Candidate],
         entities: &BTreeMap<String, Entity>,
         responder: &mut impl Responder,
         model_requested: &str,
         mat: &Materialization,
+        store: &mut S,
     ) -> Result<Vec<(Candidate, Decision, Evidence)>, PipelineError> {
         mat.validate()?;
         let mut out = Vec::new();
@@ -329,6 +333,8 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                         span: None,
                         source_file_version: from.file.clone(),
                     };
+                    store.put_decision(decision.clone()).map_err(|e| PipelineError::Store(e.to_string()))?;
+                    store.put_evidence(ev.clone()).map_err(|e| PipelineError::Store(e.to_string()))?;
                     out.push((cand.clone(), decision, ev));
                     continue;
                 }
@@ -409,6 +415,8 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                     span: Some(from.span.clone()),
                     source_file_version: from.file.clone(),
                 };
+                store.put_decision(decision.clone()).map_err(|e| PipelineError::Store(e.to_string()))?;
+                store.put_evidence(ev.clone()).map_err(|e| PipelineError::Store(e.to_string()))?;
                 out.push((cand.clone(), decision, ev));
             }
         }
@@ -434,6 +442,21 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
             build.add_node(e.clone()).map_err(|e| PipelineError::Validation(e.to_string()))?;
         }
         // Materialize accepted relations as first-class objects.
+        // Index rejected evidence by endpoint triple so materialized claims
+        // carry their same-batch contradicting evidence.
+        let mut contradictions: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
+        for (cand, dec, ev) in decided {
+            if dec.outcome == DecisionOutcome::Rejected {
+                contradictions
+                    .entry((
+                        cand.from_entity.clone(),
+                        cand.to_entity.clone(),
+                        format!("{:?}", cand.rel_type),
+                    ))
+                    .or_default()
+                    .push(ev.id.clone());
+            }
+        }
         for (cand, dec, ev) in decided {
             let accept = match &dec.outcome {
                 DecisionOutcome::Accepted => {
@@ -468,7 +491,23 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                     n += 1;
                 }
             }
-            build.add_edge(rel).map_err(|e| PipelineError::Validation(e.to_string()))?;
+            build.add_edge(rel.clone()).map_err(|e| PipelineError::Validation(e.to_string()))?;
+            // One claim per materialized relation: supporting evidence from
+            // the accepted decision, contradicting evidence from same-batch
+            // rejections over the identical triple (empty when none).
+            let triple = (
+                cand.from_entity.clone(),
+                cand.to_entity.clone(),
+                format!("{:?}", cand.rel_type),
+            );
+            let claim = Claim {
+                id: deterministic_id("claim", &[&rel.id]),
+                relation_id: rel.id.clone(),
+                supporting: vec![ev.id.clone()],
+                contradicting: contradictions.get(&triple).cloned().unwrap_or_default(),
+                accepted: true,
+            };
+            self.store.put_claim(claim).map_err(|e| PipelineError::Store(e.to_string()))?;
         }
         // Invariant: published edges refer to same-build members (enforced by add_edge).
         self.store.publish(build.clone(), expected_predecessor).map_err(|e| PipelineError::Store(e.to_string()))?;
@@ -627,19 +666,6 @@ impl LifecycleReport {
     }
 }
 
-/// Read-only readiness: no implicit init/migration/repair. Exit 0 only when ready.
-#[must_use]
-pub fn db_check_report(store: &MemoryStore, repo: &str) -> LifecycleReport {
-    match store.active(repo) {
-        Some(b) => LifecycleReport::check_ready(serde_json::json!({
-            "repo": repo, "active_build": b.id, "generation": b.generation,
-            "nodes": b.nodes.len(), "edges": b.edges.len(),
-            "schema_assets": "packaged",
-        })),
-        None => LifecycleReport::pending("db check", "no active build for repo"),
-    }
-}
-
 /// Claim evidence helper used by tests: removing one source keeps others.
 #[must_use]
 pub fn claim_survives_source_removal(claim: &Claim, removed_evidence: &str) -> bool {
@@ -673,6 +699,33 @@ pub fn all_relation_types() -> Vec<String> {
         .iter()
         .map(|s| (*s).to_owned())
         .collect()
+}
+
+/// Validate a relation-type filter against the vocabulary (case-insensitive),
+/// returning canonical names. Unknown names error loudly with the valid list
+/// instead of silently matching nothing (empty means "no relations").
+pub fn validate_rel_filter(
+    filter: Option<Vec<String>>,
+) -> Result<Option<Vec<String>>, PipelineError> {
+    match filter {
+        None => Ok(None),
+        Some(names) => {
+            let vocab = all_relation_types();
+            let mut out = Vec::with_capacity(names.len());
+            for n in names {
+                match vocab.iter().find(|v| v.eq_ignore_ascii_case(&n)) {
+                    Some(canonical) => out.push(canonical.clone()),
+                    None => {
+                        return Err(PipelineError::Consumer(format!(
+                            "unknown relation type {n:?}; valid: {}",
+                            vocab.join(", ")
+                        )));
+                    }
+                }
+            }
+            Ok(Some(out))
+        }
+    }
 }
 
 /// Hard cap for export projections; truncation is reported, never silent.
@@ -747,7 +800,7 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
         id: &str,
         filter: Option<Vec<String>>,
     ) -> Result<(Vec<chaosbox_gel::RelRow>, Vec<chaosbox_gel::RelRow>), PipelineError> {
-        let types = filter.unwrap_or_else(all_relation_types);
+        let types = validate_rel_filter(filter)?.unwrap_or_else(all_relation_types);
         let out = self
             .handle
             .neighbors_out(&self.build_id, id, types.clone())
@@ -1076,16 +1129,18 @@ mod tests {
     async fn below_floor_confidence_abstains() {
         let (cand, entities) = one_candidate();
         let mat = Materialization::default();
+        let mut store = MemoryStore::new();
         let mut low = ConfResponder { confidence: 0.1 };
         let decided =
-            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut low, "jev-1.13.0", &mat)
+            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut low, "jev-1.13.0", &mat, &mut store)
                 .await
                 .unwrap();
         assert_eq!(decided[0].1.outcome, DecisionOutcome::Abstained);
+        assert_eq!(store.stats().decisions, 1, "abstentions persist");
         // Above the accept floor the same answer is accepted.
         let mut high = ConfResponder { confidence: 0.95 };
         let decided =
-            Pipeline::<MemoryStore>::decide(&[cand], &entities, &mut high, "jev-1.13.0", &mat)
+            Pipeline::<MemoryStore>::decide(&[cand], &entities, &mut high, "jev-1.13.0", &mat, &mut store)
                 .await
                 .unwrap();
         assert_eq!(decided[0].1.outcome, DecisionOutcome::Accepted);
@@ -1095,15 +1150,28 @@ mod tests {
     async fn responder_faults_become_failed_decisions() {
         let (cand, entities) = one_candidate();
         let mat = Materialization::default();
+        let mut store = MemoryStore::new();
         let mut failing = FailResponder;
         let decided =
-            Pipeline::<MemoryStore>::decide(&[cand], &entities, &mut failing, "jev-1.13.0", &mat)
+            Pipeline::<MemoryStore>::decide(&[cand], &entities, &mut failing, "jev-1.13.0", &mat, &mut store)
                 .await
                 .unwrap();
         assert_eq!(decided.len(), 1, "batch continues past one fault");
         assert!(matches!(decided[0].1.outcome, DecisionOutcome::Failed(_)));
         // The fault text is never copied into evidence.
         assert!(!decided[0].2.text.contains("transport"));
+        assert_eq!(store.stats().decisions, 1, "failures persist for retry");
+    }
+
+    #[test]
+    fn rel_filter_validation_is_loud() {
+        assert_eq!(
+            validate_rel_filter(Some(vec!["Calls".into()])).unwrap(),
+            Some(vec!["calls".into()])
+        );
+        assert!(validate_rel_filter(None).unwrap().is_none());
+        let err = validate_rel_filter(Some(vec!["frobnicate".into()])).unwrap_err();
+        assert!(err.to_string().contains("valid:"), "{err}");
     }
 
     #[test]

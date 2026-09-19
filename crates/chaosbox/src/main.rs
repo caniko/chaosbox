@@ -235,11 +235,15 @@ async fn run_query(q: QueryCmd) -> i32 {
             }
         }
         QueryCmd::Neighbors { id, repo, rel } => {
+            // Validate the filter before touching Gel: typos must fail loudly.
+            let filter = match chaosbox::validate_rel_filter(rel.map(|r| vec![r])) {
+                Ok(f) => f,
+                Err(e) => return consumer_err("query neighbors", e),
+            };
             let reader = match GelReader::connect(&repo).await {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query neighbors", e),
             };
-            let filter = rel.map(|r| vec![r]);
             match reader.neighbors(&id, filter).await {
                 Ok((out, inc)) => {
                     println!("{}", serde_json::to_string(&serde_json::json!({
@@ -340,7 +344,7 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_je
             }
         };
         let mut responder = LiveResponder::new(client);
-        match Pipeline::<MemoryStore>::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat).await {
+        match Pipeline::<MemoryStore>::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat, &mut pipe.store).await {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("decide: {e}");
@@ -349,7 +353,7 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_je
         }
     } else {
         let mut responder = FixtureResponder::new(true);
-        match Pipeline::<MemoryStore>::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat).await {
+        match Pipeline::<MemoryStore>::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat, &mut pipe.store).await {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("decide: {e}");
@@ -535,7 +539,11 @@ async fn mcp_call_tool(
         }
         "neighbors" => {
             let eid = args["id"].as_str().unwrap_or_default();
-            let filter = args.get("rel").and_then(|r| r.as_str()).map(|r| vec![r.to_owned()]);
+            let raw = args.get("rel").and_then(|r| r.as_str()).map(|r| vec![r.to_owned()]);
+            let filter = match chaosbox::validate_rel_filter(raw) {
+                Ok(f) => f,
+                Err(e) => return mcp_error(id, -32602, e.to_string(), None),
+            };
             reader.neighbors(eid, filter).await
                 .map(|(out, inc)| serde_json::json!({"id": eid, "outgoing": out, "incoming": inc}))
                 .map_err(|e| e.to_string())

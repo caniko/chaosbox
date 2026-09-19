@@ -26,11 +26,13 @@ async fn vertical_slice_publish_query_incremental() {
     // 3. real Rust Jev adapter path against a local protocol fixture
     // (typed request/response validation, no creds, no network).
     // One threshold source for decisions and publication (see Materialization).
+    // Decisions persist into the pipeline store as produced.
     let mat = Materialization::default();
+    let mut pipe = Pipeline::<MemoryStore>::new();
     let entities: BTreeMap<_, _> = ext.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
     let mut responder = FixtureResponder::new(true);
     let decided =
-        Pipeline::<MemoryStore>::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat)
+        Pipeline::<MemoryStore>::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat, &mut pipe.store)
             .await
             .unwrap();
     assert_eq!(decided.len(), cands.len());
@@ -38,12 +40,15 @@ async fn vertical_slice_publish_query_incremental() {
         assert_eq!(d.model_requested, chaosbox_jev::JEV_MODEL_PINNED);
         assert_eq!(d.model_returned, chaosbox_jev::JEV_MODEL_PINNED);
     }
+    let stats = pipe.store.stats();
+    assert_eq!(stats.decisions, cands.len(), "every decision persisted");
+    assert_eq!(stats.evidence, cands.len(), "every evidence persisted");
 
-    // 4-5. persist decisions/evidence + publish validated build
-    let mut pipe = Pipeline::<MemoryStore>::new();
+    // 4-5. publish validated build; claims persist per materialized relation
     let build = pipe.build_and_publish("demo", &snap, &ext, &decided, &mat, None).unwrap();
     assert!(!build.nodes.is_empty());
     assert!(!build.edges.is_empty(), "fixture decisions should materialize edges");
+    assert_eq!(pipe.store.stats().claims, build.edges.len(), "one claim per edge");
 
     // 6. query through shared implementation (CLI/MCP use the same fns)
     let hits = search(&build, "hello", 10);
@@ -62,7 +67,7 @@ async fn vertical_slice_publish_query_incremental() {
     let entities2: BTreeMap<_, _> = ext2.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
     let mut responder2 = FixtureResponder::new(true);
     let decided2 =
-        Pipeline::<MemoryStore>::decide(&cands2, &entities2, &mut responder2, chaosbox_jev::JEV_MODEL_PINNED, &mat)
+        Pipeline::<MemoryStore>::decide(&cands2, &entities2, &mut responder2, chaosbox_jev::JEV_MODEL_PINNED, &mat, &mut pipe.store)
             .await
             .unwrap();
     let build2 = pipe

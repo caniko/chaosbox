@@ -1,29 +1,25 @@
-# Handoff (v0.3.0, 2026-09-18, atlas)
+# Handoff (v0.4.0, 2026-09-18, atlas)
 
 ## Commands + actual results (all executed this session)
 
-- `cargo test --workspace` — 45 passed, 0 failed; zero warnings
-  (core 8, extract 5, jev 12, gel 8 incl. conformance + lease + supersedure,
-  chaosbox lib 7 incl. fake-backed reader, vertical-slice 1, bin 4)
-- `nix-instantiate --parse flake.nix` — ok (no flake changes this round)
-- Previous MCP/CLI verifications (v0.2.0) unaffected: no protocol changes
+- `cargo test --workspace` — 46 passed, 0 failed; zero warnings
+- `cargo run -p chaosbox -- run fixtures/demo-repo --repo demo` — exit 0
+- `query neighbors xxx --rel Frobnicate` — exit 1, vocabulary error before
+  any Gel connection attempt
+- `nix-instantiate --parse flake.nix` — ok; `nix flake show` — evaluates
 
-## Changes since v0.2.0
+## Changes since v0.3.0 (Round 1: persistence inside decide)
 
-- Phase 0 seam: `GelQueries` trait (live `GelHandle` + `MemoryReader` fake +
-  `check_conformance` suite, also runnable against future live Gel),
-  `Pipeline<S: Store>` generic; canonical `relation_type_name` /
-  `evidence_class_name` helpers shared by fake and future inserts
-- Phase 2.1: every read scoped to the pinned build via membership-filtered
-  EdgeQL (`SEARCH/LOOKUP/NEIGHBORS/EVIDENCE` through `GraphMembership` /
-  `GraphEdgeMembership`); LIKE wildcards escaped reader-side; leakage tests
-  assert cross-build invisibility on both fake and reader layers
-- Phase 2.2: `Materialization.abstain_confidence` (in identity, `validate()`
-  enforces floor ordering, abstain-first precedence); per-candidate `Failed`
-  decisions with catch-and-continue (fault text never enters evidence);
-  `Failed`-once supersedure in `put_decision`, other outcomes immutable
-- Phase 2.3: `WorkerTask` SDL + `m2_worker_tasks` migration (schema v2);
-  lease claim/heartbeat/reclaim with injected clocks and generation guards
+- `decide()` takes `store: &mut S` and persists each decision + evidence as
+  produced (all outcomes incl. `Failed`/`Abstained`); 7 call sites updated
+- `build_and_publish()` assembles one `Claim` per materialized relation
+  (supporting evidence + same-triple same-batch rejections as contradicting),
+  persisted via `put_claim`; non-materialized outcomes stay decision-level only
+- `MemoryStore::stats()` for pipeline observability; vertical-slice test
+  asserts per-run store counts, claim-per-edge, and cross-rerun supersedure
+- Removed dead `db_check_report` (zero callers; `db_check_gel` is the path)
+- `validate_rel_filter` shared by CLI (pre-connect), MCP (`-32602`), and
+  `GelReader::neighbors` (defense in depth); case-insensitive, canonical output
 
 ## Dependency handoff revisions
 
@@ -35,7 +31,7 @@
 ## Remaining blockers (not copied, not faked)
 
 1. Disposable Gel instance + credentials/readiness flow (harbor-db branch).
-   Unblocks: write-path integration, decision cache, live conformance run.
+   Unblocks: Gel-backed `Store`, decision cache, live conformance run.
 2. simit named gates + ordered publication; nothing published, no tags pushed.
 3. Live Jev quality: `run --live-jev` ready, needs operator key file.
 4. Note: `00001.edgeql` is a module stub — full SDL↔migration reconciliation

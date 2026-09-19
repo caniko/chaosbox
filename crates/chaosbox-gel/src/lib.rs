@@ -343,6 +343,31 @@ impl MemoryStore {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Stored-record counts (decisions, evidence, claims, builds) for
+    /// pipeline tests and operator diagnostics.
+    #[must_use]
+    pub fn stats(&self) -> StoreStats {
+        StoreStats {
+            decisions: self.decisions.len(),
+            evidence: self.evidence.len(),
+            claims: self.claims.len(),
+            builds: self.builds.len(),
+        }
+    }
+}
+
+/// Stored-record counts; see [`MemoryStore::stats`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StoreStats {
+    /// Recorded decisions.
+    pub decisions: usize,
+    /// Recorded evidence rows.
+    pub evidence: usize,
+    /// Recorded claims.
+    pub claims: usize,
+    /// Published builds.
+    pub builds: usize,
 }
 
 impl Store for MemoryStore {
