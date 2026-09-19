@@ -216,7 +216,10 @@
             let
               flakeInputs = pkgs.lib.fileset.toSource {
                 root = ./.;
-                fileset = pkgs.lib.fileset.unions [ ./flake.nix ./flake.lock ];
+                fileset = pkgs.lib.fileset.unions [
+                  ./flake.nix
+                  ./flake.lock
+                ];
               };
               # Split across literals so this file never matches its own pattern.
               staleHosts = "cod" + "eberg|cod" + "efloe";

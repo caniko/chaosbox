@@ -9,7 +9,11 @@ homepage.workspace = true
 documentation.workspace = true
 description = "Typed Gel persistence/query operations and packaged schema assets for Chaosbox"
 readme = "../../README.md"
-include = ["/crates/chaosbox-gel/src/**/*.rs", "/dbschema/**/*", "/../../README.md"]
+include = [
+  "/crates/chaosbox-gel/src/**/*.rs",
+  "/dbschema/**/*",
+  "/../../README.md",
+]
 
 [dependencies]
 chaosbox-core = { workspace = true }
