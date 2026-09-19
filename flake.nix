@@ -173,7 +173,7 @@
           inherit pkgs cross;
           inherit (toolchain) craneLib;
         })
-        // {
+        // rec {
           default = harbor-rs.lib.mkDevShell {
             inherit pkgs cross;
             inherit (toolchain) craneLib;
@@ -183,6 +183,8 @@
             # (chaosbox/gel-cli-devshell). Expect 7.x; record exact on re-pin.
             packages = [ pkgs.gel ];
           };
+          # Simit-generated CI builds docs via `.#docs`; same shell.
+          docs = default;
         }
       );
 
