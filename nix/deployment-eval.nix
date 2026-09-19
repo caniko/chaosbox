@@ -11,7 +11,8 @@
   gelModule,
   chaosboxModule,
   chaosboxPackage,
-}: let
+}:
+let
   dummySecret = ../fixtures/eval-test-password;
   eval = import "${pkgs.path}/nixos/lib/eval-config.nix" {
     system = pkgs.system;
@@ -48,14 +49,27 @@
     }
     {
       name = "readiness-gates-migration";
-      assertion = schema.dependsOn == ["ready"];
+      assertion = schema.dependsOn == [ "ready" ];
       message = "schema migration must depend on the readiness probe";
     }
     {
       name = "contract-commands";
       assertion =
-        schema.runner.args == ["db" "migrate" "--json" "--repo" "demo"]
-        && schema.runner.checkArgs == ["db" "check" "--json" "--repo" "demo"]
+        schema.runner.args == [
+          "db"
+          "migrate"
+          "--json"
+          "--repo"
+          "demo"
+        ]
+        &&
+          schema.runner.checkArgs == [
+            "db"
+            "check"
+            "--json"
+            "--repo"
+            "demo"
+          ]
         && schema.runner.credentialEnvironment.CHAOSBOX_GEL_CREDENTIALS_FILE == "admin-creds";
       message = "schema runner must invoke the v1 contract commands with credential-file delivery";
     }
@@ -66,12 +80,13 @@
     }
     {
       name = "listener-loopback";
-      assertion = container.ports == ["127.0.0.1:56561:5656"];
+      assertion = container.ports == [ "127.0.0.1:56561:5656" ];
       message = "the Gel port must publish on loopback";
     }
     {
       name = "migration-unit-exists";
-      assertion = (eval.config.systemd.services ? "harbor-db-chaosbox") && migration.serviceConfig.Type == "oneshot";
+      assertion =
+        (eval.config.systemd.services ? "harbor-db-chaosbox") && migration.serviceConfig.Type == "oneshot";
       message = "the generated migration unit must exist";
     }
     {
@@ -84,9 +99,15 @@
   ];
   failed = builtins.filter (check: !check.assertion) checks;
 in
-  if failed == []
-  # A trivial derivation: the assertions above already threw at evaluation
-  # time on any mismatch, so reaching the builder means the composition
-  # renders. CI builds this as part of nix flake check.
-  then pkgs.runCommand "chaosbox-deployment-eval" {} ''echo "chaosbox deployment composition renders: ${toString (builtins.length checks)} checks" > $out''
-  else throw "chaosbox deployment eval failed: ${lib.concatStringsSep ", " (map (check: "${check.name}: ${check.message}") failed)}"
+if
+  failed == [ ]
+# A trivial derivation: the assertions above already threw at evaluation
+# time on any mismatch, so reaching the builder means the composition
+# renders. CI builds this as part of nix flake check.
+then
+  pkgs.runCommand "chaosbox-deployment-eval" { }
+    ''echo "chaosbox deployment composition renders: ${toString (builtins.length checks)} checks" > $out''
+else
+  throw "chaosbox deployment eval failed: ${
+    lib.concatStringsSep ", " (map (check: "${check.name}: ${check.message}") failed)
+  }"

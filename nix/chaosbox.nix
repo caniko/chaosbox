@@ -18,11 +18,18 @@
   lib,
   pkgs,
   ...
-}: let
-  inherit (lib) mkEnableOption mkIf mkOption types;
+}:
+let
+  inherit (lib)
+    mkEnableOption
+    mkIf
+    mkOption
+    types
+    ;
   cfg = config.services.chaosbox;
   gelUnit = config.services.harbor-db.gel.instances.chaosbox.systemdUnit;
-in {
+in
+{
   options.services.chaosbox = {
     enable = mkEnableOption "Chaosbox Gel-backed deployment via harbor-db";
 
@@ -77,7 +84,7 @@ in {
 
     runtimeUnits = mkOption {
       type = types.listOf types.str;
-      default = [];
+      default = [ ];
       description = "Runtime units gated behind a successful migration (e.g. workers/readers). Empty until Chaosbox ships them as units; runtime credentials must then be a separate least-privilege role, never the migration credential.";
     };
   };
@@ -127,7 +134,10 @@ in {
       # Generated units run with a minimal PATH; chaosbox shells out to
       # the gel CLI, so both must resolve here (plus an absolute fallback
       # via CHAOSBOX_GEL_BIN below).
-      path = [cfg.package cfg.gelPackage];
+      path = [
+        cfg.package
+        cfg.gelPackage
+      ];
       environment.CHAOSBOX_GEL_BIN = "${cfg.gelPackage}/bin/gel";
       operations.ready = {
         enable = true;
@@ -138,8 +148,8 @@ in {
           checkCommand = ''${config.services.harbor-db.gel.readyCheck}/bin/harbor-db-gel-ready --host 127.0.0.1 --port ${toString cfg.gelPort} --user admin --password-file "$READY_PW_FILE" --timeout 60s'';
           credentialEnvironment.READY_PW_FILE = "admin-pw";
         };
-        after = [gelUnit];
-        requires = [gelUnit];
+        after = [ gelUnit ];
+        requires = [ gelUnit ];
       };
       operations.schema = {
         enable = true;
@@ -148,16 +158,28 @@ in {
         runner = {
           package = cfg.package;
           executable = "bin/chaosbox";
-          args = ["db" "migrate" "--json" "--repo" cfg.repo];
-          checkArgs = ["db" "check" "--json" "--repo" cfg.repo];
+          args = [
+            "db"
+            "migrate"
+            "--json"
+            "--repo"
+            cfg.repo
+          ];
+          checkArgs = [
+            "db"
+            "check"
+            "--json"
+            "--repo"
+            cfg.repo
+          ];
           credentialEnvironment.CHAOSBOX_GEL_CREDENTIALS_FILE = "admin-creds";
         };
-        after = [gelUnit];
-        requires = [gelUnit];
-        dependsOn = ["ready"];
+        after = [ gelUnit ];
+        requires = [ gelUnit ];
+        dependsOn = [ "ready" ];
       };
       runtimeUnits = cfg.runtimeUnits;
-      serviceConfig.ReadWritePaths = [cfg.stateDir];
+      serviceConfig.ReadWritePaths = [ cfg.stateDir ];
     };
   };
 }
