@@ -21,13 +21,13 @@ use thiserror::Error;
 pub const SCHEMA_SDL: &str = include_str!("../../../dbschema/default.esdl");
 
 /// Committed migration asset.
-pub const MIGRATION_00001: &str = include_str!("../../../dbschema/migrations/00001.edgeql");
+pub const MIGRATION_00001: &str = include_str!("../../../dbschema/migrations/00001-m1t7ega.edgeql");
 
 /// Committed migration asset: worker-task leases.
-pub const MIGRATION_00002: &str = include_str!("../../../dbschema/migrations/00002.edgeql");
+pub const MIGRATION_00002: &str = include_str!("../../../dbschema/migrations/00002-m1qqqqq.edgeql");
 
 /// Committed migration asset: decision cache keys.
-pub const MIGRATION_00003: &str = include_str!("../../../dbschema/migrations/00003.edgeql");
+pub const MIGRATION_00003: &str = include_str!("../../../dbschema/migrations/00003-m3_deci.edgeql");
 
 /// Pinned Gel version this schema is tested against.
 pub const GEL_PINNED: &str = "7.2";
@@ -1637,6 +1637,26 @@ impl GelHandle {
             ok: true,
             detail: v.to_string(),
         })
+    }
+
+    /// Whether the application schema marker type exists. Used to tell
+    /// "migrations not applied yet" (pending) apart from genuine query
+    /// failures (error) without string-matching server errors: the system
+    /// catalog is always queryable, so a missing marker means the
+    /// committed migrations have not applied.
+    pub async fn schema_present(&self) -> Result<bool, GelError> {
+        let json = self
+            .client
+            .query_json(
+                "select exists (select schema::ObjectType filter .name = 'default::ActiveBuildPointer')",
+                &(),
+            )
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        // query_json decodes to an array even for singletons.
+        let rows: Vec<bool> =
+            serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(rows.into_iter().next().unwrap_or(false))
     }
 
     /// Typed entity lookup with a bound parameter.

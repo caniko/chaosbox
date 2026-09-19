@@ -250,7 +250,15 @@ async fn db_check_gel(repo: &str) -> LifecycleReport {
         return LifecycleReport::error("db check", &format!("gel probe: {e}"));
     }
     match Box::pin(handle.active_build(repo)).await {
-        Err(e) => LifecycleReport::error("db check", &format!("active build: {e}")),
+        Err(e) => match Box::pin(handle.schema_present()).await {
+            // No marker type: committed migrations have not applied yet.
+            // This is the normal pre-migration state, not a failure.
+            Ok(false) => LifecycleReport::pending("db check", "migrations not applied"),
+            Ok(true) => LifecycleReport::error("db check", &format!("active build: {e}")),
+            Err(probe) => {
+                LifecycleReport::error("db check", &format!("active build: {e}; schema probe: {probe}"))
+            }
+        },
         Ok(None) => LifecycleReport::pending("db check", "no active build for repo"),
         Ok(Some(b)) => LifecycleReport::check_ready(serde_json::json!({
             "repo": repo, "active_build": b.build_id, "generation": b.generation,
@@ -550,16 +558,12 @@ async fn run_migrate() -> Result<LifecycleReport, String> {
         .map_err(|_| "CHAOSBOX_GEL_CREDENTIALS_FILE unset".to_owned())?;
     // Pinned binary under Nix (`db-migrate` app); ambient `gel` only for
     // cargo-run development. Never log secret values; only reference the file.
-    // GEL_CREDENTIALS_FILE is a documented Gel connection parameter.
+    // GEL_CREDENTIALS_FILE is a documented Gel connection parameter. No
+    // --non-interactive flag: Gel CLI 7.x has none and applies without
+    // prompting when stdin is not a TTY.
     let gel_bin = std::env::var("CHAOSBOX_GEL_BIN").unwrap_or_else(|_| "gel".to_owned());
     let out = tokio::process::Command::new(gel_bin)
-        .args([
-            "--credentials-file",
-            &creds,
-            "migration",
-            "apply",
-            "--non-interactive",
-        ])
+        .args(["--credentials-file", &creds, "migration", "apply"])
         .env("GEL_CREDENTIALS_FILE", &creds)
         .output()
         .await
