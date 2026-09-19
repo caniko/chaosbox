@@ -1,11 +1,11 @@
-# Chaosbox deployment on harbor-db (Gel-backed).
+# Chaosbox deployment on harbor-db (TypeDB-backed).
 #
 # Composable NixOS module: the consuming configuration imports this module
-# together with harbor-db's own modules:
+# together with harbor-db's module and the TypeDB service module:
 #
 #   imports = [
 #     inputs.harbor-db.nixosModules.default
-#     inputs.harbor-db.nixosModules.gel
+#     inputs.nixpkgs-typedb-typedb-module  # file: nixos/modules/services/databases/typedb.nix
 #     inputs.chaosbox.nixosModules.chaosbox
 #   ];
 #
@@ -13,6 +13,10 @@
 # files. Runtime services are attached later via services.chaosbox.runtimeUnits;
 # until then the migration/check units are runnable on demand and the eval
 # check (nix/deployment-eval.nix) proves the wiring renders.
+#
+# Server liveness comes from systemd ordering on typedb.service (there is no
+# separate readiness probe unit): application readiness is the db check exit
+# contract (0 ready, 2 pending), and schema migration is idempotent.
 {
   config,
   lib,
@@ -27,23 +31,15 @@ let
     types
     ;
   cfg = config.services.chaosbox;
-  gelUnit = config.services.harbor-db.gel.instances.chaosbox.systemdUnit;
 in
 {
   options.services.chaosbox = {
-    enable = mkEnableOption "Chaosbox Gel-backed deployment via harbor-db";
+    enable = mkEnableOption "Chaosbox TypeDB-backed deployment via harbor-db";
 
     package = mkOption {
       type = types.nullOr types.package;
       default = null;
       description = "Chaosbox package providing bin/chaosbox (db check|migrate). Set from the consuming flake's packages.";
-    };
-
-    gelPackage = mkOption {
-      type = types.package;
-      default = pkgs.gel;
-      defaultText = lib.literalExpression "pkgs.gel";
-      description = "Gel CLI package (must stay major 7 with the pinned server).";
     };
 
     repo = mkOption {
@@ -52,16 +48,22 @@ in
       description = "Repository name passed as --repo to db check|migrate.";
     };
 
-    gelPort = mkOption {
-      type = types.port;
-      default = 56561;
-      description = "Host port for the Gel instance (loopback publish).";
+    serverAddress = mkOption {
+      type = types.str;
+      default = "127.0.0.1:1729";
+      description = "TypeDB driver address the CLI targets and the service listens on (loopback).";
     };
 
-    gelDataDir = mkOption {
-      type = types.path;
-      default = "/var/lib/harbor-db-gel/chaosbox";
-      description = "Persistent host directory for Gel instance data.";
+    database = mkOption {
+      type = types.str;
+      default = "chaosbox";
+      description = "TypeDB database holding the Chaosbox schema and rows.";
+    };
+
+    username = mkOption {
+      type = types.str;
+      default = "admin";
+      description = "Application username. Never the bootstrap admin in production; rotate the default credential first.";
     };
 
     stateDir = mkOption {
@@ -70,16 +72,10 @@ in
       description = "State directory for Chaosbox runtime (writable by its future services).";
     };
 
-    adminPasswordFile = mkOption {
+    passwordFile = mkOption {
       type = types.nullOr types.path;
       default = null;
-      description = "File holding the Gel admin password (server bootstrap + readiness probe). Provision via age/sops; never store a value here.";
-    };
-
-    adminCredsFile = mkOption {
-      type = types.nullOr types.path;
-      default = null;
-      description = "Gel credentials file for migration/check commands (CHAOSBOX_GEL_CREDENTIALS_FILE). Separate artifact from the password file.";
+      description = "File holding the TypeDB application password, delivered as CHAOSBOX_TYPEDB_PASSWORD_FILE. Provision via age/sops; never store a value here.";
     };
 
     runtimeUnits = mkOption {
@@ -96,30 +92,17 @@ in
         message = "services.chaosbox.package must be set when services.chaosbox.enable is true";
       }
       {
-        assertion = cfg.adminPasswordFile != null;
-        message = "services.chaosbox.adminPasswordFile is required; the server must start authenticated, never trust-auth";
-      }
-      {
-        assertion = cfg.adminCredsFile != null;
-        message = "services.chaosbox.adminCredsFile is required for migration/check commands";
+        assertion = cfg.passwordFile != null;
+        message = "services.chaosbox.passwordFile is required; it is delivered to migration/check commands, never embedded in the config";
       }
     ];
 
-    services.harbor-db.gel.instances.chaosbox = {
+    services.typedb = {
       enable = true;
-      port = cfg.gelPort;
-      bindAddress = "127.0.0.1";
-      dataDir = cfg.gelDataDir;
-      passwordFile = cfg.adminPasswordFile;
+      listenAddress = cfg.serverAddress;
     };
 
     services.harbor-db.dataDirectories = [
-      {
-        path = cfg.gelDataDir;
-        user = "root";
-        group = "root";
-        mode = "0700";
-      }
       {
         path = cfg.stateDir;
         user = "root";
@@ -130,31 +113,16 @@ in
 
     services.harbor-db.projects.chaosbox = {
       enable = true;
-      description = "Chaosbox Gel schema migration";
-      # Generated units run with a minimal PATH; chaosbox shells out to
-      # the gel CLI, so both must resolve here (plus an absolute fallback
-      # via CHAOSBOX_GEL_BIN below).
-      path = [
-        cfg.package
-        cfg.gelPackage
-      ];
-      environment.CHAOSBOX_GEL_BIN = "${cfg.gelPackage}/bin/gel";
-      operations.ready = {
-        enable = true;
-        backend = "gel";
-        credentials.admin-pw = cfg.adminPasswordFile;
-        runner = {
-          command = ''${config.services.harbor-db.gel.readyCheck}/bin/harbor-db-gel-ready --host 127.0.0.1 --port ${toString cfg.gelPort} --user admin --password-file "$READY_PW_FILE" --timeout 300s'';
-          checkCommand = ''${config.services.harbor-db.gel.readyCheck}/bin/harbor-db-gel-ready --host 127.0.0.1 --port ${toString cfg.gelPort} --user admin --password-file "$READY_PW_FILE" --timeout 60s'';
-          credentialEnvironment.READY_PW_FILE = "admin-pw";
-        };
-        after = [ gelUnit ];
-        requires = [ gelUnit ];
-      };
+      description = "Chaosbox TypeDB schema migration";
+      path = [ cfg.package ];
+      environment.CHAOSBOX_DB_BACKEND = "typedb";
+      environment.CHAOSBOX_TYPEDB_ADDR = cfg.serverAddress;
+      environment.CHAOSBOX_TYPEDB_USER = cfg.username;
+      environment.CHAOSBOX_TYPEDB_DATABASE = cfg.database;
       operations.schema = {
         enable = true;
-        backend = "gel";
-        credentials.admin-creds = cfg.adminCredsFile;
+        backend = "typedb";
+        credentials.typedb-password = cfg.passwordFile;
         runner = {
           package = cfg.package;
           executable = "bin/chaosbox";
@@ -172,11 +140,10 @@ in
             "--repo"
             cfg.repo
           ];
-          credentialEnvironment.CHAOSBOX_GEL_CREDENTIALS_FILE = "admin-creds";
+          credentialEnvironment.CHAOSBOX_TYPEDB_PASSWORD_FILE = "typedb-password";
         };
-        after = [ gelUnit ];
-        requires = [ gelUnit ];
-        dependsOn = [ "ready" ];
+        after = [ "typedb.service" ];
+        requires = [ "typedb.service" ];
       };
       runtimeUnits = cfg.runtimeUnits;
       serviceConfig.ReadWritePaths = [ cfg.stateDir ];
