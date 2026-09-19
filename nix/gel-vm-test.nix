@@ -109,11 +109,26 @@ pkgs.testers.nixosTest {
     )
     assert code == 0, f"migrate must succeed, got {code}: {out}"
 
-    # Ready after migration.
+    # Fresh database, no builds published yet: check is pending (not ready).
+    # Schema readiness (migrate exit 0) and application readiness (check
+    # exit 0 with an active build) are deliberately distinct gates.
     code, out = machine.execute(
         f"cd /tmp/cbtest && {ENV} chaosbox db check --json --repo test"
     )
-    assert code == 0, f"post-migration check must be ready(0), got {code}: {out}"
+    assert code == 2, f"post-migration check must be pending(2), got {code}: {out}"
+
+    # Seed a genesis build the way a pipeline would, then check is ready.
+    machine.succeed(
+        "gel --credentials-file /tmp/creds.json query "
+        "\"insert GraphBuild { build_id := 'genesis-test', repo := 'test', "
+        "generation := 1, status := 'ready' }; insert ActiveBuildPointer "
+        "{ repo := 'test', build := "
+        "(select GraphBuild filter .build_id = 'genesis-test') };\""
+    )
+    code, out = machine.execute(
+        f"cd /tmp/cbtest && {ENV} chaosbox db check --json --repo test"
+    )
+    assert code == 0, f"post-seed check must be ready(0), got {code}: {out}"
     assert '"status":"ready"' in out.replace(" ", ""), f"ready JSON expected: {out}"
 
     # Idempotent re-apply stays green.
