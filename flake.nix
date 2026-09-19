@@ -189,9 +189,14 @@
           default = harbor-rs.lib.mkDevShell {
             inherit pkgs cross;
             inherit (toolchain) craneLib;
-            # TypeDB server + Console for local lifecycle work (db migrate,
-            # live backend tests). Temporary packages substituted from the
-            # fleet cache; see the nixpkgs-typedb input.
+          };
+          # Live TypeDB work (db migrate, backend tests, test-typedb.sh):
+          # server + Console from the temporary packages. Opt-in so the
+          # default shell (and every CI gate using it) never builds them;
+          # binaries substitute from the fleet cache once review publishes.
+          typedb = harbor-rs.lib.mkDevShell {
+            inherit pkgs cross;
+            inherit (toolchain) craneLib;
             packages = [
               typedbPkgs.typedb
               typedbPkgs.typedb-console

@@ -15,7 +15,7 @@ cleanup() {
 trap cleanup EXIT
 
 if ! command -v typedb-server >/dev/null 2>&1 || ! command -v typedb-console >/dev/null 2>&1; then
-  echo "PENDING: no 'typedb-server'/'typedb-console' available; enter the dev shell (nix develop) which provides the temporary packages" >&2
+  echo "PENDING: no 'typedb-server'/'typedb-console' available; enter the live shell (nix develop .#typedb) which provides the temporary packages" >&2
   exit 3
 fi
 
