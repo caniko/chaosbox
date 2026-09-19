@@ -9,6 +9,8 @@
 
 pub mod encode;
 pub mod store;
+pub mod reader;
+mod common;
 
 /// Packaged TypeQL schema asset (also present as `schema.tql` in the crate
 /// package; Nix source filters must keep `*.tql`).

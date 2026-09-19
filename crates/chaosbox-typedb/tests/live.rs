@@ -11,7 +11,8 @@ use chaosbox_core::{
     Candidate, Claim, Decision, DecisionOutcome, Entity, EntityKind, Evidence, EvidenceClass,
     GraphBuild, Relation, RelationScope, RelationType, SourceSpan,
 };
-use chaosbox_gel::Store;
+use chaosbox_gel::{Store, check_conformance};
+use chaosbox_typedb::reader::TypeDbReader;
 use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
 
 fn addr() -> String {
@@ -227,4 +228,78 @@ async fn concurrent_publishers_from_same_generation_exactly_one_wins() {
             || err.to_string().contains("concurrent publisher"),
         "{err}"
     );
+}
+
+#[tokio::test]
+async fn reader_passes_reference_conformance_against_live_backend() {
+    let Some(mut s) = connected_store("t_conf").await else {
+        return;
+    };
+    use chaosbox_core::SnapshotFile;
+    // Seed the reference fixture through the write path: two builds of repo
+    // `conf`, the second active, sharing a symbol name across snapshots.
+    for snap in ["s1", "s2"] {
+        s.ensure_snapshot_files(
+            snap,
+            "conf",
+            &[SnapshotFile {
+                snapshot: snap.into(),
+                path: "f.rs".into(),
+                sha256: "ff".into(),
+                bytes: 8,
+            }],
+        )
+        .await
+        .unwrap();
+    }
+    let ent = |snap: &str, file: &str, name: &str| {
+        Entity::new(EntityKind::Symbol, "conf", snap, file, name, name, span(file))
+    };
+    let mut b1 = GraphBuild::new("conf", vec!["s1".into()], 1);
+    let a1 = ent("s1", "f.rs", "Alpha");
+    let b1e = ent("s1", "f.rs", "Beta");
+    b1.add_node(a1.clone()).unwrap();
+    b1.add_node(b1e.clone()).unwrap();
+    let r1 = Relation::new(RelationType::Calls, &a1.id, &b1e.id, RelationScope::File, &b1.id);
+    b1.add_edge(r1.clone()).unwrap();
+    let mut b2 = GraphBuild::new("conf", vec!["s2".into()], 2);
+    b2.predecessor = Some(b1.id.clone());
+    let a2 = ent("s2", "f.rs", "Alpha");
+    let c2 = ent("s2", "g.rs", "Gamma");
+    b2.add_node(a2.clone()).unwrap();
+    b2.add_node(c2.clone()).unwrap();
+    b2.add_edge(Relation::new(
+        RelationType::References,
+        &a2.id,
+        &c2.id,
+        RelationScope::CrossFile,
+        &b2.id,
+    ))
+    .unwrap();
+    s.put_evidence(Evidence {
+        id: "ev1".into(),
+        class: EvidenceClass::Extracted,
+        supports: true,
+        text: "[structural] Alpha -> Beta".into(),
+        span: None,
+        snapshot: "s1".into(),
+        source_file_version: "f.rs".into(),
+    })
+    .await
+    .unwrap();
+    s.put_claim(Claim {
+        id: "claim:conf1".into(),
+        relation_id: r1.id.clone(),
+        supporting: vec!["ev1".into()],
+        contradicting: vec![],
+        accepted: true,
+    })
+    .await
+    .unwrap();
+    s.publish(b1.clone(), None).await.unwrap();
+    s.publish(b2.clone(), Some(b1.id.clone())).await.unwrap();
+
+    let mut reader = TypeDbReader::new(config("t_conf"));
+    reader.connect().await.unwrap();
+    check_conformance(&reader, &a1.id, &b1e.id, &r1.id, &a2.id, &(b1.id, b2.id)).await;
 }

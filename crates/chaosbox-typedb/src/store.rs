@@ -19,12 +19,11 @@
 //!   never becomes visible because every consumer read pins the active
 //!   build through the pointer.
 
-use std::collections::BTreeMap;
 use std::time::Duration;
 
 use chaosbox_core::{
     Candidate, Claim, Decision, DecisionOutcome, Entity, Evidence, EvidenceClass, GraphBuild,
-    Relation, SnapshotFile, deterministic_id, evidence_class_name, relation_type_name,
+    Relation, SnapshotFile, evidence_class_name, relation_type_name,
 };
 use chaosbox_gel::{GelError, MemoryStore, Store, StoreStats};
 use futures::TryStreamExt;
@@ -32,121 +31,18 @@ use typedb_driver::{
     Address, Addresses, Credentials, DriverOptions, DriverTlsConfig, TransactionOptions,
     TransactionType, TypeDBDriver,
     answer::{ConceptRow, QueryAnswer},
-    concept::{Concept, Value},
 };
 
+use crate::common::{
+    FLUSH_RETRIES, WRITE_TIMEOUT, col_double_opt, col_int, col_string, decision_key,
+    driver_error, drain, edge_membership_id, file_version_id, fold, is_conflict,
+    is_unique_violation, link_id, membership_id, now_millis, read_rows, span_id_of,
+};
+/// Connection config re-exported for backend constructors.
+pub use crate::common::TypeDbConfig;
 use crate::encode::{bool_lit, double_lit, int_lit, str_lit};
 
-/// Connection and database selection for one [`TypeDbStore`].
-#[derive(Clone, Debug)]
-pub struct TypeDbConfig {
-    /// Server address, e.g. `127.0.0.1:1729`.
-    pub address: String,
-    /// Application username (never the bootstrap admin in production).
-    pub username: String,
-    /// Application password (delivered via credential file upstream).
-    pub password: String,
-    /// TypeDB database name holding the Chaosbox schema and rows.
-    pub database: String,
-}
-
-/// Bounded transaction lifetimes: staging writes are small, the pointer
-/// swing must not hang a publisher forever.
-const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
-/// Reads are bounded so a wedged server fails a consumer request instead of
-/// hanging it; callers apply their own tighter deadlines on top.
-const READ_TIMEOUT: Duration = Duration::from_secs(60);
-/// Transient (connection-level) flush retries; conflicts are never retried
-/// blindly because a retry could mask a lost publication race.
-const FLUSH_RETRIES: usize = 3;
-
-/// True for the `@unique` violation a duplicate `@key` insert raises.
-/// Proven shape: code `CNT9`.
-fn is_unique_violation(e: &typedb_driver::Error) -> bool {
-    e.code() == "CNT9"
-}
-
-/// True for a commit-time isolation conflict between concurrent writers.
-/// Proven shape: code `STC2`.
-fn is_conflict(e: &typedb_driver::Error) -> bool {
-    e.code() == "STC2"
-}
-
-/// Classify a driver failure for the [`Store`] surface.
-fn driver_error(e: typedb_driver::Error) -> GelError {
-    match &e {
-        typedb_driver::Error::Connection(_) => GelError::Client(e.to_string()),
-        _ => GelError::Query(format!("[{}] {e}", e.code())),
-    }
-}
-
-/// Current time as integer epoch millis for `created`/`updated` attributes.
-fn now_millis() -> i64 {
-    i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-    )
-    .unwrap_or(i64::MAX)
-}
-
-/// Deterministic key for a file version: replaces Gel's exclusive
-/// `(snapshot, path)` constraint with a content-derived `@key`.
-fn file_version_id(snapshot: &str, path: &str) -> String {
-    deterministic_id("fv", &[snapshot, path])
-}
-
-/// Deterministic key for a span row.
-fn span_id_of(
-    file: &str,
-    start_line: u32,
-    start_col: u32,
-    end_line: u32,
-    end_col: u32,
-    byte_start: u32,
-    byte_end: u32,
-) -> String {
-    deterministic_id(
-        "sp",
-        &[
-            file,
-            &start_line.to_string(),
-            &start_col.to_string(),
-            &end_line.to_string(),
-            &end_col.to_string(),
-            &byte_start.to_string(),
-            &byte_end.to_string(),
-        ],
-    )
-}
-
-/// Deterministic key for a decision: `(candidate, question)` replaces Gel's
-/// exclusive constraint of the same shape.
-fn decision_key(candidate_id: &str, question_id: &str) -> String {
-    deterministic_id("decq", &[candidate_id, question_id])
-}
-
-/// Deterministic key for a node-membership relation row.
-fn membership_id(build_id: &str, entity_id: &str) -> String {
-    deterministic_id("nm", &[build_id, entity_id])
-}
-
-/// Deterministic key for an edge-membership relation row.
-fn edge_membership_id(build_id: &str, rel_id: &str) -> String {
-    deterministic_id("em", &[build_id, rel_id])
-}
-
-/// Deterministic key for a claim-evidence link row.
-fn link_id(prefix: &str, claim_id: &str, evidence_id: &str) -> String {
-    deterministic_id(prefix, &[claim_id, evidence_id])
-}
-
-/// Case folding for the `name-fold` search columns (mirrors the Gel `ilike`
-/// semantics the reader preserves; ASCII-tested, Unicode `to_lowercase`).
-fn fold(s: &str) -> String {
-    s.to_lowercase()
-}
+// TypeDbConfig and shared driver plumbing live in [`crate::common`].
 
 /// TypeDB-backed [`Store`]: staging validation in memory, durable rows in
 /// TypeDB, publication through the active-build pointer.
@@ -255,66 +151,6 @@ impl TypeDbStore {
                 Err(e) => return Err(driver_error(e)),
             }
         }
-    }
-
-    /// Collect a read query into owned column values. Missing optional
-    /// columns (bound through `try {}`) surface as absent keys.
-    async fn read_rows(
-        &self,
-        query: &str,
-        columns: &[&str],
-    ) -> Result<Vec<BTreeMap<String, Value>>, GelError> {
-        let driver = self
-            .driver
-            .as_ref()
-            .ok_or_else(|| GelError::Client("TypeDbStore disconnected".into()))?;
-        let tx = driver
-            .transaction_with_options(
-                &self.config.database,
-                TransactionType::Read,
-                TransactionOptions::new().transaction_timeout(READ_TIMEOUT),
-            )
-            .await
-            .map_err(driver_error)?;
-        let answer = tx.query(query).await.map_err(driver_error)?;
-        let rows: Vec<ConceptRow> = match answer {
-            QueryAnswer::ConceptRowStream(_, stream) => {
-                stream.try_collect().await.map_err(driver_error)?
-            }
-            other => {
-                return Err(GelError::Query(format!("expected rows, got {other:?}")));
-            }
-        };
-        let mut out = Vec::with_capacity(rows.len());
-        for row in &rows {
-            let mut map = BTreeMap::new();
-            for col in columns {
-                match row.get(col).map_err(driver_error)? {
-                    None => {}
-                    Some(Concept::Attribute(attr)) => {
-                        map.insert((*col).to_owned(), attr.value.clone());
-                    }
-                    Some(other) => {
-                        return Err(GelError::Query(format!(
-                            "column {col} is not an attribute: {other:?}"
-                        )));
-                    }
-                }
-            }
-            out.push(map);
-        }
-        Ok(out)
-    }
-
-    /// Required string column.
-    fn col_string(
-        row: &BTreeMap<String, Value>,
-        col: &str,
-    ) -> Result<String, GelError> {
-        row.get(col)
-            .and_then(Value::get_string)
-            .map(str::to_owned)
-            .ok_or_else(|| GelError::Query(format!("missing string column {col}")))
     }
 
     /// Insert the repository row (idempotent).
@@ -571,29 +407,37 @@ impl TypeDbStore {
             "match $d isa decision, has decision-key {}, has decision-id $id, has candidate-id $c, has question-id $q, has outcome $o, has evidence-class $e, has model-requested $mr, has model-returned $mrr, has cache-key $k; try {{ $d has confidence $cf; }}; try {{ $d has probability $p; }}; select $id, $c, $q, $o, $e, $mr, $mrr, $k, $cf, $p;",
             str_lit(key)
         );
-        let rows = self
-            .read_rows(&q, &["id", "c", "q", "o", "e", "mr", "mrr", "k", "cf", "p"])
-            .await?;
+        let driver = self
+            .driver
+            .as_ref()
+            .ok_or_else(|| GelError::Client("TypeDbStore disconnected".into()))?;
+        let rows = read_rows(
+            driver,
+            &self.config.database,
+            &q,
+            &["id", "c", "q", "o", "e", "mr", "mrr", "k", "cf", "p"],
+        )
+        .await?;
         let Some(row) = rows.into_iter().next() else {
             return Ok(None);
         };
-        let outcome_str = Self::col_string(&row, "o")?;
+        let outcome_str = col_string(&row, "o")?;
         let outcome: DecisionOutcome = serde_json::from_str(&outcome_str)
             .map_err(|e| GelError::Query(format!("bad outcome json: {e}")))?;
-        let class_str = Self::col_string(&row, "e")?;
+        let class_str = col_string(&row, "e")?;
         let evidence_class: EvidenceClass = serde_json::from_str(&format!("\"{class_str}\""))
             .map_err(|e| GelError::Query(format!("bad evidence class: {e}")))?;
-        let cache_key = Self::col_string(&row, "k")?;
+        let cache_key = col_string(&row, "k")?;
         let d = Decision {
-            id: Self::col_string(&row, "id")?,
-            candidate_id: Self::col_string(&row, "c")?,
-            question_id: Self::col_string(&row, "q")?,
+            id: col_string(&row, "id")?,
+            candidate_id: col_string(&row, "c")?,
+            question_id: col_string(&row, "q")?,
             outcome,
             evidence_class,
-            model_requested: Self::col_string(&row, "mr")?,
-            model_returned: Self::col_string(&row, "mrr")?,
-            confidence: row.get("cf").and_then(Value::get_double),
-            probability: row.get("p").and_then(Value::get_double),
+            model_requested: col_string(&row, "mr")?,
+            model_returned: col_string(&row, "mrr")?,
+            confidence: col_double_opt(&row, "cf"),
+            probability: col_double_opt(&row, "p"),
             cache_key: cache_key.clone(),
         };
         Ok(Some((cache_key, outcome_str, d)))
@@ -727,15 +571,16 @@ impl TypeDbStore {
             "match $p isa active-pointer, has repo-name {}, has build-id $b; $g isa graph-build, has build-id $b, has generation $gen, has status $st; select $b, $gen, $st;",
             str_lit(repo)
         );
-        let rows = self.read_rows(&q, &["b", "gen", "st"]).await?;
+        let driver = self
+            .driver
+            .as_ref()
+            .ok_or_else(|| GelError::Client("TypeDbStore disconnected".into()))?;
+        let rows = read_rows(driver, &self.config.database, &q, &["b", "gen", "st"]).await?;
         let Some(row) = rows.into_iter().next() else {
             return Ok(None);
         };
-        let gen = row
-            .get("gen")
-            .and_then(Value::get_integer)
-            .ok_or_else(|| GelError::Query("pointer build lacks generation".into()))?;
-        Ok(Some((Self::col_string(&row, "b")?, gen, Self::col_string(&row, "st")?)))
+        let gen = col_int(&row, "gen")?;
+        Ok(Some((col_string(&row, "b")?, gen, col_string(&row, "st")?)))
     }
 
     /// Guarded pointer swing in ONE write transaction: re-validate the
@@ -838,24 +683,6 @@ impl TypeDbStore {
 /// A recorded `Failed` outcome is retryable even under the same cache key.
 fn is_failed_outcome(outcome_json: &str) -> bool {
     outcome_json.contains("\"failed\"") || outcome_json.contains("\"Failed\"")
-}
-
-/// Drain a write answer: rows and documents are collected and dropped so
-/// the commit sees a fully-consumed pipeline.
-async fn drain(answer: QueryAnswer) -> Result<(), typedb_driver::Error> {
-    match answer {
-        QueryAnswer::Ok(_) => Ok(()),
-        QueryAnswer::ConceptRowStream(_, stream) => {
-            let rows: Vec<ConceptRow> = stream.try_collect().await?;
-            let _ = rows.len();
-            Ok(())
-        }
-        QueryAnswer::ConceptDocumentStream(_, stream) => {
-            let docs: Vec<_> = stream.try_collect().await?;
-            let _ = docs.len();
-            Ok(())
-        }
-    }
 }
 
 impl Default for TypeDbStore {
