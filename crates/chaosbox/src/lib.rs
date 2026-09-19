@@ -133,9 +133,21 @@ pub fn questions_for(
                 candidate.rel_type
             ),
             criteria: BTreeMap::from([
-                ("accept".into(), Some(format!("Source shows {:?} from {} to {}", candidate.rel_type, from.qualified_name, to.qualified_name))),
-                ("reject".into(), Some("Source contradicts the proposed relation".into())),
-                ("none".into(), Some("No finding in source; abstain from the relation".into())),
+                (
+                    "accept".into(),
+                    Some(format!(
+                        "Source shows {:?} from {} to {}",
+                        candidate.rel_type, from.qualified_name, to.qualified_name
+                    )),
+                ),
+                (
+                    "reject".into(),
+                    Some("Source contradicts the proposed relation".into()),
+                ),
+                (
+                    "none".into(),
+                    Some("No finding in source; abstain from the relation".into()),
+                ),
             ]),
         },
     )])
