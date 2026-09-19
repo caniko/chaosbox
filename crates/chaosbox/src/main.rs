@@ -112,6 +112,7 @@ enum DbCmd {
         /// Emit the versioned JSON envelope (contract v1; always on).
         #[arg(long, default_value_t = true)]
         json: bool,
+        #[arg(long, default_value = "demo")] repo: String,
     },
 }
 
@@ -150,23 +151,30 @@ async fn main() {
         Command::Mcp => serve_mcp().await,
         Command::Db { op } => match op {
             DbCmd::Check { json: _, repo } => {
-                // Read-only: never init/migrate/repair. Exit 0 only when ready.
+                // Read-only: never init/migrate/repair. Exit 0 when ready,
+                // 2 when pending, 1 otherwise (harbor-db contract v1).
                 let report = db_check_gel(&repo).await;
                 println!("{}", serde_json::to_string(&report).unwrap());
                 if report.status == "ready" {
                     std::process::exit(0);
                 } else {
                     eprintln!("not ready: {}", report.status);
-                    std::process::exit(1);
+                    std::process::exit(if report.status == "pending" { 2 } else { 1 });
                 }
             }
-            DbCmd::Migrate { json: _ } => {
+            DbCmd::Migrate { json: _, repo } => {
                 // Idempotent committed migrations via pinned Gel CLI when a
                 // credentials file is present; refuse divergent history.
+                // Exit 0 only after post-apply readiness verification.
                 match run_migrate().await {
                     Ok(report) => {
-                        println!("{}", serde_json::to_string(&report).unwrap());
-                        std::process::exit(if report.status == "ready" { 0 } else { 1 });
+                        if report.status != "ready" {
+                            println!("{}", serde_json::to_string(&report).unwrap());
+                            std::process::exit(1);
+                        }
+                        let verified = db_check_gel(&repo).await;
+                        println!("{}", serde_json::to_string(&verified).unwrap());
+                        std::process::exit(if verified.status == "ready" { 0 } else { 1 });
                     }
                     Err(e) => {
                         let report = LifecycleReport::pending("db migrate", &e);
