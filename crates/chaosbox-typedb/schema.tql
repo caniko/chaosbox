@@ -11,6 +11,10 @@
 # - Composite Gel exclusivity (snapshot,path) / (candidate,question) is
 #   replaced by deterministic Rust-computed @key values (file-version-id,
 #   decision-key) using the same sha256_hex helper as the domain ids.
+# - Membership and claim-evidence relations carry deterministic @key ids
+#   (membership-id, supporting-id, ...) so every row insert is idempotent
+#   under retry and concurrent flush: a duplicate insert fails with the
+#   @unique violation the backend treats as already-present.
 # - Timestamps are integer epoch millis (no datetime literal pitfalls).
 # - Schema validation is not evidence: outcome/evidence-class strings are
 #   validated by the application; the schema only constrains shape.
@@ -32,7 +36,9 @@ define
   attribute byte-end value integer;
   attribute kind value string;
   attribute name value string;
+  attribute name-fold value string;
   attribute qualified-name value string;
+  attribute qualified-name-fold value string;
   attribute aliases value string;
   attribute entity-id value string;
   attribute span-id value string;
@@ -86,6 +92,10 @@ define
   attribute state value string;
   attribute holder value string;
   attribute expires-at value integer;
+  attribute membership-id value string;
+  attribute edge-membership-id value string;
+  attribute supporting-id value string;
+  attribute contradicting-id value string;
 
   # ---- entities ----
   entity repository owns repo-name @key;
@@ -119,7 +129,9 @@ define
     owns snapshot-id,
     owns file,
     owns name,
+    owns name-fold,
     owns qualified-name,
+    owns qualified-name-fold,
     owns aliases,
     owns span-id,
     plays relationship:from-entity,
@@ -241,11 +253,13 @@ define
 
   relation node-membership
     relates build,
-    relates member;
+    relates member,
+    owns membership-id @key;
 
   relation edge-membership
     relates build,
-    relates edge;
+    relates edge,
+    owns edge-membership-id @key;
 
   relation occurrence
     relates subject,
@@ -255,11 +269,13 @@ define
 
   relation supporting
     relates claim,
-    relates evidence;
+    relates evidence,
+    owns supporting-id @key;
 
   relation contradicting
     relates claim,
-    relates evidence;
+    relates evidence,
+    owns contradicting-id @key;
 
   relation community-membership
     relates community,

@@ -8,6 +8,7 @@
 //! application before insert.
 
 pub mod encode;
+pub mod store;
 
 /// Packaged TypeQL schema asset (also present as `schema.tql` in the crate
 /// package; Nix source filters must keep `*.tql`).
