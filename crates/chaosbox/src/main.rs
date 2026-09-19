@@ -544,7 +544,13 @@ async fn run_migrate() -> Result<LifecycleReport, String> {
     // GEL_CREDENTIALS_FILE is a documented Gel connection parameter.
     let gel_bin = std::env::var("CHAOSBOX_GEL_BIN").unwrap_or_else(|_| "gel".to_owned());
     let out = tokio::process::Command::new(gel_bin)
-        .args(["--credentials-file", &creds, "migration", "apply", "--non-interactive"])
+        .args([
+            "--credentials-file",
+            &creds,
+            "migration",
+            "apply",
+            "--non-interactive",
+        ])
         .env("GEL_CREDENTIALS_FILE", &creds)
         .output()
         .await
