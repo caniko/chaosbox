@@ -306,6 +306,7 @@ dependencies = [
  "chaosbox-extract",
  "chaosbox-gel",
  "chaosbox-jev",
+ "chaosbox-typedb",
  "clap",
  "serde",
  "serde_json",

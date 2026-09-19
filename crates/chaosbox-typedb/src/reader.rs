@@ -128,6 +128,43 @@ impl TypeDbReader {
             .ok_or_else(|| GelError::Client("TypeDbReader disconnected".into()))
     }
 
+    /// Schema presence probe: true when the Chaosbox schema is applied
+    /// (the marker query executes, rows or not), false when the schema
+    /// types are unknown (`INF2`: migrations have not applied). Connection
+    /// failures propagate as client errors.
+    pub async fn probe(&self) -> Result<bool, GelError> {
+        use typedb_driver::{TransactionOptions, TransactionType, answer::QueryAnswer};
+        use crate::common::READ_TIMEOUT;
+        let driver = self.driver()?;
+        let tx = driver
+            .transaction_with_options(
+                &self.config.database,
+                TransactionType::Read,
+                TransactionOptions::new().transaction_timeout(READ_TIMEOUT),
+            )
+            .await
+            .map_err(driver_error)?;
+        match tx
+            .query("match $x isa active-pointer; select $x; limit 1;")
+            .await
+        {
+            Ok(answer) => {
+                // Drain with the write helper's shape; rows are irrelevant.
+                match answer {
+                    QueryAnswer::ConceptRowStream(_, stream) => {
+                        use futures::TryStreamExt;
+                        let rows: Vec<_> = stream.try_collect().await.map_err(driver_error)?;
+                        let _ = rows.len();
+                        Ok(true)
+                    }
+                    _ => Ok(true),
+                }
+            }
+            Err(e) if e.code() == "INF2" => Ok(false),
+            Err(e) => Err(driver_error(e)),
+        }
+    }
+
     /// Member entities of one build, sorted by qualified name.
     async fn members(
         &self,

@@ -879,6 +879,39 @@ impl LifecycleReport {
             detail: serde_json::json!({"reason": reason}),
         }
     }
+
+    /// Shared builder for `TypeDB` (contract v2) reports: the v1 envelope
+    /// names the Gel pin, so `TypeDB` reports bump the contract and carry the
+    /// `TypeDB` pin instead. Shape is otherwise identical.
+    fn typedb_report(operation: &str, status: &str, detail: serde_json::Value) -> Self {
+        Self {
+            contract_version: 2,
+            backend: "typedb".into(),
+            operation: operation.into(),
+            status: status.into(),
+            schema_version: chaosbox_typedb::SCHEMA_VERSION,
+            gel_pinned: chaosbox_typedb::TYPEDB_PINNED.into(),
+            detail,
+        }
+    }
+
+    /// A ready `TypeDB` report: exit 0 after the caller prints it.
+    #[must_use]
+    pub fn check_ready_typedb(detail: serde_json::Value) -> Self {
+        Self::typedb_report("db check", "ready", detail)
+    }
+
+    /// A non-ready `TypeDB` report: the caller prints it and exits nonzero.
+    #[must_use]
+    pub fn pending_typedb(operation: &str, reason: &str) -> Self {
+        Self::typedb_report(operation, "pending", serde_json::json!({"reason": reason}))
+    }
+
+    /// A `TypeDB` operational-error report.
+    #[must_use]
+    pub fn error_typedb(operation: &str, reason: &str) -> Self {
+        Self::typedb_report(operation, "error", serde_json::json!({"reason": reason}))
+    }
 }
 
 /// Claim evidence helper used by tests: removing one source keeps others.

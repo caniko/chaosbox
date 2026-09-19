@@ -23,6 +23,7 @@ chaosbox-core = { workspace = true }
 chaosbox-extract = { workspace = true }
 chaosbox-jev = { workspace = true }
 chaosbox-gel = { workspace = true }
+chaosbox-typedb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
