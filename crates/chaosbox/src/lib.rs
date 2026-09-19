@@ -128,8 +128,12 @@ pub fn questions_for(
                  Answer only from the listed options. Option meanings: accept = evidence supports {:?}; \
                  reject = evidence contradicts; none = no finding (successful negative, do not retry). \
                  Entity descriptions are authoritative; the question id is arbitrary.",
-                from.qualified_name, from.kind, from.file,
-                to.qualified_name, to.kind, to.file,
+                from.qualified_name,
+                from.kind,
+                from.file,
+                to.qualified_name,
+                to.kind,
+                to.file,
                 candidate.rel_type
             ),
             criteria: BTreeMap::from([
