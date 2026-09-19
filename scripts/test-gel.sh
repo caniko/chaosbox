@@ -12,10 +12,19 @@ cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT
 
 if ! command -v gel >/dev/null 2>&1; then
-  echo "PENDING: no 'gel' CLI/server available; real Gel integration not exercisable here" >&2
+  echo "PENDING: no 'gel' CLI/server available; enter the dev shell (nix develop) which provides pinned pkgs.gel" >&2
   echo "pending: gel server unavailable (see docs/HANDOFF.md for the harbor-db dependency)" >&2
   exit 3
 fi
+
+# Shell-provided CLI must stay same-major with the pinned server (7.x);
+# record the exact string per the harbor-db re-pin procedure.
+GEL_VERSION="$(gel --version 2>&1 | head -n 1)"
+echo "== gel CLI: $GEL_VERSION =="
+case "$GEL_VERSION" in
+  *" 7."*) ;;
+  *) echo "incompatible gel CLI major (want 7.x): $GEL_VERSION" >&2; exit 1 ;;
+esac
 
 echo "== mock Jev HTTP service gate (no credentials, loopback only) =="
 cargo test -p chaosbox-jev http_tests --offline

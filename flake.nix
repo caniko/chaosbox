@@ -126,6 +126,11 @@
         default = harbor-rs.lib.mkDevShell {
           inherit pkgs cross;
           inherit (toolchain) craneLib;
+          # Gel CLI for local lifecycle work (db migrate, test-gel). Same
+          # source as harbor-db's cliPackage default (pkgs.gel); the
+          # harbor-db devshell also provides it upstream
+          # (chaosbox/gel-cli-devshell). Expect 7.x; record exact on re-pin.
+          packages = [ pkgs.gel ];
         };
       });
 

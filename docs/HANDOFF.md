@@ -1,4 +1,30 @@
-# Handoff (v0.7.0, 2026-09-19, atlas)
+# Handoff (live-proving round, 2026-09-19, atlas)
+
+## Landed since v0.7.0
+
+- P0 upstream: `harbor-db@chaosbox/gel-cli-devshell` (`e6fee81`) puts pinned
+  `pkgs.gel` in devShells (verified: evaluates, locked nixpkgs → gel 7.10.2).
+- P1 consume: chaosbox default devShell includes `pkgs.gel`; `test-gel.sh`
+  asserts same-major 7.x CLI from the shell (no more silent ambient PATH).
+- P2 code: `run` budget flags (`--max-requests/--max-input-tokens/
+  --max-retries`); live-credential preflight guard (exit 1 before any spend
+  when no key); `fixtures/smoke-tiny` (1 fn, few candidates) ready.
+- Credentials idiom: native Gel credentials JSON (`gel --credentials-file`
+  proven; `gel-dsn` resolves `GEL_CREDENTIALS_FILE` for the Rust client).
+  Operator secret lives at `age/secrets/users/can/typesafe.age` (never read
+  here); live smoke needs it exported in-session as `TYPESAFE_API_KEY` or a
+  runtime file via `CHAOSBOX_JEV_API_KEY_FILE`.
+- NOTE: `crates/chaosbox/src/main.rs` still carries the foreign DbCmd hunk
+  (exit-2-pending, --repo, post-migrate verify) + this round's Run-area
+  hunks (flags, guard); split carefully on adopt, do not blanket-commit.
+
+## Still blocked
+
+- Live-Jev smoke: key absent in this session (`test -n` both vars → unset).
+- Live Gel proof: no `nix build/run` in this session to realize `gel`;
+  needs a devshell session (podman present) to pull the pinned 7.1 image
+  and run the live.sh-pattern proof.
+- simit gates; communities decision; packaging.
 
 ## Commands + actual results (all executed this session)
 
