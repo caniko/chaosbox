@@ -253,6 +253,16 @@ pub fn evidence_class_name(c: EvidenceClass) -> String {
         .unwrap_or_else(|| format!("{c:?}"))
 }
 
+/// Canonical storage name for an entity kind (serde snake_case).
+/// Both the in-memory projection and Gel inserts must use this.
+#[must_use]
+pub fn entity_kind_name(k: &EntityKind) -> String {
+    serde_json::to_value(k)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("{k:?}"))
+}
+
 /// One supporting or contradicting observation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Evidence {
@@ -266,8 +276,25 @@ pub struct Evidence {
     pub text: String,
     /// Source span the text was copied from, if any.
     pub span: Option<SourceSpan>,
+    /// Snapshot this observation belongs to (file-version linkage).
+    pub snapshot: String,
     /// Repository-relative path of the source file version.
     pub source_file_version: String,
+}
+
+/// Content identity of one source file version: what the Gel `FileVersion`
+/// link resolves from. Both backends key evidence files by
+/// (snapshot, path); hashes are never invented.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotFile {
+    /// Snapshot id.
+    pub snapshot: String,
+    /// Repository-relative path.
+    pub path: String,
+    /// SHA-256 hex of the file text.
+    pub sha256: String,
+    /// File size in bytes.
+    pub bytes: u64,
 }
 
 /// A claim assembled from evidence; negative evidence survives merges.
@@ -602,6 +629,8 @@ mod tests {
         assert_eq!(relation_type_name(&RelationType::Calls), "calls");
         assert_eq!(evidence_class_name(EvidenceClass::Extracted), "extracted");
         assert_eq!(evidence_class_name(EvidenceClass::Ambiguous), "ambiguous");
+        assert_eq!(entity_kind_name(&EntityKind::CodeMention), "code_mention");
+        assert_eq!(entity_kind_name(&EntityKind::Symbol), "symbol");
     }
 
     #[test]

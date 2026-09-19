@@ -1,4 +1,4 @@
-# Capability matrix (v0.4.0)
+# Capability matrix (v0.5.0)
 
 ## Implemented in native Rust
 
@@ -22,6 +22,13 @@
   `GelQueries` (live `GelHandle` + in-memory fake + conformance suite proving
   parity); all reads scoped to the pinned build (leakage-tested), LIKE
   wildcards escaped
+- Gel write path (graph half): `GelStore` stages in `MemoryStore` and flushes
+  snapshots, files, entities (+spans), relationships, memberships, builds at
+  publication with a generation-guarded pointer swing (concurrent publisher
+  wins; idempotent retry; last-good stays active on failure); `Store` is
+  async end-to-end; decision/evidence/claim row flushing waits for the
+  candidate chain (Round 3); full decision-chain EdgeQL consts reviewed
+  (12-param tuple ceiling forced span/evedence statement splits)
 - Decisions, evidence, and claims persist in-pipeline: `decide()` writes each
   record as produced; `build_and_publish()` assembles one claim per
   materialized relation (same-triple rejections as contradicting evidence);
@@ -54,6 +61,9 @@
 
 ## Not yet implemented (explicit)
 
+- Decision/evidence/claim row flushing + decision-cache reuse/invalidation
+  (needs run/set identity born in `run_pipeline`; consts reviewed, methods
+  land with the candidate chain)
 - Real Gel integration gate (needs disposable server; `test-gel` runs schema,
   mock-HTTP, and pipeline gates, exits 3 PENDING without a `gel` server);
   Gel write-path integration (`Pipeline` through a Gel-backed `Store`,

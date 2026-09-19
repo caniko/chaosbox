@@ -29,6 +29,7 @@ async fn vertical_slice_publish_query_incremental() {
     // Decisions persist into the pipeline store as produced.
     let mat = Materialization::default();
     let mut pipe = Pipeline::<MemoryStore>::new();
+    pipe.store.ensure_snapshot_files(&snap.id, "demo", &snap.snapshot_files()).await.unwrap();
     let entities: BTreeMap<_, _> = ext.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
     let mut responder = FixtureResponder::new(true);
     let decided =
@@ -45,7 +46,7 @@ async fn vertical_slice_publish_query_incremental() {
     assert_eq!(stats.evidence, cands.len(), "every evidence persisted");
 
     // 4-5. publish validated build; claims persist per materialized relation
-    let build = pipe.build_and_publish("demo", &snap, &ext, &decided, &mat, None).unwrap();
+    let build = pipe.build_and_publish("demo", &snap, &ext, &decided, &mat, None).await.unwrap();
     assert!(!build.nodes.is_empty());
     assert!(!build.edges.is_empty(), "fixture decisions should materialize edges");
     assert_eq!(pipe.store.stats().claims, build.edges.len(), "one claim per edge");
@@ -64,6 +65,7 @@ async fn vertical_slice_publish_query_incremental() {
     std::fs::write(tmp_root.join("notes.txt"), "changed notes about hello\n").unwrap();
     let (snap2, ext2, cands2) = Pipeline::<MemoryStore>::snapshot_extract("demo", tmp_root, 200).unwrap();
     assert_ne!(snap.id, snap2.id, "changed sources => new snapshot");
+    pipe.store.ensure_snapshot_files(&snap2.id, "demo", &snap2.snapshot_files()).await.unwrap();
     let entities2: BTreeMap<_, _> = ext2.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
     let mut responder2 = FixtureResponder::new(true);
     let decided2 =
@@ -72,6 +74,7 @@ async fn vertical_slice_publish_query_incremental() {
             .unwrap();
     let build2 = pipe
         .build_and_publish("demo", &snap2, &ext2, &decided2, &mat, Some(build.id.clone()))
+        .await
         .unwrap();
     assert_ne!(build.id, build2.id);
     assert_eq!(pipe.store.active("demo").unwrap().id, build2.id, "last good replaced atomically");

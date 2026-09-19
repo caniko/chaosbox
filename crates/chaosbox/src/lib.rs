@@ -331,10 +331,11 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                         supports: false,
                         text: "decision attempt failed; see attempt accounting".into(),
                         span: None,
+                        snapshot: from.snapshot.clone(),
                         source_file_version: from.file.clone(),
                     };
-                    store.put_decision(decision.clone()).map_err(|e| PipelineError::Store(e.to_string()))?;
-                    store.put_evidence(ev.clone()).map_err(|e| PipelineError::Store(e.to_string()))?;
+                    store.put_decision(decision.clone()).await.map_err(|e| PipelineError::Store(e.to_string()))?;
+                    store.put_evidence(ev.clone()).await.map_err(|e| PipelineError::Store(e.to_string()))?;
                     out.push((cand.clone(), decision, ev));
                     continue;
                 }
@@ -413,10 +414,11 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                     supports: outcome == DecisionOutcome::Accepted,
                     text,
                     span: Some(from.span.clone()),
+                    snapshot: from.snapshot.clone(),
                     source_file_version: from.file.clone(),
                 };
-                store.put_decision(decision.clone()).map_err(|e| PipelineError::Store(e.to_string()))?;
-                store.put_evidence(ev.clone()).map_err(|e| PipelineError::Store(e.to_string()))?;
+                store.put_decision(decision.clone()).await.map_err(|e| PipelineError::Store(e.to_string()))?;
+                store.put_evidence(ev.clone()).await.map_err(|e| PipelineError::Store(e.to_string()))?;
                 out.push((cand.clone(), decision, ev));
             }
         }
@@ -424,7 +426,8 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
     }
 
     /// Policy-controlled build + atomic publication with predecessor check.
-    pub fn build_and_publish(
+    /// Async because the Gel backend needs network IO for the flush.
+    pub async fn build_and_publish(
         &mut self,
         repo: &str,
         snapshot: &Snapshot,
@@ -507,10 +510,10 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                 contradicting: contradictions.get(&triple).cloned().unwrap_or_default(),
                 accepted: true,
             };
-            self.store.put_claim(claim).map_err(|e| PipelineError::Store(e.to_string()))?;
+            self.store.put_claim(claim).await.map_err(|e| PipelineError::Store(e.to_string()))?;
         }
         // Invariant: published edges refer to same-build members (enforced by add_edge).
-        self.store.publish(build.clone(), expected_predecessor).map_err(|e| PipelineError::Store(e.to_string()))?;
+        self.store.publish(build.clone(), expected_predecessor).await.map_err(|e| PipelineError::Store(e.to_string()))?;
         Ok(build)
     }
 }
@@ -991,6 +994,7 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
 mod tests {
     use super::*;
     use chaosbox_core::{SourceSpan, diff_builds};
+    use chaosbox_gel::Store as _;
 
     #[test]
     fn export_is_deterministic_and_compatible() {
@@ -1130,6 +1134,19 @@ mod tests {
         let (cand, entities) = one_candidate();
         let mat = Materialization::default();
         let mut store = MemoryStore::new();
+        store
+            .ensure_snapshot_files(
+                "s",
+                "r",
+                &[chaosbox_core::SnapshotFile {
+                    snapshot: "s".into(),
+                    path: "a.rs".into(),
+                    sha256: "abc".into(),
+                    bytes: 3,
+                }],
+            )
+            .await
+            .unwrap();
         let mut low = ConfResponder { confidence: 0.1 };
         let decided =
             Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut low, "jev-1.13.0", &mat, &mut store)
@@ -1151,6 +1168,19 @@ mod tests {
         let (cand, entities) = one_candidate();
         let mat = Materialization::default();
         let mut store = MemoryStore::new();
+        store
+            .ensure_snapshot_files(
+                "s",
+                "r",
+                &[chaosbox_core::SnapshotFile {
+                    snapshot: "s".into(),
+                    path: "a.rs".into(),
+                    sha256: "abc".into(),
+                    bytes: 3,
+                }],
+            )
+            .await
+            .unwrap();
         let mut failing = FailResponder;
         let decided =
             Pipeline::<MemoryStore>::decide(&[cand], &entities, &mut failing, "jev-1.13.0", &mat, &mut store)

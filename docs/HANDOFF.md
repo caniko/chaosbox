@@ -1,25 +1,32 @@
-# Handoff (v0.4.0, 2026-09-18, atlas)
+# Handoff (v0.5.0, 2026-09-19, atlas)
 
 ## Commands + actual results (all executed this session)
 
-- `cargo test --workspace` — 46 passed, 0 failed; zero warnings
+- `cargo test --workspace` — 44 passed, 0 failed; zero warnings
+  (3 store tests merged into 1 write-conformance test vs v0.4.0's 46)
 - `cargo run -p chaosbox -- run fixtures/demo-repo --repo demo` — exit 0
-- `query neighbors xxx --rel Frobnicate` — exit 1, vocabulary error before
-  any Gel connection attempt
-- `nix-instantiate --parse flake.nix` — ok; `nix flake show` — evaluates
+- `db check --json` without Gel — exit 1, contract-v1 error JSON
+- `nix-instantiate --parse flake.nix` — ok (no flake changes this round)
+- gel-protocol audit: positional arg tuples cap at 12 params; `Option<T>`
+  args supported; `uuid` passed as `<uuid><str>` cast (no new dep)
 
-## Changes since v0.3.0 (Round 1: persistence inside decide)
+## Changes since v0.4.0 (Round 2: Gel write path, graph half)
 
-- `decide()` takes `store: &mut S` and persists each decision + evidence as
-  produced (all outcomes incl. `Failed`/`Abstained`); 7 call sites updated
-- `build_and_publish()` assembles one `Claim` per materialized relation
-  (supporting evidence + same-triple same-batch rejections as contradicting),
-  persisted via `put_claim`; non-materialized outcomes stay decision-level only
-- `MemoryStore::stats()` for pipeline observability; vertical-slice test
-  asserts per-run store counts, claim-per-edge, and cross-rerun supersedure
-- Removed dead `db_check_report` (zero callers; `db_check_gel` is the path)
-- `validate_rel_filter` shared by CLI (pre-connect), MCP (`-32602`), and
-  `GelReader::neighbors` (defense in depth); case-insensitive, canonical output
+- `Store` is async end-to-end (`MemoryStore`, `decide`, `build_and_publish`,
+  all callers; gel store tests now `#[tokio::test]`)
+- `GelStore`: in-memory staging with identical semantics + flush at
+  publication (snapshots, files, entities+spans, relations, memberships,
+  build row) with a generation-guarded pointer swing; concurrent publisher
+  wins, retry idempotent, last-good stays active on failure
+- Fixed `UPSERT_ENTITY` (was missing the required span link — would have
+  failed on live Gel); split span insert (12-param ceiling); canonical
+  `entity_kind_name` shared by fake and inserts (fake previously used Debug)
+- Decision-chain EdgeQL consts reviewed (conditional Failed-supersedure
+  upsert, run/set/candidate/attempt/evidence/claim inserts); row-flush
+  methods deferred to Round 3 with the candidate chain (FK requires
+  run/set identity born in `run_pipeline`)
+- Shared write-conformance suite (`check_write_conformance`) over any
+  `Store`: linkage, idempotency, supersedure, publication guards
 
 ## Dependency handoff revisions
 
@@ -31,19 +38,19 @@
 ## Remaining blockers (not copied, not faked)
 
 1. Disposable Gel instance + credentials/readiness flow (harbor-db branch).
-   Unblocks: Gel-backed `Store`, decision cache, live conformance run.
+   Unblocks: live write/read conformance, decision cache proof.
 2. simit named gates + ordered publication; nothing published, no tags pushed.
 3. Live Jev quality: `run --live-jev` ready, needs operator key file.
 4. Note: `00001.edgeql` is a module stub — full SDL↔migration reconciliation
    happens on the first live `gel migration create`/apply cycle.
 
-## Exact next commands
+## Exact next commands (Round 3: decision cache)
 
 ```sh
 cd /data/nvme0/can/canix/projects/repos/owned/chaosbox
 git log --oneline -3
+# 1. run_pipeline mints run/set identity; ensure_run + put_candidate
+# 2. decision/evidence/claim flush methods; cache_key() lookup in decide()
+# 3. per-axis invalidation tests (catalog/model/rubric vs thresholds)
 nix run .#test-gel            # PENDING until the harbor-db branch lands
-simit init ci
-CHAOSBOX_JEV_API_KEY_FILE=/path/to/key cargo run -p chaosbox -- run fixtures/demo-repo --live-jev
-cargo package -p chaosbox-core
 ```

@@ -14,7 +14,7 @@ use chaosbox::{
 };
 use chaosbox::{FixtureResponder, LiveResponder};
 use chaosbox_extract::Snapshot;
-use chaosbox_gel::MemoryStore;
+use chaosbox_gel::{MemoryStore, Store as _};
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
@@ -334,6 +334,11 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_je
     let entities: BTreeMap<_, _> = ext.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
     let mat = Materialization::default();
     let mut pipe = Pipeline::<MemoryStore>::new();
+    // Register file content identities before any evidence references them.
+    if let Err(e) = pipe.store.ensure_snapshot_files(&snap.id, repo, &snap.snapshot_files()).await {
+        eprintln!("snapshot files: {e}");
+        return 1;
+    }
     let decided = if live_jev {
         let policy = chaosbox_jev::JevPolicy::default();
         let client = match chaosbox_jev::JevClient::new(policy) {
@@ -361,7 +366,7 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_je
             }
         }
     };
-    match pipe.build_and_publish(repo, &snap, &ext, &decided, &mat, None) {
+    match pipe.build_and_publish(repo, &snap, &ext, &decided, &mat, None).await {
         Ok(build) => {
             let v = chaosbox::export_json(&build);
             println!("{}", serde_json::to_string(&v).unwrap());

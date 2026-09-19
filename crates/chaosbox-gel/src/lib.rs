@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use chaosbox_core::{Claim, Decision, Entity, Evidence, GraphBuild, Relation};
+use chaosbox_core::{Claim, Decision, Entity, Evidence, GraphBuild, Relation, SnapshotFile};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -51,11 +51,35 @@ pub mod edgeql {
     pub const UPSERT_SNAPSHOT: &str =
         "select (insert SourceSnapshot { repo := <str>$0, snapshot_id := <str>$1 } \
          unless conflict on .snapshot_id else (update SourceSnapshot filter .snapshot_id = <str>$1 set { repo := <str>$0 })) { snapshot_id }";
-    /// Idempotent entity upsert (`$0` entity id .. `$6` qualified name).
+    /// Idempotent file-version upsert (`$0` snapshot id, `$1` path,
+    /// `$2` sha256, `$3` bytes).
+    pub const UPSERT_FILE_VERSION: &str =
+        "select (insert FileVersion { snapshot := (select SourceSnapshot filter .snapshot_id = <str>$0), \
+         path := <str>$1, sha256 := <str>$2, bytes := <int64>$3 } \
+         unless conflict on ((.snapshot, .path)) else (select FileVersion filter .snapshot.snapshot_id = <str>$0 and .path = <str>$1)) { path }";
+    /// Span insert (`$0` file, `$1..$6` lines/cols/bytes); returns the new id.
+    /// Separate statement because positional arg tuples cap at 12 params.
+    pub const INSERT_SPAN: &str =
+        "select (insert SourceSpan { file := <str>$0, start_line := <int64>$1, start_col := <int64>$2, \
+         end_line := <int64>$3, end_col := <int64>$4, byte_start := <int64>$5, byte_end := <int64>$6 }) { id }";
+    /// Idempotent entity upsert with an existing span (`$0` entity id,
+    /// `$1` kind canonical name, `$2` repo, `$3` snapshot, `$4` file,
+    /// `$5` name, `$6` qualified name, `$7` span id string).
     pub const UPSERT_ENTITY: &str =
         "select (insert Entity { entity_id := <str>$0, kind := <str>$1, repo := <str>$2, snapshot := <str>$3, \
-         file := <str>$4, name := <str>$5, qualified_name := <str>$6 } \
+         file := <str>$4, name := <str>$5, qualified_name := <str>$6, \
+         span := (select SourceSpan filter .id = <uuid><str>$7) } \
          unless conflict on .entity_id else (select Entity filter .entity_id = <str>$0)) { entity_id }";
+    /// Idempotent graph membership (`$0` build id, `$1` entity id).
+    pub const INSERT_MEMBERSHIP: &str =
+        "select (insert GraphMembership { build := (select GraphBuild filter .build_id = <str>$0), \
+         entity := (select Entity filter .entity_id = <str>$1) } \
+         unless conflict on ((.build, .entity)) else (select GraphMembership filter .build.build_id = <str>$0 and .entity.entity_id = <str>$1)) { build: { build_id } }";
+    /// Idempotent edge membership (`$0` build id, `$1` rel id).
+    pub const INSERT_EDGE_MEMBERSHIP: &str =
+        "select (insert GraphEdgeMembership { build := (select GraphBuild filter .build_id = <str>$0), \
+         relationship := (select Relationship filter .rel_id = <str>$1) } \
+         unless conflict on ((.build, .relationship)) else (select GraphEdgeMembership filter .build.build_id = <str>$0 and .relationship.rel_id = <str>$1)) { build: { build_id } }";
     /// Idempotent relationship upsert with typed endpoints (`$0` rel id .. `$4` scope).
     pub const UPSERT_RELATIONSHIP: &str =
         "select (insert Relationship { rel_id := <str>$0, rel_type := <str>$1, \
@@ -68,6 +92,73 @@ pub mod edgeql {
          question_id := <str>$2, outcome := <str>$3, evidence_class := <str>$4, \
          model_requested := <str>$5, model_returned := <str>$6 } \
          unless conflict on ((.candidate, .question_id)) else (select Decision filter .decision_id = <str>$0)) { decision_id }";
+    /// Conditional decision upsert with Failed-supersedure (`$0` decision id,
+    /// `$1` candidate id, `$2` question id, `$3` outcome, `$4` evidence class,
+    /// `$5` model requested, `$6` model returned, `$7` confidence or {},
+    /// `$8` probability or {}). Empty when a non-Failed row already stands.
+    /// Used by the Round 3 flush; [`GelStore`](super::GelStore) documents why
+    /// decision rows wait for the candidate chain.
+    pub const UPSERT_DECISION: &str =
+        "select (insert Decision { decision_id := <str>$0, candidate := (select Candidate filter .candidate_id = <str>$1), \
+         question_id := <str>$2, outcome := <str>$3, evidence_class := <str>$4, \
+         model_requested := <str>$5, model_returned := <str>$6, \
+         confidence := <optional float64>$7, probability := <optional float64>$8 } \
+         unless conflict on ((.candidate, .question_id)) \
+         else (update Decision filter .candidate.candidate_id = <str>$1 and .question_id = <str>$2 and .outcome = 'failed' \
+         set { decision_id := <str>$0, outcome := <str>$3, evidence_class := <str>$4, \
+         model_requested := <str>$5, model_returned := <str>$6, \
+         confidence := <optional float64>$7, probability := <optional float64>$8 })) { decision_id, outcome }";
+    /// Extraction-run insert (`$0` run id, `$1` repo, `$2` snapshot id).
+    pub const INSERT_EXTRACTION_RUN: &str =
+        "select (insert ExtractionRun { run_id := <str>$0, repo := <str>$1, \
+         snapshot := (select SourceSnapshot filter .snapshot_id = <str>$2) } \
+         unless conflict on .run_id else (select ExtractionRun filter .run_id = <str>$0)) { run_id }";
+    /// Candidate-set insert (`$0` set id, `$1` run id, `$2` catalog digest,
+    /// `$3` rubric version).
+    pub const INSERT_CANDIDATE_SET: &str =
+        "select (insert CandidateSet { set_id := <str>$0, run := (select ExtractionRun filter .run_id = <str>$1), \
+         catalog_digest := <str>$2, rubric_version := <str>$3 } \
+         unless conflict on .set_id else (select CandidateSet filter .set_id = <str>$0)) { set_id }";
+    /// Candidate insert (`$0` candidate id, `$1` set id, `$2` rel type,
+    /// `$3` from id, `$4` to id, `$5` reason, `$6` excerpt).
+    pub const INSERT_CANDIDATE: &str =
+        "select (insert Candidate { candidate_id := <str>$0, \
+         candidate_set := (select CandidateSet filter .set_id = <str>$1), rel_type := <str>$2, \
+         from_entity := (select Entity filter .entity_id = <str>$3), \
+         to_entity := (select Entity filter .entity_id = <str>$4), \
+         reason := <str>$5, state_excerpt := <str>$6 } \
+         unless conflict on .candidate_id else (select Candidate filter .candidate_id = <str>$0)) { candidate_id }";
+    /// Attempt insert (`$0` attempt id, `$1` candidate id, `$2` question id,
+    /// `$3` model requested, `$4` model returned, `$5` cache key,
+    /// `$6` input tokens or {}, `$7` http status or {}, `$8` error or {}).
+    pub const INSERT_ATTEMPT: &str =
+        "select (insert JevAttempt { attempt_id := <str>$0, \
+         candidate := (select Candidate filter .candidate_id = <str>$1), question_id := <str>$2, \
+         model_requested := <str>$3, model_returned := <str>$4, cache_key := <str>$5, \
+         input_tokens := <optional int64>$6, http_status := <optional int64>$7, error := <optional str>$8 } \
+         unless conflict on .attempt_id else (select JevAttempt filter .attempt_id = <str>$0)) { attempt_id }";
+    /// Evidence insert with span (`$0` evidence id, `$1` class, `$2` supports,
+    /// `$3` text, `$4` snapshot id, `$5` file path, `$6` span id string).
+    /// Span rows go through `INSERT_SPAN` first: positional arg tuples cap
+    /// at 12 params, so span-less evidence uses `INSERT_EVIDENCE_NOSPAN`.
+    pub const INSERT_EVIDENCE: &str =
+        "select (insert Evidence { evidence_id := <str>$0, class := <str>$1, supports := <bool>$2, text := <str>$3, \
+         source_file_version := (select FileVersion filter .snapshot.snapshot_id = <str>$4 and .path = <str>$5), \
+         span := (select SourceSpan filter .id = <uuid><str>$6) } \
+         unless conflict on .evidence_id else (select Evidence filter .evidence_id = <str>$0)) { evidence_id }";
+    /// Evidence insert without span (`$0..$5` as above, no span link).
+    pub const INSERT_EVIDENCE_NOSPAN: &str =
+        "select (insert Evidence { evidence_id := <str>$0, class := <str>$1, supports := <bool>$2, text := <str>$3, \
+         source_file_version := (select FileVersion filter .snapshot.snapshot_id = <str>$4 and .path = <str>$5) } \
+         unless conflict on .evidence_id else (select Evidence filter .evidence_id = <str>$0)) { evidence_id }";
+    /// Claim insert with evidence links (`$0` claim id, `$1` rel id,
+    /// `$2` accepted, `$3` supporting ids, `$4` contradicting ids).
+    pub const INSERT_CLAIM: &str =
+        "select (insert Claim { claim_id := <str>$0, \
+         relationship := (select Relationship filter .rel_id = <str>$1), accepted := <bool>$2, \
+         supporting := (select Evidence filter .evidence_id in array_unpack(<array<str>>$3)), \
+         contradicting := (select Evidence filter .evidence_id in array_unpack(<array<str>>$4)) } \
+         unless conflict on .claim_id else (select Claim filter .claim_id = <str>$0)) { claim_id }";
     /// Staging build insert (`$0` build id, `$1` repo, `$2` generation, `$3` status).
     pub const CREATE_BUILD: &str =
         "select (insert GraphBuild { build_id := <str>$0, repo := <str>$1, generation := <int64>$2, status := <str>$3 }) { build_id }";
@@ -75,6 +166,14 @@ pub mod edgeql {
     pub const SET_ACTIVE_BUILD: &str =
         "select (insert ActiveBuildPointer { repo := <str>$0, build := (select GraphBuild filter .build_id = <str>$1) } \
          unless conflict on .repo else (update ActiveBuildPointer filter .repo = <str>$0 set { build := (select GraphBuild filter .build_id = <str>$1) })) { repo }";
+    /// Guarded active-build swing: only when the generation still matches or
+    /// the build is already active (idempotent retry), so a concurrent
+    /// publisher wins instead of being overwritten (`$0` repo, `$1` build id,
+    /// `$2` predecessor generation). Empty when a concurrent build moved first.
+    pub const SET_ACTIVE_BUILD_IF_GEN: &str =
+        "select (update ActiveBuildPointer filter .repo = <str>$0 \
+         and (.build.generation = <int64>$2 or .build.build_id = <str>$1) \
+         set { build := (select GraphBuild filter .build_id = <str>$1) }) { repo }";
     /// Active build pointer read (`$0` repo).
     pub const ACTIVE_BUILD: &str =
         "select ActiveBuildPointer { repo, build: { build_id, generation, status } } filter .repo = <str>$0";
@@ -114,6 +213,13 @@ pub mod edgeql {
     pub const EVIDENCE_FOR_REL: &str =
         "select GraphEdgeMembership { ev := .relationship.evidence: { evidence_id, class, supports, text } } \
          filter .build.build_id = <str>$0 and .relationship.rel_id = <str>$1";
+}
+
+/// Span id row returned by the span insert.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SpanIdRow {
+    /// New span object id (uuid string).
+    pub id: String,
 }
 
 /// Typed row for entity lookup.
@@ -303,31 +409,51 @@ pub fn reclaim_task(
     }
 }
 
-/// Storage abstraction: real Gel via [`GelHandle`] or [`MemoryStore`] for
-/// tests and environments without a server.
+/// Storage abstraction: real Gel via [`GelStore`] (Gel-backed) or
+/// [`MemoryStore`] for tests and environments without a server.
+/// Mutating methods are async because the Gel backend needs network IO;
+/// file versions must be registered with [`Store::ensure_snapshot_files`]
+/// before evidence referencing them is stored; hashes are never invented.
+#[async_trait::async_trait]
 pub trait Store: Send + Sync {
+    /// Register one snapshot's file content identities (idempotent).
+    /// Must precede any [`Store::put_evidence`] for those files.
+    async fn ensure_snapshot_files(
+        &mut self,
+        snapshot_id: &str,
+        repo: &str,
+        files: &[SnapshotFile],
+    ) -> Result<(), GelError>;
     /// Stage an entity (idempotent); validated at publication.
-    fn put_entity(&mut self, e: Entity) -> Result<(), GelError>;
+    async fn put_entity(&mut self, e: Entity) -> Result<(), GelError>;
     /// Stage a relationship for one build (idempotent).
-    fn put_relation(&mut self, r: Relation, build_id: &str) -> Result<(), GelError>;
+    async fn put_relation(&mut self, r: Relation, build_id: &str) -> Result<(), GelError>;
     /// Record a decision (idempotent per candidate + question; first write
     /// wins, except a recorded `Failed` decision may be superseded once).
-    fn put_decision(&mut self, d: Decision) -> Result<(), GelError>;
-    /// Record evidence (idempotent per evidence id).
-    fn put_evidence(&mut self, e: Evidence) -> Result<(), GelError>;
+    async fn put_decision(&mut self, d: Decision) -> Result<(), GelError>;
+    /// Record evidence (idempotent per evidence id; the (snapshot, path)
+    /// file version must be registered first).
+    async fn put_evidence(&mut self, e: Evidence) -> Result<(), GelError>;
     /// Record a claim (idempotent per claim id).
-    fn put_claim(&mut self, c: Claim) -> Result<(), GelError>;
+    async fn put_claim(&mut self, c: Claim) -> Result<(), GelError>;
     /// Validate invariants and atomically swing the active-build pointer.
     /// Rejects stale predecessors and older-worker overwrites.
-    fn publish(&mut self, build: GraphBuild, expected_predecessor: Option<String>) -> Result<(), GelError>;
+    async fn publish(
+        &mut self,
+        build: GraphBuild,
+        expected_predecessor: Option<String>,
+    ) -> Result<(), GelError>;
     /// The active (last good) build for a repository, if any.
     fn active(&self, repo: &str) -> Option<GraphBuild>;
     /// A build by id, active or superseded.
     fn get(&self, build_id: &str) -> Option<GraphBuild>;
+    /// Stored-record counts for tests and operator diagnostics.
+    fn stats(&self) -> StoreStats;
 }
 
-/// In-memory store: same invariants as the Gel path (idempotent writes,
-/// predecessor-checked publication, immutable published builds via clone).
+/// In-memory store: same invariants as the Gel path (registered file
+/// versions, idempotent writes, predecessor-checked publication, immutable
+/// published builds via clone).
 #[derive(Default)]
 pub struct MemoryStore {
     builds: BTreeMap<String, GraphBuild>,
@@ -335,6 +461,8 @@ pub struct MemoryStore {
     decisions: BTreeMap<String, Decision>,
     evidence: BTreeMap<String, Evidence>,
     claims: BTreeMap<String, Claim>,
+    /// (snapshot, path) -> (sha256, bytes); evidence linkage validated here.
+    files: BTreeMap<(String, String), (String, u64)>,
 }
 
 impl MemoryStore {
@@ -370,14 +498,36 @@ pub struct StoreStats {
     pub builds: usize,
 }
 
+#[async_trait::async_trait]
 impl Store for MemoryStore {
-    fn put_entity(&mut self, _e: Entity) -> Result<(), GelError> {
-        Ok(()) // entities live inside builds; staging validated at publish
-    }
-    fn put_relation(&mut self, _r: Relation, _build: &str) -> Result<(), GelError> {
+    async fn ensure_snapshot_files(
+        &mut self,
+        snapshot_id: &str,
+        _repo: &str,
+        files: &[SnapshotFile],
+    ) -> Result<(), GelError> {
+        for f in files {
+            if f.snapshot != snapshot_id {
+                return Err(GelError::Invariant(format!(
+                    "file {} lists snapshot {}, registered under {}",
+                    f.path, f.snapshot, snapshot_id
+                )));
+            }
+            self.files.insert(
+                (snapshot_id.to_owned(), f.path.clone()),
+                (f.sha256.clone(), f.bytes),
+            );
+        }
         Ok(())
     }
-    fn put_decision(&mut self, d: Decision) -> Result<(), GelError> {
+
+    async fn put_entity(&mut self, _e: Entity) -> Result<(), GelError> {
+        Ok(()) // entities live inside builds; staging validated at publish
+    }
+    async fn put_relation(&mut self, _r: Relation, _build: &str) -> Result<(), GelError> {
+        Ok(())
+    }
+    async fn put_decision(&mut self, d: Decision) -> Result<(), GelError> {
         // Idempotent per (candidate, question): first write wins, except a
         // recorded Failed decision may be superseded by a later outcome.
         // Non-Failed outcomes are never overwritten.
@@ -393,15 +543,21 @@ impl Store for MemoryStore {
         }
         Ok(())
     }
-    fn put_evidence(&mut self, e: Evidence) -> Result<(), GelError> {
+    async fn put_evidence(&mut self, e: Evidence) -> Result<(), GelError> {
+        if !self.files.contains_key(&(e.snapshot.clone(), e.source_file_version.clone())) {
+            return Err(GelError::Invariant(format!(
+                "evidence {} references unregistered file {} in snapshot {}",
+                e.id, e.source_file_version, e.snapshot
+            )));
+        }
         self.evidence.entry(e.id.clone()).or_insert(e);
         Ok(())
     }
-    fn put_claim(&mut self, c: Claim) -> Result<(), GelError> {
+    async fn put_claim(&mut self, c: Claim) -> Result<(), GelError> {
         self.claims.entry(c.id.clone()).or_insert(c);
         Ok(())
     }
-    fn publish(&mut self, build: GraphBuild, expected_predecessor: Option<String>) -> Result<(), GelError> {
+    async fn publish(&mut self, build: GraphBuild, expected_predecessor: Option<String>) -> Result<(), GelError> {
         // Validate invariants before pointer swing.
         for r in build.edges.values() {
             if !build.nodes.contains_key(&r.from) || !build.nodes.contains_key(&r.to) {
@@ -431,6 +587,173 @@ impl Store for MemoryStore {
     }
     fn get(&self, build_id: &str) -> Option<GraphBuild> {
         self.builds.get(build_id).cloned()
+    }
+    fn stats(&self) -> StoreStats {
+        self.stats()
+    }
+}
+
+/// Gel-backed [`Store`]: all writes stage in an in-memory [`MemoryStore`]
+/// with identical semantics, then flush to Gel at publication. Staging is
+/// the write-ahead log: a failed or interrupted flush leaves the last good
+/// Gel build active because the pointer swing is always last and guarded.
+/// Decision/evidence/claim *rows* flush in Round 3 with the candidate chain;
+/// this round flushes snapshots, files, entities, relationships, memberships,
+/// builds, and the pointer.
+pub struct GelStore {
+    handle: Option<GelHandle>,
+    staging: MemoryStore,
+}
+
+impl GelStore {
+    /// A disconnected store; connects lazily on first flush.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { handle: None, staging: MemoryStore::default() }
+    }
+
+    /// The connected handle, connecting on first use. Returns an owned
+    /// clone so staged writes and the flush never alias borrows.
+    async fn connected(&mut self) -> Result<GelHandle, GelError> {
+        if self.handle.is_none() {
+            self.handle = Some(GelHandle::connect().await?);
+        }
+        Ok(self.handle.clone().expect("connected above"))
+    }
+
+    /// Flush one validated build's graph rows to Gel (idempotent upserts).
+    /// Snapshot/file rows first (evidence links need them), then entities,
+    /// relationships, memberships, and the build row itself.
+    async fn flush_build(&self, handle: &GelHandle, build: &GraphBuild) -> Result<(), GelError> {
+        for snapshot_id in &build.snapshot_ids {
+            handle.upsert_snapshot(&build.repo, snapshot_id).await?;
+        }
+        for ((snapshot_id, path), (sha, bytes)) in &self.staging.files {
+            if build.snapshot_ids.contains(snapshot_id) {
+                handle
+                    .ensure_snapshot_files(
+                        snapshot_id,
+                        &build.repo,
+                        &[SnapshotFile {
+                            snapshot: snapshot_id.clone(),
+                            path: path.clone(),
+                            sha256: sha.clone(),
+                            bytes: *bytes,
+                        }],
+                    )
+                    .await?;
+            }
+        }
+        let mut nodes: Vec<&Entity> = build.nodes.values().collect();
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        for e in nodes {
+            handle.put_entity_row(e).await?;
+            handle.insert_membership(&build.id, &e.id).await?;
+        }
+        let mut edges: Vec<&Relation> = build.edges.values().collect();
+        edges.sort_by(|a, b| a.id.cmp(&b.id));
+        for r in edges {
+            handle.put_relation_row(r).await?;
+            handle.insert_edge_membership(&build.id, &r.id).await?;
+        }
+        handle.create_build(&build.id, &build.repo, build.generation as i64, "staging").await?;
+        Ok(())
+    }
+}
+
+impl Default for GelStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl Store for GelStore {
+    async fn ensure_snapshot_files(
+        &mut self,
+        snapshot_id: &str,
+        repo: &str,
+        files: &[SnapshotFile],
+    ) -> Result<(), GelError> {
+        self.staging.ensure_snapshot_files(snapshot_id, repo, files).await
+    }
+
+    async fn put_entity(&mut self, e: Entity) -> Result<(), GelError> {
+        self.staging.put_entity(e).await
+    }
+
+    async fn put_relation(&mut self, r: Relation, build_id: &str) -> Result<(), GelError> {
+        self.staging.put_relation(r, build_id).await
+    }
+
+    async fn put_decision(&mut self, d: Decision) -> Result<(), GelError> {
+        self.staging.put_decision(d).await
+    }
+
+    async fn put_evidence(&mut self, e: Evidence) -> Result<(), GelError> {
+        self.staging.put_evidence(e).await
+    }
+
+    async fn put_claim(&mut self, c: Claim) -> Result<(), GelError> {
+        self.staging.put_claim(c).await
+    }
+
+    async fn publish(
+        &mut self,
+        build: GraphBuild,
+        expected_predecessor: Option<String>,
+    ) -> Result<(), GelError> {
+        // 1. Gel-side guard against the live pointer before writing anything.
+        let handle = self.connected().await?;
+        let live = handle.active_build(&build.repo).await?;
+        match (&live, &expected_predecessor) {
+            (None, None) => {}
+            (Some(a), _) if a.build_id == build.id => return Ok(()), // idempotent retry
+            (Some(a), Some(pred)) if *pred == a.build_id && build.generation as i64 > a.generation => {}
+            (Some(a), pred) => {
+                return Err(GelError::Invariant(format!(
+                    "predecessor mismatch: expected {:?}, Gel active is {} (gen {})",
+                    pred, a.build_id, a.generation
+                )));
+            }
+            (None, Some(pred)) => {
+                return Err(GelError::Invariant(format!(
+                    "expected predecessor {pred} but Gel has no active build"
+                )));
+            }
+        }
+        let pred_gen = live.map(|a| a.generation);
+        // 2. Local invariant validation (cross-build edges, generations).
+        self.staging.publish(build.clone(), expected_predecessor).await?;
+        // 3. Idempotent flush; safe to retry after a crash mid-flush.
+        self.flush_build(&handle, &build).await?;
+        // 4. Guarded swing last: a concurrent publisher wins instead of being
+        // overwritten, and the last good build stays active on any failure.
+        match pred_gen {
+            None => {
+                handle.swing(&build.repo, &build.id).await?;
+            }
+            Some(g) => {
+                if !handle.guarded_swing(&build.repo, &build.id, g).await? {
+                    return Err(GelError::Invariant(
+                        "concurrent publisher moved the pointer; build staged but not activated".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn active(&self, repo: &str) -> Option<GraphBuild> {
+        self.staging.active(repo)
+    }
+
+    fn get(&self, build_id: &str) -> Option<GraphBuild> {
+        self.staging.get(build_id)
+    }
+
+    fn stats(&self) -> StoreStats {
+        self.staging.stats()
     }
 }
 
@@ -488,13 +811,21 @@ pub trait GelQueries: Send + Sync {
 fn entity_row(e: &Entity) -> EntityRow {
     EntityRow {
         entity_id: e.id.clone(),
-        kind: format!("{:?}", e.kind),
+        kind: chaosbox_core::entity_kind_name(&e.kind),
         repo: e.repo.clone(),
         snapshot: e.snapshot.clone(),
         file: e.file.clone(),
         name: e.name.clone(),
         qualified_name: e.qualified_name.clone(),
     }
+}
+
+/// Canonical storage name for a relation scope (serde snake_case).
+fn scope_name(s: &chaosbox_core::RelationScope) -> String {
+    serde_json::to_value(s)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("{s:?}"))
 }
 
 /// Project one relationship into its row form (canonical storage names).
@@ -894,7 +1225,9 @@ pub async fn check_conformance<R: GelQueries>(
 ///
 /// Connection comes from the environment / instance config (never from
 /// caller-controlled session variables); credentials arrive via
-/// `CHAOSBOX_GEL_CREDENTIALS_FILE`.
+/// `CHAOSBOX_GEL_CREDENTIALS_FILE`. Cheap to clone (the client pools
+/// connections internally).
+#[derive(Clone, Debug)]
 pub struct GelHandle {
     client: gel_tokio::Client,
 }
@@ -946,6 +1279,162 @@ impl GelHandle {
     pub async fn upsert_snapshot(&self, repo: &str, snapshot_id: &str) -> Result<(), GelError> {
         self.client
             .query_json(edgeql::UPSERT_SNAPSHOT, &(repo, snapshot_id))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Register one snapshot's file content identities (idempotent).
+    /// Hashes always come from the snapshot; never invented.
+    pub async fn ensure_snapshot_files(
+        &self,
+        snapshot_id: &str,
+        repo: &str,
+        files: &[SnapshotFile],
+    ) -> Result<(), GelError> {
+        self.upsert_snapshot(repo, snapshot_id).await?;
+        for f in files {
+            if f.snapshot != snapshot_id {
+                return Err(GelError::Invariant(format!(
+                    "file {} lists snapshot {}, registered under {}",
+                    f.path, f.snapshot, snapshot_id
+                )));
+            }
+            self.client
+                .query_json(
+                    edgeql::UPSERT_FILE_VERSION,
+                    &(snapshot_id, f.path.as_str(), f.sha256.as_str(), f.bytes as i64),
+                )
+                .await
+                .map_err(|e| GelError::Query(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Idempotent entity upsert: span row first (7 params), then the
+    /// entity with the span id (8 params; arg tuples cap at 12).
+    pub async fn put_entity_row(&self, e: &Entity) -> Result<(), GelError> {
+        let kind = chaosbox_core::entity_kind_name(&e.kind);
+        let json = self
+            .client
+            .query_json(
+                edgeql::INSERT_SPAN,
+                &(
+                    e.span.file.as_str(),
+                    e.span.start_line as i64,
+                    e.span.start_col as i64,
+                    e.span.end_line as i64,
+                    e.span.end_col as i64,
+                    e.span.byte_start as i64,
+                    e.span.byte_end as i64,
+                ),
+            )
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        let rows: Vec<SpanIdRow> =
+            serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
+        let span_id = rows.into_iter().next().map(|r| r.id).ok_or_else(|| {
+            GelError::Query("span insert returned no id".into())
+        })?;
+        self.client
+            .query_json(
+                edgeql::UPSERT_ENTITY,
+                &(
+                    e.id.as_str(),
+                    kind,
+                    e.repo.as_str(),
+                    e.snapshot.as_str(),
+                    e.file.as_str(),
+                    e.name.as_str(),
+                    e.qualified_name.as_str(),
+                    span_id,
+                ),
+            )
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Idempotent relationship upsert with typed endpoints (canonical names).
+    /// Endpoint entities must already exist.
+    pub async fn put_relation_row(&self, r: &Relation) -> Result<(), GelError> {
+        let rel_type = chaosbox_core::relation_type_name(&r.rel_type);
+        let scope = scope_name(&r.scope);
+        self.client
+            .query_json(
+                edgeql::UPSERT_RELATIONSHIP,
+                &(
+                    r.id.as_str(),
+                    rel_type,
+                    r.from.as_str(),
+                    r.to.as_str(),
+                    scope,
+                ),
+            )
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Idempotent graph membership insert.
+    pub async fn insert_membership(&self, build_id: &str, entity_id: &str) -> Result<(), GelError> {
+        self.client
+            .query_json(edgeql::INSERT_MEMBERSHIP, &(build_id, entity_id))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Idempotent edge membership insert.
+    pub async fn insert_edge_membership(
+        &self,
+        build_id: &str,
+        rel_id: &str,
+    ) -> Result<(), GelError> {
+        self.client
+            .query_json(edgeql::INSERT_EDGE_MEMBERSHIP, &(build_id, rel_id))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Staging build insert.
+    pub async fn create_build(
+        &self,
+        build_id: &str,
+        repo: &str,
+        generation: i64,
+        status: &str,
+    ) -> Result<(), GelError> {
+        self.client
+            .query_json(edgeql::CREATE_BUILD, &(build_id, repo, generation, status))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Guarded pointer swing: returns true when swung, false when a
+    /// concurrent publisher moved the pointer first (caller must abort).
+    pub async fn guarded_swing(
+        &self,
+        repo: &str,
+        build_id: &str,
+        expected_gen: i64,
+    ) -> Result<bool, GelError> {
+        let json = self
+            .client
+            .query_json(edgeql::SET_ACTIVE_BUILD_IF_GEN, &(repo, build_id, expected_gen))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(!rows.is_empty())
+    }
+
+    /// Plain pointer swing for first publication (no predecessor to guard).
+    pub async fn swing(&self, repo: &str, build_id: &str) -> Result<(), GelError> {
+        self.client
+            .query_json(edgeql::SET_ACTIVE_BUILD, &(repo, build_id))
             .await
             .map_err(|e| GelError::Query(e.to_string()))?;
         Ok(())
@@ -1094,31 +1583,38 @@ mod tests {
         assert!(MIGRATION_00002.contains("m1_chaosbox_init"), "migration chain must link");
     }
 
-    #[test]
-    fn publish_rejects_stale_worker() {
-        let mut s = MemoryStore::new();
-        let mut b1 = GraphBuild::new("r", vec!["s1".into()], 1);
-        let a = ent("r", "s1", "a.rs", "a");
-        b1.add_node(a).unwrap();
-        s.publish(b1.clone(), None).unwrap();
-        // concurrent stale build with same predecessor expectation fails
-        let mut stale = GraphBuild::new("r", vec!["s1".into()], 1);
-        let b = ent("r", "s1", "b.rs", "b");
-        stale.add_node(b).unwrap();
-        assert!(s.publish(stale, Some("wrong-predecessor".into())).is_err());
-        // newer generation with correct predecessor wins
-        let mut b2 = GraphBuild::new("r", vec!["s2".into()], 2);
-        b2.predecessor = Some(b1.id.clone());
-        let c = ent("r", "s2", "c.rs", "c");
-        b2.add_node(c).unwrap();
-        assert!(s.publish(b2.clone(), Some(b1.id.clone())).is_ok());
-        assert_eq!(s.active("r").unwrap().id, b2.id);
-    }
-
-    #[test]
-    fn failed_decisions_superseded_once() {
-        use chaosbox_core::{DecisionOutcome, EvidenceClass};
-        let mut s = MemoryStore::new();
+    /// Shared write-path conformance over any [`Store`] impl: file linkage,
+    /// decision idempotency + Failed-supersedure, and publication guards.
+    /// Runs against [`MemoryStore`] now; a live-Gel test seeds nothing extra
+    /// and calls this against [`GelStore`] once a server is available.
+    pub async fn check_write_conformance<S: Store>(s: &mut S) {
+        use chaosbox_core::{DecisionOutcome, EvidenceClass, SourceSpan};
+        // File versions register before evidence may reference them.
+        let files =
+            vec![SnapshotFile { snapshot: "s1".into(), path: "a.rs".into(), sha256: "abc".into(), bytes: 3 }];
+        s.ensure_snapshot_files("s1", "r", &files).await.unwrap();
+        let ev = Evidence {
+            id: "ev1".into(),
+            class: EvidenceClass::Extracted,
+            supports: true,
+            text: "[structural] a".into(),
+            span: Some(SourceSpan::point("a.rs", 1, 1, 0)),
+            snapshot: "s1".into(),
+            source_file_version: "a.rs".into(),
+        };
+        s.put_evidence(ev).await.unwrap();
+        assert_eq!(s.stats().evidence, 1);
+        let bad = Evidence {
+            id: "ev2".into(),
+            class: EvidenceClass::Ambiguous,
+            supports: false,
+            text: "x".into(),
+            span: None,
+            snapshot: "s9".into(),
+            source_file_version: "missing.rs".into(),
+        };
+        assert!(s.put_evidence(bad).await.is_err(), "unregistered files never resolve");
+        // Decisions: first write wins, except Failed supersedes once.
         let mk = |id: &str, outcome| Decision {
             id: id.into(),
             candidate_id: "c1".into(),
@@ -1130,32 +1626,30 @@ mod tests {
             confidence: None,
             probability: None,
         };
-        s.put_decision(mk("d1", DecisionOutcome::Failed("down".into()))).unwrap();
-        s.put_decision(mk("d2", DecisionOutcome::Accepted)).unwrap();
-        let key = "c1:q1";
-        assert_eq!(s.decisions[key].id, "d2", "retry supersedes a recorded failure");
-        // Non-failed outcomes are never overwritten.
-        s.put_decision(mk("d3", DecisionOutcome::Rejected)).unwrap();
-        assert_eq!(s.decisions[key].id, "d2", "accepted outcomes stick");
+        s.put_decision(mk("d1", DecisionOutcome::Failed("down".into()))).await.unwrap();
+        s.put_decision(mk("d2", DecisionOutcome::Accepted)).await.unwrap();
+        assert_eq!(s.stats().decisions, 1, "one row per (candidate, question)");
+        s.put_decision(mk("d3", DecisionOutcome::Rejected)).await.unwrap();
+        assert_eq!(s.stats().decisions, 1, "accepted outcomes stick");
+        // Publication: stale predecessors and older generations rejected.
+        let mut b1 = GraphBuild::new("r", vec!["s1".into()], 1);
+        b1.add_node(ent("r", "s1", "a.rs", "a")).unwrap();
+        s.publish(b1.clone(), None).await.unwrap();
+        let mut stale = GraphBuild::new("r", vec!["s1".into()], 1);
+        stale.add_node(ent("r", "s1", "b.rs", "b")).unwrap();
+        assert!(s.publish(stale, Some("wrong-predecessor".into())).await.is_err());
+        let mut b2 = GraphBuild::new("r", vec!["s2".into()], 2);
+        b2.predecessor = Some(b1.id.clone());
+        b2.add_node(ent("r", "s2", "c.rs", "c")).unwrap();
+        assert!(s.publish(b2.clone(), Some(b1.id.clone())).await.is_ok());
+        assert_eq!(s.active("r").unwrap().id, b2.id);
+        assert_eq!(s.stats().builds, 2);
     }
 
-    #[test]
-    fn decisions_idempotent() {
+    #[tokio::test]
+    async fn memory_store_write_conformance() {
         let mut s = MemoryStore::new();
-        let d = Decision {
-            id: "d1".into(),
-            candidate_id: "c1".into(),
-            question_id: "q1".into(),
-            outcome: chaosbox_core::DecisionOutcome::Accepted,
-            evidence_class: chaosbox_core::EvidenceClass::Extracted,
-            model_requested: "jev-1.13.0".into(),
-            model_returned: "jev-1.13.0".into(),
-            confidence: None,
-            probability: Some(0.9),
-        };
-        s.put_decision(d.clone()).unwrap();
-        s.put_decision({ let mut d2 = d.clone(); d2.id = "d2".into(); d2 }).unwrap();
-        assert_eq!(s.decisions.len(), 1, "first write wins");
+        check_write_conformance(&mut s).await;
     }
 
     #[test]
@@ -1192,7 +1686,35 @@ mod tests {
 
     #[test]
     fn edgeql_is_parameterized() {
-        for q in [edgeql::UPSERT_ENTITY, edgeql::UPSERT_RELATIONSHIP, edgeql::ENTITY_BY_ID] {
+        for q in [
+            edgeql::UPSERT_SNAPSHOT,
+            edgeql::UPSERT_FILE_VERSION,
+            edgeql::INSERT_SPAN,
+            edgeql::UPSERT_ENTITY,
+            edgeql::UPSERT_RELATIONSHIP,
+            edgeql::INSERT_DECISION,
+            edgeql::UPSERT_DECISION,
+            edgeql::INSERT_EXTRACTION_RUN,
+            edgeql::INSERT_CANDIDATE_SET,
+            edgeql::INSERT_CANDIDATE,
+            edgeql::INSERT_ATTEMPT,
+            edgeql::INSERT_EVIDENCE,
+            edgeql::INSERT_EVIDENCE_NOSPAN,
+            edgeql::INSERT_CLAIM,
+            edgeql::CREATE_BUILD,
+            edgeql::SET_ACTIVE_BUILD,
+            edgeql::SET_ACTIVE_BUILD_IF_GEN,
+            edgeql::ACTIVE_BUILD,
+            edgeql::ENTITY_BY_ID,
+            edgeql::SEARCH_ENTITIES,
+            edgeql::NEIGHBORS_OUT,
+            edgeql::NEIGHBORS_IN,
+            edgeql::BUILD_ENTITIES,
+            edgeql::BUILD_RELATIONSHIPS,
+            edgeql::EVIDENCE_FOR_REL,
+            edgeql::INSERT_MEMBERSHIP,
+            edgeql::INSERT_EDGE_MEMBERSHIP,
+        ] {
             assert!(q.contains("$"), "values must be bound params, not interpolated");
             assert!(!q.contains("format!"), "no string interpolation in EdgeQL");
         }

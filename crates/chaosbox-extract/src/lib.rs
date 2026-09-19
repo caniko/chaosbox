@@ -111,6 +111,20 @@ impl Snapshot {
     pub fn file_version(&self, path: &str) -> Option<&FileVersion> {
         self.files.iter().find(|f| f.path == path)
     }
+
+    /// Content identities for store registration (snapshot id verified).
+    #[must_use]
+    pub fn snapshot_files(&self) -> Vec<chaosbox_core::SnapshotFile> {
+        self.files
+            .iter()
+            .map(|f| chaosbox_core::SnapshotFile {
+                snapshot: self.id.clone(),
+                path: f.path.clone(),
+                sha256: f.sha256.clone(),
+                bytes: f.bytes,
+            })
+            .collect()
+    }
 }
 
 fn is_supported(path: &str) -> bool {
