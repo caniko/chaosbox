@@ -80,12 +80,12 @@
       packages = forAllSystems (
         { pkgs, craneLib, ... }:
         let
-      commonArgs = {
-        src = workspaceSrc {inherit pkgs craneLib;};
-        pname = "chaosbox";
-        version = "0.1.0";
-        strictDeps = true;
-        cargoExtraArgs = "--locked -p chaosbox";
+          commonArgs = {
+            src = workspaceSrc { inherit pkgs craneLib; };
+            pname = "chaosbox";
+            version = "0.1.0";
+            strictDeps = true;
+            cargoExtraArgs = "--locked -p chaosbox";
             meta = {
               description = "Chaosbox deterministic code-graph pipeline";
               homepage = "https://github.com/caniko/chaosbox";
@@ -189,7 +189,7 @@
       checks = forAllSystems (
         { pkgs, craneLib, ... }:
         let
-          src = workspaceSrc {inherit pkgs craneLib;};
+          src = workspaceSrc { inherit pkgs craneLib; };
           commonArgs = {
             inherit src;
             pname = "chaosbox";
