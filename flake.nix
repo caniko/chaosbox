@@ -60,7 +60,7 @@
           # making the two gates unsatisfiable simultaneously.
           programs.rustfmt.edition = "2021";
           programs.taplo.enable = true;
-    }).config.build;
+        }).config.build;
       # Cargo source plus the non-Cargo trees Rust embeds (dbschema via
       # include_str!) or reads at test time (fixtures/). cleanCargoSource
       # alone strips them and breaks nix builds while cargo works.
@@ -74,8 +74,8 @@
             || pkgs.lib.hasPrefix (toString ./dbschema + "/") (toString path)
             || pkgs.lib.hasPrefix (toString ./fixtures + "/") (toString path);
         };
-  in
-    {
+    in
+      {
       nixosModules.chaosbox = import ./nix/chaosbox.nix;
       nixosModules.default = self.nixosModules.chaosbox;
 
