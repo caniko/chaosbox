@@ -651,8 +651,8 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
         for (cand, dec, ev) in decided {
             let accept = match &dec.outcome {
                 DecisionOutcome::Accepted => {
-                    let conf_ok = dec.confidence.map_or(true, |c| c >= mat.accept_confidence);
-                    let prob_ok = dec.probability.map_or(true, |p| p >= mat.accept_noul);
+                    let conf_ok = dec.confidence.is_none_or(|c| c >= mat.accept_confidence);
+                    let prob_ok = dec.probability.is_none_or(|p| p >= mat.accept_noul);
                     conf_ok && prob_ok
                 }
                 _ => false, // rejected/abstained/negative/failure recorded, never materialized

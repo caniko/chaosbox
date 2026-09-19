@@ -525,7 +525,7 @@ impl GraphBuild {
     pub fn outgoing(&self, id: &str, filter: Option<&RelationType>) -> Vec<&Relation> {
         self.edges
             .values()
-            .filter(|r| r.from == id && filter.map_or(true, |f| &r.rel_type == f))
+            .filter(|r| r.from == id && filter.is_none_or(|f| &r.rel_type == f))
             .collect()
     }
 
@@ -534,7 +534,7 @@ impl GraphBuild {
     pub fn incoming(&self, id: &str, filter: Option<&RelationType>) -> Vec<&Relation> {
         self.edges
             .values()
-            .filter(|r| r.to == id && filter.map_or(true, |f| &r.rel_type == f))
+            .filter(|r| r.to == id && filter.is_none_or(|f| &r.rel_type == f))
             .collect()
     }
 
