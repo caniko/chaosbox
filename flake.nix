@@ -202,9 +202,10 @@
             chaosboxModule = self.nixosModules.chaosbox;
             chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
           };
-          gel-integration = pkgs.runCommand "chaosbox-gel-integration" { } ''
-            ${pkgs.lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.test-gel} | tee $out
-          '';
+          gel-integration = pkgs.callPackage ./nix/gel-vm-test.nix {
+            chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
+            gelPackage = pkgs.gel;
+          };
         }
       );
     };

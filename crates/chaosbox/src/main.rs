@@ -55,6 +55,13 @@ enum Command {
         /// the deterministic fixture. Real inference, real spend.
         #[arg(long, default_value_t = false)]
         live_jev: bool,
+        /// Live-Jev spend guards (defaults = JevPolicy::default).
+        #[arg(long)]
+        max_requests: Option<u32>,
+        #[arg(long)]
+        max_input_tokens: Option<u64>,
+        #[arg(long)]
+        max_retries: Option<u32>,
     },
     /// Query helpers (read-only; Gel-backed, shared with MCP).
     Query {
@@ -173,8 +180,20 @@ async fn main() {
             repo,
             max_candidates,
             live_jev,
+            max_requests,
+            max_input_tokens,
+            max_retries,
         } => {
-            let code = run_pipeline(&path, &repo, max_candidates, live_jev).await;
+            let code = run_pipeline(
+                &path,
+                &repo,
+                max_candidates,
+                live_jev,
+                max_requests,
+                max_input_tokens,
+                max_retries,
+            )
+            .await;
             std::process::exit(code);
         }
         Command::Query { q } => std::process::exit(run_query(q).await),
@@ -382,7 +401,15 @@ async fn run_query(q: QueryCmd) -> i32 {
     }
 }
 
-async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_jev: bool) -> i32 {
+async fn run_pipeline(
+    path: &PathBuf,
+    repo: &str,
+    max_candidates: usize,
+    live_jev: bool,
+    max_requests: Option<u32>,
+    max_input_tokens: Option<u64>,
+    max_retries: Option<u32>,
+) -> i32 {
     let (snap, ext, cands) =
         match Pipeline::<MemoryStore>::snapshot_extract(repo, path, max_candidates) {
             Ok(v) => v,
@@ -434,7 +461,22 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_je
         }
     }
     let decided = if live_jev {
-        let policy = chaosbox_jev::JevPolicy::default();
+        // Fail fast without credentials: otherwise every decision degrades
+        // to Failed and the run exits 0 with an empty graph.
+        if chaosbox_jev::JevClient::api_key().is_none() {
+            eprintln!("live-jev needs CHAOSBOX_JEV_API_KEY_FILE or TYPESAFE_API_KEY");
+            return 1;
+        }
+        let mut policy = chaosbox_jev::JevPolicy::default();
+        if let Some(n) = max_requests {
+            policy.max_requests = n;
+        }
+        if let Some(n) = max_input_tokens {
+            policy.max_input_tokens = n;
+        }
+        if let Some(n) = max_retries {
+            policy.max_retries = n;
+        }
         let client = match chaosbox_jev::JevClient::new(policy) {
             Ok(c) => c,
             Err(e) => {
@@ -502,7 +544,7 @@ async fn run_migrate() -> Result<LifecycleReport, String> {
     // GEL_CREDENTIALS_FILE is a documented Gel connection parameter.
     let gel_bin = std::env::var("CHAOSBOX_GEL_BIN").unwrap_or_else(|_| "gel".to_owned());
     let out = tokio::process::Command::new(gel_bin)
-        .args(["migration", "apply", "--non-interactive"])
+        .args(["--credentials-file", &creds, "migration", "apply", "--non-interactive"])
         .env("GEL_CREDENTIALS_FILE", &creds)
         .output()
         .await

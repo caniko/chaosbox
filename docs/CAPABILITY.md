@@ -69,10 +69,9 @@
 
 ## Not yet implemented (explicit)
 
-- Live proof: write/read conformance against disposable Gel, `test-gel`
-  green, live decision-reuse demonstration
-- Real Gel integration gate (needs disposable server; `test-gel` runs schema,
-  mock-HTTP, and pipeline gates, exits 3 PENDING without a `gel` server);
+- Live proof: VM test realization (needs a build-capable session),
+  write/read conformance in-guest, cache-reuse demo
+- Real Gel integration gate green (blocked on realization, not on design);
   Gel write-path integration (`Pipeline` through a Gel-backed `Store`,
   candidate/decision/evidence inserts) and decision-cache reuse/invalidation
 - harbor-db Gel runtime/test interfaces for the disposable instance +

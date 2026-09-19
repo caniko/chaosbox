@@ -1,4 +1,24 @@
-# Handoff (live-proving round, 2026-09-19, atlas)
+# Handoff (container-free gel-integration, 2026-09-19, atlas)
+
+## Landed this round
+
+- `run_migrate` passes explicit `--credentials-file` (proven flag shape)
+  alongside the env passthrough; no `gel.toml` created (tools resolve
+  `dbschema/` from cwd; explicit config deferred until a failure demands it).
+- `nix/gel-vm-test.nix`: nixosTest guest (4G/4-core/10G disk) with
+  docker-in-guest + store-preloaded digest-pinned 7.1 image (same digest +
+  nar hash harbor-db enforces), chaosbox + gel + dbschema as store closures,
+  in-guest credentials (test-only, never leaves the guest).
+- Guest matrix: ready-probe → check pending/exit 2 → migrate exit 0 with
+  post-apply verification → check ready/exit 0 → idempotent re-apply →
+  wrong-credentials error with state intact.
+- `checks.gel-integration` runs the VM test (replaces the exit-3 script
+  check; `apps.test-gel` keeps the direct script for manual runs).
+- Verified without realizing: flake + test parse, check evaluates to a
+  `vm-test-run` derivation, dry-run resolves the 443-derivation closure.
+  Realization needs a build-capable session (policy-gated here).
+- Missing-package note stands: no native `gel-server` in nixpkgs (CLI-only
+  `geldata/gel-cli`); server arrives via pinned OCI only.
 
 ## Landed since v0.7.0
 
