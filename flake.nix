@@ -3,6 +3,11 @@
 
   inputs = {
     harbor-rs.url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=7a3328e186258dca31f9801227bc4e6fd8db4f36";
+    # Deployment/lifecycle infrastructure (Gel backend, server module,
+    # readiness gates). Pinned to the reviewed Gel-support revision; moves
+    # to trunk after harbor-db#5 merges. Never a local path.
+    harbor-db.url = "git+https://github.com/caniko/harbor-db.git?ref=gel-support&rev=c5770090031e2a7c03144b2c739481ad0949ff42";
+    harbor-db.inputs.nixpkgs.follows = "nixpkgs";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
     harbor-meta.follows = "harbor-rs/harbor-meta";
@@ -14,6 +19,7 @@
 
   outputs = {
     self,
+    harbor-db,
     harbor-rs,
     harbor-meta,
     treefmt-nix,
@@ -45,6 +51,9 @@
         programs.taplo.enable = true;
       }).config.build;
   in {
+    nixosModules.chaosbox = import ./nix/chaosbox.nix;
+    nixosModules.default = self.nixosModules.chaosbox;
+
     packages = forAllSystems ({pkgs, craneLib, ...}: let
       commonArgs = {
         src = craneLib.cleanCargoSource ./.;
@@ -139,6 +148,12 @@
       unit = craneLib.cargoTest (commonArgs // {inherit cargoArtifacts;});
       doc = craneLib.cargoDoc (commonArgs // {inherit cargoArtifacts;});
       packaging = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
+      deployment-eval = pkgs.callPackage ./nix/deployment-eval.nix {
+        harborDbModule = harbor-db.nixosModules.default;
+        gelModule = harbor-db.nixosModules.gel;
+        chaosboxModule = self.nixosModules.chaosbox;
+        chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
+      };
       gel-integration = pkgs.runCommand "chaosbox-gel-integration" {} ''
         ${pkgs.lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.test-gel} | tee $out
       '';
