@@ -1,0 +1,5 @@
+# Import order is intentionally unenforced: the pinned dev toolchain
+# (rust-toolchain.toml) and CI's nix-provided rustfmt disagree on the
+# canonical order of mixed-case import lists, and no single layout
+# satisfies both. Layout and width rules still apply everywhere.
+reorder_imports = false
