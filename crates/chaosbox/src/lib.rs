@@ -252,6 +252,30 @@ impl Responder for LiveResponder {
     }
 }
 
+/// Assemble evidence deterministically from a decision: ids and texts are
+/// pure functions of (decision, entity), so cache reuse rebuilds
+/// byte-identical rows and puts stay idempotent. Single choke point —
+/// success, failure, and skip paths must all use this.
+fn assemble_evidence(
+    decision: &Decision,
+    supports: bool,
+    text: String,
+    span: Option<chaosbox_core::SourceSpan>,
+    snapshot: &str,
+    file: &str,
+    suffix: &str,
+) -> Evidence {
+    Evidence {
+        id: deterministic_id("ev", &[&decision.id, suffix]),
+        class: decision.evidence_class,
+        supports,
+        text,
+        span,
+        snapshot: snapshot.to_owned(),
+        source_file_version: file.to_owned(),
+    }
+}
+
 /// Full pipeline state held by the operator commands.
 /// Generic over [`chaosbox_gel::Store`] with [`MemoryStore`] as the default.
 pub struct Pipeline<S = MemoryStore> {
@@ -305,6 +329,33 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
             let from = entities.get(&cand.from_entity).ok_or_else(|| PipelineError::Validation("missing from".into()))?;
             let to = entities.get(&cand.to_entity).ok_or_else(|| PipelineError::Validation("missing to".into()))?;
             let questions = questions_for(cand, from, to);
+            let qid = format!("rel_{}", cand.id);
+            let key = cache_key(&from.snapshot, &catalog, &questions, model_requested, &mat.rubric_version);
+            // Cache reuse: same key and never a recorded failure (retries
+            // always re-ask). Evidence rebuilds byte-identically.
+            if let Some(stored) =
+                store.find_decision(&cand.id, &qid).await.map_err(|e| PipelineError::Store(e.to_string()))?
+            {
+                if stored.cache_key == key && !matches!(stored.outcome, DecisionOutcome::Failed(_)) {
+                    let supports = stored.outcome == DecisionOutcome::Accepted;
+                    let text = format!(
+                        "[{}] {} -> {} ({:?})",
+                        cand.reason, from.qualified_name, to.qualified_name, cand.rel_type
+                    );
+                    let ev = assemble_evidence(
+                        &stored,
+                        supports,
+                        text,
+                        Some(from.span.clone()),
+                        &from.snapshot,
+                        &from.file,
+                        "support",
+                    );
+                    store.put_evidence(ev.clone()).await.map_err(|e| PipelineError::Store(e.to_string()))?;
+                    out.push((cand.clone(), stored, ev));
+                    continue;
+                }
+            }
             let state = serde_json::json!({
                 "candidate": cand.id,
                 "rel_type": format!("{:?}", cand.rel_type),
@@ -332,15 +383,15 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                         probability: None,
                         cache_key: key,
                     };
-                    let ev = Evidence {
-                        id: deterministic_id("ev", &[&decision.id, "failed"]),
-                        class: EvidenceClass::Ambiguous,
-                        supports: false,
-                        text: "decision attempt failed; see attempt accounting".into(),
-                        span: None,
-                        snapshot: from.snapshot.clone(),
-                        source_file_version: from.file.clone(),
-                    };
+                    let ev = assemble_evidence(
+                        &decision,
+                        false,
+                        "decision attempt failed; see attempt accounting".into(),
+                        None,
+                        &from.snapshot,
+                        &from.file,
+                        "failed",
+                    );
                     store.put_decision(decision.clone()).await.map_err(|e| PipelineError::Store(e.to_string()))?;
                     store.put_evidence(ev.clone()).await.map_err(|e| PipelineError::Store(e.to_string()))?;
                     out.push((cand.clone(), decision, ev));
@@ -422,15 +473,16 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                 };
                 // Evidence text copied from source spans / deterministic template.
                 let text = format!("[{}] {} -> {} ({:?})", cand.reason, from.qualified_name, to.qualified_name, cand.rel_type);
-                let ev = Evidence {
-                    id: deterministic_id("ev", &[&decision.id, "support"]),
-                    class,
-                    supports: outcome == DecisionOutcome::Accepted,
-                    text,
-                    span: Some(from.span.clone()),
-                    snapshot: from.snapshot.clone(),
-                    source_file_version: from.file.clone(),
-                };
+                let supports = outcome == DecisionOutcome::Accepted;
+                    let ev = assemble_evidence(
+                        &decision,
+                        supports,
+                        text,
+                        Some(from.span.clone()),
+                        &from.snapshot,
+                        &from.file,
+                        "support",
+                    );
                 store.put_decision(decision.clone()).await.map_err(|e| PipelineError::Store(e.to_string()))?;
                 store.put_evidence(ev.clone()).await.map_err(|e| PipelineError::Store(e.to_string()))?;
                 out.push((cand.clone(), decision, ev));
@@ -1168,10 +1220,32 @@ mod tests {
                 .unwrap();
         assert_eq!(decided[0].1.outcome, DecisionOutcome::Abstained);
         assert_eq!(store.stats().decisions, 1, "abstentions persist");
-        // Above the accept floor the same answer is accepted.
+        // Same inputs reuse the stored decision even when the responder would
+        // now fail: no re-ask on a cache hit.
+        let mut failing = FailResponder;
+        let reused =
+            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut failing, "jev-1.13.0", &mat, &mut store)
+                .await
+                .unwrap();
+        assert_eq!(reused[0].1.outcome, DecisionOutcome::Abstained);
+        // A fresh store re-asks: above the accept floor the answer is accepted.
+        let mut fresh = MemoryStore::new();
+        fresh
+            .ensure_snapshot_files(
+                "s",
+                "r",
+                &[chaosbox_core::SnapshotFile {
+                    snapshot: "s".into(),
+                    path: "a.rs".into(),
+                    sha256: "abc".into(),
+                    bytes: 3,
+                }],
+            )
+            .await
+            .unwrap();
         let mut high = ConfResponder { confidence: 0.95 };
         let decided =
-            Pipeline::<MemoryStore>::decide(&[cand], &entities, &mut high, "jev-1.13.0", &mat, &mut store)
+            Pipeline::<MemoryStore>::decide(&[cand], &entities, &mut high, "jev-1.13.0", &mat, &mut fresh)
                 .await
                 .unwrap();
         assert_eq!(decided[0].1.outcome, DecisionOutcome::Accepted);
@@ -1205,6 +1279,79 @@ mod tests {
         // The fault text is never copied into evidence.
         assert!(!decided[0].2.text.contains("transport"));
         assert_eq!(store.stats().decisions, 1, "failures persist for retry");
+    }
+
+    /// Ensure helper for the single-file `one_candidate` fixture.
+    async fn ensure_a_rs(store: &mut MemoryStore) {
+        store
+            .ensure_snapshot_files(
+                "s",
+                "r",
+                &[chaosbox_core::SnapshotFile {
+                    snapshot: "s".into(),
+                    path: "a.rs".into(),
+                    sha256: "abc".into(),
+                    bytes: 3,
+                }],
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cache_invalidates_per_axis() {
+        let (cand, entities) = one_candidate();
+        let mat = Materialization::default();
+        let mut store = MemoryStore::new();
+        ensure_a_rs(&mut store).await;
+        // Baseline: accepted under jev-1.13.0 / rubric-v1.
+        let mut accept = ConfResponder { confidence: 0.95 };
+        let first =
+            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut accept, "jev-1.13.0", &mat, &mut store)
+                .await
+                .unwrap();
+        assert_eq!(first[0].1.outcome, DecisionOutcome::Accepted);
+        // Model change invalidates: re-asked (low confidence now abstains),
+        // and the stale row is replaced because the key differs.
+        let mut low = ConfResponder { confidence: 0.1 };
+        let second =
+            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut low, "jev-9.9.9", &mat, &mut store)
+                .await
+                .unwrap();
+        assert_eq!(second[0].1.outcome, DecisionOutcome::Abstained);
+        // Rubric change invalidates the same way.
+        let mat2 = Materialization { rubric_version: "rubric-v2".into(), ..Default::default() };
+        let third =
+            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut low, "jev-1.13.0", &mat2, &mut store)
+                .await
+                .unwrap();
+        assert_eq!(third[0].1.outcome, DecisionOutcome::Abstained);
+        // Catalog change (extra candidate) invalidates the whole run.
+        let mut extra = cand.clone();
+        extra.id = "cand:2".into();
+        let fourth =
+            Pipeline::<MemoryStore>::decide(&[cand.clone(), extra], &entities, &mut low, "jev-1.13.0", &mat, &mut store)
+                .await
+                .unwrap();
+        assert_eq!(fourth[0].1.outcome, DecisionOutcome::Abstained);
+        // Threshold-only change keeps the key: the stored decision is reused
+        // (materialization applies current thresholds later, not here).
+        // Fresh store so earlier legs haven't replaced the row.
+        let mut store2 = MemoryStore::new();
+        ensure_a_rs(&mut store2).await;
+        let mut accept2 = ConfResponder { confidence: 0.95 };
+        let base =
+            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut accept2, "jev-1.13.0", &mat, &mut store2)
+                .await
+                .unwrap();
+        assert_eq!(base[0].1.outcome, DecisionOutcome::Accepted);
+        let mat3 = Materialization { accept_confidence: 0.99, ..Default::default() };
+        let mut failing = FailResponder;
+        let fifth =
+            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut failing, "jev-1.13.0", &mat3, &mut store2)
+                .await
+                .unwrap();
+        assert_eq!(fifth[0].1.outcome, DecisionOutcome::Accepted, "threshold change reuses raw decision");
     }
 
     #[test]

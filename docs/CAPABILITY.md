@@ -1,4 +1,4 @@
-# Capability matrix (v0.6.0)
+# Capability matrix (v0.7.0)
 
 ## Implemented in native Rust
 
@@ -33,10 +33,14 @@
   record as produced; `build_and_publish()` assembles one claim per
   materialized relation (same-triple rejections as contradicting evidence);
   relation filters validated loudly against the vocabulary
-- Run identity + cache-key storage (schema-first): deterministic run/set ids
-  over the candidate catalog, `ensure_run`/`put_candidate` on both stores,
-  `cache_key` on every decision, `Decision.cache_key` in SDL + `m3`
-  migration (schema v3), `CATALOG_VERSION` + order-invariant catalog digest
+- Decision cache behavior: skip-on-key-match with shared evidence assembler
+  (byte-identical rebuilds); recorded failures always re-asked; per-axis
+  invalidation (catalog/model/rubric invalidate, thresholds reuse); stale
+  rows replaced on key change, valid rows immutable
+- Full-chain Gel flush: run/set/candidate/decision/evidence/claim rows plus
+  relationship evidence links in FK order; conditional decision upsert mirrors
+  the store supersedure rule; FK-chain consts reviewed (12-param ceiling,
+  `<uuid><str>` casts, no new deps)
 - Durable worker leases: `WorkerTask` SDL + `m2` migration; claim/heartbeat/
   reclaim with injected clocks and generation guards; stale holders recognizable
 - Gel SDL + migration, first-class Relationship objects, typed EdgeQL ops with
@@ -65,8 +69,8 @@
 
 ## Not yet implemented (explicit)
 
-- Decision-cache lookup/invalidation + decision/evidence/claim row flushing
-  (run/set identity and `cache_key` storage land this round; behavior next)
+- Live proof: write/read conformance against disposable Gel, `test-gel`
+  green, live decision-reuse demonstration
 - Real Gel integration gate (needs disposable server; `test-gel` runs schema,
   mock-HTTP, and pipeline gates, exits 3 PENDING without a `gel` server);
   Gel write-path integration (`Pipeline` through a Gel-backed `Store`,

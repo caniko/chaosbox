@@ -10,7 +10,10 @@
 
 use std::collections::BTreeMap;
 
-use chaosbox_core::{Candidate, Claim, Decision, Entity, Evidence, GraphBuild, Relation, SnapshotFile};
+use chaosbox_core::{
+    Candidate, Claim, Decision, DecisionOutcome, Entity, Evidence, EvidenceClass, GraphBuild,
+    Relation, SnapshotFile,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -95,20 +98,22 @@ pub mod edgeql {
          question_id := <str>$2, outcome := <str>$3, evidence_class := <str>$4, \
          model_requested := <str>$5, model_returned := <str>$6 } \
          unless conflict on ((.candidate, .question_id)) else (select Decision filter .decision_id = <str>$0)) { decision_id }";
-    /// Conditional decision upsert with Failed-supersedure (`$0` decision id,
-    /// `$1` candidate id, `$2` question id, `$3` outcome, `$4` evidence class,
-    /// `$5` model requested, `$6` model returned, `$7` confidence or {},
-    /// `$8` probability or {}). Empty when a non-Failed row already stands.
+    /// Conditional decision upsert with input-change supersedure (`$0` decision
+    /// id, `$1` candidate id, `$2` question id, `$3` outcome, `$4` evidence
+    /// class, `$5` model requested, `$6` model returned, `$7` confidence or {},
+    /// `$8` probability or {}, `$9` cache key). Replaces on key change or
+    /// recorded failure; empty when a valid row already stands.
     /// Used by the Round 3 flush; [`GelStore`](super::GelStore) documents why
     /// decision rows wait for the candidate chain.
     pub const UPSERT_DECISION: &str =
         "select (insert Decision { decision_id := <str>$0, candidate := (select Candidate filter .candidate_id = <str>$1), \
          question_id := <str>$2, outcome := <str>$3, evidence_class := <str>$4, \
-         model_requested := <str>$5, model_returned := <str>$6, \
+         model_requested := <str>$5, model_returned := <str>$6, cache_key := <str>$9, \
          confidence := <optional float64>$7, probability := <optional float64>$8 } \
          unless conflict on ((.candidate, .question_id)) \
-         else (update Decision filter .candidate.candidate_id = <str>$1 and .question_id = <str>$2 and .outcome = 'failed' \
-         set { decision_id := <str>$0, outcome := <str>$3, evidence_class := <str>$4, \
+         else (update Decision filter .candidate.candidate_id = <str>$1 and .question_id = <str>$2 \
+         and (.outcome = 'failed' or .cache_key != <str>$9) \
+         set { decision_id := <str>$0, outcome := <str>$3, evidence_class := <str>$4, cache_key := <str>$9, \
          model_requested := <str>$5, model_returned := <str>$6, \
          confidence := <optional float64>$7, probability := <optional float64>$8 })) { decision_id, outcome }";
     /// Extraction-run insert (`$0` run id, `$1` repo, `$2` snapshot id).
@@ -216,6 +221,16 @@ pub mod edgeql {
     pub const EVIDENCE_FOR_REL: &str =
         "select GraphEdgeMembership { ev := .relationship.evidence: { evidence_id, class, supports, text } } \
          filter .build.build_id = <str>$0 and .relationship.rel_id = <str>$1";
+    /// Decision lookup by candidate + question (`$0` candidate id,
+    /// `$1` question id), with the cache key for reuse comparison.
+    pub const DECISION_BY_CANDIDATE: &str =
+        "select Decision { decision_id, candidate: { candidate_id }, question_id, outcome, \
+         evidence_class, model_requested, model_returned, confidence, probability, cache_key } \
+         filter .candidate.candidate_id = <str>$0 and .question_id = <str>$1";
+    /// Append one evidence link to a relationship (`$0` rel id, `$1` evidence id).
+    pub const LINK_EVIDENCE: &str =
+        "select (update Relationship filter .rel_id = <str>$0 \
+         set { evidence += (select Evidence filter .evidence_id = <str>$1) }) { rel_id }";
 }
 
 /// Span id row returned by the span insert.
@@ -303,6 +318,38 @@ pub struct EdgeMembershipRow {
 pub struct EvidenceBundleRow {
     /// Evidence rows attached to the membership's relationship.
     pub ev: Vec<EvidenceRow>,
+}
+
+/// Candidate id wrapper (EdgeQL shape).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CandidateRef {
+    /// Candidate id.
+    pub candidate_id: String,
+}
+
+/// Decision row with its cache key for reuse comparison.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DecisionRow {
+    /// Decision id.
+    pub decision_id: String,
+    /// Linked candidate wrapper.
+    pub candidate: CandidateRef,
+    /// Question id.
+    pub question_id: String,
+    /// Outcome name.
+    pub outcome: String,
+    /// Evidence class name.
+    pub evidence_class: String,
+    /// Model identity requested.
+    pub model_requested: String,
+    /// Model identity returned.
+    pub model_returned: String,
+    /// Confidence, if the answer type carries one.
+    pub confidence: Option<f64>,
+    /// Probability, if applicable.
+    pub probability: Option<f64>,
+    /// Cache identity the decision is valid under.
+    pub cache_key: String,
 }
 
 /// Evidence row for claim support/contradiction display.
@@ -445,14 +492,22 @@ pub trait Store: Send + Sync {
     async fn put_entity(&mut self, e: Entity) -> Result<(), GelError>;
     /// Stage a relationship for one build (idempotent).
     async fn put_relation(&mut self, r: Relation, build_id: &str) -> Result<(), GelError>;
-    /// Record a decision (idempotent per candidate + question; first write
-    /// wins, except a recorded `Failed` decision may be superseded once).
+    /// Record a decision (idempotent per candidate + question while inputs
+    /// are unchanged; replaced when the cache key differs or a recorded
+    /// `Failed` decision is retried).
     async fn put_decision(&mut self, d: Decision) -> Result<(), GelError>;
     /// Record evidence (idempotent per evidence id; the (snapshot, path)
     /// file version must be registered first).
     async fn put_evidence(&mut self, e: Evidence) -> Result<(), GelError>;
     /// Record a claim (idempotent per claim id).
     async fn put_claim(&mut self, c: Claim) -> Result<(), GelError>;
+    /// Look up a stored decision by candidate + question for cache reuse.
+    /// Returns `None` on a miss; callers compare `cache_key` themselves.
+    async fn find_decision(
+        &self,
+        candidate_id: &str,
+        question_id: &str,
+    ) -> Result<Option<Decision>, GelError>;
     /// Validate invariants and atomically swing the active-build pointer.
     /// Rejects stale predecessors and older-worker overwrites.
     async fn publish(
@@ -557,18 +612,21 @@ impl Store for MemoryStore {
         Ok(())
     }
     async fn put_decision(&mut self, d: Decision) -> Result<(), GelError> {
-        // Idempotent per (candidate, question): first write wins, except a
-        // recorded Failed decision may be superseded by a later outcome.
-        // Non-Failed outcomes are never overwritten.
+        // Idempotent per (candidate, question) while inputs are unchanged.
+        // A different cache key means the inputs changed (model, rubric,
+        // catalog, questions, source): the stale row is replaced. A recorded
+        // Failed decision is superseded even under the same key (retry).
+        // Anything else keeps the first write.
         let key = format!("{}:{}", d.candidate_id, d.question_id);
-        let supersede = matches!(
-            self.decisions.get(&key).map(|old| &old.outcome),
-            Some(chaosbox_core::DecisionOutcome::Failed(_))
-        );
-        if supersede {
+        let replace = match self.decisions.get(&key) {
+            None => true,
+            Some(old) => {
+                old.cache_key != d.cache_key
+                    || matches!(old.outcome, chaosbox_core::DecisionOutcome::Failed(_))
+            }
+        };
+        if replace {
             self.decisions.insert(key, d);
-        } else {
-            self.decisions.entry(key).or_insert(d);
         }
         Ok(())
     }
@@ -585,6 +643,17 @@ impl Store for MemoryStore {
     async fn put_claim(&mut self, c: Claim) -> Result<(), GelError> {
         self.claims.entry(c.id.clone()).or_insert(c);
         Ok(())
+    }
+
+    async fn find_decision(
+        &self,
+        candidate_id: &str,
+        question_id: &str,
+    ) -> Result<Option<Decision>, GelError> {
+        Ok(self
+            .decisions
+            .get(&format!("{candidate_id}:{question_id}"))
+            .cloned())
     }
 
     async fn ensure_run(
@@ -685,6 +754,54 @@ impl GelStore {
         Ok(self.handle.clone().expect("connected above"))
     }
 
+    /// Flush staged runs, sets, candidates, decisions, evidence, claims,
+    /// and relationship evidence links in FK order (all idempotent).
+    async fn flush_chain(&self, handle: &GelHandle) -> Result<(), GelError> {
+        let mut run_ids: Vec<&String> = self.staging.runs.keys().collect();
+        run_ids.sort();
+        for run_id in run_ids {
+            let (repo, snapshot_id) =
+                self.staging.runs.get(run_id).expect("key from map");
+            handle.insert_run(run_id, repo, snapshot_id).await?;
+        }
+        let mut set_ids: Vec<&String> = self.staging.sets.keys().collect();
+        set_ids.sort();
+        for set_id in set_ids {
+            let (run_id, catalog, rubric) =
+                self.staging.sets.get(set_id).expect("key from map");
+            handle.insert_set(set_id, run_id, catalog, rubric).await?;
+        }
+        let mut cand_ids: Vec<&String> = self.staging.candidates.keys().collect();
+        cand_ids.sort();
+        for cand_id in cand_ids {
+            let (set_id, cand) =
+                self.staging.candidates.get(cand_id).expect("key from map");
+            handle.insert_candidate_row(set_id, cand).await?;
+        }
+        let mut dec_keys: Vec<&String> = self.staging.decisions.keys().collect();
+        dec_keys.sort();
+        for key in dec_keys {
+            let d = self.staging.decisions.get(key).expect("key from map");
+            handle.upsert_decision_row(d).await?;
+        }
+        let mut ev_ids: Vec<&String> = self.staging.evidence.keys().collect();
+        ev_ids.sort();
+        for ev_id in ev_ids {
+            let e = self.staging.evidence.get(ev_id).expect("key from map");
+            handle.insert_evidence_row(e).await?;
+        }
+        let mut claim_ids: Vec<&String> = self.staging.claims.keys().collect();
+        claim_ids.sort();
+        for claim_id in claim_ids {
+            let c = self.staging.claims.get(claim_id).expect("key from map");
+            handle.insert_claim_row(c).await?;
+            for ev_id in c.supporting.iter().chain(c.contradicting.iter()) {
+                handle.link_evidence(&c.relation_id, ev_id).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Flush one validated build's graph rows to Gel (idempotent upserts).
     /// Snapshot/file rows first (evidence links need them), then entities,
     /// relationships, memberships, and the build row itself.
@@ -762,6 +879,23 @@ impl Store for GelStore {
         self.staging.put_claim(c).await
     }
 
+    async fn find_decision(
+        &self,
+        candidate_id: &str,
+        question_id: &str,
+    ) -> Result<Option<Decision>, GelError> {
+        if let Some(d) = self.staging.find_decision(candidate_id, question_id).await? {
+            return Ok(Some(d));
+        }
+        let handle = self.handle.clone().ok_or_else(|| {
+            GelError::Client("GelStore disconnected; no staged decision and no server".into())
+        })?;
+        match handle.find_decision_row(candidate_id, question_id).await? {
+            None => Ok(None),
+            Some(row) => Ok(Some(decision_from_row(row)?)),
+        }
+    }
+
     async fn ensure_run(
         &mut self,
         run_id: &str,
@@ -807,6 +941,7 @@ impl Store for GelStore {
         self.staging.publish(build.clone(), expected_predecessor).await?;
         // 3. Idempotent flush; safe to retry after a crash mid-flush.
         self.flush_build(&handle, &build).await?;
+        self.flush_chain(&handle).await?;
         // 4. Guarded swing last: a concurrent publisher wins instead of being
         // overwritten, and the last good build stays active on any failure.
         match pred_gen {
@@ -885,6 +1020,27 @@ pub trait GelQueries: Send + Sync {
     ) -> Result<Vec<RelRow>, GelError>;
     /// Evidence attached to one relationship of the pinned build.
     async fn evidence_for(&self, build_id: &str, rel_id: &str) -> Result<Vec<EvidenceRow>, GelError>;
+}
+
+/// Rebuild a [`Decision`] from a [`DecisionRow`]: outcome and class travel
+/// as JSON so enum shapes round-trip exactly.
+fn decision_from_row(row: DecisionRow) -> Result<Decision, GelError> {
+    let outcome: DecisionOutcome =
+        serde_json::from_str(&row.outcome).map_err(|e| GelError::Query(e.to_string()))?;
+    let evidence_class: EvidenceClass = serde_json::from_str(&format!("\"{}\"", row.evidence_class))
+        .map_err(|e| GelError::Query(e.to_string()))?;
+    Ok(Decision {
+        id: row.decision_id,
+        candidate_id: row.candidate.candidate_id,
+        question_id: row.question_id,
+        outcome,
+        evidence_class,
+        model_requested: row.model_requested,
+        model_returned: row.model_returned,
+        confidence: row.confidence,
+        probability: row.probability,
+        cache_key: row.cache_key,
+    })
 }
 
 /// Project one entity into its row form (canonical storage names).
@@ -1520,6 +1676,167 @@ impl GelHandle {
         Ok(())
     }
 
+    /// Extraction-run insert (idempotent).
+    pub async fn insert_run(&self, run_id: &str, repo: &str, snapshot_id: &str) -> Result<(), GelError> {
+        self.client
+            .query_json(edgeql::INSERT_EXTRACTION_RUN, &(run_id, repo, snapshot_id))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Candidate-set insert (idempotent).
+    pub async fn insert_set(
+        &self,
+        set_id: &str,
+        run_id: &str,
+        catalog_digest: &str,
+        rubric_version: &str,
+    ) -> Result<(), GelError> {
+        self.client
+            .query_json(edgeql::INSERT_CANDIDATE_SET, &(set_id, run_id, catalog_digest, rubric_version))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Candidate insert (idempotent).
+    pub async fn insert_candidate_row(&self, set_id: &str, c: &Candidate) -> Result<(), GelError> {
+        let rel_type = chaosbox_core::relation_type_name(&c.rel_type);
+        self.client
+            .query_json(
+                edgeql::INSERT_CANDIDATE,
+                &(
+                    c.id.as_str(),
+                    set_id,
+                    rel_type,
+                    c.from_entity.as_str(),
+                    c.to_entity.as_str(),
+                    c.reason.as_str(),
+                    c.state_excerpt.as_str(),
+                ),
+            )
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Conditional decision upsert: replaces on cache-key change or recorded
+    /// failure, keeps valid rows. Returns true when the row now holds the
+    /// given decision id.
+    pub async fn upsert_decision_row(&self, d: &Decision) -> Result<bool, GelError> {
+        let outcome = serde_json::to_string(&d.outcome).map_err(|e| GelError::Query(e.to_string()))?;
+        let class = chaosbox_core::evidence_class_name(d.evidence_class);
+        let json = self
+            .client
+            .query_json(
+                edgeql::UPSERT_DECISION,
+                &(
+                    d.id.as_str(),
+                    d.candidate_id.as_str(),
+                    d.question_id.as_str(),
+                    outcome,
+                    class,
+                    d.model_requested.as_str(),
+                    d.model_returned.as_str(),
+                    d.confidence,
+                    d.probability,
+                    d.cache_key.as_str(),
+                ),
+            )
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(rows.iter().any(|r| r["decision_id"].as_str() == Some(d.id.as_str())))
+    }
+
+    /// Evidence insert (idempotent); span goes through `INSERT_SPAN` first.
+    pub async fn insert_evidence_row(&self, e: &Evidence) -> Result<(), GelError> {
+        let class = chaosbox_core::evidence_class_name(e.class);
+        if let Some(span) = &e.span {
+            let json = self
+                .client
+                .query_json(
+                    edgeql::INSERT_SPAN,
+                    &(
+                        span.file.as_str(),
+                        span.start_line as i64,
+                        span.start_col as i64,
+                        span.end_line as i64,
+                        span.end_col as i64,
+                        span.byte_start as i64,
+                        span.byte_end as i64,
+                    ),
+                )
+                .await
+                .map_err(|e| GelError::Query(e.to_string()))?;
+            let rows: Vec<SpanIdRow> =
+                serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
+            let span_id = rows.into_iter().next().map(|r| r.id).ok_or_else(|| {
+                GelError::Query("span insert returned no id".into())
+            })?;
+            self.client
+                .query_json(
+                    edgeql::INSERT_EVIDENCE,
+                    &(
+                        e.id.as_str(),
+                        class,
+                        e.supports,
+                        e.text.as_str(),
+                        e.snapshot.as_str(),
+                        e.source_file_version.as_str(),
+                        span_id,
+                    ),
+                )
+                .await
+                .map_err(|e| GelError::Query(e.to_string()))?;
+        } else {
+            self.client
+                .query_json(
+                    edgeql::INSERT_EVIDENCE_NOSPAN,
+                    &(
+                        e.id.as_str(),
+                        class,
+                        e.supports,
+                        e.text.as_str(),
+                        e.snapshot.as_str(),
+                        e.source_file_version.as_str(),
+                    ),
+                )
+                .await
+                .map_err(|e| GelError::Query(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Claim insert with evidence links (idempotent).
+    pub async fn insert_claim_row(&self, c: &Claim) -> Result<(), GelError> {
+        self.client
+            .query_json(
+                edgeql::INSERT_CLAIM,
+                &(
+                    c.id.as_str(),
+                    c.relation_id.as_str(),
+                    c.accepted,
+                    c.supporting.clone(),
+                    c.contradicting.clone(),
+                ),
+            )
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Append one evidence link to a relationship.
+    pub async fn link_evidence(&self, rel_id: &str, evidence_id: &str) -> Result<(), GelError> {
+        self.client
+            .query_json(edgeql::LINK_EVIDENCE, &(rel_id, evidence_id))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        Ok(())
+    }
+
     /// Active build header for a repository (per-request build pinning).
     pub async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, GelError> {
         let json = self
@@ -1631,6 +1948,27 @@ impl GelHandle {
         let rows: Vec<EvidenceBundleRow> =
             serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
         Ok(rows.into_iter().flat_map(|r| r.ev).collect())
+    }
+
+    /// Decision lookup by candidate + question with its cache key.
+    pub async fn find_decision_row(
+        &self,
+        candidate_id: &str,
+        question_id: &str,
+    ) -> Result<Option<DecisionRow>, GelError> {
+        let json = self
+            .client
+            .query_single_json(edgeql::DECISION_BY_CANDIDATE, &(candidate_id, question_id))
+            .await
+            .map_err(|e| GelError::Query(e.to_string()))?;
+        match json {
+            None => Ok(None),
+            Some(j) => {
+                let row: DecisionRow = serde_json::from_str(j.as_ref())
+                    .map_err(|e| GelError::Query(e.to_string()))?;
+                Ok(Some(row))
+            }
+        }
     }
 }
 
