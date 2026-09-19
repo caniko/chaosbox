@@ -55,6 +55,10 @@
           projectRootFile = "flake.nix";
           programs.nixfmt.enable = true;
           programs.rustfmt.enable = true;
+          # Match Cargo.toml (edition 2021): treefmt defaults to 2024, whose
+          # overflow rules disagree with `cargo fmt` on the same toolchain,
+          # making the two gates unsatisfiable simultaneously.
+          programs.rustfmt.edition = "2021";
           programs.taplo.enable = true;
         }).config.build;
     in

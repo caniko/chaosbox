@@ -2181,11 +2181,10 @@ mod tests {
         s.ensure_run("run:1", "r", "s1", "set:1", "catalog:1", "rubric-v1")
             .await
             .unwrap();
-        assert!(
-            s.ensure_run("run:1", "r", "s1", "set:1", "catalog:2", "rubric-v1")
-                .await
-                .is_err()
-        );
+        assert!(s
+            .ensure_run("run:1", "r", "s1", "set:1", "catalog:2", "rubric-v1")
+            .await
+            .is_err());
         let cand = Candidate {
             id: "cand:1".into(),
             rel_type: RelationType::Calls,
@@ -2263,11 +2262,10 @@ mod tests {
         s.publish(b1.clone(), None).await.unwrap();
         let mut stale = GraphBuild::new("r", vec!["s1".into()], 1);
         stale.add_node(ent("r", "s1", "b.rs", "b")).unwrap();
-        assert!(
-            s.publish(stale, Some("wrong-predecessor".into()))
-                .await
-                .is_err()
-        );
+        assert!(s
+            .publish(stale, Some("wrong-predecessor".into()))
+            .await
+            .is_err());
         let mut b2 = GraphBuild::new("r", vec!["s2".into()], 2);
         b2.predecessor = Some(b1.id.clone());
         b2.add_node(ent("r", "s2", "c.rs", "c")).unwrap();
