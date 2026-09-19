@@ -219,7 +219,7 @@ async fn main() {
                 // credentials file is present; refuse divergent history.
                 // run_migrate verifies schema readiness itself; the arm only
                 // maps the verdict to the exit code.
-                match run_migrate().await {
+                match Box::pin(run_migrate()).await {
                     Ok(report) => {
                         println!("{}", serde_json::to_string(&report).unwrap());
                         std::process::exit(i32::from(report.status != "ready"));
@@ -573,9 +573,9 @@ async fn run_migrate() -> Result<LifecycleReport, String> {
         // application readiness (check exit 0 only with an active build).
         // Reuses the same connection the CLI just proved.
         std::env::set_var("GEL_CREDENTIALS_FILE", &creds);
-        match chaosbox_gel::GelHandle::connect().await {
+        match Box::pin(chaosbox_gel::GelHandle::connect()).await {
             Err(e) => Err(format!("post-apply connect: {e}")),
-            Ok(handle) => match handle.schema_present().await {
+            Ok(handle) => match Box::pin(handle.schema_present()).await {
                 Err(e) => Err(format!("post-apply schema probe: {e}")),
                 Ok(false) => Err("post-apply schema probe: marker type absent".into()),
                 Ok(true) => Ok(chaosbox::LifecycleReport {
