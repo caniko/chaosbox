@@ -21,13 +21,13 @@ use thiserror::Error;
 pub const SCHEMA_SDL: &str = include_str!("../../../dbschema/default.esdl");
 
 /// Committed migration asset.
-pub const MIGRATION_00001: &str = include_str!("../../../dbschema/migrations/00001-m1t7ega.edgeql");
+pub const MIGRATION_00001: &str = include_str!("../../../dbschema/migrations/00001-m1tjyzf.edgeql");
 
 /// Committed migration asset: worker-task leases.
-pub const MIGRATION_00002: &str = include_str!("../../../dbschema/migrations/00002-m1qqqqq.edgeql");
+pub const MIGRATION_00002: &str = include_str!("../../../dbschema/migrations/00002-m12njzr.edgeql");
 
 /// Committed migration asset: decision cache keys.
-pub const MIGRATION_00003: &str = include_str!("../../../dbschema/migrations/00003-m3_deci.edgeql");
+pub const MIGRATION_00003: &str = include_str!("../../../dbschema/migrations/00003-m1hzxxs.edgeql");
 
 /// Pinned Gel version this schema is tested against.
 pub const GEL_PINNED: &str = "7.2";
@@ -2197,15 +2197,15 @@ mod tests {
         assert!(SCHEMA_SDL.contains("ActiveBuildPointer"));
         assert!(SCHEMA_SDL.contains("type WorkerTask"));
         assert!(!SCHEMA_SDL.contains("json;") || SCHEMA_SDL.contains("raw_envelope"));
-        assert!(MIGRATION_00001.contains("m1_chaosbox_init"));
-        assert!(MIGRATION_00002.contains("m2_worker_tasks"));
+        assert!(MIGRATION_00001.contains("m1tjyzfl33vvzwjd5izo5nyp4zdsekyvxpdm7zhtt5ufmqjzczopdq"));
+        assert!(MIGRATION_00002.contains("m12njzrcvjntb32dcaaa4tl6ac34fenx7qczc3skbufpfimsp4zgeq"));
         assert!(
-            MIGRATION_00002.contains("m1_chaosbox_init"),
+            MIGRATION_00002.contains("m1tjyzfl33vvzwjd5izo5nyp4zdsekyvxpdm7zhtt5ufmqjzczopdq"),
             "migration chain must link"
         );
-        assert!(MIGRATION_00003.contains("m3_decision_cache_key"));
+        assert!(MIGRATION_00003.contains("m1hzxxsspfr3msambqsztuyxg4b63khfwpjg7pmhsqbd4bprndljya"));
         assert!(
-            MIGRATION_00003.contains("m2_worker_tasks"),
+            MIGRATION_00003.contains("m12njzrcvjntb32dcaaa4tl6ac34fenx7qczc3skbufpfimsp4zgeq"),
             "migration chain must link"
         );
     }

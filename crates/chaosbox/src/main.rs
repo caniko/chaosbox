@@ -214,19 +214,15 @@ async fn main() {
                     std::process::exit(if report.status == "pending" { 2 } else { 1 });
                 }
             }
-            DbCmd::Migrate { json: _, repo } => {
+            DbCmd::Migrate { json: _, repo: _ } => {
                 // Idempotent committed migrations via pinned Gel CLI when a
                 // credentials file is present; refuse divergent history.
-                // Exit 0 only after post-apply readiness verification.
+                // run_migrate verifies schema readiness itself; the arm only
+                // maps the verdict to the exit code.
                 match run_migrate().await {
                     Ok(report) => {
-                        if report.status != "ready" {
-                            println!("{}", serde_json::to_string(&report).unwrap());
-                            std::process::exit(1);
-                        }
-                        let verified = Box::pin(db_check_gel(&repo)).await;
-                        println!("{}", serde_json::to_string(&verified).unwrap());
-                        std::process::exit(i32::from(verified.status != "ready"));
+                        println!("{}", serde_json::to_string(&report).unwrap());
+                        std::process::exit(i32::from(report.status != "ready"));
                     }
                     Err(e) => {
                         let report = LifecycleReport::pending("db migrate", &e);
@@ -255,9 +251,10 @@ async fn db_check_gel(repo: &str) -> LifecycleReport {
             // This is the normal pre-migration state, not a failure.
             Ok(false) => LifecycleReport::pending("db check", "migrations not applied"),
             Ok(true) => LifecycleReport::error("db check", &format!("active build: {e}")),
-            Err(probe) => {
-                LifecycleReport::error("db check", &format!("active build: {e}; schema probe: {probe}"))
-            }
+            Err(probe) => LifecycleReport::error(
+                "db check",
+                &format!("active build: {e}; schema probe: {probe}"),
+            ),
         },
         Ok(None) => LifecycleReport::pending("db check", "no active build for repo"),
         Ok(Some(b)) => LifecycleReport::check_ready(serde_json::json!({
@@ -569,9 +566,29 @@ async fn run_migrate() -> Result<LifecycleReport, String> {
         .await
         .map_err(|e| format!("gel CLI: {e}"))?;
     if out.status.success() {
-        Ok(LifecycleReport::check_ready(
-            serde_json::json!({"applied": true}),
-        ))
+        // Schema-level verification only: server reachable, authenticated,
+        // committed schema present. Active builds are published by pipelines
+        // AFTER migration, so a fresh database legitimately has none;
+        // deployment distinguishes schema readiness (migrate exit 0) from
+        // application readiness (check exit 0 only with an active build).
+        // Reuses the same connection the CLI just proved.
+        std::env::set_var("GEL_CREDENTIALS_FILE", &creds);
+        match chaosbox_gel::GelHandle::connect().await {
+            Err(e) => Err(format!("post-apply connect: {e}")),
+            Ok(handle) => match handle.schema_present().await {
+                Err(e) => Err(format!("post-apply schema probe: {e}")),
+                Ok(false) => Err("post-apply schema probe: marker type absent".into()),
+                Ok(true) => Ok(chaosbox::LifecycleReport {
+                    contract_version: 1,
+                    backend: "gel".into(),
+                    operation: "db migrate".into(),
+                    status: "ready".into(),
+                    schema_version: chaosbox_gel::SCHEMA_VERSION,
+                    gel_pinned: chaosbox_gel::GEL_PINNED.into(),
+                    detail: serde_json::json!({"applied": true}),
+                }),
+            },
+        }
     } else {
         Err(format!(
             "gel migration apply failed: {}",
