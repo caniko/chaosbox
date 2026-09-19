@@ -339,6 +339,26 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_je
         eprintln!("snapshot files: {e}");
         return 1;
     }
+    // Mint deterministic run/set identity and register the candidate catalog
+    // before any decision references it.
+    let catalog = chaosbox_core::catalog_digest(&cands);
+    let run_id = chaosbox_core::deterministic_id("run", &[repo, &snap.id]);
+    let set_id =
+        chaosbox_core::deterministic_id("set", &[&run_id, &catalog, &mat.rubric_version]);
+    if let Err(e) = pipe
+        .store
+        .ensure_run(&run_id, repo, &snap.id, &set_id, &catalog, &mat.rubric_version)
+        .await
+    {
+        eprintln!("run identity: {e}");
+        return 1;
+    }
+    for cand in &cands {
+        if let Err(e) = pipe.store.put_candidate(&set_id, cand).await {
+            eprintln!("candidate: {e}");
+            return 1;
+        }
+    }
     let decided = if live_jev {
         let policy = chaosbox_jev::JevPolicy::default();
         let client = match chaosbox_jev::JevClient::new(policy) {

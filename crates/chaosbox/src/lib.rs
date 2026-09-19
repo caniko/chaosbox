@@ -9,11 +9,13 @@ use std::{
 
 use chaosbox_core::{
     Candidate, Claim, Decision, DecisionOutcome, Entity, Evidence, EvidenceClass, GraphBuild,
-    Relation, RelationScope, check_confidence, check_probability, deterministic_id,
+    Relation, RelationScope, catalog_digest, check_confidence, check_probability, deterministic_id,
 };
 use chaosbox_extract::{Extraction, Snapshot, build_candidates, extract_snapshot};
 use chaosbox_gel::MemoryStore;
-use chaosbox_jev::{Answer, ChoiceAnswer, JevClient, NoulAnswer, Question, ScoreAnswer, SystemOneResponse};
+use chaosbox_jev::{
+    Answer, ChoiceAnswer, JevClient, NoulAnswer, Question, ScoreAnswer, SystemOneResponse, cache_key,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -295,6 +297,9 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
         store: &mut S,
     ) -> Result<Vec<(Candidate, Decision, Evidence)>, PipelineError> {
         mat.validate()?;
+        // Conservative cache identity: the whole-catalog digest feeds every
+        // key, so any catalog change re-asks all decisions (documented).
+        let catalog = catalog_digest(candidates);
         let mut out = Vec::new();
         for cand in candidates {
             let from = entities.get(&cand.from_entity).ok_or_else(|| PipelineError::Validation("missing from".into()))?;
@@ -314,6 +319,7 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
             let resp = match responder.respond(state, questions.clone()).await {
                 Ok(r) => r,
                 Err(_) => {
+                    let key = cache_key(&from.snapshot, &catalog, &questions, model_requested, &mat.rubric_version);
                     let decision = Decision {
                         id: deterministic_id("dec", &[&cand.id, "failed", model_requested]),
                         candidate_id: cand.id.clone(),
@@ -324,6 +330,7 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                         model_returned: String::new(),
                         confidence: None,
                         probability: None,
+                        cache_key: key,
                     };
                     let ev = Evidence {
                         id: deterministic_id("ev", &[&decision.id, "failed"]),
@@ -405,6 +412,13 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                     model_returned: resp.model.clone(),
                     confidence: conf,
                     probability: prob,
+                    cache_key: cache_key(
+                        &from.snapshot,
+                        &catalog,
+                        &questions,
+                        model_requested,
+                        &mat.rubric_version,
+                    ),
                 };
                 // Evidence text copied from source spans / deterministic template.
                 let text = format!("[{}] {} -> {} ({:?})", cand.reason, from.qualified_name, to.qualified_name, cand.rel_type);

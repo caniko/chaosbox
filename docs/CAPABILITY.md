@@ -1,4 +1,4 @@
-# Capability matrix (v0.5.0)
+# Capability matrix (v0.6.0)
 
 ## Implemented in native Rust
 
@@ -33,6 +33,10 @@
   record as produced; `build_and_publish()` assembles one claim per
   materialized relation (same-triple rejections as contradicting evidence);
   relation filters validated loudly against the vocabulary
+- Run identity + cache-key storage (schema-first): deterministic run/set ids
+  over the candidate catalog, `ensure_run`/`put_candidate` on both stores,
+  `cache_key` on every decision, `Decision.cache_key` in SDL + `m3`
+  migration (schema v3), `CATALOG_VERSION` + order-invariant catalog digest
 - Durable worker leases: `WorkerTask` SDL + `m2` migration; claim/heartbeat/
   reclaim with injected clocks and generation guards; stale holders recognizable
 - Gel SDL + migration, first-class Relationship objects, typed EdgeQL ops with
@@ -61,9 +65,8 @@
 
 ## Not yet implemented (explicit)
 
-- Decision/evidence/claim row flushing + decision-cache reuse/invalidation
-  (needs run/set identity born in `run_pipeline`; consts reviewed, methods
-  land with the candidate chain)
+- Decision-cache lookup/invalidation + decision/evidence/claim row flushing
+  (run/set identity and `cache_key` storage land this round; behavior next)
 - Real Gel integration gate (needs disposable server; `test-gel` runs schema,
   mock-HTTP, and pipeline gates, exits 3 PENDING without a `gel` server);
   Gel write-path integration (`Pipeline` through a Gel-backed `Store`,

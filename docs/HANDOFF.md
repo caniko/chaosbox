@@ -1,32 +1,24 @@
-# Handoff (v0.5.0, 2026-09-19, atlas)
+# Handoff (v0.6.0, 2026-09-19, atlas)
 
 ## Commands + actual results (all executed this session)
 
-- `cargo test --workspace` — 44 passed, 0 failed; zero warnings
-  (3 store tests merged into 1 write-conformance test vs v0.4.0's 46)
+- `cargo test --workspace` — 45 passed, 0 failed; zero warnings
 - `cargo run -p chaosbox -- run fixtures/demo-repo --repo demo` — exit 0
-- `db check --json` without Gel — exit 1, contract-v1 error JSON
 - `nix-instantiate --parse flake.nix` — ok (no flake changes this round)
-- gel-protocol audit: positional arg tuples cap at 12 params; `Option<T>`
-  args supported; `uuid` passed as `<uuid><str>` cast (no new dep)
 
-## Changes since v0.4.0 (Round 2: Gel write path, graph half)
+## Changes since v0.5.0 (Round 3 schema-first: run identity + key storage)
 
-- `Store` is async end-to-end (`MemoryStore`, `decide`, `build_and_publish`,
-  all callers; gel store tests now `#[tokio::test]`)
-- `GelStore`: in-memory staging with identical semantics + flush at
-  publication (snapshots, files, entities+spans, relations, memberships,
-  build row) with a generation-guarded pointer swing; concurrent publisher
-  wins, retry idempotent, last-good stays active on failure
-- Fixed `UPSERT_ENTITY` (was missing the required span link — would have
-  failed on live Gel); split span insert (12-param ceiling); canonical
-  `entity_kind_name` shared by fake and inserts (fake previously used Debug)
-- Decision-chain EdgeQL consts reviewed (conditional Failed-supersedure
-  upsert, run/set/candidate/attempt/evidence/claim inserts); row-flush
-  methods deferred to Round 3 with the candidate chain (FK requires
-  run/set identity born in `run_pipeline`)
-- Shared write-conformance suite (`check_write_conformance`) over any
-  `Store`: linkage, idempotency, supersedure, publication guards
+- Core: `Decision.cache_key` (documented reuse contract), `CATALOG_VERSION`
+  (`catalog-v1`), order-invariant + change-sensitive `catalog_digest()`;
+  `decide()` stamps every key (source snapshot, whole-catalog digest,
+  questions, model, rubric; conservative: any catalog change re-asks all)
+- Gel schema: `Decision.cache_key` required field + `m3_decision_cache_key`
+  migration (schema v3, chain-linked, asset-tested)
+- Run identity: `Store::ensure_run` + `Store::put_candidate` on both stores
+  (set-identity mismatch and unregistered sets rejected); `run_pipeline`
+  mints deterministic run/set ids and registers the catalog before deciding;
+  vertical slice asserts candidate/run counts
+- Write conformance extended with run/candidate registration cases
 
 ## Dependency handoff revisions
 
@@ -38,19 +30,19 @@
 ## Remaining blockers (not copied, not faked)
 
 1. Disposable Gel instance + credentials/readiness flow (harbor-db branch).
-   Unblocks: live write/read conformance, decision cache proof.
+   Unblocks: live write/read conformance, cache proof.
 2. simit named gates + ordered publication; nothing published, no tags pushed.
 3. Live Jev quality: `run --live-jev` ready, needs operator key file.
 4. Note: `00001.edgeql` is a module stub — full SDL↔migration reconciliation
    happens on the first live `gel migration create`/apply cycle.
 
-## Exact next commands (Round 3: decision cache)
+## Exact next commands (Round 3 behavior: lookup + flush)
 
 ```sh
 cd /data/nvme0/can/canix/projects/repos/owned/chaosbox
 git log --oneline -3
-# 1. run_pipeline mints run/set identity; ensure_run + put_candidate
-# 2. decision/evidence/claim flush methods; cache_key() lookup in decide()
+# 1. Store::find_decision; decide() skips on cache-key match
+# 2. decision/evidence/claim flush methods on GelHandle; GelStore full chain
 # 3. per-axis invalidation tests (catalog/model/rubric vs thresholds)
 nix run .#test-gel            # PENDING until the harbor-db branch lands
 ```

@@ -125,6 +125,9 @@ module default {
         required evidence_class: str;
         required model_requested: str;
         required model_returned: str;
+        # Cache identity the decision is valid under (source, preprocessing,
+        # catalog, questions, model, rubric). Reuse compares this key.
+        required cache_key: str;
         confidence: float64;
         probability: float64;
         constraint exclusive on ((.candidate, .question_id));

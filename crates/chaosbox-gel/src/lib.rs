@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use chaosbox_core::{Claim, Decision, Entity, Evidence, GraphBuild, Relation, SnapshotFile};
+use chaosbox_core::{Candidate, Claim, Decision, Entity, Evidence, GraphBuild, Relation, SnapshotFile};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -23,10 +23,13 @@ pub const MIGRATION_00001: &str = include_str!("../../../dbschema/migrations/000
 /// Committed migration asset: worker-task leases.
 pub const MIGRATION_00002: &str = include_str!("../../../dbschema/migrations/00002.edgeql");
 
+/// Committed migration asset: decision cache keys.
+pub const MIGRATION_00003: &str = include_str!("../../../dbschema/migrations/00003.edgeql");
+
 /// Pinned Gel version this schema is tested against.
 pub const GEL_PINNED: &str = "7.2";
 /// Schema compatibility marker checked by `db check`.
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Persistence/query failures: client, query, invariant, or missing rows.
 #[derive(Debug, Error)]
@@ -424,6 +427,20 @@ pub trait Store: Send + Sync {
         repo: &str,
         files: &[SnapshotFile],
     ) -> Result<(), GelError>;
+    /// Register one extraction run + candidate set (idempotent).
+    /// A set id with a different catalog digest or rubric is rejected:
+    /// set identity covers its inputs.
+    async fn ensure_run(
+        &mut self,
+        run_id: &str,
+        repo: &str,
+        snapshot_id: &str,
+        set_id: &str,
+        catalog_digest: &str,
+        rubric_version: &str,
+    ) -> Result<(), GelError>;
+    /// Record a candidate of a registered set (idempotent per candidate id).
+    async fn put_candidate(&mut self, set_id: &str, c: &Candidate) -> Result<(), GelError>;
     /// Stage an entity (idempotent); validated at publication.
     async fn put_entity(&mut self, e: Entity) -> Result<(), GelError>;
     /// Stage a relationship for one build (idempotent).
@@ -463,6 +480,12 @@ pub struct MemoryStore {
     claims: BTreeMap<String, Claim>,
     /// (snapshot, path) -> (sha256, bytes); evidence linkage validated here.
     files: BTreeMap<(String, String), (String, u64)>,
+    /// run id -> (repo, snapshot id).
+    runs: BTreeMap<String, (String, String)>,
+    /// set id -> (run id, catalog digest, rubric version).
+    sets: BTreeMap<String, (String, String, String)>,
+    /// candidate id -> (set id, candidate).
+    candidates: BTreeMap<String, (String, Candidate)>,
 }
 
 impl MemoryStore {
@@ -481,6 +504,8 @@ impl MemoryStore {
             evidence: self.evidence.len(),
             claims: self.claims.len(),
             builds: self.builds.len(),
+            candidates: self.candidates.len(),
+            runs: self.runs.len(),
         }
     }
 }
@@ -496,6 +521,10 @@ pub struct StoreStats {
     pub claims: usize,
     /// Published builds.
     pub builds: usize,
+    /// Recorded candidates.
+    pub candidates: usize,
+    /// Registered runs.
+    pub runs: usize,
 }
 
 #[async_trait::async_trait]
@@ -557,7 +586,42 @@ impl Store for MemoryStore {
         self.claims.entry(c.id.clone()).or_insert(c);
         Ok(())
     }
-    async fn publish(&mut self, build: GraphBuild, expected_predecessor: Option<String>) -> Result<(), GelError> {
+
+    async fn ensure_run(
+        &mut self,
+        run_id: &str,
+        repo: &str,
+        snapshot_id: &str,
+        set_id: &str,
+        catalog_digest: &str,
+        rubric_version: &str,
+    ) -> Result<(), GelError> {
+        self.runs.entry(run_id.to_owned()).or_insert_with(|| (repo.to_owned(), snapshot_id.to_owned()));
+        if let Some((run, catalog, rubric)) = self.sets.get(set_id) {
+            if run != run_id || catalog != catalog_digest || rubric != rubric_version {
+                return Err(GelError::Invariant(format!(
+                    "candidate set {set_id} already registered with different inputs"
+                )));
+            }
+            return Ok(());
+        }
+        self.sets.insert(
+            set_id.to_owned(),
+            (run_id.to_owned(), catalog_digest.to_owned(), rubric_version.to_owned()),
+        );
+        Ok(())
+    }
+
+    async fn put_candidate(&mut self, set_id: &str, c: &Candidate) -> Result<(), GelError> {
+        if !self.sets.contains_key(set_id) {
+            return Err(GelError::Invariant(format!(
+                "candidate {} references unregistered set {set_id}",
+                c.id
+            )));
+        }
+        self.candidates.entry(c.id.clone()).or_insert_with(|| (set_id.to_owned(), c.clone()));
+        Ok(())
+    }    async fn publish(&mut self, build: GraphBuild, expected_predecessor: Option<String>) -> Result<(), GelError> {
         // Validate invariants before pointer swing.
         for r in build.edges.values() {
             if !build.nodes.contains_key(&r.from) || !build.nodes.contains_key(&r.to) {
@@ -696,6 +760,22 @@ impl Store for GelStore {
 
     async fn put_claim(&mut self, c: Claim) -> Result<(), GelError> {
         self.staging.put_claim(c).await
+    }
+
+    async fn ensure_run(
+        &mut self,
+        run_id: &str,
+        repo: &str,
+        snapshot_id: &str,
+        set_id: &str,
+        catalog_digest: &str,
+        rubric_version: &str,
+    ) -> Result<(), GelError> {
+        self.staging.ensure_run(run_id, repo, snapshot_id, set_id, catalog_digest, rubric_version).await
+    }
+
+    async fn put_candidate(&mut self, set_id: &str, c: &Candidate) -> Result<(), GelError> {
+        self.staging.put_candidate(set_id, c).await
     }
 
     async fn publish(
@@ -1581,6 +1661,8 @@ mod tests {
         assert!(MIGRATION_00001.contains("m1_chaosbox_init"));
         assert!(MIGRATION_00002.contains("m2_worker_tasks"));
         assert!(MIGRATION_00002.contains("m1_chaosbox_init"), "migration chain must link");
+        assert!(MIGRATION_00003.contains("m3_decision_cache_key"));
+        assert!(MIGRATION_00003.contains("m2_worker_tasks"), "migration chain must link");
     }
 
     /// Shared write-path conformance over any [`Store`] impl: file linkage,
@@ -1588,7 +1670,25 @@ mod tests {
     /// Runs against [`MemoryStore`] now; a live-Gel test seeds nothing extra
     /// and calls this against [`GelStore`] once a server is available.
     pub async fn check_write_conformance<S: Store>(s: &mut S) {
-        use chaosbox_core::{DecisionOutcome, EvidenceClass, SourceSpan};
+        use chaosbox_core::{DecisionOutcome, EvidenceClass, RelationType, SourceSpan};
+        // Run + set identity registers before candidates may reference it.
+        s.ensure_run("run:1", "r", "s1", "set:1", "catalog:1", "rubric-v1").await.unwrap();
+        assert_eq!(s.stats().runs, 1);
+        // Same inputs re-register idempotently; changed inputs are rejected.
+        s.ensure_run("run:1", "r", "s1", "set:1", "catalog:1", "rubric-v1").await.unwrap();
+        assert!(s.ensure_run("run:1", "r", "s1", "set:1", "catalog:2", "rubric-v1").await.is_err());
+        let cand = Candidate {
+            id: "cand:1".into(),
+            rel_type: RelationType::Calls,
+            from_entity: "ent:a".into(),
+            to_entity: "ent:b".into(),
+            reason: "structural".into(),
+            state_excerpt: String::new(),
+        };
+        assert!(s.put_candidate("set:missing", &cand).await.is_err(), "unregistered sets never resolve");
+        s.put_candidate("set:1", &cand).await.unwrap();
+        s.put_candidate("set:1", &cand).await.unwrap();
+        assert_eq!(s.stats().candidates, 1);
         // File versions register before evidence may reference them.
         let files =
             vec![SnapshotFile { snapshot: "s1".into(), path: "a.rs".into(), sha256: "abc".into(), bytes: 3 }];
@@ -1625,6 +1725,7 @@ mod tests {
             model_returned: "jev-1.13.0".into(),
             confidence: None,
             probability: None,
+            cache_key: "test-cache-key".into(),
         };
         s.put_decision(mk("d1", DecisionOutcome::Failed("down".into()))).await.unwrap();
         s.put_decision(mk("d2", DecisionOutcome::Accepted)).await.unwrap();

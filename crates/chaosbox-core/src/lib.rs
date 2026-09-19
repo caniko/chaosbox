@@ -345,10 +345,43 @@ pub struct Decision {
     pub model_requested: String,
     /// Model identity returned by the provider.
     pub model_returned: String,
-    /// Choice/Score confidence, if the answer type carries one.
+    /// Confidence (Choice/Score), if the answer type carries one.
     pub confidence: Option<f64>,
-    /// Noul probability or winning-option probability, if applicable.
+    /// Probability (Noul or winning option), if applicable.
     pub probability: Option<f64>,
+    /// Cache identity under which this decision is valid (source,
+    /// preprocessing, catalog, questions, model, rubric). Reuse compares
+    /// this key; threshold-only changes keep it stable.
+    pub cache_key: String,
+}
+
+/// Candidate catalog/preprocessing version. Bump when parsers, candidate
+/// construction, or question semantics change: the digest below feeds every
+/// decision cache key, so a bump conservatively re-asks all decisions.
+pub const CATALOG_VERSION: &str = "catalog-v1";
+
+/// Catalog digest over the sorted candidate set: one record per candidate
+/// `(id, rel_type, from, to, reason)` plus [`CATALOG_VERSION`].
+/// Conservative: any catalog change invalidates every decision in the run
+/// (per-dependency precision is a documented follow-up).
+#[must_use]
+pub fn catalog_digest(candidates: &[Candidate]) -> String {
+    let mut records: Vec<String> = candidates
+        .iter()
+        .map(|c| {
+            format!(
+                "{}:{}:{}:{}:{}",
+                c.id,
+                relation_type_name(&c.rel_type),
+                c.from_entity,
+                c.to_entity,
+                c.reason
+            )
+        })
+        .collect();
+    records.sort();
+    records.push(CATALOG_VERSION.to_owned());
+    sha256_hex(&records.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
 /// A candidate relationship proposed deterministically for Jev review.
@@ -631,6 +664,24 @@ mod tests {
         assert_eq!(evidence_class_name(EvidenceClass::Ambiguous), "ambiguous");
         assert_eq!(entity_kind_name(&EntityKind::CodeMention), "code_mention");
         assert_eq!(entity_kind_name(&EntityKind::Symbol), "symbol");
+    }
+
+    #[test]
+    fn catalog_digest_is_order_invariant_and_change_sensitive() {
+        let mk = |id: &str| Candidate {
+            id: id.into(),
+            rel_type: RelationType::Calls,
+            from_entity: "a".into(),
+            to_entity: "b".into(),
+            reason: "structural".into(),
+            state_excerpt: String::new(),
+        };
+        let (c1, c2) = (mk("cand:1"), mk("cand:2"));
+        assert_eq!(catalog_digest(&[c1.clone(), c2.clone()]), catalog_digest(&[c2.clone(), c1.clone()]));
+        let mut changed = c2.clone();
+        changed.reason = "co-occurrence".into();
+        assert_ne!(catalog_digest(&[c1, c2]), catalog_digest(&[changed]));
+        assert!(!CATALOG_VERSION.is_empty());
     }
 
     #[test]
