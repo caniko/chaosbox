@@ -75,7 +75,7 @@
             || pkgs.lib.hasPrefix (toString ./fixtures + "/") (toString path);
         };
     in
-      {
+    {
       nixosModules.chaosbox = import ./nix/chaosbox.nix;
       nixosModules.default = self.nixosModules.chaosbox;
 
