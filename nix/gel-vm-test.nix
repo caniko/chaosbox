@@ -51,6 +51,10 @@ pkgs.testers.nixosTest {
         environment = {
           GEL_SERVER_DATADIR = "/var/lib/gel/data";
           GEL_SERVER_PASSWORD_FILE = "/run/secrets/gel-server-password";
+          # Required: without a cert mode (and outside insecure_dev_mode,
+          # which would also disable password auth) the server has no TLS
+          # material and exits at startup. Matches the harbor-db default.
+          GEL_SERVER_TLS_CERT_MODE = "generate_self_signed";
           # Project-owned migrations only; container startup never applies
           # schema implicitly.
           GEL_DOCKER_APPLY_MIGRATIONS = "never";
