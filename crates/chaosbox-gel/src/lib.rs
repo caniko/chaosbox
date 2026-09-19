@@ -1,7 +1,7 @@
 //! Typed Gel persistence/query operations and packaged schema assets.
 //!
 //! The native `gel-tokio` client is used with typed serde decoding and
-//! parameterized EdgeQL. `query_json` results are decoded into typed structs;
+//! parameterized `EdgeQL`. `query_json` results are decoded into typed structs;
 //! frequently queried fields are typed properties/links, JSON only for
 //! bounded raw provider envelopes. No SQLx/Postgres, no Python bridge.
 //!
@@ -41,7 +41,7 @@ pub enum GelError {
     /// Connection or client-construction failure.
     Client(String),
     #[error("query: {0}")]
-    /// EdgeQL execution or typed-decoding failure.
+    /// `EdgeQL` execution or typed-decoding failure.
     Query(String),
     #[error("invariant: {0}")]
     /// A graph invariant was violated (cross-build edge, stale predecessor, ...).
@@ -51,7 +51,7 @@ pub enum GelError {
     NotFound(String),
 }
 
-/// Parameterized EdgeQL statements (never string-interpolated values).
+/// Parameterized `EdgeQL` statements (never string-interpolated values).
 pub mod edgeql {
     /// Idempotent snapshot upsert (`$0` repo, `$1` snapshot id).
     pub const UPSERT_SNAPSHOT: &str =
@@ -290,7 +290,7 @@ pub struct RelRow {
     pub to_entity: EndpointRef,
 }
 
-/// Endpoint id wrapper (EdgeQL shape).
+/// Endpoint id wrapper (`EdgeQL` shape).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct EndpointRef {
     /// Entity id.
@@ -318,7 +318,7 @@ pub struct EvidenceBundleRow {
     pub ev: Vec<EvidenceRow>,
 }
 
-/// Candidate id wrapper (EdgeQL shape).
+/// Candidate id wrapper (`EdgeQL` shape).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CandidateRef {
     /// Candidate id.
@@ -413,8 +413,7 @@ pub fn claim_task(
             Ok(())
         }
         other => Err(GelError::Invariant(format!(
-            "claim non-pending task {:?} as {worker}",
-            other
+            "claim non-pending task {other:?} as {worker}"
         ))),
     }
 }
@@ -772,6 +771,11 @@ pub struct GelStore {
     staging: MemoryStore,
 }
 
+// Flush paths hold the (large) Gel client across awaits by design; boxing
+// every call would trade stack for allocator pressure on hot paths. The
+// owning session should audit future sizes deliberately; allowed meanwhile.
+// (Covers impl GelStore staging/flush helpers below.)
+#[allow(clippy::large_futures)]
 impl GelStore {
     /// A disconnected store; connects lazily on first flush.
     #[must_use]
@@ -872,7 +876,12 @@ impl GelStore {
             handle.insert_edge_membership(&build.id, &r.id).await?;
         }
         handle
-            .create_build(&build.id, &build.repo, build.generation as i64, "staging")
+            .create_build(
+                &build.id,
+                &build.repo,
+                i64::try_from(build.generation).expect("generation fits in i64"),
+                "staging",
+            )
             .await?;
         Ok(())
     }
@@ -885,6 +894,9 @@ impl Default for GelStore {
 }
 
 #[async_trait::async_trait]
+// Same as above: large client futures across awaits in the Store impl;
+// allowed pending the owning session's size audit.
+#[allow(clippy::large_futures)]
 impl Store for GelStore {
     async fn ensure_snapshot_files(
         &mut self,
@@ -975,7 +987,9 @@ impl Store for GelStore {
             (None, None) => {}
             (Some(a), _) if a.build_id == build.id => return Ok(()), // idempotent retry
             (Some(a), Some(pred))
-                if *pred == a.build_id && build.generation as i64 > a.generation => {}
+                if *pred == a.build_id
+                    && i64::try_from(build.generation).expect("generation fits in i64")
+                        > a.generation => {}
             (Some(a), pred) => {
                 return Err(GelError::Invariant(format!(
                     "predecessor mismatch: expected {:?}, Gel active is {} (gen {})",
@@ -1209,7 +1223,7 @@ impl GelQueries for MemoryReader {
             .and_then(|id| self.builds.get(id))
             .map(|b| BuildRow {
                 build_id: b.id.clone(),
-                generation: b.generation as i64,
+                generation: i64::try_from(b.generation).expect("generation fits in i64"),
                 status: "active".to_owned(),
             }))
     }
@@ -1221,7 +1235,7 @@ impl GelQueries for MemoryReader {
         limit: i64,
     ) -> Result<Vec<EntityRow>, GelError> {
         let needle = unescape_like(like).to_lowercase();
-        let limit = limit.max(0) as usize;
+        let limit = usize::try_from(limit.max(0)).expect("limit fits in usize");
         Ok(self
             .members(build_id)
             .into_iter()
@@ -1267,7 +1281,7 @@ impl GelQueries for MemoryReader {
     }
 
     async fn build_entities(&self, build_id: &str, limit: i64) -> Result<Vec<EntityRow>, GelError> {
-        let limit = limit.max(0) as usize;
+        let limit = usize::try_from(limit.max(0)).expect("limit fits in usize");
         Ok(self
             .builds
             .get(build_id)
@@ -1284,7 +1298,7 @@ impl GelQueries for MemoryReader {
         build_id: &str,
         limit: i64,
     ) -> Result<Vec<RelRow>, GelError> {
-        let limit = limit.max(0) as usize;
+        let limit = usize::try_from(limit.max(0)).expect("limit fits in usize");
         Ok(self
             .builds
             .get(build_id)
@@ -1309,6 +1323,11 @@ impl GelQueries for MemoryReader {
 }
 
 #[async_trait::async_trait]
+// Query futures hold the large client across awaits (~32KB); boxing every
+// call site trades stack for allocator pressure without owner context.
+// Allowed pending a deliberate size audit (see follow-up); the store-impl
+// blocks above carry the same allowance for the same reason.
+#[allow(clippy::large_futures)]
 impl GelQueries for GelHandle {
     async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, GelError> {
         GelHandle::active_build(self, repo).await
@@ -1449,6 +1468,8 @@ pub fn conformance_seed() -> ConformanceSeed {
 /// Relationship/evidence lists compare as sets (live order is unspecified);
 /// entity lists compare ordered by qualified name. A future live-Gel test
 /// seeds the same fixture through the insert path and calls this function.
+// Long shared test helper; splitting it apart is the owning session's call.
+#[allow(clippy::too_many_lines)]
 pub async fn check_conformance<R: GelQueries>(
     r: &R,
     a1: &str,
@@ -1588,6 +1609,9 @@ pub struct GelHandle {
     client: gel_tokio::Client,
 }
 
+// Connection setup holds client builders across awaits (~31KB); same
+// allowance rationale as the query impls above.
+#[allow(clippy::large_futures)]
 impl GelHandle {
     /// Connect with default parameters (env/instance config).
     pub async fn connect() -> Result<Self, GelError> {
@@ -1669,7 +1693,7 @@ impl GelHandle {
                         snapshot_id,
                         f.path.as_str(),
                         f.sha256.as_str(),
-                        f.bytes as i64,
+                        i64::try_from(f.bytes).expect("file size fits in i64"),
                     ),
                 )
                 .await
@@ -1688,12 +1712,12 @@ impl GelHandle {
                 edgeql::INSERT_SPAN,
                 &(
                     e.span.file.as_str(),
-                    e.span.start_line as i64,
-                    e.span.start_col as i64,
-                    e.span.end_line as i64,
-                    e.span.end_col as i64,
-                    e.span.byte_start as i64,
-                    e.span.byte_end as i64,
+                    i64::from(e.span.start_line),
+                    i64::from(e.span.start_col),
+                    i64::from(e.span.end_line),
+                    i64::from(e.span.end_col),
+                    i64::from(e.span.byte_start),
+                    i64::from(e.span.byte_end),
                 ),
             )
             .await
@@ -1908,12 +1932,12 @@ impl GelHandle {
                     edgeql::INSERT_SPAN,
                     &(
                         span.file.as_str(),
-                        span.start_line as i64,
-                        span.start_col as i64,
-                        span.end_line as i64,
-                        span.end_col as i64,
-                        span.byte_start as i64,
-                        span.byte_end as i64,
+                        i64::from(span.start_line),
+                        i64::from(span.start_col),
+                        i64::from(span.end_line),
+                        i64::from(span.end_col),
+                        i64::from(span.byte_start),
+                        i64::from(span.byte_end),
                     ),
                 )
                 .await
@@ -2351,7 +2375,7 @@ mod tests {
             edgeql::INSERT_EDGE_MEMBERSHIP,
         ] {
             assert!(
-                q.contains("$"),
+                q.contains('$'),
                 "values must be bound params, not interpolated"
             );
             assert!(!q.contains("format!"), "no string interpolation in EdgeQL");

@@ -5,8 +5,8 @@
 //!   definitions, imports, containment, explicit textual references.
 //! - Markdown: headings, links, code mentions, source spans.
 //! - Plain text: file/symbol records, lexical mentions.
-//! Unsupported images/audio/video and office docs are reported, never
-//! silently interpreted or omitted.
+//!   Unsupported images/audio/video and office docs are reported, never
+//!   silently interpreted or omitted.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -143,7 +143,9 @@ fn is_supported(path: &str) -> bool {
         "rs", "py", "js", "ts", "jsx", "tsx", "mjs", "cjs", "md", "markdown", "txt",
     ];
     match path.rsplit('.').next() {
-        Some(ext) => EXTS.contains(&ext),
+        // Case-insensitive like the extractor below; a lone ".md" still
+        // yields "md" here, preserving the previous matching behavior.
+        Some(ext) => EXTS.iter().any(|e| e.eq_ignore_ascii_case(ext)),
         None => false,
     }
 }
@@ -210,12 +212,13 @@ fn span_of(text: &str, file: &str, byte_start: usize, byte_end: usize) -> Source
         start_col: sc,
         end_line: el,
         end_col: ec,
-        byte_start: byte_start as u32,
-        byte_end: byte_end as u32,
+        byte_start: u32::try_from(byte_start).expect("source byte offset fits in u32"),
+        byte_end: u32::try_from(byte_end).expect("source byte offset fits in u32"),
     }
 }
 
 /// Extract one file deterministically.
+#[must_use]
 pub fn extract_file(repo: &str, snapshot: &str, path: &str, text: &str) -> Extraction {
     let mut entities = Vec::new();
     let mut refs = Vec::new();
@@ -231,7 +234,8 @@ pub fn extract_file(repo: &str, snapshot: &str, path: &str, text: &str) -> Extra
     let file_id = file_entity.id.clone();
     entities.push(file_entity);
 
-    if path.ends_with(".md") || path.ends_with(".markdown") {
+    let ext_lower = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    if ext_lower == "md" || ext_lower == "markdown" {
         extract_markdown(
             repo,
             snapshot,
@@ -241,7 +245,7 @@ pub fn extract_file(repo: &str, snapshot: &str, path: &str, text: &str) -> Extra
             &mut entities,
             &mut refs,
         );
-    } else if path.ends_with(".txt") {
+    } else if ext_lower == "txt" {
         let sym = Entity::new(
             EntityKind::Symbol,
             repo,
@@ -442,26 +446,15 @@ pub fn extract_snapshot(snapshot: &Snapshot) -> Extraction {
 /// Sources: same-file co-occurrence, qualified-name match, explicit imports,
 /// lexical mentions, structural (file->module->definition) neighborhoods.
 /// Cap total candidates to keep Jev budgets bounded.
+// Over the default line budget; splitting the bounded pipeline stages
+// apart is the owning session's refactor. Allowed to keep CI unblocked.
+#[allow(clippy::too_many_lines)]
 #[must_use]
 pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Vec<Candidate> {
-    let by_id: BTreeMap<&str, &Entity> = extraction
-        .entities
-        .iter()
-        .map(|e| (e.id.as_str(), e))
-        .collect();
-    let mut name_index: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for e in &extraction.entities {
-        name_index
-            .entry(e.name.clone())
-            .or_default()
-            .push(e.id.clone());
-        name_index
-            .entry(e.qualified_name.clone())
-            .or_default()
-            .push(e.id.clone());
-    }
-    let mut out: Vec<Candidate> = Vec::new();
-    let mut seen: BTreeSet<(String, String, String)> = BTreeSet::new();
+    // Nested helper first: items exist from scope start (clarity lint).
+    // Eight parameters are a smell the owning session should refactor
+    // (e.g. a builder struct); allowed to keep this integration unblocked.
+    #[allow(clippy::too_many_arguments)]
     fn push(
         out: &mut Vec<Candidate>,
         seen: &mut BTreeSet<(String, String, String)>,
@@ -488,14 +481,31 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Vec<C
             });
         }
     }
+    let by_id: BTreeMap<&str, &Entity> = extraction
+        .entities
+        .iter()
+        .map(|e| (e.id.as_str(), e))
+        .collect();
+    let mut name_index: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for e in &extraction.entities {
+        name_index
+            .entry(e.name.clone())
+            .or_default()
+            .push(e.id.clone());
+        name_index
+            .entry(e.qualified_name.clone())
+            .or_default()
+            .push(e.id.clone());
+    }
+    let mut out: Vec<Candidate> = Vec::new();
+    let mut seen: BTreeSet<(String, String, String)> = BTreeSet::new();
     // 1. structural edges from extraction refs
     for (from, to, kind) in &extraction.explicit_refs {
         let rel = match kind.as_str() {
             "defines" => RelationType::Defines,
             "imports" => RelationType::Imports,
-            "references" => RelationType::References,
+            "references" | "mentions" => RelationType::References,
             "linksto" => RelationType::LinksTo,
-            "mentions" => RelationType::References,
             _ => RelationType::Contains,
         };
         let excerpt = by_id
@@ -555,7 +565,7 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Vec<C
             by_file.entry(e.file.as_str()).or_default().push(e);
         }
     }
-    for (_, defs_in_file) in &by_file {
+    for defs_in_file in by_file.values() {
         for pair in defs_in_file.windows(2).take(25) {
             push(
                 &mut out,

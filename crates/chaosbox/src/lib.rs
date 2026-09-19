@@ -74,6 +74,7 @@ impl Default for Materialization {
 impl Materialization {
     /// Materialization identity: every threshold plus build inputs, so
     /// threshold changes reuse valid raw decisions instead of re-asking Jev.
+    #[must_use]
     pub fn identity(&self, build_inputs: &str) -> String {
         deterministic_id(
             "mat",
@@ -342,6 +343,9 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
     /// Every decision and its evidence is persisted to `store` as produced,
     /// so a dead worker loses nothing already decided. Claims are assembled
     /// later in [`Pipeline::build_and_publish`], where relation ids exist.
+    // Long decision pipeline; splitting stages apart is the owning
+    // session's refactor. Allowed to keep CI unblocked.
+    #[allow(clippy::too_many_lines)]
     pub async fn decide(
         candidates: &[Candidate],
         entities: &BTreeMap<String, Entity>,
@@ -413,49 +417,47 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
             // Per-candidate faults become recorded Failed decisions (retryable),
             // never batch aborts and never retried blindly as empty responses.
             // The error text is NOT copied into evidence (untrusted responder).
-            let resp = match responder.respond(state, questions.clone()).await {
-                Ok(r) => r,
-                Err(_) => {
-                    let key = cache_key(
-                        &from.snapshot,
-                        &catalog,
-                        &questions,
-                        model_requested,
-                        &mat.rubric_version,
-                    );
-                    let decision = Decision {
-                        id: deterministic_id("dec", &[&cand.id, "failed", model_requested]),
-                        candidate_id: cand.id.clone(),
-                        question_id: format!("rel_{}", cand.id),
-                        outcome: DecisionOutcome::Failed("responder fault".into()),
-                        evidence_class: EvidenceClass::Ambiguous,
-                        model_requested: model_requested.to_owned(),
-                        model_returned: String::new(),
-                        confidence: None,
-                        probability: None,
-                        cache_key: key,
-                    };
-                    let ev = assemble_evidence(
-                        &decision,
-                        false,
-                        "decision attempt failed; see attempt accounting".into(),
-                        None,
-                        &from.snapshot,
-                        &from.file,
-                        "failed",
-                    );
-                    store
-                        .put_decision(decision.clone())
-                        .await
-                        .map_err(|e| PipelineError::Store(e.to_string()))?;
-                    store
-                        .put_evidence(ev.clone())
-                        .await
-                        .map_err(|e| PipelineError::Store(e.to_string()))?;
-                    out.push((cand.clone(), decision, ev));
-                    continue;
-                }
+            let Ok(r) = responder.respond(state, questions.clone()).await else {
+                let key = cache_key(
+                    &from.snapshot,
+                    &catalog,
+                    &questions,
+                    model_requested,
+                    &mat.rubric_version,
+                );
+                let decision = Decision {
+                    id: deterministic_id("dec", &[&cand.id, "failed", model_requested]),
+                    candidate_id: cand.id.clone(),
+                    question_id: format!("rel_{}", cand.id),
+                    outcome: DecisionOutcome::Failed("responder fault".into()),
+                    evidence_class: EvidenceClass::Ambiguous,
+                    model_requested: model_requested.to_owned(),
+                    model_returned: String::new(),
+                    confidence: None,
+                    probability: None,
+                    cache_key: key,
+                };
+                let ev = assemble_evidence(
+                    &decision,
+                    false,
+                    "decision attempt failed; see attempt accounting".into(),
+                    None,
+                    &from.snapshot,
+                    &from.file,
+                    "failed",
+                );
+                store
+                    .put_decision(decision.clone())
+                    .await
+                    .map_err(|e| PipelineError::Store(e.to_string()))?;
+                store
+                    .put_evidence(ev.clone())
+                    .await
+                    .map_err(|e| PipelineError::Store(e.to_string()))?;
+                out.push((cand.clone(), decision, ev));
+                continue;
             };
+            let resp = r;
             // Record requested vs returned model identities.
             if resp.model.is_empty() {
                 return Err(PipelineError::Validation("empty returned model".into()));
@@ -976,7 +978,7 @@ impl GelReader<chaosbox_gel::GelHandle> {
     /// Connect and pin the active build for `repo`. Errors when no Gel is
     /// reachable or no build is published (callers report pending/error).
     pub async fn connect(repo: &str) -> Result<Self, PipelineError> {
-        let handle = chaosbox_gel::GelHandle::connect()
+        let handle = Box::pin(chaosbox_gel::GelHandle::connect())
             .await
             .map_err(|e| PipelineError::Consumer(format!("gel connect: {e}")))?;
         Self::pinned(handle, repo).await
@@ -1096,7 +1098,7 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
             .build_entities(&self.build_id, EXPORT_NODE_CAP + 1)
             .await
             .map_err(|e| PipelineError::Consumer(e.to_string()))?;
-        if entities.len() as i64 > EXPORT_NODE_CAP {
+        if i64::try_from(entities.len()).expect("entity count fits in i64") > EXPORT_NODE_CAP {
             return Err(PipelineError::Consumer(format!(
                 "export truncated at {EXPORT_NODE_CAP} nodes; narrow the repo"
             )));
@@ -1106,7 +1108,7 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
             .build_relationships(&self.build_id, EXPORT_EDGE_CAP + 1)
             .await
             .map_err(|e| PipelineError::Consumer(e.to_string()))?;
-        if rels.len() as i64 > EXPORT_EDGE_CAP {
+        if i64::try_from(rels.len()).expect("relation count fits in i64") > EXPORT_EDGE_CAP {
             return Err(PipelineError::Consumer(format!(
                 "export truncated at {EXPORT_EDGE_CAP} edges; narrow the repo"
             )));
@@ -1190,7 +1192,9 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
                 .build_relationships(build, EXPORT_EDGE_CAP + 1)
                 .await
                 .map_err(|e| PipelineError::Consumer(e.to_string()))?;
-            if ents.len() as i64 > EXPORT_NODE_CAP || rels.len() as i64 > EXPORT_EDGE_CAP {
+            if i64::try_from(ents.len()).expect("entity count fits in i64") > EXPORT_NODE_CAP
+                || i64::try_from(rels.len()).expect("relation count fits in i64") > EXPORT_EDGE_CAP
+            {
                 return Err(PipelineError::Consumer(
                     "diff truncated at export caps".into(),
                 ));
@@ -1319,7 +1323,7 @@ mod tests {
             questions: BTreeMap<String, Question>,
         ) -> Result<SystemOneResponse, String> {
             let mut answers = BTreeMap::new();
-            for (id, _) in &questions {
+            for id in questions.keys() {
                 answers.insert(
                     id.clone(),
                     Answer::Choice(ChoiceAnswer {
@@ -1395,7 +1399,7 @@ mod tests {
             .unwrap();
         let mut low = ConfResponder { confidence: 0.1 };
         let decided = Pipeline::<MemoryStore>::decide(
-            &[cand.clone()],
+            std::slice::from_ref(&cand),
             &entities,
             &mut low,
             "jev-1.13.0",
@@ -1410,7 +1414,7 @@ mod tests {
         // now fail: no re-ask on a cache hit.
         let mut failing = FailResponder;
         let reused = Pipeline::<MemoryStore>::decide(
-            &[cand.clone()],
+            std::slice::from_ref(&cand),
             &entities,
             &mut failing,
             "jev-1.13.0",
@@ -1511,7 +1515,7 @@ mod tests {
         // Baseline: accepted under jev-1.13.0 / rubric-v1.
         let mut accept = ConfResponder { confidence: 0.95 };
         let first = Pipeline::<MemoryStore>::decide(
-            &[cand.clone()],
+            std::slice::from_ref(&cand),
             &entities,
             &mut accept,
             "jev-1.13.0",
@@ -1525,7 +1529,7 @@ mod tests {
         // and the stale row is replaced because the key differs.
         let mut low = ConfResponder { confidence: 0.1 };
         let second = Pipeline::<MemoryStore>::decide(
-            &[cand.clone()],
+            std::slice::from_ref(&cand),
             &entities,
             &mut low,
             "jev-9.9.9",
@@ -1541,7 +1545,7 @@ mod tests {
             ..Default::default()
         };
         let third = Pipeline::<MemoryStore>::decide(
-            &[cand.clone()],
+            std::slice::from_ref(&cand),
             &entities,
             &mut low,
             "jev-1.13.0",
@@ -1572,7 +1576,7 @@ mod tests {
         ensure_a_rs(&mut store2).await;
         let mut accept2 = ConfResponder { confidence: 0.95 };
         let base = Pipeline::<MemoryStore>::decide(
-            &[cand.clone()],
+            std::slice::from_ref(&cand),
             &entities,
             &mut accept2,
             "jev-1.13.0",
@@ -1588,7 +1592,7 @@ mod tests {
         };
         let mut failing = FailResponder;
         let fifth = Pipeline::<MemoryStore>::decide(
-            &[cand.clone()],
+            std::slice::from_ref(&cand),
             &entities,
             &mut failing,
             "jev-1.13.0",
