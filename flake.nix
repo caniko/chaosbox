@@ -60,8 +60,19 @@
           # making the two gates unsatisfiable simultaneously.
           programs.rustfmt.edition = "2021";
           programs.taplo.enable = true;
-        }).config.build;
-    in
+    }).config.build;
+    # Cargo source plus the non-Cargo trees Rust embeds (dbschema via
+    # include_str!) or reads at test time (fixtures/). cleanCargoSource
+    # alone strips them and breaks nix builds while cargo works.
+    workspaceSrc = {pkgs, craneLib}:
+      pkgs.lib.cleanSourceWith {
+        src = ./.;
+        filter = path: type:
+          craneLib.filterCargoSources path type
+          || pkgs.lib.hasPrefix (toString ./dbschema + "/") (toString path)
+          || pkgs.lib.hasPrefix (toString ./fixtures + "/") (toString path);
+      };
+  in
     {
       nixosModules.chaosbox = import ./nix/chaosbox.nix;
       nixosModules.default = self.nixosModules.chaosbox;
@@ -69,12 +80,12 @@
       packages = forAllSystems (
         { pkgs, craneLib, ... }:
         let
-          commonArgs = {
-            src = craneLib.cleanCargoSource ./.;
-            pname = "chaosbox";
-            version = "0.1.0";
-            strictDeps = true;
-            cargoExtraArgs = "--locked -p chaosbox";
+      commonArgs = {
+        src = workspaceSrc {inherit pkgs craneLib;};
+        pname = "chaosbox";
+        version = "0.1.0";
+        strictDeps = true;
+        cargoExtraArgs = "--locked -p chaosbox";
             meta = {
               description = "Chaosbox deterministic code-graph pipeline";
               homepage = "https://github.com/caniko/chaosbox";
@@ -178,7 +189,7 @@
       checks = forAllSystems (
         { pkgs, craneLib, ... }:
         let
-          src = craneLib.cleanCargoSource ./.;
+          src = workspaceSrc {inherit pkgs craneLib;};
           commonArgs = {
             inherit src;
             pname = "chaosbox";
