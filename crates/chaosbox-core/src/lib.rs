@@ -147,7 +147,7 @@ impl Entity {
 }
 
 /// Relation vocabulary. Each variant is a first-class edge type.
-/// Canonical storage name is the serde snake_case form (see [`relation_type_name`]).
+/// Canonical storage name is the serde `snake_case` form (see [`relation_type_name`]).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RelationType {
@@ -167,7 +167,7 @@ pub enum RelationType {
     Mentions,
 }
 
-/// Canonical storage name for a relation type (serde snake_case).
+/// Canonical storage name for a relation type (serde `snake_case`).
 /// Both the in-memory projection and future Gel inserts must use this.
 #[must_use]
 pub fn relation_type_name(r: &RelationType) -> String {
@@ -229,7 +229,7 @@ impl Relation {
 }
 
 /// Evidence classification. Model probability never upgrades INFERRED.
-/// Canonical storage name is the serde snake_case form (see [`evidence_class_name`]).
+/// Canonical storage name is the serde `snake_case` form (see [`evidence_class_name`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceClass {
@@ -241,7 +241,7 @@ pub enum EvidenceClass {
     Ambiguous,
 }
 
-/// Canonical storage name for an evidence class (serde snake_case).
+/// Canonical storage name for an evidence class (serde `snake_case`).
 #[must_use]
 pub fn evidence_class_name(c: EvidenceClass) -> String {
     serde_json::to_value(c)
@@ -250,7 +250,7 @@ pub fn evidence_class_name(c: EvidenceClass) -> String {
         .unwrap_or_else(|| format!("{c:?}"))
 }
 
-/// Canonical storage name for an entity kind (serde snake_case).
+/// Canonical storage name for an entity kind (serde `snake_case`).
 /// Both the in-memory projection and Gel inserts must use this.
 #[must_use]
 pub fn entity_kind_name(k: &EntityKind) -> String {

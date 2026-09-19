@@ -1112,7 +1112,7 @@ fn entity_row(e: &Entity) -> EntityRow {
     }
 }
 
-/// Canonical storage name for a relation scope (serde snake_case).
+/// Canonical storage name for a relation scope (serde `snake_case`).
 fn scope_name(s: &chaosbox_core::RelationScope) -> String {
     serde_json::to_value(s)
         .ok()
