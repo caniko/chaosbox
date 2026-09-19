@@ -206,6 +206,25 @@
             chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
             gelPackage = pkgs.gel;
           };
+          # Fail if flake inputs ever point at the retired Codeberg/Codefloe
+          # mirrors again (fleet migrated to github.com/caniko/*).
+          host-pinning =
+            let
+              flakeInputs = pkgs.lib.fileset.toSource {
+                root = ./.;
+                fileset = pkgs.lib.fileset.unions [ ./flake.nix ./flake.lock ];
+              };
+              # Split across literals so this file never matches its own pattern.
+              staleHosts = "cod" + "eberg|cod" + "efloe";
+            in
+            pkgs.runCommand "chaosbox-host-pinning" { } ''
+              if ${pkgs.lib.getExe pkgs.ripgrep} -q "${staleHosts}" ${flakeInputs}; then
+                echo "ERROR: retired forge host in flake inputs:" >&2
+                ${pkgs.lib.getExe pkgs.ripgrep} -n "${staleHosts}" ${flakeInputs} >&2 || true
+                exit 1
+              fi
+              touch $out
+            '';
         }
       );
     };
