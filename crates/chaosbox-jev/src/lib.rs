@@ -274,7 +274,10 @@ pub fn cache_key(
     rubric_version: &str,
 ) -> String {
     let q = serde_json::to_string(ordered_questions).unwrap_or_default();
-    format!("jev:{}", sha256_hex(&[source_digest, catalog_digest, &q, model, rubric_version]))
+    format!(
+        "jev:{}",
+        sha256_hex(&[source_digest, catalog_digest, &q, model, rubric_version])
+    )
 }
 
 /// Typed client. No OpenAI/Anthropic/Gemini/Ollama fallback anywhere.
@@ -294,7 +297,13 @@ impl JevClient {
             .timeout(policy.deadline)
             .build()
             .map_err(|e| JevError::Transport(e.to_string()))?;
-        Ok(Self { http, policy, attempts: Vec::new(), spent_tokens: 0, sent_requests: 0 })
+        Ok(Self {
+            http,
+            policy,
+            attempts: Vec::new(),
+            spent_tokens: 0,
+            sent_requests: 0,
+        })
     }
 
     /// Read API key: explicit file first, then explicit env for operators.
@@ -339,7 +348,11 @@ impl JevClient {
         let state_str = state.to_string();
         check_context_limits(&state_str, &questions)?;
         let key = Self::api_key_for_request()?;
-        let body = SystemOneRequest { state, model: self.policy.model.clone(), questions: questions.clone() };
+        let body = SystemOneRequest {
+            state,
+            model: self.policy.model.clone(),
+            questions: questions.clone(),
+        };
         let ids: Vec<String> = questions.keys().cloned().collect();
         let mut attempt = 0u32;
         loop {
@@ -412,7 +425,10 @@ impl JevClient {
                         backoff(attempt).await;
                         continue;
                     }
-                    let bytes = resp.bytes().await.map_err(|e| JevError::Transport(sanitized(&e.to_string())))?;
+                    let bytes = resp
+                        .bytes()
+                        .await
+                        .map_err(|e| JevError::Transport(sanitized(&e.to_string())))?;
                     if bytes.len() as u64 > self.policy.max_response_bytes {
                         return Err(JevError::Protocol("response too large".into()));
                     }
@@ -457,7 +473,10 @@ pub fn validate_response(
         )));
     }
     for (id, q) in asked {
-        let a = resp.answers.get(id).ok_or_else(|| JevError::Protocol(format!("missing answer {id}")))?;
+        let a = resp
+            .answers
+            .get(id)
+            .ok_or_else(|| JevError::Protocol(format!("missing answer {id}")))?;
         match (q, a) {
             (Question::Noul { .. }, Answer::Noul(n)) => {
                 check_probability(n.noul).map_err(|e| JevError::Schema(e.to_string()))?;
@@ -474,7 +493,10 @@ pub fn validate_response(
                 }
                 if let Some(valid) = valid_options.get(id) {
                     if !valid.contains(&c.choice) {
-                        return Err(JevError::Schema(format!("out-of-scope choice {}", c.choice)));
+                        return Err(JevError::Schema(format!(
+                            "out-of-scope choice {}",
+                            c.choice
+                        )));
                     }
                     for k in c.probabilities.keys() {
                         if !valid.contains(k) {
@@ -509,7 +531,12 @@ fn sanitized(s: &str) -> String {
     let mut out = s.to_owned();
     for prefix in ["sk-", "ts-", "Bearer "] {
         while let Some(i) = out.find(prefix) {
-            let end = out[i..].char_indices().take(12).last().map(|(j, _)| i + j).unwrap_or(out.len());
+            let end = out[i..]
+                .char_indices()
+                .take(12)
+                .last()
+                .map(|(j, _)| i + j)
+                .unwrap_or(out.len());
             out.replace_range(i..end.min(out.len()), &format!("{prefix}[redacted]"));
             break;
         }
@@ -529,18 +556,36 @@ mod tests {
     fn context_limits_reject_silently_truncatable() {
         let big = "x".repeat(CTX_TOTAL_MAX * 5);
         let mut q = BTreeMap::new();
-        q.insert("q".into(), Question::Noul { instructions: "y?".into(), criteria: None });
-        assert!(check_context_limits(&big, &q).is_err(), "never silently truncate");
+        q.insert(
+            "q".into(),
+            Question::Noul {
+                instructions: "y?".into(),
+                criteria: None,
+            },
+        );
+        assert!(
+            check_context_limits(&big, &q).is_err(),
+            "never silently truncate"
+        );
     }
 
     #[test]
     fn noul_missing_confidence_ok_but_choice_requires_it() {
         let mut asked = BTreeMap::new();
-        asked.insert("a".into(), Question::Noul { instructions: "y?".into(), criteria: None });
+        asked.insert(
+            "a".into(),
+            Question::Noul {
+                instructions: "y?".into(),
+                criteria: None,
+            },
+        );
         let resp = SystemOneResponse {
             model: JEV_MODEL_PINNED.into(),
             answers: BTreeMap::from([("a".into(), Answer::Noul(NoulAnswer { noul: 0.7 }))]),
-            usage: Usage { input_tokens: 10, output_tokens: 0 },
+            usage: Usage {
+                input_tokens: 10,
+                output_tokens: 0,
+            },
         };
         assert!(validate_response(&resp, &asked, &BTreeMap::new()).is_ok());
     }
@@ -548,20 +593,36 @@ mod tests {
     #[test]
     fn choice_rejects_out_of_scope() {
         let mut asked = BTreeMap::new();
-        asked.insert("c".into(), Question::Choice {
-            instructions: "pick".into(),
-            criteria: BTreeMap::from([("yes".into(), None), ("no".into(), None), ("none".into(), None)]),
-        });
+        asked.insert(
+            "c".into(),
+            Question::Choice {
+                instructions: "pick".into(),
+                criteria: BTreeMap::from([
+                    ("yes".into(), None),
+                    ("no".into(), None),
+                    ("none".into(), None),
+                ]),
+            },
+        );
         let resp = SystemOneResponse {
             model: JEV_MODEL_PINNED.into(),
-            answers: BTreeMap::from([("c".into(), Answer::Choice(ChoiceAnswer {
-                choice: "invented".into(),
-                probabilities: BTreeMap::from([("invented".into(), 1.0)]),
-                confidence: 0.9,
-            }))]),
-            usage: Usage { input_tokens: 5, output_tokens: 0 },
+            answers: BTreeMap::from([(
+                "c".into(),
+                Answer::Choice(ChoiceAnswer {
+                    choice: "invented".into(),
+                    probabilities: BTreeMap::from([("invented".into(), 1.0)]),
+                    confidence: 0.9,
+                }),
+            )]),
+            usage: Usage {
+                input_tokens: 5,
+                output_tokens: 0,
+            },
         };
-        let valid = BTreeMap::from([("c".into(), BTreeSet::from(["yes".into(), "no".into(), "none".into()]))]);
+        let valid = BTreeMap::from([(
+            "c".into(),
+            BTreeSet::from(["yes".into(), "no".into(), "none".into()]),
+        )]);
         assert!(validate_response(&resp, &asked, &valid).is_err());
     }
 
@@ -573,7 +634,13 @@ mod tests {
 
     #[test]
     fn cache_key_changes_with_inputs() {
-        let q = BTreeMap::from([("a".into(), Question::Noul { instructions: "y?".into(), criteria: None })]);
+        let q = BTreeMap::from([(
+            "a".into(),
+            Question::Noul {
+                instructions: "y?".into(),
+                criteria: None,
+            },
+        )]);
         let k1 = cache_key("s", "c", &q, JEV_MODEL_PINNED, "r1");
         let k2 = cache_key("s", "c", &q, JEV_MODEL_PINNED, "r2");
         assert_ne!(k1, k2);
@@ -596,7 +663,12 @@ mod tests {
 
     #[test]
     fn no_ambient_provider_fallback() {
-        for v in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OLLAMA_HOST"] {
+        for v in [
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "GOOGLE_API_KEY",
+            "OLLAMA_HOST",
+        ] {
             assert!(!format!("{:?}", JevClient::api_key()).contains(v));
         }
     }
@@ -660,11 +732,15 @@ mod http_tests {
         let h = tokio::spawn(async move {
             let mut served = 0usize;
             for s in scripts {
-                let Ok((mut sock, _)) = listener.accept().await else { break };
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
                 let mut buf = Vec::new();
                 let mut tmp = [0u8; 4096];
                 loop {
-                    let Ok(n) = sock.read(&mut tmp).await else { break };
+                    let Ok(n) = sock.read(&mut tmp).await else {
+                        break;
+                    };
                     if n == 0 {
                         break;
                     }
@@ -759,15 +835,27 @@ mod http_tests {
         let heads = Arc::new(Mutex::new(Vec::new()));
         let (url, server) = serve(
             vec![
-                Script { status: 429, retry_after: Some(0), body: "{}".to_owned() },
-                Script { status: 200, retry_after: None, body: accept_body() },
+                Script {
+                    status: 429,
+                    retry_after: Some(0),
+                    body: "{}".to_owned(),
+                },
+                Script {
+                    status: 200,
+                    retry_after: None,
+                    body: accept_body(),
+                },
             ],
             heads.clone(),
         )
         .await;
         let mut client = JevClient::new(test_policy(url)).unwrap();
         let resp = client
-            .evaluate(serde_json::json!({"repo": "demo"}), choice_questions(), &valid_options())
+            .evaluate(
+                serde_json::json!({"repo": "demo"}),
+                choice_questions(),
+                &valid_options(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.model, JEV_MODEL_PINNED);
@@ -788,9 +876,15 @@ mod http_tests {
         let _guard = env_lock().lock().unwrap();
         use_test_key("auth");
         let heads = Arc::new(Mutex::new(Vec::new()));
-        let (url, server) =
-            serve(vec![Script { status: 401, retry_after: None, body: "{}".to_owned() }], heads)
-                .await;
+        let (url, server) = serve(
+            vec![Script {
+                status: 401,
+                retry_after: None,
+                body: "{}".to_owned(),
+            }],
+            heads,
+        )
+        .await;
         let mut client = JevClient::new(test_policy(url)).unwrap();
         let err = client
             .evaluate(serde_json::json!({}), choice_questions(), &valid_options())
@@ -815,7 +909,11 @@ mod http_tests {
         })
         .to_string();
         let (url, server) = serve(
-            vec![Script { status: 200, retry_after: None, body }],
+            vec![Script {
+                status: 200,
+                retry_after: None,
+                body,
+            }],
             Arc::new(Mutex::new(Vec::new())),
         )
         .await;
@@ -839,7 +937,11 @@ mod http_tests {
         })
         .to_string();
         let (url, server) = serve(
-            vec![Script { status: 200, retry_after: None, body }],
+            vec![Script {
+                status: 200,
+                retry_after: None,
+                body,
+            }],
             Arc::new(Mutex::new(Vec::new())),
         )
         .await;
@@ -864,10 +966,17 @@ mod http_tests {
         .to_string();
         let questions = BTreeMap::from([(
             "q1".to_owned(),
-            Question::Noul { instructions: "y?".to_owned(), criteria: None },
+            Question::Noul {
+                instructions: "y?".to_owned(),
+                criteria: None,
+            },
         )]);
         let (url, server) = serve(
-            vec![Script { status: 200, retry_after: None, body }],
+            vec![Script {
+                status: 200,
+                retry_after: None,
+                body,
+            }],
             Arc::new(Mutex::new(Vec::new())),
         )
         .await;

@@ -4,7 +4,7 @@
 
 use std::{collections::BTreeMap, path::PathBuf};
 
-use chaosbox::{FixtureResponder, Materialization, Pipeline, export_json, search};
+use chaosbox::{export_json, search, FixtureResponder, Materialization, Pipeline};
 use chaosbox_core::diff_builds;
 use chaosbox_extract::Snapshot;
 use chaosbox_gel::{MemoryStore, Store as _};
@@ -20,7 +20,11 @@ async fn vertical_slice_publish_query_incremental() {
 
     // 1-2. snapshot + deterministic extraction/candidates
     let (snap, ext, cands) = Pipeline::<MemoryStore>::snapshot_extract("demo", &root, 200).unwrap();
-    assert!(ext.entities.len() > 10, "expected entities, got {}", ext.entities.len());
+    assert!(
+        ext.entities.len() > 10,
+        "expected entities, got {}",
+        ext.entities.len()
+    );
     assert!(!cands.is_empty(), "expected candidates");
 
     // 3. real Rust Jev adapter path against a local protocol fixture
@@ -29,24 +33,46 @@ async fn vertical_slice_publish_query_incremental() {
     // Decisions persist into the pipeline store as produced.
     let mat = Materialization::default();
     let mut pipe = Pipeline::<MemoryStore>::new();
-    pipe.store.ensure_snapshot_files(&snap.id, "demo", &snap.snapshot_files()).await.unwrap();
+    pipe.store
+        .ensure_snapshot_files(&snap.id, "demo", &snap.snapshot_files())
+        .await
+        .unwrap();
     // Deterministic run/set identity over the candidate catalog.
     let catalog = chaosbox_core::catalog_digest(&cands);
     let run_id = chaosbox_core::deterministic_id("run", &["demo", &snap.id]);
-    let set_id =
-        chaosbox_core::deterministic_id("set", &[&run_id, &catalog, &mat.rubric_version]);
-    pipe.store.ensure_run(&run_id, "demo", &snap.id, &set_id, &catalog, &mat.rubric_version).await.unwrap();
+    let set_id = chaosbox_core::deterministic_id("set", &[&run_id, &catalog, &mat.rubric_version]);
+    pipe.store
+        .ensure_run(
+            &run_id,
+            "demo",
+            &snap.id,
+            &set_id,
+            &catalog,
+            &mat.rubric_version,
+        )
+        .await
+        .unwrap();
     for cand in &cands {
         pipe.store.put_candidate(&set_id, cand).await.unwrap();
     }
     assert_eq!(pipe.store.stats().candidates, cands.len());
     assert_eq!(pipe.store.stats().runs, 1);
-    let entities: BTreeMap<_, _> = ext.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
+    let entities: BTreeMap<_, _> = ext
+        .entities
+        .iter()
+        .map(|e| (e.id.clone(), e.clone()))
+        .collect();
     let mut responder = FixtureResponder::new(true);
-    let decided =
-        Pipeline::<MemoryStore>::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat, &mut pipe.store)
-            .await
-            .unwrap();
+    let decided = Pipeline::<MemoryStore>::decide(
+        &cands,
+        &entities,
+        &mut responder,
+        chaosbox_jev::JEV_MODEL_PINNED,
+        &mat,
+        &mut pipe.store,
+    )
+    .await
+    .unwrap();
     assert_eq!(decided.len(), cands.len());
     for (_, d, _) in &decided {
         assert_eq!(d.model_requested, chaosbox_jev::JEV_MODEL_PINNED);
@@ -57,10 +83,20 @@ async fn vertical_slice_publish_query_incremental() {
     assert_eq!(stats.evidence, cands.len(), "every evidence persisted");
 
     // 4-5. publish validated build; claims persist per materialized relation
-    let build = pipe.build_and_publish("demo", &snap, &ext, &decided, &mat, None).await.unwrap();
+    let build = pipe
+        .build_and_publish("demo", &snap, &ext, &decided, &mat, None)
+        .await
+        .unwrap();
     assert!(!build.nodes.is_empty());
-    assert!(!build.edges.is_empty(), "fixture decisions should materialize edges");
-    assert_eq!(pipe.store.stats().claims, build.edges.len(), "one claim per edge");
+    assert!(
+        !build.edges.is_empty(),
+        "fixture decisions should materialize edges"
+    );
+    assert_eq!(
+        pipe.store.stats().claims,
+        build.edges.len(),
+        "one claim per edge"
+    );
 
     // 6. query through shared implementation (CLI/MCP use the same fns)
     let hits = search(&build, "hello", 10);
@@ -74,23 +110,51 @@ async fn vertical_slice_publish_query_incremental() {
     copy_dir(&root, tmp_root);
     std::fs::remove_file(tmp_root.join("greeter.py")).unwrap();
     std::fs::write(tmp_root.join("notes.txt"), "changed notes about hello\n").unwrap();
-    let (snap2, ext2, cands2) = Pipeline::<MemoryStore>::snapshot_extract("demo", tmp_root, 200).unwrap();
+    let (snap2, ext2, cands2) =
+        Pipeline::<MemoryStore>::snapshot_extract("demo", tmp_root, 200).unwrap();
     assert_ne!(snap.id, snap2.id, "changed sources => new snapshot");
-    pipe.store.ensure_snapshot_files(&snap2.id, "demo", &snap2.snapshot_files()).await.unwrap();
-    let entities2: BTreeMap<_, _> = ext2.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
+    pipe.store
+        .ensure_snapshot_files(&snap2.id, "demo", &snap2.snapshot_files())
+        .await
+        .unwrap();
+    let entities2: BTreeMap<_, _> = ext2
+        .entities
+        .iter()
+        .map(|e| (e.id.clone(), e.clone()))
+        .collect();
     let mut responder2 = FixtureResponder::new(true);
-    let decided2 =
-        Pipeline::<MemoryStore>::decide(&cands2, &entities2, &mut responder2, chaosbox_jev::JEV_MODEL_PINNED, &mat, &mut pipe.store)
-            .await
-            .unwrap();
+    let decided2 = Pipeline::<MemoryStore>::decide(
+        &cands2,
+        &entities2,
+        &mut responder2,
+        chaosbox_jev::JEV_MODEL_PINNED,
+        &mat,
+        &mut pipe.store,
+    )
+    .await
+    .unwrap();
     let build2 = pipe
-        .build_and_publish("demo", &snap2, &ext2, &decided2, &mat, Some(build.id.clone()))
+        .build_and_publish(
+            "demo",
+            &snap2,
+            &ext2,
+            &decided2,
+            &mat,
+            Some(build.id.clone()),
+        )
         .await
         .unwrap();
     assert_ne!(build.id, build2.id);
-    assert_eq!(pipe.store.active("demo").unwrap().id, build2.id, "last good replaced atomically");
+    assert_eq!(
+        pipe.store.active("demo").unwrap().id,
+        build2.id,
+        "last good replaced atomically"
+    );
     let diff = diff_builds(&build, &build2);
-    assert!(!diff.added_nodes.is_empty() || !diff.removed_nodes.is_empty(), "incremental diff must show change");
+    assert!(
+        !diff.added_nodes.is_empty() || !diff.removed_nodes.is_empty(),
+        "incremental diff must show change"
+    );
 }
 
 fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {

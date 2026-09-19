@@ -9,8 +9,8 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use chaosbox::{
-    EXPORT_EDGE_CAP, EXPORT_NODE_CAP, GelReader, LifecycleReport, Materialization,
-    Pipeline, all_relation_types,
+    all_relation_types, GelReader, LifecycleReport, Materialization, Pipeline, EXPORT_EDGE_CAP,
+    EXPORT_NODE_CAP,
 };
 use chaosbox::{FixtureResponder, LiveResponder};
 use chaosbox_extract::Snapshot;
@@ -18,7 +18,11 @@ use chaosbox_gel::{MemoryStore, Store as _};
 use clap::{Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "chaosbox", version, about = "Chaosbox deterministic code-graph pipeline (Gel-backed)")]
+#[command(
+    name = "chaosbox",
+    version,
+    about = "Chaosbox deterministic code-graph pipeline (Gel-backed)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -27,21 +31,30 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Snapshot a fixture repository.
-    Snapshot { path: PathBuf, #[arg(long, default_value = "demo")] repo: String },
+    Snapshot {
+        path: PathBuf,
+        #[arg(long, default_value = "demo")]
+        repo: String,
+    },
     /// Extract deterministic facts + candidates.
     Extract {
         path: PathBuf,
-        #[arg(long, default_value = "demo")] repo: String,
-        #[arg(long, default_value_t = 200)] max_candidates: usize,
+        #[arg(long, default_value = "demo")]
+        repo: String,
+        #[arg(long, default_value_t = 200)]
+        max_candidates: usize,
     },
     /// Run the full pipeline (fixture decisions unless --live-jev).
     Run {
         path: PathBuf,
-        #[arg(long, default_value = "demo")] repo: String,
-        #[arg(long, default_value_t = 200)] max_candidates: usize,
+        #[arg(long, default_value = "demo")]
+        repo: String,
+        #[arg(long, default_value_t = 200)]
+        max_candidates: usize,
         /// Use the live Jev API (needs CHAOSBOX_JEV_API_KEY_FILE) instead of
         /// the deterministic fixture. Real inference, real spend.
-        #[arg(long, default_value_t = false)] live_jev: bool,
+        #[arg(long, default_value_t = false)]
+        live_jev: bool,
     },
     /// Query helpers (read-only; Gel-backed, shared with MCP).
     Query {
@@ -62,39 +75,49 @@ enum QueryCmd {
     /// Substring search over entity names (sorted, bounded).
     Search {
         query: String,
-        #[arg(long, default_value = "demo")] repo: String,
-        #[arg(long, default_value_t = 20)] limit: i64,
+        #[arg(long, default_value = "demo")]
+        repo: String,
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
     },
     /// Typed entity lookup by id.
     Lookup {
         id: String,
-        #[arg(long, default_value = "demo")] repo: String,
+        #[arg(long, default_value = "demo")]
+        repo: String,
     },
     /// Incoming/outgoing neighborhoods with optional relation filter.
     Neighbors {
         id: String,
-        #[arg(long, default_value = "demo")] repo: String,
-        #[arg(long)] rel: Option<String>,
+        #[arg(long, default_value = "demo")]
+        repo: String,
+        #[arg(long)]
+        rel: Option<String>,
     },
     /// Bounded path between two entities (successful negative => null).
     Path {
         from: String,
         to: String,
-        #[arg(long, default_value = "demo")] repo: String,
-        #[arg(long, default_value_t = 4)] max_hops: usize,
+        #[arg(long, default_value = "demo")]
+        repo: String,
+        #[arg(long, default_value_t = 4)]
+        max_hops: usize,
     },
     /// Deterministic export of the pinned active build.
     Export {
-        #[arg(long, default_value = "demo")] repo: String,
+        #[arg(long, default_value = "demo")]
+        repo: String,
     },
     /// Source-backed entity explanation (no generated prose).
     Explain {
         id: String,
-        #[arg(long, default_value = "demo")] repo: String,
+        #[arg(long, default_value = "demo")]
+        repo: String,
     },
     /// Active-build status, coverage, and generation.
     Status {
-        #[arg(long, default_value = "demo")] repo: String,
+        #[arg(long, default_value = "demo")]
+        repo: String,
     },
 }
 
@@ -105,14 +128,16 @@ enum DbCmd {
         /// Emit the versioned JSON envelope (contract v1; always on).
         #[arg(long, default_value_t = true)]
         json: bool,
-        #[arg(long, default_value = "demo")] repo: String,
+        #[arg(long, default_value = "demo")]
+        repo: String,
     },
     /// Apply committed migrations idempotently via pinned Gel tooling.
     Migrate {
         /// Emit the versioned JSON envelope (contract v1; always on).
         #[arg(long, default_value_t = true)]
         json: bool,
-        #[arg(long, default_value = "demo")] repo: String,
+        #[arg(long, default_value = "demo")]
+        repo: String,
     },
 }
 
@@ -120,30 +145,35 @@ enum DbCmd {
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Command::Snapshot { path, repo } => {
-            match Snapshot::capture(&repo, &path) {
-                Ok(s) => println!(r#"{{"snapshot":"{}","files":{}}}"#, s.id, s.files.len()),
-                Err(e) => {
-                    eprintln!("snapshot failed: {e}");
-                    std::process::exit(1);
-                }
+        Command::Snapshot { path, repo } => match Snapshot::capture(&repo, &path) {
+            Ok(s) => println!(r#"{{"snapshot":"{}","files":{}}}"#, s.id, s.files.len()),
+            Err(e) => {
+                eprintln!("snapshot failed: {e}");
+                std::process::exit(1);
             }
-        }
-        Command::Extract { path, repo, max_candidates } => {
-            match Pipeline::<MemoryStore>::snapshot_extract(&repo, &path, max_candidates) {
-                Ok((snap, ext, cands)) => println!(
-                    r#"{{"snapshot":"{}","entities":{},"candidates":{}}}"#,
-                    snap.id,
-                    ext.entities.len(),
-                    cands.len()
-                ),
-                Err(e) => {
-                    eprintln!("extract failed: {e}");
-                    std::process::exit(1);
-                }
+        },
+        Command::Extract {
+            path,
+            repo,
+            max_candidates,
+        } => match Pipeline::<MemoryStore>::snapshot_extract(&repo, &path, max_candidates) {
+            Ok((snap, ext, cands)) => println!(
+                r#"{{"snapshot":"{}","entities":{},"candidates":{}}}"#,
+                snap.id,
+                ext.entities.len(),
+                cands.len()
+            ),
+            Err(e) => {
+                eprintln!("extract failed: {e}");
+                std::process::exit(1);
             }
-        }
-        Command::Run { path, repo, max_candidates, live_jev } => {
+        },
+        Command::Run {
+            path,
+            repo,
+            max_candidates,
+            live_jev,
+        } => {
             let code = run_pipeline(&path, &repo, max_candidates, live_jev).await;
             std::process::exit(code);
         }
@@ -254,15 +284,24 @@ async fn run_query(q: QueryCmd) -> i32 {
             };
             match reader.neighbors(&id, filter).await {
                 Ok((out, inc)) => {
-                    println!("{}", serde_json::to_string(&serde_json::json!({
-                        "id": id, "outgoing": out, "incoming": inc,
-                    })).unwrap());
+                    println!(
+                        "{}",
+                        serde_json::to_string(&serde_json::json!({
+                            "id": id, "outgoing": out, "incoming": inc,
+                        }))
+                        .unwrap()
+                    );
                     0
                 }
                 Err(e) => consumer_err("query neighbors", e),
             }
         }
-        QueryCmd::Path { from, to, repo, max_hops } => {
+        QueryCmd::Path {
+            from,
+            to,
+            repo,
+            max_hops,
+        } => {
             let reader = match GelReader::connect(&repo).await {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query path", e),
@@ -270,9 +309,13 @@ async fn run_query(q: QueryCmd) -> i32 {
             match reader.path(&from, &to, max_hops).await {
                 // Successful negative (no path) is a null result, exit 0.
                 Ok(path) => {
-                    println!("{}", serde_json::to_string(&serde_json::json!({
-                        "from": from, "to": to, "path": path,
-                    })).unwrap());
+                    println!(
+                        "{}",
+                        serde_json::to_string(&serde_json::json!({
+                            "from": from, "to": to, "path": path,
+                        }))
+                        .unwrap()
+                    );
                     0
                 }
                 Err(e) => consumer_err("query path", e),
@@ -306,11 +349,15 @@ async fn run_query(q: QueryCmd) -> i32 {
                         Ok(n) => n,
                         Err(e) => return consumer_err("query explain", e),
                     };
-                    println!("{}", serde_json::to_string(&serde_json::json!({
-                        "id": e.entity_id, "kind": e.kind, "file": e.file,
-                        "qualified_name": e.qualified_name,
-                        "outgoing": out.len(), "incoming": inc.len(),
-                    })).unwrap());
+                    println!(
+                        "{}",
+                        serde_json::to_string(&serde_json::json!({
+                            "id": e.entity_id, "kind": e.kind, "file": e.file,
+                            "qualified_name": e.qualified_name,
+                            "outgoing": out.len(), "incoming": inc.len(),
+                        }))
+                        .unwrap()
+                    );
                     0
                 }
                 Err(e) => consumer_err("query explain", e),
@@ -321,29 +368,42 @@ async fn run_query(q: QueryCmd) -> i32 {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query status", e),
             };
-            println!("{}", serde_json::to_string(&serde_json::json!({
-                "repo": repo, "build_id": reader.build_id,
-                "generation": reader.generation,
-                "export_caps": {"nodes": EXPORT_NODE_CAP, "edges": EXPORT_EDGE_CAP},
-            })).unwrap());
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "repo": repo, "build_id": reader.build_id,
+                    "generation": reader.generation,
+                    "export_caps": {"nodes": EXPORT_NODE_CAP, "edges": EXPORT_EDGE_CAP},
+                }))
+                .unwrap()
+            );
             0
         }
     }
 }
 
 async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_jev: bool) -> i32 {
-    let (snap, ext, cands) = match Pipeline::<MemoryStore>::snapshot_extract(repo, path, max_candidates) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("extract: {e}");
-            return 1;
-        }
-    };
-    let entities: BTreeMap<_, _> = ext.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
+    let (snap, ext, cands) =
+        match Pipeline::<MemoryStore>::snapshot_extract(repo, path, max_candidates) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("extract: {e}");
+                return 1;
+            }
+        };
+    let entities: BTreeMap<_, _> = ext
+        .entities
+        .iter()
+        .map(|e| (e.id.clone(), e.clone()))
+        .collect();
     let mat = Materialization::default();
     let mut pipe = Pipeline::<MemoryStore>::new();
     // Register file content identities before any evidence references them.
-    if let Err(e) = pipe.store.ensure_snapshot_files(&snap.id, repo, &snap.snapshot_files()).await {
+    if let Err(e) = pipe
+        .store
+        .ensure_snapshot_files(&snap.id, repo, &snap.snapshot_files())
+        .await
+    {
         eprintln!("snapshot files: {e}");
         return 1;
     }
@@ -351,11 +411,17 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_je
     // before any decision references it.
     let catalog = chaosbox_core::catalog_digest(&cands);
     let run_id = chaosbox_core::deterministic_id("run", &[repo, &snap.id]);
-    let set_id =
-        chaosbox_core::deterministic_id("set", &[&run_id, &catalog, &mat.rubric_version]);
+    let set_id = chaosbox_core::deterministic_id("set", &[&run_id, &catalog, &mat.rubric_version]);
     if let Err(e) = pipe
         .store
-        .ensure_run(&run_id, repo, &snap.id, &set_id, &catalog, &mat.rubric_version)
+        .ensure_run(
+            &run_id,
+            repo,
+            &snap.id,
+            &set_id,
+            &catalog,
+            &mat.rubric_version,
+        )
         .await
     {
         eprintln!("run identity: {e}");
@@ -377,7 +443,16 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_je
             }
         };
         let mut responder = LiveResponder::new(client);
-        match Pipeline::<MemoryStore>::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat, &mut pipe.store).await {
+        match Pipeline::<MemoryStore>::decide(
+            &cands,
+            &entities,
+            &mut responder,
+            chaosbox_jev::JEV_MODEL_PINNED,
+            &mat,
+            &mut pipe.store,
+        )
+        .await
+        {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("decide: {e}");
@@ -386,7 +461,16 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_je
         }
     } else {
         let mut responder = FixtureResponder::new(true);
-        match Pipeline::<MemoryStore>::decide(&cands, &entities, &mut responder, chaosbox_jev::JEV_MODEL_PINNED, &mat, &mut pipe.store).await {
+        match Pipeline::<MemoryStore>::decide(
+            &cands,
+            &entities,
+            &mut responder,
+            chaosbox_jev::JEV_MODEL_PINNED,
+            &mat,
+            &mut pipe.store,
+        )
+        .await
+        {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("decide: {e}");
@@ -394,7 +478,10 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_je
             }
         }
     };
-    match pipe.build_and_publish(repo, &snap, &ext, &decided, &mat, None).await {
+    match pipe
+        .build_and_publish(repo, &snap, &ext, &decided, &mat, None)
+        .await
+    {
         Ok(build) => {
             let v = chaosbox::export_json(&build);
             println!("{}", serde_json::to_string(&v).unwrap());
@@ -408,7 +495,8 @@ async fn run_pipeline(path: &PathBuf, repo: &str, max_candidates: usize, live_je
 }
 
 async fn run_migrate() -> Result<LifecycleReport, String> {
-    let creds = std::env::var("CHAOSBOX_GEL_CREDENTIALS_FILE").map_err(|_| "CHAOSBOX_GEL_CREDENTIALS_FILE unset".to_owned())?;
+    let creds = std::env::var("CHAOSBOX_GEL_CREDENTIALS_FILE")
+        .map_err(|_| "CHAOSBOX_GEL_CREDENTIALS_FILE unset".to_owned())?;
     // Pinned binary under Nix (`db-migrate` app); ambient `gel` only for
     // cargo-run development. Never log secret values; only reference the file.
     // GEL_CREDENTIALS_FILE is a documented Gel connection parameter.
@@ -420,9 +508,17 @@ async fn run_migrate() -> Result<LifecycleReport, String> {
         .await
         .map_err(|e| format!("gel CLI: {e}"))?;
     if out.status.success() {
-        Ok(LifecycleReport::check_ready(serde_json::json!({"applied": true})))
+        Ok(LifecycleReport::check_ready(
+            serde_json::json!({"applied": true}),
+        ))
     } else {
-        Err(format!("gel migration apply failed: {}", String::from_utf8_lossy(&out.stderr).chars().take(300).collect::<String>()))
+        Err(format!(
+            "gel migration apply failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+                .chars()
+                .take(300)
+                .collect::<String>()
+        ))
     }
 }
 
@@ -437,27 +533,61 @@ const MCP_PAGE_SIZE: usize = 5;
 
 fn mcp_tool_defs() -> Vec<serde_json::Value> {
     vec![
-        mcp_tool("search", "Substring search over entity names (sorted, bounded).",
+        mcp_tool(
+            "search",
+            "Substring search over entity names (sorted, bounded).",
             serde_json::json!({"query": {"type": "string"}, "limit": {"type": "integer", "default": 20}}),
-            vec!["query"]),
-        mcp_tool("lookup", "Typed entity lookup by id.",
-            serde_json::json!({"id": {"type": "string"}}), vec!["id"]),
-        mcp_tool("neighbors", "Incoming/outgoing neighborhoods with optional relation filter.",
-            serde_json::json!({"id": {"type": "string"}, "rel": {"type": "string"}}), vec!["id"]),
-        mcp_tool("path", "Bounded path between two entities (null when absent).",
+            vec!["query"],
+        ),
+        mcp_tool(
+            "lookup",
+            "Typed entity lookup by id.",
+            serde_json::json!({"id": {"type": "string"}}),
+            vec!["id"],
+        ),
+        mcp_tool(
+            "neighbors",
+            "Incoming/outgoing neighborhoods with optional relation filter.",
+            serde_json::json!({"id": {"type": "string"}, "rel": {"type": "string"}}),
+            vec!["id"],
+        ),
+        mcp_tool(
+            "path",
+            "Bounded path between two entities (null when absent).",
             serde_json::json!({"from": {"type": "string"}, "to": {"type": "string"},
-                "max_hops": {"type": "integer", "default": 4}}), vec!["from", "to"]),
-        mcp_tool("evidence", "Claim evidence and source locations for a relationship.",
-            serde_json::json!({"rel": {"type": "string"}}), vec!["rel"]),
-        mcp_tool("status", "Active-build status, coverage, and generation.",
-            serde_json::json!({}), Vec::<&str>::new()),
-        mcp_tool("diff", "Node/edge id diff between two builds of one repo.",
+                "max_hops": {"type": "integer", "default": 4}}),
+            vec!["from", "to"],
+        ),
+        mcp_tool(
+            "evidence",
+            "Claim evidence and source locations for a relationship.",
+            serde_json::json!({"rel": {"type": "string"}}),
+            vec!["rel"],
+        ),
+        mcp_tool(
+            "status",
+            "Active-build status, coverage, and generation.",
+            serde_json::json!({}),
+            Vec::<&str>::new(),
+        ),
+        mcp_tool(
+            "diff",
+            "Node/edge id diff between two builds of one repo.",
             serde_json::json!({"from_build": {"type": "string"}, "to_build": {"type": "string"}}),
-            vec!["from_build", "to_build"]),
-        mcp_tool("export", "Deterministic export of the pinned active build.",
-            serde_json::json!({}), Vec::<&str>::new()),
-        mcp_tool("explain", "Source-backed entity explanation (no generated prose).",
-            serde_json::json!({"id": {"type": "string"}}), vec!["id"]),
+            vec!["from_build", "to_build"],
+        ),
+        mcp_tool(
+            "export",
+            "Deterministic export of the pinned active build.",
+            serde_json::json!({}),
+            Vec::<&str>::new(),
+        ),
+        mcp_tool(
+            "explain",
+            "Source-backed entity explanation (no generated prose).",
+            serde_json::json!({"id": {"type": "string"}}),
+            vec!["id"],
+        ),
     ]
 }
 
@@ -474,7 +604,10 @@ fn mcp_tool(
     });
     // Every tool accepts an optional repo; the pinned active build serves reads.
     if let Some(props) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
-        props.insert("repo".to_owned(), serde_json::json!({"type": "string", "default": "demo"}));
+        props.insert(
+            "repo".to_owned(),
+            serde_json::json!({"type": "string", "default": "demo"}),
+        );
     }
     serde_json::json!({
         "name": name, "description": description,
@@ -519,8 +652,15 @@ fn mcp_args(
         _ => &[],
     };
     for key in required {
-        if map.get(*key).and_then(|v| v.as_str()).map(|s| s.is_empty()).unwrap_or(true) {
-            return Err(serde_json::json!({"code": -32602, "message": format!("missing required argument: {key}")}));
+        if map
+            .get(*key)
+            .and_then(|v| v.as_str())
+            .map(|s| s.is_empty())
+            .unwrap_or(true)
+        {
+            return Err(
+                serde_json::json!({"code": -32602, "message": format!("missing required argument: {key}")}),
+            );
         }
     }
     Ok(map)
@@ -541,9 +681,21 @@ async fn mcp_call_tool(
     };
     // Closed read-only tool set: reject unknown (write/mutation) tools before
     // touching Gel or credentials of any kind.
-    if !matches!(name, "search" | "lookup" | "neighbors" | "path" | "evidence" | "status" | "diff" | "export" | "explain") {
+    if !matches!(
+        name,
+        "search"
+            | "lookup"
+            | "neighbors"
+            | "path"
+            | "evidence"
+            | "status"
+            | "diff"
+            | "export"
+            | "explain"
+    ) {
         return mcp_error(
-            id, -32601,
+            id,
+            -32601,
             format!("read-only MCP: no such tool (rejected): {name}"),
             None,
         );
@@ -553,67 +705,83 @@ async fn mcp_call_tool(
         Ok(r) => r,
         Err(e) => {
             let report = LifecycleReport::error(&format!("mcp {name}"), &e.to_string());
-            return mcp_error(id, -32603, e.to_string(), Some(serde_json::to_value(&report).unwrap()));
-        }
-    };
-    let payload: Result<serde_json::Value, String> = match name {
-        "search" => {
-            let q = args["query"].as_str().unwrap_or_default();
-            let limit = args.get("limit").and_then(|l| l.as_i64()).unwrap_or(20);
-            reader.search(q, limit).await
-                .map(|rows| serde_json::to_value(&rows).unwrap())
-                .map_err(|e| e.to_string())
-        }
-        "lookup" => {
-            let eid = args["id"].as_str().unwrap_or_default();
-            reader.lookup(eid).await
-                .map(|row| serde_json::to_value(&row).unwrap())
-                .map_err(|e| e.to_string())
-        }
-        "neighbors" => {
-            let eid = args["id"].as_str().unwrap_or_default();
-            let raw = args.get("rel").and_then(|r| r.as_str()).map(|r| vec![r.to_owned()]);
-            let filter = match chaosbox::validate_rel_filter(raw) {
-                Ok(f) => f,
-                Err(e) => return mcp_error(id, -32602, e.to_string(), None),
-            };
-            reader.neighbors(eid, filter).await
-                .map(|(out, inc)| serde_json::json!({"id": eid, "outgoing": out, "incoming": inc}))
-                .map_err(|e| e.to_string())
-        }
-        "path" => {
-            let from = args["from"].as_str().unwrap_or_default();
-            let to = args["to"].as_str().unwrap_or_default();
-            let hops = args.get("max_hops").and_then(|h| h.as_u64()).unwrap_or(4) as usize;
-            reader.path(from, to, hops).await
-                .map(|path| serde_json::json!({"from": from, "to": to, "path": path}))
-                .map_err(|e| e.to_string())
-        }
-        "evidence" => {
-            let rel = args["rel"].as_str().unwrap_or_default();
-            reader.evidence(rel).await.map_err(|e| e.to_string())
-        }
-        "status" => Ok(serde_json::json!({
-            "repo": repo, "build_id": reader.build_id, "generation": reader.generation,
-        })),
-        "diff" => {
-            let from = args["from_build"].as_str().unwrap_or_default();
-            let to = args["to_build"].as_str().unwrap_or_default();
-            reader.diff(repo, from, to).await.map_err(|e| e.to_string())
-        }
-        "export" => reader.export().await.map_err(|e| e.to_string()),
-        "explain" => {
-            let eid = args["id"].as_str().unwrap_or_default();
-            reader.explain(eid).await.map_err(|e| e.to_string())
-        }
-        _ => {
             return mcp_error(
-                id, -32601,
-                format!("read-only MCP: no such tool (rejected): {name}"),
-                None,
+                id,
+                -32603,
+                e.to_string(),
+                Some(serde_json::to_value(&report).unwrap()),
             );
         }
     };
+    let payload: Result<serde_json::Value, String> =
+        match name {
+            "search" => {
+                let q = args["query"].as_str().unwrap_or_default();
+                let limit = args.get("limit").and_then(|l| l.as_i64()).unwrap_or(20);
+                reader
+                    .search(q, limit)
+                    .await
+                    .map(|rows| serde_json::to_value(&rows).unwrap())
+                    .map_err(|e| e.to_string())
+            }
+            "lookup" => {
+                let eid = args["id"].as_str().unwrap_or_default();
+                reader
+                    .lookup(eid)
+                    .await
+                    .map(|row| serde_json::to_value(&row).unwrap())
+                    .map_err(|e| e.to_string())
+            }
+            "neighbors" => {
+                let eid = args["id"].as_str().unwrap_or_default();
+                let raw = args
+                    .get("rel")
+                    .and_then(|r| r.as_str())
+                    .map(|r| vec![r.to_owned()]);
+                let filter = match chaosbox::validate_rel_filter(raw) {
+                    Ok(f) => f,
+                    Err(e) => return mcp_error(id, -32602, e.to_string(), None),
+                };
+                reader.neighbors(eid, filter).await
+                .map(|(out, inc)| serde_json::json!({"id": eid, "outgoing": out, "incoming": inc}))
+                .map_err(|e| e.to_string())
+            }
+            "path" => {
+                let from = args["from"].as_str().unwrap_or_default();
+                let to = args["to"].as_str().unwrap_or_default();
+                let hops = args.get("max_hops").and_then(|h| h.as_u64()).unwrap_or(4) as usize;
+                reader
+                    .path(from, to, hops)
+                    .await
+                    .map(|path| serde_json::json!({"from": from, "to": to, "path": path}))
+                    .map_err(|e| e.to_string())
+            }
+            "evidence" => {
+                let rel = args["rel"].as_str().unwrap_or_default();
+                reader.evidence(rel).await.map_err(|e| e.to_string())
+            }
+            "status" => Ok(serde_json::json!({
+                "repo": repo, "build_id": reader.build_id, "generation": reader.generation,
+            })),
+            "diff" => {
+                let from = args["from_build"].as_str().unwrap_or_default();
+                let to = args["to_build"].as_str().unwrap_or_default();
+                reader.diff(repo, from, to).await.map_err(|e| e.to_string())
+            }
+            "export" => reader.export().await.map_err(|e| e.to_string()),
+            "explain" => {
+                let eid = args["id"].as_str().unwrap_or_default();
+                reader.explain(eid).await.map_err(|e| e.to_string())
+            }
+            _ => {
+                return mcp_error(
+                    id,
+                    -32601,
+                    format!("read-only MCP: no such tool (rejected): {name}"),
+                    None,
+                );
+            }
+        };
     match payload {
         Ok(v) => mcp_text_result(id, &v),
         Err(e) => mcp_error(id, -32603, e, None),
@@ -635,14 +803,28 @@ async fn serve_mcp() {
         let req: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => {
-                let resp = mcp_error(&serde_json::Value::Null, -32700, "parse error".to_owned(), None);
-                let _ = stdout.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes()).await;
+                let resp = mcp_error(
+                    &serde_json::Value::Null,
+                    -32700,
+                    "parse error".to_owned(),
+                    None,
+                );
+                let _ = stdout
+                    .write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes())
+                    .await;
                 continue;
             }
         };
         if req.is_array() {
-            let resp = mcp_error(&serde_json::Value::Null, -32600, "batch requests not supported".to_owned(), None);
-            let _ = stdout.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes()).await;
+            let resp = mcp_error(
+                &serde_json::Value::Null,
+                -32600,
+                "batch requests not supported".to_owned(),
+                None,
+            );
+            let _ = stdout
+                .write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes())
+                .await;
             continue;
         }
         // Notifications carry no id and get no response.
@@ -651,11 +833,19 @@ async fn serve_mcp() {
             None => continue,
         };
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
-        let params = req.get("params").cloned().unwrap_or(serde_json::Value::Null);
+        let params = req
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         let resp = match method {
             "initialize" => {
-                let requested = params.get("protocolVersion").and_then(|v| v.as_str()).unwrap_or("");
-                let version = if requested == MCP_PROTOCOL_VERSION || MCP_PROTOCOL_FALLBACKS.contains(&requested) {
+                let requested = params
+                    .get("protocolVersion")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let version = if requested == MCP_PROTOCOL_VERSION
+                    || MCP_PROTOCOL_FALLBACKS.contains(&requested)
+                {
                     requested.to_owned()
                 } else {
                     MCP_PROTOCOL_VERSION.to_owned()
@@ -676,9 +866,17 @@ async fn serve_mcp() {
                     mcp_error(&id, -32600, "server not initialized".to_owned(), None)
                 } else {
                     let defs = mcp_tool_defs();
-                    let cursor = params.get("cursor").and_then(|c| c.as_str()).and_then(|c| c.parse::<usize>().ok()).unwrap_or(0);
+                    let cursor = params
+                        .get("cursor")
+                        .and_then(|c| c.as_str())
+                        .and_then(|c| c.parse::<usize>().ok())
+                        .unwrap_or(0);
                     let page: Vec<_> = defs.into_iter().skip(cursor).take(MCP_PAGE_SIZE).collect();
-                    let next = if page.len() == MCP_PAGE_SIZE { Some((cursor + MCP_PAGE_SIZE).to_string()) } else { None };
+                    let next = if page.len() == MCP_PAGE_SIZE {
+                        Some((cursor + MCP_PAGE_SIZE).to_string())
+                    } else {
+                        None
+                    };
                     let mut result = serde_json::json!({"tools": page});
                     if let Some(n) = next {
                         result["nextCursor"] = serde_json::Value::String(n);
@@ -694,9 +892,16 @@ async fn serve_mcp() {
                     mcp_call_tool(&id, name, &params).await
                 }
             }
-            _ => mcp_error(&id, -32601, format!("unknown method (rejected): {method}"), None),
+            _ => mcp_error(
+                &id,
+                -32601,
+                format!("unknown method (rejected): {method}"),
+                None,
+            ),
         };
-        let _ = stdout.write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes()).await;
+        let _ = stdout
+            .write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes())
+            .await;
     }
     let _ = all_relation_types;
 }

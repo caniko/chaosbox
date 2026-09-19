@@ -161,8 +161,7 @@ pub mod edgeql {
          unless conflict on .evidence_id else (select Evidence filter .evidence_id = <str>$0)) { evidence_id }";
     /// Claim insert with evidence links (`$0` claim id, `$1` rel id,
     /// `$2` accepted, `$3` supporting ids, `$4` contradicting ids).
-    pub const INSERT_CLAIM: &str =
-        "select (insert Claim { claim_id := <str>$0, \
+    pub const INSERT_CLAIM: &str = "select (insert Claim { claim_id := <str>$0, \
          relationship := (select Relationship filter .rel_id = <str>$1), accepted := <bool>$2, \
          supporting := (select Evidence filter .evidence_id in array_unpack(<array<str>>$3)), \
          contradicting := (select Evidence filter .evidence_id in array_unpack(<array<str>>$4)) } \
@@ -228,8 +227,7 @@ pub mod edgeql {
          evidence_class, model_requested, model_returned, confidence, probability, cache_key } \
          filter .candidate.candidate_id = <str>$0 and .question_id = <str>$1";
     /// Append one evidence link to a relationship (`$0` rel id, `$1` evidence id).
-    pub const LINK_EVIDENCE: &str =
-        "select (update Relationship filter .rel_id = <str>$0 \
+    pub const LINK_EVIDENCE: &str = "select (update Relationship filter .rel_id = <str>$0 \
          set { evidence += (select Evidence filter .evidence_id = <str>$1) }) { rel_id }";
 }
 
@@ -414,7 +412,10 @@ pub fn claim_task(
             task.generation += 1;
             Ok(())
         }
-        other => Err(GelError::Invariant(format!("claim non-pending task {:?} as {worker}", other))),
+        other => Err(GelError::Invariant(format!(
+            "claim non-pending task {:?} as {worker}",
+            other
+        ))),
     }
 }
 
@@ -434,7 +435,9 @@ pub fn heartbeat_task(
             };
             Ok(())
         }
-        other => Err(GelError::Invariant(format!("heartbeat not holder: {other:?} as {worker}"))),
+        other => Err(GelError::Invariant(format!(
+            "heartbeat not holder: {other:?} as {worker}"
+        ))),
     }
 }
 
@@ -455,7 +458,9 @@ pub fn reclaim_task(
             task.generation += 1;
             Ok(())
         }
-        other => Err(GelError::Invariant(format!("reclaim live task {other:?} as {worker}"))),
+        other => Err(GelError::Invariant(format!(
+            "reclaim live task {other:?} as {worker}"
+        ))),
     }
 }
 
@@ -631,7 +636,10 @@ impl Store for MemoryStore {
         Ok(())
     }
     async fn put_evidence(&mut self, e: Evidence) -> Result<(), GelError> {
-        if !self.files.contains_key(&(e.snapshot.clone(), e.source_file_version.clone())) {
+        if !self
+            .files
+            .contains_key(&(e.snapshot.clone(), e.source_file_version.clone()))
+        {
             return Err(GelError::Invariant(format!(
                 "evidence {} references unregistered file {} in snapshot {}",
                 e.id, e.source_file_version, e.snapshot
@@ -665,7 +673,9 @@ impl Store for MemoryStore {
         catalog_digest: &str,
         rubric_version: &str,
     ) -> Result<(), GelError> {
-        self.runs.entry(run_id.to_owned()).or_insert_with(|| (repo.to_owned(), snapshot_id.to_owned()));
+        self.runs
+            .entry(run_id.to_owned())
+            .or_insert_with(|| (repo.to_owned(), snapshot_id.to_owned()));
         if let Some((run, catalog, rubric)) = self.sets.get(set_id) {
             if run != run_id || catalog != catalog_digest || rubric != rubric_version {
                 return Err(GelError::Invariant(format!(
@@ -676,7 +686,11 @@ impl Store for MemoryStore {
         }
         self.sets.insert(
             set_id.to_owned(),
-            (run_id.to_owned(), catalog_digest.to_owned(), rubric_version.to_owned()),
+            (
+                run_id.to_owned(),
+                catalog_digest.to_owned(),
+                rubric_version.to_owned(),
+            ),
         );
         Ok(())
     }
@@ -688,17 +702,30 @@ impl Store for MemoryStore {
                 c.id
             )));
         }
-        self.candidates.entry(c.id.clone()).or_insert_with(|| (set_id.to_owned(), c.clone()));
+        self.candidates
+            .entry(c.id.clone())
+            .or_insert_with(|| (set_id.to_owned(), c.clone()));
         Ok(())
-    }    async fn publish(&mut self, build: GraphBuild, expected_predecessor: Option<String>) -> Result<(), GelError> {
+    }
+    async fn publish(
+        &mut self,
+        build: GraphBuild,
+        expected_predecessor: Option<String>,
+    ) -> Result<(), GelError> {
         // Validate invariants before pointer swing.
         for r in build.edges.values() {
             if !build.nodes.contains_key(&r.from) || !build.nodes.contains_key(&r.to) {
-                return Err(GelError::Invariant(format!("edge {} outside build {}", r.id, build.id)));
+                return Err(GelError::Invariant(format!(
+                    "edge {} outside build {}",
+                    r.id, build.id
+                )));
             }
         }
         if let Some(cur_id) = self.active.get(&build.repo) {
-            let cur = self.builds.get(cur_id).ok_or_else(|| GelError::NotFound(cur_id.clone()))?;
+            let cur = self
+                .builds
+                .get(cur_id)
+                .ok_or_else(|| GelError::NotFound(cur_id.clone()))?;
             if expected_predecessor.as_deref() != Some(&cur.id) {
                 return Err(GelError::Invariant(format!(
                     "predecessor mismatch: expected {:?}, active is {} (gen {})",
@@ -706,17 +733,24 @@ impl Store for MemoryStore {
                 )));
             }
             if build.generation <= cur.generation {
-                return Err(GelError::Invariant("older worker cannot replace newer build".into()));
+                return Err(GelError::Invariant(
+                    "older worker cannot replace newer build".into(),
+                ));
             }
         } else if expected_predecessor.is_some() {
-            return Err(GelError::Invariant("expected predecessor but no active build".into()));
+            return Err(GelError::Invariant(
+                "expected predecessor but no active build".into(),
+            ));
         }
         self.builds.insert(build.id.clone(), build.clone());
         self.active.insert(build.repo.clone(), build.id.clone());
         Ok(())
     }
     fn active(&self, repo: &str) -> Option<GraphBuild> {
-        self.active.get(repo).and_then(|id| self.builds.get(id)).cloned()
+        self.active
+            .get(repo)
+            .and_then(|id| self.builds.get(id))
+            .cloned()
     }
     fn get(&self, build_id: &str) -> Option<GraphBuild> {
         self.builds.get(build_id).cloned()
@@ -742,7 +776,10 @@ impl GelStore {
     /// A disconnected store; connects lazily on first flush.
     #[must_use]
     pub fn new() -> Self {
-        Self { handle: None, staging: MemoryStore::default() }
+        Self {
+            handle: None,
+            staging: MemoryStore::default(),
+        }
     }
 
     /// The connected handle, connecting on first use. Returns an owned
@@ -760,22 +797,19 @@ impl GelStore {
         let mut run_ids: Vec<&String> = self.staging.runs.keys().collect();
         run_ids.sort();
         for run_id in run_ids {
-            let (repo, snapshot_id) =
-                self.staging.runs.get(run_id).expect("key from map");
+            let (repo, snapshot_id) = self.staging.runs.get(run_id).expect("key from map");
             handle.insert_run(run_id, repo, snapshot_id).await?;
         }
         let mut set_ids: Vec<&String> = self.staging.sets.keys().collect();
         set_ids.sort();
         for set_id in set_ids {
-            let (run_id, catalog, rubric) =
-                self.staging.sets.get(set_id).expect("key from map");
+            let (run_id, catalog, rubric) = self.staging.sets.get(set_id).expect("key from map");
             handle.insert_set(set_id, run_id, catalog, rubric).await?;
         }
         let mut cand_ids: Vec<&String> = self.staging.candidates.keys().collect();
         cand_ids.sort();
         for cand_id in cand_ids {
-            let (set_id, cand) =
-                self.staging.candidates.get(cand_id).expect("key from map");
+            let (set_id, cand) = self.staging.candidates.get(cand_id).expect("key from map");
             handle.insert_candidate_row(set_id, cand).await?;
         }
         let mut dec_keys: Vec<&String> = self.staging.decisions.keys().collect();
@@ -837,7 +871,9 @@ impl GelStore {
             handle.put_relation_row(r).await?;
             handle.insert_edge_membership(&build.id, &r.id).await?;
         }
-        handle.create_build(&build.id, &build.repo, build.generation as i64, "staging").await?;
+        handle
+            .create_build(&build.id, &build.repo, build.generation as i64, "staging")
+            .await?;
         Ok(())
     }
 }
@@ -856,7 +892,9 @@ impl Store for GelStore {
         repo: &str,
         files: &[SnapshotFile],
     ) -> Result<(), GelError> {
-        self.staging.ensure_snapshot_files(snapshot_id, repo, files).await
+        self.staging
+            .ensure_snapshot_files(snapshot_id, repo, files)
+            .await
     }
 
     async fn put_entity(&mut self, e: Entity) -> Result<(), GelError> {
@@ -884,7 +922,11 @@ impl Store for GelStore {
         candidate_id: &str,
         question_id: &str,
     ) -> Result<Option<Decision>, GelError> {
-        if let Some(d) = self.staging.find_decision(candidate_id, question_id).await? {
+        if let Some(d) = self
+            .staging
+            .find_decision(candidate_id, question_id)
+            .await?
+        {
             return Ok(Some(d));
         }
         let handle = self.handle.clone().ok_or_else(|| {
@@ -905,7 +947,16 @@ impl Store for GelStore {
         catalog_digest: &str,
         rubric_version: &str,
     ) -> Result<(), GelError> {
-        self.staging.ensure_run(run_id, repo, snapshot_id, set_id, catalog_digest, rubric_version).await
+        self.staging
+            .ensure_run(
+                run_id,
+                repo,
+                snapshot_id,
+                set_id,
+                catalog_digest,
+                rubric_version,
+            )
+            .await
     }
 
     async fn put_candidate(&mut self, set_id: &str, c: &Candidate) -> Result<(), GelError> {
@@ -923,7 +974,8 @@ impl Store for GelStore {
         match (&live, &expected_predecessor) {
             (None, None) => {}
             (Some(a), _) if a.build_id == build.id => return Ok(()), // idempotent retry
-            (Some(a), Some(pred)) if *pred == a.build_id && build.generation as i64 > a.generation => {}
+            (Some(a), Some(pred))
+                if *pred == a.build_id && build.generation as i64 > a.generation => {}
             (Some(a), pred) => {
                 return Err(GelError::Invariant(format!(
                     "predecessor mismatch: expected {:?}, Gel active is {} (gen {})",
@@ -938,7 +990,9 @@ impl Store for GelStore {
         }
         let pred_gen = live.map(|a| a.generation);
         // 2. Local invariant validation (cross-build edges, generations).
-        self.staging.publish(build.clone(), expected_predecessor).await?;
+        self.staging
+            .publish(build.clone(), expected_predecessor)
+            .await?;
         // 3. Idempotent flush; safe to retry after a crash mid-flush.
         self.flush_build(&handle, &build).await?;
         self.flush_chain(&handle).await?;
@@ -951,7 +1005,8 @@ impl Store for GelStore {
             Some(g) => {
                 if !handle.guarded_swing(&build.repo, &build.id, g).await? {
                     return Err(GelError::Invariant(
-                        "concurrent publisher moved the pointer; build staged but not activated".into(),
+                        "concurrent publisher moved the pointer; build staged but not activated"
+                            .into(),
                     ));
                 }
             }
@@ -1007,11 +1062,7 @@ pub trait GelQueries: Send + Sync {
         rel_types: Vec<String>,
     ) -> Result<Vec<RelRow>, GelError>;
     /// Member entities of one build, bounded.
-    async fn build_entities(
-        &self,
-        build_id: &str,
-        limit: i64,
-    ) -> Result<Vec<EntityRow>, GelError>;
+    async fn build_entities(&self, build_id: &str, limit: i64) -> Result<Vec<EntityRow>, GelError>;
     /// Member relationships of one build, bounded.
     async fn build_relationships(
         &self,
@@ -1019,7 +1070,11 @@ pub trait GelQueries: Send + Sync {
         limit: i64,
     ) -> Result<Vec<RelRow>, GelError>;
     /// Evidence attached to one relationship of the pinned build.
-    async fn evidence_for(&self, build_id: &str, rel_id: &str) -> Result<Vec<EvidenceRow>, GelError>;
+    async fn evidence_for(
+        &self,
+        build_id: &str,
+        rel_id: &str,
+    ) -> Result<Vec<EvidenceRow>, GelError>;
 }
 
 /// Rebuild a [`Decision`] from a [`DecisionRow`]: outcome and class travel
@@ -1027,8 +1082,9 @@ pub trait GelQueries: Send + Sync {
 fn decision_from_row(row: DecisionRow) -> Result<Decision, GelError> {
     let outcome: DecisionOutcome =
         serde_json::from_str(&row.outcome).map_err(|e| GelError::Query(e.to_string()))?;
-    let evidence_class: EvidenceClass = serde_json::from_str(&format!("\"{}\"", row.evidence_class))
-        .map_err(|e| GelError::Query(e.to_string()))?;
+    let evidence_class: EvidenceClass =
+        serde_json::from_str(&format!("\"{}\"", row.evidence_class))
+            .map_err(|e| GelError::Query(e.to_string()))?;
     Ok(Decision {
         id: row.decision_id,
         candidate_id: row.candidate.candidate_id,
@@ -1069,8 +1125,12 @@ fn rel_row(r: &Relation) -> RelRow {
     RelRow {
         rel_id: r.id.clone(),
         rel_type: chaosbox_core::relation_type_name(&r.rel_type),
-        from_entity: EndpointRef { entity_id: r.from.clone() },
-        to_entity: EndpointRef { entity_id: r.to.clone() },
+        from_entity: EndpointRef {
+            entity_id: r.from.clone(),
+        },
+        to_entity: EndpointRef {
+            entity_id: r.to.clone(),
+        },
     }
 }
 
@@ -1117,7 +1177,9 @@ impl MemoryReader {
 
     /// Member relationships of one build.
     fn member_relations(&self, build_id: &str) -> Vec<RelRow> {
-        self.builds.get(build_id).map_or_else(Vec::new, |b| b.edges.values().map(rel_row).collect())
+        self.builds
+            .get(build_id)
+            .map_or_else(Vec::new, |b| b.edges.values().map(rel_row).collect())
     }
 }
 
@@ -1141,11 +1203,15 @@ fn unescape_like(like: &str) -> String {
 #[async_trait::async_trait]
 impl GelQueries for MemoryReader {
     async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, GelError> {
-        Ok(self.active.get(repo).and_then(|id| self.builds.get(id)).map(|b| BuildRow {
-            build_id: b.id.clone(),
-            generation: b.generation as i64,
-            status: "active".to_owned(),
-        }))
+        Ok(self
+            .active
+            .get(repo)
+            .and_then(|id| self.builds.get(id))
+            .map(|b| BuildRow {
+                build_id: b.id.clone(),
+                generation: b.generation as i64,
+                status: "active".to_owned(),
+            }))
     }
 
     async fn search_entities(
@@ -1167,12 +1233,11 @@ impl GelQueries for MemoryReader {
             .collect())
     }
 
-    async fn entity_by_id(
-        &self,
-        build_id: &str,
-        id: &str,
-    ) -> Result<Option<EntityRow>, GelError> {
-        Ok(self.members(build_id).into_iter().find(|e| e.entity_id == id))
+    async fn entity_by_id(&self, build_id: &str, id: &str) -> Result<Option<EntityRow>, GelError> {
+        Ok(self
+            .members(build_id)
+            .into_iter()
+            .find(|e| e.entity_id == id))
     }
 
     async fn neighbors_out(
@@ -1201,11 +1266,7 @@ impl GelQueries for MemoryReader {
             .collect())
     }
 
-    async fn build_entities(
-        &self,
-        build_id: &str,
-        limit: i64,
-    ) -> Result<Vec<EntityRow>, GelError> {
+    async fn build_entities(&self, build_id: &str, limit: i64) -> Result<Vec<EntityRow>, GelError> {
         let limit = limit.max(0) as usize;
         Ok(self
             .builds
@@ -1236,7 +1297,11 @@ impl GelQueries for MemoryReader {
         build_id: &str,
         rel_id: &str,
     ) -> Result<Vec<EvidenceRow>, GelError> {
-        if self.builds.get(build_id).is_none_or(|b| !b.edges.contains_key(rel_id)) {
+        if self
+            .builds
+            .get(build_id)
+            .is_none_or(|b| !b.edges.contains_key(rel_id))
+        {
             return Ok(Vec::new());
         }
         Ok(self.evidence.get(rel_id).cloned().unwrap_or_default())
@@ -1258,11 +1323,7 @@ impl GelQueries for GelHandle {
         GelHandle::search_entities(self, build_id, like, limit).await
     }
 
-    async fn entity_by_id(
-        &self,
-        build_id: &str,
-        id: &str,
-    ) -> Result<Option<EntityRow>, GelError> {
+    async fn entity_by_id(&self, build_id: &str, id: &str) -> Result<Option<EntityRow>, GelError> {
         GelHandle::entity_by_id(self, build_id, id).await
     }
 
@@ -1284,11 +1345,7 @@ impl GelQueries for GelHandle {
         GelHandle::neighbors_in(self, build_id, id, rel_types).await
     }
 
-    async fn build_entities(
-        &self,
-        build_id: &str,
-        limit: i64,
-    ) -> Result<Vec<EntityRow>, GelError> {
+    async fn build_entities(&self, build_id: &str, limit: i64) -> Result<Vec<EntityRow>, GelError> {
         GelHandle::build_entities(self, build_id, limit).await
     }
 
@@ -1340,7 +1397,13 @@ pub fn conformance_seed() -> ConformanceSeed {
     let b1e = ent("conf", "s1", "f.rs", "Beta");
     b1.add_node(a1.clone()).unwrap();
     b1.add_node(b1e.clone()).unwrap();
-    let mut r1 = Relation::new(RelationType::Calls, &a1.id, &b1e.id, RelationScope::File, &b1.id);
+    let mut r1 = Relation::new(
+        RelationType::Calls,
+        &a1.id,
+        &b1e.id,
+        RelationScope::File,
+        &b1.id,
+    );
     r1.evidence_ids.push("ev1".into());
     b1.add_edge(r1.clone()).unwrap();
     let mut b2 = GraphBuild::new("conf", vec!["s2".into()], 2);
@@ -1349,7 +1412,13 @@ pub fn conformance_seed() -> ConformanceSeed {
     let c2 = ent("conf", "s2", "g.rs", "Gamma");
     b2.add_node(a2.clone()).unwrap();
     b2.add_node(c2.clone()).unwrap();
-    let r2 = Relation::new(RelationType::References, &a2.id, &c2.id, RelationScope::CrossFile, &b2.id);
+    let r2 = Relation::new(
+        RelationType::References,
+        &a2.id,
+        &c2.id,
+        RelationScope::CrossFile,
+        &b2.id,
+    );
     b2.add_edge(r2).unwrap();
     let mut reader = MemoryReader::new();
     reader.insert_build(b1.clone());
@@ -1395,20 +1464,51 @@ pub async fn check_conformance<R: GelQueries>(
     assert_eq!(active.generation, 2);
     assert!(r.active_build("missing-repo").await.unwrap().is_none());
     // Search is scoped: each build sees only its own Alpha.
-    let hits: Vec<_> =
-        r.search_entities(&builds.0, "%alpha%", 10).await.unwrap().into_iter().map(|e| e.entity_id).collect();
+    let hits: Vec<_> = r
+        .search_entities(&builds.0, "%alpha%", 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.entity_id)
+        .collect();
     assert_eq!(hits, vec![a1.to_owned()]);
-    let hits: Vec<_> =
-        r.search_entities(&builds.1, "%alpha%", 10).await.unwrap().into_iter().map(|e| e.entity_id).collect();
+    let hits: Vec<_> = r
+        .search_entities(&builds.1, "%alpha%", 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.entity_id)
+        .collect();
     assert_eq!(hits, vec![a2.to_owned()]);
-    assert_eq!(r.search_entities(&builds.1, "%alpha%", 0).await.unwrap().len(), 0);
+    assert_eq!(
+        r.search_entities(&builds.1, "%alpha%", 0)
+            .await
+            .unwrap()
+            .len(),
+        0
+    );
     // Escaped wildcards match literally, not as patterns (same on live Gel,
     // where backslash is the LIKE escape).
-    assert!(r.search_entities(&builds.1, "%alp\\_ha%", 10).await.unwrap().is_empty());
+    assert!(r
+        .search_entities(&builds.1, "%alp\\_ha%", 10)
+        .await
+        .unwrap()
+        .is_empty());
     // Lookup is scoped: a1 is invisible from the second build.
-    assert_eq!(r.entity_by_id(&builds.0, a1).await.unwrap().unwrap().entity_id, a1);
+    assert_eq!(
+        r.entity_by_id(&builds.0, a1)
+            .await
+            .unwrap()
+            .unwrap()
+            .entity_id,
+        a1
+    );
     assert!(r.entity_by_id(&builds.1, a1).await.unwrap().is_none());
-    assert!(r.entity_by_id(&builds.0, "ent:missing").await.unwrap().is_none());
+    assert!(r
+        .entity_by_id(&builds.0, "ent:missing")
+        .await
+        .unwrap()
+        .is_none());
     // Neighborhoods honor the type filter and the build scope; empty filter
     // matches nothing.
     let out: BTreeSet<_> = r
@@ -1419,9 +1519,21 @@ pub async fn check_conformance<R: GelQueries>(
         .map(|x| x.rel_id)
         .collect();
     assert_eq!(out, BTreeSet::from([rel1.to_owned()]));
-    assert!(r.neighbors_out(&builds.1, a1, vec!["calls".into()]).await.unwrap().is_empty());
-    assert!(r.neighbors_out(&builds.0, a1, vec![]).await.unwrap().is_empty());
-    assert!(r.neighbors_out(&builds.0, a1, vec!["references".into()]).await.unwrap().is_empty());
+    assert!(r
+        .neighbors_out(&builds.1, a1, vec!["calls".into()])
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(r
+        .neighbors_out(&builds.0, a1, vec![])
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(r
+        .neighbors_out(&builds.0, a1, vec!["references".into()])
+        .await
+        .unwrap()
+        .is_empty());
     let inc: BTreeSet<_> = r
         .neighbors_in(&builds.0, b1, vec!["calls".into()])
         .await
@@ -1439,7 +1551,11 @@ pub async fn check_conformance<R: GelQueries>(
         .map(|e| e.entity_id)
         .collect();
     assert_eq!(e1, BTreeSet::from([a1.to_owned(), b1.to_owned()]));
-    assert!(r.build_entities("build:missing", 100).await.unwrap().is_empty());
+    assert!(r
+        .build_entities("build:missing", 100)
+        .await
+        .unwrap()
+        .is_empty());
     let r1: BTreeSet<_> = r
         .build_relationships(&builds.0, 100)
         .await
@@ -1454,7 +1570,11 @@ pub async fn check_conformance<R: GelQueries>(
     assert_eq!(ev[0].evidence_id, "ev1");
     assert!(ev[0].supports);
     assert!(r.evidence_for(&builds.1, rel1).await.unwrap().is_empty());
-    assert!(r.evidence_for(&builds.0, "rel:missing").await.unwrap().is_empty());
+    assert!(r
+        .evidence_for(&builds.0, "rel:missing")
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 /// Native Gel handle: typed decoding over `query_json` with bound params.
@@ -1481,12 +1601,18 @@ impl GelHandle {
     pub async fn probe(&self) -> Result<Probe, GelError> {
         let json = self
             .client
-            .query_json("select { version := <int64>$0 }", &(i64::from(SCHEMA_VERSION),))
+            .query_json(
+                "select { version := <int64>$0 }",
+                &(i64::from(SCHEMA_VERSION),),
+            )
             .await
             .map_err(|e| GelError::Query(e.to_string()))?;
         let v: serde_json::Value =
             serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
-        Ok(Probe { ok: true, detail: v.to_string() })
+        Ok(Probe {
+            ok: true,
+            detail: v.to_string(),
+        })
     }
 
     /// Typed entity lookup with a bound parameter.
@@ -1504,8 +1630,8 @@ impl GelHandle {
         match json {
             None => Ok(None),
             Some(j) => {
-                let row: MembershipRow = serde_json::from_str(j.as_ref())
-                    .map_err(|e| GelError::Query(e.to_string()))?;
+                let row: MembershipRow =
+                    serde_json::from_str(j.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
                 Ok(Some(row.entity))
             }
         }
@@ -1539,7 +1665,12 @@ impl GelHandle {
             self.client
                 .query_json(
                     edgeql::UPSERT_FILE_VERSION,
-                    &(snapshot_id, f.path.as_str(), f.sha256.as_str(), f.bytes as i64),
+                    &(
+                        snapshot_id,
+                        f.path.as_str(),
+                        f.sha256.as_str(),
+                        f.bytes as i64,
+                    ),
                 )
                 .await
                 .map_err(|e| GelError::Query(e.to_string()))?;
@@ -1569,9 +1700,11 @@ impl GelHandle {
             .map_err(|e| GelError::Query(e.to_string()))?;
         let rows: Vec<SpanIdRow> =
             serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
-        let span_id = rows.into_iter().next().map(|r| r.id).ok_or_else(|| {
-            GelError::Query("span insert returned no id".into())
-        })?;
+        let span_id = rows
+            .into_iter()
+            .next()
+            .map(|r| r.id)
+            .ok_or_else(|| GelError::Query("span insert returned no id".into()))?;
         self.client
             .query_json(
                 edgeql::UPSERT_ENTITY,
@@ -1659,7 +1792,10 @@ impl GelHandle {
     ) -> Result<bool, GelError> {
         let json = self
             .client
-            .query_json(edgeql::SET_ACTIVE_BUILD_IF_GEN, &(repo, build_id, expected_gen))
+            .query_json(
+                edgeql::SET_ACTIVE_BUILD_IF_GEN,
+                &(repo, build_id, expected_gen),
+            )
             .await
             .map_err(|e| GelError::Query(e.to_string()))?;
         let rows: Vec<serde_json::Value> =
@@ -1677,7 +1813,12 @@ impl GelHandle {
     }
 
     /// Extraction-run insert (idempotent).
-    pub async fn insert_run(&self, run_id: &str, repo: &str, snapshot_id: &str) -> Result<(), GelError> {
+    pub async fn insert_run(
+        &self,
+        run_id: &str,
+        repo: &str,
+        snapshot_id: &str,
+    ) -> Result<(), GelError> {
         self.client
             .query_json(edgeql::INSERT_EXTRACTION_RUN, &(run_id, repo, snapshot_id))
             .await
@@ -1694,7 +1835,10 @@ impl GelHandle {
         rubric_version: &str,
     ) -> Result<(), GelError> {
         self.client
-            .query_json(edgeql::INSERT_CANDIDATE_SET, &(set_id, run_id, catalog_digest, rubric_version))
+            .query_json(
+                edgeql::INSERT_CANDIDATE_SET,
+                &(set_id, run_id, catalog_digest, rubric_version),
+            )
             .await
             .map_err(|e| GelError::Query(e.to_string()))?;
         Ok(())
@@ -1725,7 +1869,8 @@ impl GelHandle {
     /// failure, keeps valid rows. Returns true when the row now holds the
     /// given decision id.
     pub async fn upsert_decision_row(&self, d: &Decision) -> Result<bool, GelError> {
-        let outcome = serde_json::to_string(&d.outcome).map_err(|e| GelError::Query(e.to_string()))?;
+        let outcome =
+            serde_json::to_string(&d.outcome).map_err(|e| GelError::Query(e.to_string()))?;
         let class = chaosbox_core::evidence_class_name(d.evidence_class);
         let json = self
             .client
@@ -1748,7 +1893,9 @@ impl GelHandle {
             .map_err(|e| GelError::Query(e.to_string()))?;
         let rows: Vec<serde_json::Value> =
             serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
-        Ok(rows.iter().any(|r| r["decision_id"].as_str() == Some(d.id.as_str())))
+        Ok(rows
+            .iter()
+            .any(|r| r["decision_id"].as_str() == Some(d.id.as_str())))
     }
 
     /// Evidence insert (idempotent); span goes through `INSERT_SPAN` first.
@@ -1773,9 +1920,11 @@ impl GelHandle {
                 .map_err(|e| GelError::Query(e.to_string()))?;
             let rows: Vec<SpanIdRow> =
                 serde_json::from_str(json.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
-            let span_id = rows.into_iter().next().map(|r| r.id).ok_or_else(|| {
-                GelError::Query("span insert returned no id".into())
-            })?;
+            let span_id = rows
+                .into_iter()
+                .next()
+                .map(|r| r.id)
+                .ok_or_else(|| GelError::Query("span insert returned no id".into()))?;
             self.client
                 .query_json(
                     edgeql::INSERT_EVIDENCE,
@@ -1964,8 +2113,8 @@ impl GelHandle {
         match json {
             None => Ok(None),
             Some(j) => {
-                let row: DecisionRow = serde_json::from_str(j.as_ref())
-                    .map_err(|e| GelError::Query(e.to_string()))?;
+                let row: DecisionRow =
+                    serde_json::from_str(j.as_ref()).map_err(|e| GelError::Query(e.to_string()))?;
                 Ok(Some(row))
             }
         }
@@ -1987,7 +2136,15 @@ mod tests {
     use chaosbox_core::{EntityKind, GraphBuild, RelationScope, RelationType, SourceSpan};
 
     fn ent(repo: &str, snap: &str, file: &str, name: &str) -> Entity {
-        Entity::new(EntityKind::Symbol, repo, snap, file, name, name, SourceSpan::point(file, 1, 1, 0))
+        Entity::new(
+            EntityKind::Symbol,
+            repo,
+            snap,
+            file,
+            name,
+            name,
+            SourceSpan::point(file, 1, 1, 0),
+        )
     }
 
     #[test]
@@ -1998,9 +2155,15 @@ mod tests {
         assert!(!SCHEMA_SDL.contains("json;") || SCHEMA_SDL.contains("raw_envelope"));
         assert!(MIGRATION_00001.contains("m1_chaosbox_init"));
         assert!(MIGRATION_00002.contains("m2_worker_tasks"));
-        assert!(MIGRATION_00002.contains("m1_chaosbox_init"), "migration chain must link");
+        assert!(
+            MIGRATION_00002.contains("m1_chaosbox_init"),
+            "migration chain must link"
+        );
         assert!(MIGRATION_00003.contains("m3_decision_cache_key"));
-        assert!(MIGRATION_00003.contains("m2_worker_tasks"), "migration chain must link");
+        assert!(
+            MIGRATION_00003.contains("m2_worker_tasks"),
+            "migration chain must link"
+        );
     }
 
     /// Shared write-path conformance over any [`Store`] impl: file linkage,
@@ -2010,11 +2173,18 @@ mod tests {
     pub async fn check_write_conformance<S: Store>(s: &mut S) {
         use chaosbox_core::{DecisionOutcome, EvidenceClass, RelationType, SourceSpan};
         // Run + set identity registers before candidates may reference it.
-        s.ensure_run("run:1", "r", "s1", "set:1", "catalog:1", "rubric-v1").await.unwrap();
+        s.ensure_run("run:1", "r", "s1", "set:1", "catalog:1", "rubric-v1")
+            .await
+            .unwrap();
         assert_eq!(s.stats().runs, 1);
         // Same inputs re-register idempotently; changed inputs are rejected.
-        s.ensure_run("run:1", "r", "s1", "set:1", "catalog:1", "rubric-v1").await.unwrap();
-        assert!(s.ensure_run("run:1", "r", "s1", "set:1", "catalog:2", "rubric-v1").await.is_err());
+        s.ensure_run("run:1", "r", "s1", "set:1", "catalog:1", "rubric-v1")
+            .await
+            .unwrap();
+        assert!(s
+            .ensure_run("run:1", "r", "s1", "set:1", "catalog:2", "rubric-v1")
+            .await
+            .is_err());
         let cand = Candidate {
             id: "cand:1".into(),
             rel_type: RelationType::Calls,
@@ -2023,13 +2193,20 @@ mod tests {
             reason: "structural".into(),
             state_excerpt: String::new(),
         };
-        assert!(s.put_candidate("set:missing", &cand).await.is_err(), "unregistered sets never resolve");
+        assert!(
+            s.put_candidate("set:missing", &cand).await.is_err(),
+            "unregistered sets never resolve"
+        );
         s.put_candidate("set:1", &cand).await.unwrap();
         s.put_candidate("set:1", &cand).await.unwrap();
         assert_eq!(s.stats().candidates, 1);
         // File versions register before evidence may reference them.
-        let files =
-            vec![SnapshotFile { snapshot: "s1".into(), path: "a.rs".into(), sha256: "abc".into(), bytes: 3 }];
+        let files = vec![SnapshotFile {
+            snapshot: "s1".into(),
+            path: "a.rs".into(),
+            sha256: "abc".into(),
+            bytes: 3,
+        }];
         s.ensure_snapshot_files("s1", "r", &files).await.unwrap();
         let ev = Evidence {
             id: "ev1".into(),
@@ -2051,7 +2228,10 @@ mod tests {
             snapshot: "s9".into(),
             source_file_version: "missing.rs".into(),
         };
-        assert!(s.put_evidence(bad).await.is_err(), "unregistered files never resolve");
+        assert!(
+            s.put_evidence(bad).await.is_err(),
+            "unregistered files never resolve"
+        );
         // Decisions: first write wins, except Failed supersedes once.
         let mk = |id: &str, outcome| Decision {
             id: id.into(),
@@ -2065,10 +2245,16 @@ mod tests {
             probability: None,
             cache_key: "test-cache-key".into(),
         };
-        s.put_decision(mk("d1", DecisionOutcome::Failed("down".into()))).await.unwrap();
-        s.put_decision(mk("d2", DecisionOutcome::Accepted)).await.unwrap();
+        s.put_decision(mk("d1", DecisionOutcome::Failed("down".into())))
+            .await
+            .unwrap();
+        s.put_decision(mk("d2", DecisionOutcome::Accepted))
+            .await
+            .unwrap();
         assert_eq!(s.stats().decisions, 1, "one row per (candidate, question)");
-        s.put_decision(mk("d3", DecisionOutcome::Rejected)).await.unwrap();
+        s.put_decision(mk("d3", DecisionOutcome::Rejected))
+            .await
+            .unwrap();
         assert_eq!(s.stats().decisions, 1, "accepted outcomes stick");
         // Publication: stale predecessors and older generations rejected.
         let mut b1 = GraphBuild::new("r", vec!["s1".into()], 1);
@@ -2076,7 +2262,10 @@ mod tests {
         s.publish(b1.clone(), None).await.unwrap();
         let mut stale = GraphBuild::new("r", vec!["s1".into()], 1);
         stale.add_node(ent("r", "s1", "b.rs", "b")).unwrap();
-        assert!(s.publish(stale, Some("wrong-predecessor".into())).await.is_err());
+        assert!(s
+            .publish(stale, Some("wrong-predecessor".into()))
+            .await
+            .is_err());
         let mut b2 = GraphBuild::new("r", vec!["s2".into()], 2);
         b2.predecessor = Some(b1.id.clone());
         b2.add_node(ent("r", "s2", "c.rs", "c")).unwrap();
@@ -2093,9 +2282,16 @@ mod tests {
 
     #[test]
     fn task_claim_recovery() {
-        let mut t = Task { id: "t".into(), state: TaskState::Pending, generation: 0 };
+        let mut t = Task {
+            id: "t".into(),
+            state: TaskState::Pending,
+            generation: 0,
+        };
         claim_task(&mut t, "w1", 1_000, 60).unwrap();
-        assert!(claim_task(&mut t, "w2", 1_001, 60).is_err(), "stale worker must not overwrite");
+        assert!(
+            claim_task(&mut t, "w2", 1_001, 60).is_err(),
+            "stale worker must not overwrite"
+        );
         // Heartbeats renew the holder's own lease; others are rejected.
         heartbeat_task(&mut t, "w1", 1_050, 60).unwrap();
         assert!(heartbeat_task(&mut t, "w2", 1_050, 60).is_err());
@@ -2154,7 +2350,10 @@ mod tests {
             edgeql::INSERT_MEMBERSHIP,
             edgeql::INSERT_EDGE_MEMBERSHIP,
         ] {
-            assert!(q.contains("$"), "values must be bound params, not interpolated");
+            assert!(
+                q.contains("$"),
+                "values must be bound params, not interpolated"
+            );
             assert!(!q.contains("format!"), "no string interpolation in EdgeQL");
         }
         let _ = (RelationScope::CrossFile, RelationType::Calls);

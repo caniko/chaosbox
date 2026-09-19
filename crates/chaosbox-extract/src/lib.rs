@@ -14,7 +14,7 @@ use std::{
 };
 
 use chaosbox_core::{
-    Candidate, Entity, EntityKind, RelationType, SourceSpan, deterministic_id, sha256_hex,
+    deterministic_id, sha256_hex, Candidate, Entity, EntityKind, RelationType, SourceSpan,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -63,8 +63,7 @@ impl Snapshot {
         let mut contents = BTreeMap::new();
         let mut stack = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
-            let entries = std::fs::read_dir(&dir)
-                .map_err(|e| ExtractError::Io(e.to_string()))?;
+            let entries = std::fs::read_dir(&dir).map_err(|e| ExtractError::Io(e.to_string()))?;
             let mut sorted: Vec<PathBuf> = Vec::new();
             for e in entries {
                 let e = e.map_err(|e| ExtractError::Io(e.to_string()))?;
@@ -101,9 +100,21 @@ impl Snapshot {
         files.sort_by(|a, b| a.path.cmp(&b.path));
         let id = deterministic_id(
             "snap",
-            &[repo, &files.iter().map(|f| format!("{}:{}", f.path, f.sha256)).collect::<Vec<_>>().join(",")],
+            &[
+                repo,
+                &files
+                    .iter()
+                    .map(|f| format!("{}:{}", f.path, f.sha256))
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ],
         );
-        Ok(Self { id, repo: repo.to_owned(), files, contents })
+        Ok(Self {
+            id,
+            repo: repo.to_owned(),
+            files,
+            contents,
+        })
     }
 
     /// Look up a pinned file version by repository-relative path.
@@ -128,7 +139,9 @@ impl Snapshot {
 }
 
 fn is_supported(path: &str) -> bool {
-    const EXTS: [&str; 11] = ["rs", "py", "js", "ts", "jsx", "tsx", "mjs", "cjs", "md", "markdown", "txt"];
+    const EXTS: [&str; 11] = [
+        "rs", "py", "js", "ts", "jsx", "tsx", "mjs", "cjs", "md", "markdown", "txt",
+    ];
     match path.rsplit('.').next() {
         Some(ext) => EXTS.contains(&ext),
         None => false,
@@ -138,11 +151,15 @@ fn is_supported(path: &str) -> bool {
 /// Unsupported binary/media/document formats: reported, never interpreted.
 #[must_use]
 pub fn report_unsupported(root: &Path) -> Vec<String> {
-    const BAD: [&str; 12] = ["png", "jpg", "jpeg", "gif", "mp3", "mp4", "wav", "pdf", "docx", "xlsx", "pptx", "exe"];
+    const BAD: [&str; 12] = [
+        "png", "jpg", "jpeg", "gif", "mp3", "mp4", "wav", "pdf", "docx", "xlsx", "pptx", "exe",
+    ];
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for e in entries.flatten() {
             let p = e.path();
             if p.is_dir() {
@@ -202,20 +219,55 @@ fn span_of(text: &str, file: &str, byte_start: usize, byte_end: usize) -> Source
 pub fn extract_file(repo: &str, snapshot: &str, path: &str, text: &str) -> Extraction {
     let mut entities = Vec::new();
     let mut refs = Vec::new();
-    let file_entity = Entity::new(EntityKind::File, repo, snapshot, path, path, path, span_of(text, path, 0, 0));
+    let file_entity = Entity::new(
+        EntityKind::File,
+        repo,
+        snapshot,
+        path,
+        path,
+        path,
+        span_of(text, path, 0, 0),
+    );
     let file_id = file_entity.id.clone();
     entities.push(file_entity);
 
     if path.ends_with(".md") || path.ends_with(".markdown") {
-        extract_markdown(repo, snapshot, path, text, &file_id, &mut entities, &mut refs);
+        extract_markdown(
+            repo,
+            snapshot,
+            path,
+            text,
+            &file_id,
+            &mut entities,
+            &mut refs,
+        );
     } else if path.ends_with(".txt") {
-        let sym = Entity::new(EntityKind::Symbol, repo, snapshot, path, "text", &format!("{path}::text"), span_of(text, path, 0, 0));
+        let sym = Entity::new(
+            EntityKind::Symbol,
+            repo,
+            snapshot,
+            path,
+            "text",
+            &format!("{path}::text"),
+            span_of(text, path, 0, 0),
+        );
         refs.push((file_id, sym.id.clone(), "contains".into()));
         entities.push(sym);
     } else {
-        extract_code(repo, snapshot, path, text, &file_id, &mut entities, &mut refs);
+        extract_code(
+            repo,
+            snapshot,
+            path,
+            text,
+            &file_id,
+            &mut entities,
+            &mut refs,
+        );
     }
-    Extraction { entities, explicit_refs: refs }
+    Extraction {
+        entities,
+        explicit_refs: refs,
+    }
 }
 
 fn extract_code(
@@ -236,14 +288,33 @@ fn extract_code(
         let name = cap.get(1).unwrap().as_str();
         let m = cap.get(1).unwrap();
         let qn = format!("{path}::{name}");
-        let e = Entity::new(EntityKind::Definition, repo, snapshot, path, name, &qn, span_of(text, path, m.start(), m.end()));
+        let e = Entity::new(
+            EntityKind::Definition,
+            repo,
+            snapshot,
+            path,
+            name,
+            &qn,
+            span_of(text, path, m.start(), m.end()),
+        );
         refs.push((file_id.to_owned(), e.id.clone(), "defines".into()));
         defined.push((name.to_owned(), e.id.clone()));
         entities.push(e);
     }
     // Module record for code files.
-    let stem = Path::new(path).file_stem().and_then(|s| s.to_str()).unwrap_or(path);
-    let mod_ent = Entity::new(EntityKind::Module, repo, snapshot, path, stem, &format!("{path}::{stem}"), span_of(text, path, 0, 0));
+    let stem = Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path);
+    let mod_ent = Entity::new(
+        EntityKind::Module,
+        repo,
+        snapshot,
+        path,
+        stem,
+        &format!("{path}::{stem}"),
+        span_of(text, path, 0, 0),
+    );
     refs.push((file_id.to_owned(), mod_ent.id.clone(), "contains".into()));
     for (_, did) in &defined {
         refs.push((mod_ent.id.clone(), did.clone(), "defines".into()));
@@ -260,7 +331,15 @@ fn extract_code(
             continue;
         }
         let m = cap.get(0).unwrap();
-        let e = Entity::new(EntityKind::Import, repo, snapshot, path, &target, &format!("{path}::import::{target}"), span_of(text, path, m.start(), m.end()));
+        let e = Entity::new(
+            EntityKind::Import,
+            repo,
+            snapshot,
+            path,
+            &target,
+            &format!("{path}::import::{target}"),
+            span_of(text, path, m.start(), m.end()),
+        );
         refs.push((file_id.to_owned(), e.id.clone(), "imports".into()));
         entities.push(e);
     }
@@ -297,19 +376,43 @@ fn extract_markdown(
     let code_re = Regex::new(r"`([^`]+)`").unwrap();
     for cap in head_re.captures_iter(text) {
         let title = cap.get(2).unwrap();
-        let e = Entity::new(EntityKind::Heading, repo, snapshot, path, title.as_str(), &format!("{path}#{}", title.as_str()), span_of(text, path, title.start(), title.end()));
+        let e = Entity::new(
+            EntityKind::Heading,
+            repo,
+            snapshot,
+            path,
+            title.as_str(),
+            &format!("{path}#{}", title.as_str()),
+            span_of(text, path, title.start(), title.end()),
+        );
         refs.push((file_id.to_owned(), e.id.clone(), "contains".into()));
         entities.push(e);
     }
     for cap in link_re.captures_iter(text) {
         let (label, target) = (cap.get(1).unwrap(), cap.get(2).unwrap());
-        let e = Entity::new(EntityKind::Link, repo, snapshot, path, label.as_str(), &format!("{path}::link::{}", target.as_str()), span_of(text, path, target.start(), target.end()));
+        let e = Entity::new(
+            EntityKind::Link,
+            repo,
+            snapshot,
+            path,
+            label.as_str(),
+            &format!("{path}::link::{}", target.as_str()),
+            span_of(text, path, target.start(), target.end()),
+        );
         refs.push((file_id.to_owned(), e.id.clone(), "linksto".into()));
         entities.push(e);
     }
     for cap in code_re.captures_iter(text) {
         let inner = cap.get(1).unwrap();
-        let e = Entity::new(EntityKind::CodeMention, repo, snapshot, path, inner.as_str(), &format!("{path}::code::{}", inner.as_str()), span_of(text, path, inner.start(), inner.end()));
+        let e = Entity::new(
+            EntityKind::CodeMention,
+            repo,
+            snapshot,
+            path,
+            inner.as_str(),
+            &format!("{path}::code::{}", inner.as_str()),
+            span_of(text, path, inner.start(), inner.end()),
+        );
         refs.push((file_id.to_owned(), e.id.clone(), "mentions".into()));
         entities.push(e);
     }
@@ -328,7 +431,10 @@ pub fn extract_snapshot(snapshot: &Snapshot) -> Extraction {
         entities.extend(one.entities);
         refs.extend(one.explicit_refs);
     }
-    Extraction { entities, explicit_refs: refs }
+    Extraction {
+        entities,
+        explicit_refs: refs,
+    }
 }
 
 /// Bounded candidate construction: no cartesian product.
@@ -338,11 +444,21 @@ pub fn extract_snapshot(snapshot: &Snapshot) -> Extraction {
 /// Cap total candidates to keep Jev budgets bounded.
 #[must_use]
 pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Vec<Candidate> {
-    let by_id: BTreeMap<&str, &Entity> = extraction.entities.iter().map(|e| (e.id.as_str(), e)).collect();
+    let by_id: BTreeMap<&str, &Entity> = extraction
+        .entities
+        .iter()
+        .map(|e| (e.id.as_str(), e))
+        .collect();
     let mut name_index: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for e in &extraction.entities {
-        name_index.entry(e.name.clone()).or_default().push(e.id.clone());
-        name_index.entry(e.qualified_name.clone()).or_default().push(e.id.clone());
+        name_index
+            .entry(e.name.clone())
+            .or_default()
+            .push(e.id.clone());
+        name_index
+            .entry(e.qualified_name.clone())
+            .or_default()
+            .push(e.id.clone());
     }
     let mut out: Vec<Candidate> = Vec::new();
     let mut seen: BTreeSet<(String, String, String)> = BTreeSet::new();
@@ -382,17 +498,50 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Vec<C
             "mentions" => RelationType::References,
             _ => RelationType::Contains,
         };
-        let excerpt = by_id.get(to.as_str()).map(|e| e.qualified_name.clone()).unwrap_or_default();
-        push(&mut out, &mut seen, max_candidates, rel, from, to, "structural", &excerpt);
+        let excerpt = by_id
+            .get(to.as_str())
+            .map(|e| e.qualified_name.clone())
+            .unwrap_or_default();
+        push(
+            &mut out,
+            &mut seen,
+            max_candidates,
+            rel,
+            from,
+            to,
+            "structural",
+            &excerpt,
+        );
     }
     // 2. import -> definition resolution by last-segment lexical match (bounded)
-    let imports: Vec<&Entity> = extraction.entities.iter().filter(|e| e.kind == EntityKind::Import).collect();
-    let defs: Vec<&Entity> = extraction.entities.iter().filter(|e| e.kind == EntityKind::Definition).collect();
+    let imports: Vec<&Entity> = extraction
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Import)
+        .collect();
+    let defs: Vec<&Entity> = extraction
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Definition)
+        .collect();
     for imp in &imports {
-        let last = imp.name.split(['/', '.', ':']).next_back().unwrap_or(&imp.name);
+        let last = imp
+            .name
+            .split(['/', '.', ':'])
+            .next_back()
+            .unwrap_or(&imp.name);
         for d in defs.iter().take(200) {
             if d.name == last && imp.file != d.file {
-                push(&mut out, &mut seen, max_candidates, RelationType::References, &imp.id, &d.id, "lexical-import", &d.qualified_name);
+                push(
+                    &mut out,
+                    &mut seen,
+                    max_candidates,
+                    RelationType::References,
+                    &imp.id,
+                    &d.id,
+                    "lexical-import",
+                    &d.qualified_name,
+                );
             }
             if out.len() >= max_candidates {
                 break;
@@ -408,7 +557,16 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Vec<C
     }
     for (_, defs_in_file) in &by_file {
         for pair in defs_in_file.windows(2).take(25) {
-            push(&mut out, &mut seen, max_candidates, RelationType::References, &pair[0].id, &pair[1].id, "co-occurrence", &pair[1].qualified_name);
+            push(
+                &mut out,
+                &mut seen,
+                max_candidates,
+                RelationType::References,
+                &pair[0].id,
+                &pair[1].id,
+                "co-occurrence",
+                &pair[1].qualified_name,
+            );
         }
     }
     out
@@ -458,8 +616,20 @@ mod tests {
         let snap = Snapshot::capture("r", &root).unwrap();
         assert_eq!(snap.files.len(), 5);
         let ext = extract_snapshot(&snap);
-        let kinds: BTreeSet<String> = ext.entities.iter().map(|e| format!("{:?}", e.kind)).collect();
-        for k in ["File", "Module", "Definition", "Import", "Heading", "Link", "CodeMention"] {
+        let kinds: BTreeSet<String> = ext
+            .entities
+            .iter()
+            .map(|e| format!("{:?}", e.kind))
+            .collect();
+        for k in [
+            "File",
+            "Module",
+            "Definition",
+            "Import",
+            "Heading",
+            "Link",
+            "CodeMention",
+        ] {
             assert!(kinds.contains(k), "missing {k} in {kinds:?}");
         }
         let cands = build_candidates(&ext, 100);
@@ -490,7 +660,11 @@ mod tests {
         let (_t, root) = tmp_repo(&[("a.rs", "fn foo() {}\n")]);
         let snap = Snapshot::capture("r", &root).unwrap();
         let ext = extract_snapshot(&snap);
-        let def = ext.entities.iter().find(|e| e.kind == EntityKind::Definition).unwrap();
+        let def = ext
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Definition)
+            .unwrap();
         assert_eq!(def.span.start_line, 1);
         assert_eq!(def.span.file, "a.rs");
     }

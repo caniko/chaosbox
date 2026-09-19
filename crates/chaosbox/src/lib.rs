@@ -8,13 +8,15 @@ use std::{
 };
 
 use chaosbox_core::{
-    Candidate, Claim, Decision, DecisionOutcome, Entity, Evidence, EvidenceClass, GraphBuild,
-    Relation, RelationScope, catalog_digest, check_confidence, check_probability, deterministic_id,
+    catalog_digest, check_confidence, check_probability, deterministic_id, Candidate, Claim,
+    Decision, DecisionOutcome, Entity, Evidence, EvidenceClass, GraphBuild, Relation,
+    RelationScope,
 };
-use chaosbox_extract::{Extraction, Snapshot, build_candidates, extract_snapshot};
+use chaosbox_extract::{build_candidates, extract_snapshot, Extraction, Snapshot};
 use chaosbox_gel::MemoryStore;
 use chaosbox_jev::{
-    Answer, ChoiceAnswer, JevClient, NoulAnswer, Question, ScoreAnswer, SystemOneResponse, cache_key,
+    cache_key, Answer, ChoiceAnswer, JevClient, NoulAnswer, Question, ScoreAnswer,
+    SystemOneResponse,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -113,7 +115,11 @@ impl Materialization {
 /// How a candidate becomes Jev questions. Descriptions (not ids) go into
 /// state/instructions; ids carry no inference meaning.
 #[must_use]
-pub fn questions_for(candidate: &Candidate, from: &Entity, to: &Entity) -> BTreeMap<String, Question> {
+pub fn questions_for(
+    candidate: &Candidate,
+    from: &Entity,
+    to: &Entity,
+) -> BTreeMap<String, Question> {
     BTreeMap::from([(
         format!("rel_{}", candidate.id),
         Question::Choice {
@@ -159,7 +165,10 @@ impl FixtureResponder {
     /// A deterministic responder for tests and credential-free runs.
     #[must_use]
     pub fn new(accept_all: bool) -> Self {
-        Self { accept_all, model: chaosbox_jev::JEV_MODEL_PINNED.into() }
+        Self {
+            accept_all,
+            model: chaosbox_jev::JEV_MODEL_PINNED.into(),
+        }
     }
 }
 
@@ -189,10 +198,7 @@ impl Responder for FixtureResponder {
                     );
                 }
                 Question::Noul { .. } => {
-                    answers.insert(
-                        id.clone(),
-                        Answer::Noul(NoulAnswer { noul: 0.8 }),
-                    );
+                    answers.insert(id.clone(), Answer::Noul(NoulAnswer { noul: 0.8 }));
                 }
                 Question::Score { .. } => {
                     answers.insert(
@@ -210,7 +216,10 @@ impl Responder for FixtureResponder {
         Ok(SystemOneResponse {
             model: self.model.clone(),
             answers,
-            usage: chaosbox_jev::Usage { input_tokens: 100, output_tokens: 0 },
+            usage: chaosbox_jev::Usage {
+                input_tokens: 100,
+                output_tokens: 0,
+            },
         })
     }
 }
@@ -243,12 +252,13 @@ impl Responder for LiveResponder {
                 Question::Choice { criteria, .. } => {
                     (id.clone(), criteria.keys().cloned().collect())
                 }
-                Question::Noul { .. } | Question::Score { .. } => {
-                    (id.clone(), BTreeSet::new())
-                }
+                Question::Noul { .. } | Question::Score { .. } => (id.clone(), BTreeSet::new()),
             })
             .collect();
-        self.client.evaluate(state, questions, &valid).await.map_err(|e| e.to_string())
+        self.client
+            .evaluate(state, questions, &valid)
+            .await
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -289,7 +299,10 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
     /// A pipeline with an empty store at generation zero.
     #[must_use]
     pub fn new() -> Self {
-        Self { store: S::default(), generation: 0 }
+        Self {
+            store: S::default(),
+            generation: 0,
+        }
     }
 
     /// Snapshot -> extract -> candidates.
@@ -298,7 +311,8 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
         root: &Path,
         max_candidates: usize,
     ) -> Result<(Snapshot, Extraction, Vec<Candidate>), PipelineError> {
-        let snap = Snapshot::capture(repo, root).map_err(|e| PipelineError::Extract(e.to_string()))?;
+        let snap =
+            Snapshot::capture(repo, root).map_err(|e| PipelineError::Extract(e.to_string()))?;
         let ext = extract_snapshot(&snap);
         let cands = build_candidates(&ext, max_candidates);
         Ok((snap, ext, cands))
@@ -326,17 +340,30 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
         let catalog = catalog_digest(candidates);
         let mut out = Vec::new();
         for cand in candidates {
-            let from = entities.get(&cand.from_entity).ok_or_else(|| PipelineError::Validation("missing from".into()))?;
-            let to = entities.get(&cand.to_entity).ok_or_else(|| PipelineError::Validation("missing to".into()))?;
+            let from = entities
+                .get(&cand.from_entity)
+                .ok_or_else(|| PipelineError::Validation("missing from".into()))?;
+            let to = entities
+                .get(&cand.to_entity)
+                .ok_or_else(|| PipelineError::Validation("missing to".into()))?;
             let questions = questions_for(cand, from, to);
             let qid = format!("rel_{}", cand.id);
-            let key = cache_key(&from.snapshot, &catalog, &questions, model_requested, &mat.rubric_version);
+            let key = cache_key(
+                &from.snapshot,
+                &catalog,
+                &questions,
+                model_requested,
+                &mat.rubric_version,
+            );
             // Cache reuse: same key and never a recorded failure (retries
             // always re-ask). Evidence rebuilds byte-identically.
-            if let Some(stored) =
-                store.find_decision(&cand.id, &qid).await.map_err(|e| PipelineError::Store(e.to_string()))?
+            if let Some(stored) = store
+                .find_decision(&cand.id, &qid)
+                .await
+                .map_err(|e| PipelineError::Store(e.to_string()))?
             {
-                if stored.cache_key == key && !matches!(stored.outcome, DecisionOutcome::Failed(_)) {
+                if stored.cache_key == key && !matches!(stored.outcome, DecisionOutcome::Failed(_))
+                {
                     let supports = stored.outcome == DecisionOutcome::Accepted;
                     let text = format!(
                         "[{}] {} -> {} ({:?})",
@@ -351,7 +378,10 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                         &from.file,
                         "support",
                     );
-                    store.put_evidence(ev.clone()).await.map_err(|e| PipelineError::Store(e.to_string()))?;
+                    store
+                        .put_evidence(ev.clone())
+                        .await
+                        .map_err(|e| PipelineError::Store(e.to_string()))?;
                     out.push((cand.clone(), stored, ev));
                     continue;
                 }
@@ -370,7 +400,13 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
             let resp = match responder.respond(state, questions.clone()).await {
                 Ok(r) => r,
                 Err(_) => {
-                    let key = cache_key(&from.snapshot, &catalog, &questions, model_requested, &mat.rubric_version);
+                    let key = cache_key(
+                        &from.snapshot,
+                        &catalog,
+                        &questions,
+                        model_requested,
+                        &mat.rubric_version,
+                    );
                     let decision = Decision {
                         id: deterministic_id("dec", &[&cand.id, "failed", model_requested]),
                         candidate_id: cand.id.clone(),
@@ -392,8 +428,14 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                         &from.file,
                         "failed",
                     );
-                    store.put_decision(decision.clone()).await.map_err(|e| PipelineError::Store(e.to_string()))?;
-                    store.put_evidence(ev.clone()).await.map_err(|e| PipelineError::Store(e.to_string()))?;
+                    store
+                        .put_decision(decision.clone())
+                        .await
+                        .map_err(|e| PipelineError::Store(e.to_string()))?;
+                    store
+                        .put_evidence(ev.clone())
+                        .await
+                        .map_err(|e| PipelineError::Store(e.to_string()))?;
                     out.push((cand.clone(), decision, ev));
                     continue;
                 }
@@ -407,42 +449,92 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                 format!("rel_{}", cand.id),
                 BTreeSet::from(["accept".into(), "reject".into(), "none".into()]),
             )]);
-            chaosbox_jev::validate_response(&resp, &questions, &valid).map_err(|e| PipelineError::Validation(e.to_string()))?;
+            chaosbox_jev::validate_response(&resp, &questions, &valid)
+                .map_err(|e| PipelineError::Validation(e.to_string()))?;
             for (qid, ans) in &resp.answers {
                 // Abstain-first precedence: below-floor confidence abstains
                 // regardless of the selected option or score.
                 let (outcome, class, conf, prob) = match ans {
                     Answer::Choice(c) => {
-                        check_confidence(c.confidence).map_err(|e| PipelineError::Validation(e.to_string()))?;
+                        check_confidence(c.confidence)
+                            .map_err(|e| PipelineError::Validation(e.to_string()))?;
                         for p in c.probabilities.values() {
-                            check_probability(*p).map_err(|e| PipelineError::Validation(e.to_string()))?;
+                            check_probability(*p)
+                                .map_err(|e| PipelineError::Validation(e.to_string()))?;
                         }
                         if c.confidence < mat.abstain_confidence {
-                            (DecisionOutcome::Abstained, EvidenceClass::Ambiguous, Some(c.confidence), None)
+                            (
+                                DecisionOutcome::Abstained,
+                                EvidenceClass::Ambiguous,
+                                Some(c.confidence),
+                                None,
+                            )
                         } else {
                             match c.choice.as_str() {
-                                "accept" => (DecisionOutcome::Accepted, EvidenceClass::Inferred, Some(c.confidence), c.probabilities.get("accept").copied()),
-                                "reject" => (DecisionOutcome::Rejected, EvidenceClass::Ambiguous, Some(c.confidence), c.probabilities.get("reject").copied()),
-                                _ => (DecisionOutcome::Negative, EvidenceClass::Ambiguous, Some(c.confidence), c.probabilities.get("none").copied()),
+                                "accept" => (
+                                    DecisionOutcome::Accepted,
+                                    EvidenceClass::Inferred,
+                                    Some(c.confidence),
+                                    c.probabilities.get("accept").copied(),
+                                ),
+                                "reject" => (
+                                    DecisionOutcome::Rejected,
+                                    EvidenceClass::Ambiguous,
+                                    Some(c.confidence),
+                                    c.probabilities.get("reject").copied(),
+                                ),
+                                _ => (
+                                    DecisionOutcome::Negative,
+                                    EvidenceClass::Ambiguous,
+                                    Some(c.confidence),
+                                    c.probabilities.get("none").copied(),
+                                ),
                             }
                         }
                     }
                     Answer::Noul(n) => {
-                        check_probability(n.noul).map_err(|e| PipelineError::Validation(e.to_string()))?;
+                        check_probability(n.noul)
+                            .map_err(|e| PipelineError::Validation(e.to_string()))?;
                         if n.noul >= mat.accept_noul {
-                            (DecisionOutcome::Accepted, EvidenceClass::Inferred, None, Some(n.noul))
+                            (
+                                DecisionOutcome::Accepted,
+                                EvidenceClass::Inferred,
+                                None,
+                                Some(n.noul),
+                            )
                         } else {
-                            (DecisionOutcome::Negative, EvidenceClass::Ambiguous, None, Some(n.noul))
+                            (
+                                DecisionOutcome::Negative,
+                                EvidenceClass::Ambiguous,
+                                None,
+                                Some(n.noul),
+                            )
                         }
                     }
                     Answer::Score(s) => {
-                        check_confidence(s.confidence).map_err(|e| PipelineError::Validation(e.to_string()))?;
+                        check_confidence(s.confidence)
+                            .map_err(|e| PipelineError::Validation(e.to_string()))?;
                         if s.confidence < mat.abstain_confidence {
-                            (DecisionOutcome::Abstained, EvidenceClass::Ambiguous, Some(s.confidence), None)
+                            (
+                                DecisionOutcome::Abstained,
+                                EvidenceClass::Ambiguous,
+                                Some(s.confidence),
+                                None,
+                            )
                         } else if s.score >= mat.accept_score {
-                            (DecisionOutcome::Accepted, EvidenceClass::Inferred, Some(s.confidence), None)
+                            (
+                                DecisionOutcome::Accepted,
+                                EvidenceClass::Inferred,
+                                Some(s.confidence),
+                                None,
+                            )
                         } else {
-                            (DecisionOutcome::Negative, EvidenceClass::Ambiguous, Some(s.confidence), None)
+                            (
+                                DecisionOutcome::Negative,
+                                EvidenceClass::Ambiguous,
+                                Some(s.confidence),
+                                None,
+                            )
                         }
                     }
                 };
@@ -472,19 +564,28 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                     ),
                 };
                 // Evidence text copied from source spans / deterministic template.
-                let text = format!("[{}] {} -> {} ({:?})", cand.reason, from.qualified_name, to.qualified_name, cand.rel_type);
+                let text = format!(
+                    "[{}] {} -> {} ({:?})",
+                    cand.reason, from.qualified_name, to.qualified_name, cand.rel_type
+                );
                 let supports = outcome == DecisionOutcome::Accepted;
-                    let ev = assemble_evidence(
-                        &decision,
-                        supports,
-                        text,
-                        Some(from.span.clone()),
-                        &from.snapshot,
-                        &from.file,
-                        "support",
-                    );
-                store.put_decision(decision.clone()).await.map_err(|e| PipelineError::Store(e.to_string()))?;
-                store.put_evidence(ev.clone()).await.map_err(|e| PipelineError::Store(e.to_string()))?;
+                let ev = assemble_evidence(
+                    &decision,
+                    supports,
+                    text,
+                    Some(from.span.clone()),
+                    &from.snapshot,
+                    &from.file,
+                    "support",
+                );
+                store
+                    .put_decision(decision.clone())
+                    .await
+                    .map_err(|e| PipelineError::Store(e.to_string()))?;
+                store
+                    .put_evidence(ev.clone())
+                    .await
+                    .map_err(|e| PipelineError::Store(e.to_string()))?;
                 out.push((cand.clone(), decision, ev));
             }
         }
@@ -505,10 +606,15 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
         self.generation += 1;
         let mut build = GraphBuild::new(repo, vec![snapshot.id.clone()], self.generation);
         build.predecessor = expected_predecessor.clone();
-        let entities: BTreeMap<String, Entity> =
-            extraction.entities.iter().map(|e| (e.id.clone(), e.clone())).collect();
+        let entities: BTreeMap<String, Entity> = extraction
+            .entities
+            .iter()
+            .map(|e| (e.id.clone(), e.clone()))
+            .collect();
         for e in entities.values() {
-            build.add_node(e.clone()).map_err(|e| PipelineError::Validation(e.to_string()))?;
+            build
+                .add_node(e.clone())
+                .map_err(|e| PipelineError::Validation(e.to_string()))?;
         }
         // Materialize accepted relations as first-class objects.
         // Index rejected evidence by endpoint triple so materialized claims
@@ -538,14 +644,26 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
             if !accept {
                 continue;
             }
-            let scope = if entities.get(&cand.from_entity).map(|e| e.file.clone()).unwrap_or_default()
-                == entities.get(&cand.to_entity).map(|e| e.file.clone()).unwrap_or_default()
+            let scope = if entities
+                .get(&cand.from_entity)
+                .map(|e| e.file.clone())
+                .unwrap_or_default()
+                == entities
+                    .get(&cand.to_entity)
+                    .map(|e| e.file.clone())
+                    .unwrap_or_default()
             {
                 RelationScope::File
             } else {
                 RelationScope::CrossFile
             };
-            let mut rel = Relation::new(cand.rel_type.clone(), &cand.from_entity, &cand.to_entity, scope, &build.id);
+            let mut rel = Relation::new(
+                cand.rel_type.clone(),
+                &cand.from_entity,
+                &cand.to_entity,
+                scope,
+                &build.id,
+            );
             rel.evidence_ids.push(ev.id.clone());
             // Parallel relations preserved: distinct (type, from, to) ids get
             // a deterministic numeric suffix so N-way collisions all survive.
@@ -560,7 +678,9 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                     n += 1;
                 }
             }
-            build.add_edge(rel.clone()).map_err(|e| PipelineError::Validation(e.to_string()))?;
+            build
+                .add_edge(rel.clone())
+                .map_err(|e| PipelineError::Validation(e.to_string()))?;
             // One claim per materialized relation: supporting evidence from
             // the accepted decision, contradicting evidence from same-batch
             // rejections over the identical triple (empty when none).
@@ -576,10 +696,16 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
                 contradicting: contradictions.get(&triple).cloned().unwrap_or_default(),
                 accepted: true,
             };
-            self.store.put_claim(claim).await.map_err(|e| PipelineError::Store(e.to_string()))?;
+            self.store
+                .put_claim(claim)
+                .await
+                .map_err(|e| PipelineError::Store(e.to_string()))?;
         }
         // Invariant: published edges refer to same-build members (enforced by add_edge).
-        self.store.publish(build.clone(), expected_predecessor).await.map_err(|e| PipelineError::Store(e.to_string()))?;
+        self.store
+            .publish(build.clone(), expected_predecessor)
+            .await
+            .map_err(|e| PipelineError::Store(e.to_string()))?;
         Ok(build)
     }
 }
@@ -600,7 +726,9 @@ pub fn search(build: &GraphBuild, query: &str, limit: usize) -> Vec<Entity> {
     let mut out: Vec<Entity> = build
         .nodes
         .values()
-        .filter(|e| e.name.to_lowercase().contains(&q) || e.qualified_name.to_lowercase().contains(&q))
+        .filter(|e| {
+            e.name.to_lowercase().contains(&q) || e.qualified_name.to_lowercase().contains(&q)
+        })
         .cloned()
         .collect();
     out.sort_by(|a, b| a.qualified_name.cmp(&b.qualified_name));
@@ -738,10 +866,16 @@ impl LifecycleReport {
 /// Claim evidence helper used by tests: removing one source keeps others.
 #[must_use]
 pub fn claim_survives_source_removal(claim: &Claim, removed_evidence: &str) -> bool {
-    let remaining_support: Vec<_> =
-        claim.supporting.iter().filter(|e| *e != removed_evidence).collect();
-    let remaining_contra: Vec<_> =
-        claim.contradicting.iter().filter(|e| *e != removed_evidence).collect();
+    let remaining_support: Vec<_> = claim
+        .supporting
+        .iter()
+        .filter(|e| *e != removed_evidence)
+        .collect();
+    let remaining_contra: Vec<_> = claim
+        .contradicting
+        .iter()
+        .filter(|e| *e != removed_evidence)
+        .collect();
     !remaining_support.is_empty() || !remaining_contra.is_empty() || claim.supporting.is_empty()
 }
 
@@ -764,10 +898,18 @@ fn escape_like(query: &str) -> String {
 /// callers pass [`all_relation_types`] for unfiltered neighborhoods.
 #[must_use]
 pub fn all_relation_types() -> Vec<String> {
-    ["contains", "defines", "imports", "references", "calls", "links_to", "mentions"]
-        .iter()
-        .map(|s| (*s).to_owned())
-        .collect()
+    [
+        "contains",
+        "defines",
+        "imports",
+        "references",
+        "calls",
+        "links_to",
+        "mentions",
+    ]
+    .iter()
+    .map(|s| (*s).to_owned())
+    .collect()
 }
 
 /// Validate a relation-type filter against the vocabulary (case-insensitive),
@@ -834,7 +976,11 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
             .await
             .map_err(|e| PipelineError::Consumer(format!("active build: {e}")))?
             .ok_or_else(|| PipelineError::Consumer(format!("no active build for repo {repo}")))?;
-        Ok(Self { handle, build_id: build.build_id, generation: build.generation })
+        Ok(Self {
+            handle,
+            build_id: build.build_id,
+            generation: build.generation,
+        })
     }
 
     /// Bounded substring search over the pinned build's entity names.
@@ -852,10 +998,7 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
     }
 
     /// Typed entity lookup within the pinned build.
-    pub async fn lookup(
-        &self,
-        id: &str,
-    ) -> Result<Option<chaosbox_gel::EntityRow>, PipelineError> {
+    pub async fn lookup(&self, id: &str) -> Result<Option<chaosbox_gel::EntityRow>, PipelineError> {
         self.handle
             .entity_by_id(&self.build_id, id)
             .await
@@ -981,10 +1124,7 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
 
     /// Claim evidence and source locations for one relationship of the
     /// pinned build.
-    pub async fn evidence(
-        &self,
-        rel_id: &str,
-    ) -> Result<serde_json::Value, PipelineError> {
+    pub async fn evidence(&self, rel_id: &str) -> Result<serde_json::Value, PipelineError> {
         let rows = self
             .handle
             .evidence_for(&self.build_id, rel_id)
@@ -1035,7 +1175,9 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
                 .await
                 .map_err(|e| PipelineError::Consumer(e.to_string()))?;
             if ents.len() as i64 > EXPORT_NODE_CAP || rels.len() as i64 > EXPORT_EDGE_CAP {
-                return Err(PipelineError::Consumer("diff truncated at export caps".into()));
+                return Err(PipelineError::Consumer(
+                    "diff truncated at export caps".into(),
+                ));
             }
             Ok((
                 ents.iter().map(|e| e.entity_id.clone()).collect(),
@@ -1059,7 +1201,7 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chaosbox_core::{SourceSpan, diff_builds};
+    use chaosbox_core::{diff_builds, SourceSpan};
     use chaosbox_gel::Store as _;
 
     #[test]
@@ -1115,18 +1257,37 @@ mod tests {
     fn threshold_change_reuses_decisions() {
         // Same decisions, different materialization => different accepted sets.
         // Identity covers every threshold so raw decisions are reusable.
-        let m1 = Materialization { accept_noul: 0.95, ..Default::default() };
+        let m1 = Materialization {
+            accept_noul: 0.95,
+            ..Default::default()
+        };
         let m2 = Materialization::default();
         assert_ne!(m1.identity("x"), m2.identity("x"));
-        let m3 = Materialization { accept_score: 2.0, ..Default::default() };
+        let m3 = Materialization {
+            accept_score: 2.0,
+            ..Default::default()
+        };
         assert_ne!(m3.identity("x"), m2.identity("x"));
-        let m4 = Materialization { accept_confidence: 0.99, ..Default::default() };
+        let m4 = Materialization {
+            accept_confidence: 0.99,
+            ..Default::default()
+        };
         assert_ne!(m4.identity("x"), m2.identity("x"));
-        let m5 = Materialization { abstain_confidence: 0.1, ..Default::default() };
+        let m5 = Materialization {
+            abstain_confidence: 0.1,
+            ..Default::default()
+        };
         assert_ne!(m5.identity("x"), m2.identity("x"));
         assert!(m2.validate().is_ok());
-        let bad = Materialization { abstain_confidence: 0.9, accept_confidence: 0.6, ..Default::default() };
-        assert!(bad.validate().is_err(), "abstain floor above accept floor is incoherent");
+        let bad = Materialization {
+            abstain_confidence: 0.9,
+            accept_confidence: 0.6,
+            ..Default::default()
+        };
+        assert!(
+            bad.validate().is_err(),
+            "abstain floor above accept floor is incoherent"
+        );
     }
 
     /// Responder with tunable Choice confidence for abstain tests.
@@ -1159,7 +1320,10 @@ mod tests {
             Ok(SystemOneResponse {
                 model: chaosbox_jev::JEV_MODEL_PINNED.into(),
                 answers,
-                usage: chaosbox_jev::Usage { input_tokens: 1, output_tokens: 0 },
+                usage: chaosbox_jev::Usage {
+                    input_tokens: 1,
+                    output_tokens: 0,
+                },
             })
         }
     }
@@ -1214,19 +1378,31 @@ mod tests {
             .await
             .unwrap();
         let mut low = ConfResponder { confidence: 0.1 };
-        let decided =
-            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut low, "jev-1.13.0", &mat, &mut store)
-                .await
-                .unwrap();
+        let decided = Pipeline::<MemoryStore>::decide(
+            &[cand.clone()],
+            &entities,
+            &mut low,
+            "jev-1.13.0",
+            &mat,
+            &mut store,
+        )
+        .await
+        .unwrap();
         assert_eq!(decided[0].1.outcome, DecisionOutcome::Abstained);
         assert_eq!(store.stats().decisions, 1, "abstentions persist");
         // Same inputs reuse the stored decision even when the responder would
         // now fail: no re-ask on a cache hit.
         let mut failing = FailResponder;
-        let reused =
-            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut failing, "jev-1.13.0", &mat, &mut store)
-                .await
-                .unwrap();
+        let reused = Pipeline::<MemoryStore>::decide(
+            &[cand.clone()],
+            &entities,
+            &mut failing,
+            "jev-1.13.0",
+            &mat,
+            &mut store,
+        )
+        .await
+        .unwrap();
         assert_eq!(reused[0].1.outcome, DecisionOutcome::Abstained);
         // A fresh store re-asks: above the accept floor the answer is accepted.
         let mut fresh = MemoryStore::new();
@@ -1244,10 +1420,16 @@ mod tests {
             .await
             .unwrap();
         let mut high = ConfResponder { confidence: 0.95 };
-        let decided =
-            Pipeline::<MemoryStore>::decide(&[cand], &entities, &mut high, "jev-1.13.0", &mat, &mut fresh)
-                .await
-                .unwrap();
+        let decided = Pipeline::<MemoryStore>::decide(
+            &[cand],
+            &entities,
+            &mut high,
+            "jev-1.13.0",
+            &mat,
+            &mut fresh,
+        )
+        .await
+        .unwrap();
         assert_eq!(decided[0].1.outcome, DecisionOutcome::Accepted);
     }
 
@@ -1270,10 +1452,16 @@ mod tests {
             .await
             .unwrap();
         let mut failing = FailResponder;
-        let decided =
-            Pipeline::<MemoryStore>::decide(&[cand], &entities, &mut failing, "jev-1.13.0", &mat, &mut store)
-                .await
-                .unwrap();
+        let decided = Pipeline::<MemoryStore>::decide(
+            &[cand],
+            &entities,
+            &mut failing,
+            "jev-1.13.0",
+            &mat,
+            &mut store,
+        )
+        .await
+        .unwrap();
         assert_eq!(decided.len(), 1, "batch continues past one fault");
         assert!(matches!(decided[0].1.outcome, DecisionOutcome::Failed(_)));
         // The fault text is never copied into evidence.
@@ -1306,33 +1494,60 @@ mod tests {
         ensure_a_rs(&mut store).await;
         // Baseline: accepted under jev-1.13.0 / rubric-v1.
         let mut accept = ConfResponder { confidence: 0.95 };
-        let first =
-            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut accept, "jev-1.13.0", &mat, &mut store)
-                .await
-                .unwrap();
+        let first = Pipeline::<MemoryStore>::decide(
+            &[cand.clone()],
+            &entities,
+            &mut accept,
+            "jev-1.13.0",
+            &mat,
+            &mut store,
+        )
+        .await
+        .unwrap();
         assert_eq!(first[0].1.outcome, DecisionOutcome::Accepted);
         // Model change invalidates: re-asked (low confidence now abstains),
         // and the stale row is replaced because the key differs.
         let mut low = ConfResponder { confidence: 0.1 };
-        let second =
-            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut low, "jev-9.9.9", &mat, &mut store)
-                .await
-                .unwrap();
+        let second = Pipeline::<MemoryStore>::decide(
+            &[cand.clone()],
+            &entities,
+            &mut low,
+            "jev-9.9.9",
+            &mat,
+            &mut store,
+        )
+        .await
+        .unwrap();
         assert_eq!(second[0].1.outcome, DecisionOutcome::Abstained);
         // Rubric change invalidates the same way.
-        let mat2 = Materialization { rubric_version: "rubric-v2".into(), ..Default::default() };
-        let third =
-            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut low, "jev-1.13.0", &mat2, &mut store)
-                .await
-                .unwrap();
+        let mat2 = Materialization {
+            rubric_version: "rubric-v2".into(),
+            ..Default::default()
+        };
+        let third = Pipeline::<MemoryStore>::decide(
+            &[cand.clone()],
+            &entities,
+            &mut low,
+            "jev-1.13.0",
+            &mat2,
+            &mut store,
+        )
+        .await
+        .unwrap();
         assert_eq!(third[0].1.outcome, DecisionOutcome::Abstained);
         // Catalog change (extra candidate) invalidates the whole run.
         let mut extra = cand.clone();
         extra.id = "cand:2".into();
-        let fourth =
-            Pipeline::<MemoryStore>::decide(&[cand.clone(), extra], &entities, &mut low, "jev-1.13.0", &mat, &mut store)
-                .await
-                .unwrap();
+        let fourth = Pipeline::<MemoryStore>::decide(
+            &[cand.clone(), extra],
+            &entities,
+            &mut low,
+            "jev-1.13.0",
+            &mat,
+            &mut store,
+        )
+        .await
+        .unwrap();
         assert_eq!(fourth[0].1.outcome, DecisionOutcome::Abstained);
         // Threshold-only change keeps the key: the stored decision is reused
         // (materialization applies current thresholds later, not here).
@@ -1340,18 +1555,37 @@ mod tests {
         let mut store2 = MemoryStore::new();
         ensure_a_rs(&mut store2).await;
         let mut accept2 = ConfResponder { confidence: 0.95 };
-        let base =
-            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut accept2, "jev-1.13.0", &mat, &mut store2)
-                .await
-                .unwrap();
+        let base = Pipeline::<MemoryStore>::decide(
+            &[cand.clone()],
+            &entities,
+            &mut accept2,
+            "jev-1.13.0",
+            &mat,
+            &mut store2,
+        )
+        .await
+        .unwrap();
         assert_eq!(base[0].1.outcome, DecisionOutcome::Accepted);
-        let mat3 = Materialization { accept_confidence: 0.99, ..Default::default() };
+        let mat3 = Materialization {
+            accept_confidence: 0.99,
+            ..Default::default()
+        };
         let mut failing = FailResponder;
-        let fifth =
-            Pipeline::<MemoryStore>::decide(&[cand.clone()], &entities, &mut failing, "jev-1.13.0", &mat3, &mut store2)
-                .await
-                .unwrap();
-        assert_eq!(fifth[0].1.outcome, DecisionOutcome::Accepted, "threshold change reuses raw decision");
+        let fifth = Pipeline::<MemoryStore>::decide(
+            &[cand.clone()],
+            &entities,
+            &mut failing,
+            "jev-1.13.0",
+            &mat3,
+            &mut store2,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fifth[0].1.outcome,
+            DecisionOutcome::Accepted,
+            "threshold change reuses raw decision"
+        );
     }
 
     #[test]
@@ -1418,8 +1652,14 @@ mod tests {
         let ev = reader.evidence(&seed.rel1).await.unwrap();
         assert_eq!(ev["evidence"].as_array().unwrap().len(), 0);
         let v = reader.export().await.unwrap();
-        assert_eq!(v["build_id"], serde_json::Value::String(seed.builds.1.clone()));
-        let d = reader.diff("conf", &seed.builds.0, &seed.builds.1).await.unwrap();
+        assert_eq!(
+            v["build_id"],
+            serde_json::Value::String(seed.builds.1.clone())
+        );
+        let d = reader
+            .diff("conf", &seed.builds.0, &seed.builds.1)
+            .await
+            .unwrap();
         assert!(!d["added_nodes"].as_array().unwrap().is_empty());
     }
 }

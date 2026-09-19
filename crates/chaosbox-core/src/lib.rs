@@ -216,10 +216,7 @@ impl Relation {
         scope: RelationScope,
         build: &str,
     ) -> Self {
-        let id = deterministic_id(
-            "rel",
-            &[build, &format!("{:?}", rel_type), from, to],
-        );
+        let id = deterministic_id("rel", &[build, &format!("{:?}", rel_type), from, to]);
         Self {
             id,
             rel_type,
@@ -505,10 +502,16 @@ impl GraphBuild {
     /// Insert an edge; both endpoints must be members of this build.
     pub fn add_edge(&mut self, r: Relation) -> Result<(), ValidationError> {
         if !self.nodes.contains_key(&r.from) {
-            return Err(ValidationError::CrossBuildEdge(r.from.clone(), self.id.clone()));
+            return Err(ValidationError::CrossBuildEdge(
+                r.from.clone(),
+                self.id.clone(),
+            ));
         }
         if !self.nodes.contains_key(&r.to) {
-            return Err(ValidationError::CrossBuildEdge(r.to.clone(), self.id.clone()));
+            return Err(ValidationError::CrossBuildEdge(
+                r.to.clone(),
+                self.id.clone(),
+            ));
         }
         if self.edges.contains_key(&r.id) {
             return Err(ValidationError::DuplicateMember(r.id));
@@ -548,8 +551,12 @@ impl GraphBuild {
         // adjacency (undirected for reachability, edge ids preserved)
         let mut adj: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
         for r in self.edges.values() {
-            adj.entry(r.from.clone()).or_default().push((r.to.clone(), r.id.clone()));
-            adj.entry(r.to.clone()).or_default().push((r.from.clone(), r.id.clone()));
+            adj.entry(r.from.clone())
+                .or_default()
+                .push((r.to.clone(), r.id.clone()));
+            adj.entry(r.to.clone())
+                .or_default()
+                .push((r.from.clone(), r.id.clone()));
         }
         while let Some((cur, depth)) = q.pop_front() {
             if depth >= max_hops {
@@ -677,7 +684,10 @@ mod tests {
             state_excerpt: String::new(),
         };
         let (c1, c2) = (mk("cand:1"), mk("cand:2"));
-        assert_eq!(catalog_digest(&[c1.clone(), c2.clone()]), catalog_digest(&[c2.clone(), c1.clone()]));
+        assert_eq!(
+            catalog_digest(&[c1.clone(), c2.clone()]),
+            catalog_digest(&[c2.clone(), c1.clone()])
+        );
         let mut changed = c2.clone();
         changed.reason = "co-occurrence".into();
         assert_ne!(catalog_digest(&[c1, c2]), catalog_digest(&[changed]));
@@ -686,51 +696,158 @@ mod tests {
 
     #[test]
     fn ids_are_deterministic_and_scoped() {
-        let a = Entity::new(EntityKind::Symbol, "r", "s1", "a.rs", "foo", "a::foo", span("a.rs"));
-        let b = Entity::new(EntityKind::Symbol, "r", "s1", "a.rs", "foo", "a::foo", span("a.rs"));
+        let a = Entity::new(
+            EntityKind::Symbol,
+            "r",
+            "s1",
+            "a.rs",
+            "foo",
+            "a::foo",
+            span("a.rs"),
+        );
+        let b = Entity::new(
+            EntityKind::Symbol,
+            "r",
+            "s1",
+            "a.rs",
+            "foo",
+            "a::foo",
+            span("a.rs"),
+        );
         assert_eq!(a.id, b.id);
-        let c = Entity::new(EntityKind::Symbol, "r", "s2", "a.rs", "foo", "a::foo", span("a.rs"));
+        let c = Entity::new(
+            EntityKind::Symbol,
+            "r",
+            "s2",
+            "a.rs",
+            "foo",
+            "a::foo",
+            span("a.rs"),
+        );
         assert_ne!(a.id, c.id, "snapshots must not collide");
-        let d = Entity::new(EntityKind::Symbol, "other", "s1", "a.rs", "foo", "a::foo", span("a.rs"));
+        let d = Entity::new(
+            EntityKind::Symbol,
+            "other",
+            "s1",
+            "a.rs",
+            "foo",
+            "a::foo",
+            span("a.rs"),
+        );
         assert_ne!(a.id, d.id, "repos must not collide");
     }
 
     #[test]
     fn edges_require_same_build_members() {
         let mut g = GraphBuild::new("r", vec!["s1".into()], 1);
-        let a = Entity::new(EntityKind::Symbol, "r", "s1", "a.rs", "a", "a", span("a.rs"));
-        let outsider =
-            Entity::new(EntityKind::Symbol, "r", "s1", "b.rs", "b", "b", span("b.rs"));
+        let a = Entity::new(
+            EntityKind::Symbol,
+            "r",
+            "s1",
+            "a.rs",
+            "a",
+            "a",
+            span("a.rs"),
+        );
+        let outsider = Entity::new(
+            EntityKind::Symbol,
+            "r",
+            "s1",
+            "b.rs",
+            "b",
+            "b",
+            span("b.rs"),
+        );
         g.add_node(a.clone()).unwrap();
-        let r = Relation::new(RelationType::Calls, &a.id, &outsider.id, RelationScope::CrossFile, &g.id);
+        let r = Relation::new(
+            RelationType::Calls,
+            &a.id,
+            &outsider.id,
+            RelationScope::CrossFile,
+            &g.id,
+        );
         assert!(g.add_edge(r).is_err(), "cross-build edge must fail");
     }
 
     #[test]
     fn parallel_relations_preserved() {
         let mut g = GraphBuild::new("r", vec!["s1".into()], 1);
-        let a = Entity::new(EntityKind::Symbol, "r", "s1", "a.rs", "a", "a", span("a.rs"));
-        let b = Entity::new(EntityKind::Symbol, "r", "s1", "b.rs", "b", "b", span("b.rs"));
+        let a = Entity::new(
+            EntityKind::Symbol,
+            "r",
+            "s1",
+            "a.rs",
+            "a",
+            "a",
+            span("a.rs"),
+        );
+        let b = Entity::new(
+            EntityKind::Symbol,
+            "r",
+            "s1",
+            "b.rs",
+            "b",
+            "b",
+            span("b.rs"),
+        );
         g.add_node(a.clone()).unwrap();
         g.add_node(b.clone()).unwrap();
-        let r1 = Relation::new(RelationType::Calls, &a.id, &b.id, RelationScope::CrossFile, &g.id);
-        let mut r2 = Relation::new(RelationType::References, &a.id, &b.id, RelationScope::CrossFile, &g.id);
+        let r1 = Relation::new(
+            RelationType::Calls,
+            &a.id,
+            &b.id,
+            RelationScope::CrossFile,
+            &g.id,
+        );
+        let mut r2 = Relation::new(
+            RelationType::References,
+            &a.id,
+            &b.id,
+            RelationScope::CrossFile,
+            &g.id,
+        );
         r2.id.push('2');
         g.add_edge(r1).unwrap();
         g.add_edge(r2).unwrap();
-        assert_eq!(g.outgoing(&a.id, None).len(), 2, "parallel relations survive");
+        assert_eq!(
+            g.outgoing(&a.id, None).len(),
+            2,
+            "parallel relations survive"
+        );
         assert_eq!(g.outgoing(&a.id, Some(&RelationType::Calls)).len(), 1);
     }
 
     #[test]
     fn edge_direction_matters() {
         let mut g = GraphBuild::new("r", vec!["s1".into()], 1);
-        let a = Entity::new(EntityKind::Symbol, "r", "s1", "a.rs", "a", "a", span("a.rs"));
-        let b = Entity::new(EntityKind::Symbol, "r", "s1", "b.rs", "b", "b", span("b.rs"));
+        let a = Entity::new(
+            EntityKind::Symbol,
+            "r",
+            "s1",
+            "a.rs",
+            "a",
+            "a",
+            span("a.rs"),
+        );
+        let b = Entity::new(
+            EntityKind::Symbol,
+            "r",
+            "s1",
+            "b.rs",
+            "b",
+            "b",
+            span("b.rs"),
+        );
         g.add_node(a.clone()).unwrap();
         g.add_node(b.clone()).unwrap();
-        g.add_edge(Relation::new(RelationType::Calls, &a.id, &b.id, RelationScope::CrossFile, &g.id))
-            .unwrap();
+        g.add_edge(Relation::new(
+            RelationType::Calls,
+            &a.id,
+            &b.id,
+            RelationScope::CrossFile,
+            &g.id,
+        ))
+        .unwrap();
         assert_eq!(g.outgoing(&a.id, None).len(), 1);
         assert_eq!(g.outgoing(&b.id, None).len(), 0);
         assert_eq!(g.incoming(&b.id, None).len(), 1);
@@ -748,8 +865,22 @@ mod tests {
             g.add_node(e.clone()).unwrap();
         }
         let gid = g.id.clone();
-        g.add_edge(Relation::new(RelationType::Calls, &ids[0].id, &ids[1].id, RelationScope::CrossFile, &gid)).unwrap();
-        g.add_edge(Relation::new(RelationType::Calls, &ids[1].id, &ids[2].id, RelationScope::CrossFile, &gid)).unwrap();
+        g.add_edge(Relation::new(
+            RelationType::Calls,
+            &ids[0].id,
+            &ids[1].id,
+            RelationScope::CrossFile,
+            &gid,
+        ))
+        .unwrap();
+        g.add_edge(Relation::new(
+            RelationType::Calls,
+            &ids[1].id,
+            &ids[2].id,
+            RelationScope::CrossFile,
+            &gid,
+        ))
+        .unwrap();
         assert!(g.bounded_path(&ids[0].id, &ids[2].id, 1).is_none());
         assert!(g.bounded_path(&ids[0].id, &ids[2].id, 2).is_some());
     }
@@ -773,6 +904,10 @@ mod tests {
             contradicting: vec!["ev:2".into()],
             accepted: true,
         };
-        assert_eq!(c.contradicting.len(), 1, "negative evidence must not disappear");
+        assert_eq!(
+            c.contradicting.len(),
+            1,
+            "negative evidence must not disappear"
+        );
     }
 }
