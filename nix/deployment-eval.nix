@@ -81,7 +81,10 @@ let
     }
     {
       name = "service-loopback";
-      assertion = typedb.enable && typedb.listenAddress == "127.0.0.1:1729";
+      assertion =
+        typedb.enable
+        && typedb.listenHost == "127.0.0.1"
+        && typedb.listenPort == 1729;
       message = "the TypeDB service must be enabled on loopback";
     }
     {
