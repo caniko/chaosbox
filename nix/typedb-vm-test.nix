@@ -98,6 +98,16 @@ pkgs.testers.nixosTest {
     assert code == 0, f"status must succeed, got {code}: {out}"
     assert '"generation":2' in out.replace(" ", ""), f"re-run must publish generation 2: {out}"
 
+    # Deterministic-only publication: entities publish with no inference
+    # and no fixture decisions, so the build has nodes but no links.
+    code, _out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox run demo-repo --repo test-nodec --no-decisions > /tmp/graph-nodec.json")
+    assert code == 0, f"no-decisions run must succeed, got {code}"
+    code, out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox query export --repo test-nodec")
+    assert code == 0, f"export must succeed, got {code}: {out}"
+    compact = out.replace(" ", "")
+    assert '"nodes":[]' not in compact, f"entities-only build must have nodes: {out}"
+    assert '"links":[]' in compact, f"entities-only build must have no links: {out}"
+
     # Idempotent re-apply stays green.
     code, _out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox db migrate --json --repo test")
     assert code == 0, f"re-apply must stay green, got {code}"

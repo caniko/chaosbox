@@ -71,6 +71,11 @@ impl Snapshot {
             }
             sorted.sort();
             for p in sorted {
+                // Never follow symlinks: no escape from the corpus root and
+                // no cycles. Symlinked content is out of scope for indexing.
+                if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) {
+                    continue;
+                }
                 if p.is_dir() {
                     let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
                     if name == ".git" || name == "target" || name == "node_modules" {
@@ -677,5 +682,22 @@ mod tests {
             .unwrap();
         assert_eq!(def.span.start_line, 1);
         assert_eq!(def.span.file, "a.rs");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_never_followed() {
+        use std::os::unix::fs::symlink;
+        let (_t, root) = tmp_repo(&[("a.rs", "fn foo() {}\n"), ("sub/b.rs", "fn bar() {}\n")]);
+        std::fs::create_dir_all(root.join("outside")).unwrap();
+        std::fs::write(root.join("outside/secret.rs"), "fn secret() {}\n").unwrap();
+        symlink("a.rs", root.join("link-file.rs")).unwrap();
+        symlink("sub", root.join("link-dir")).unwrap();
+        symlink("..", root.join("sub/loop")).unwrap();
+        symlink("outside/secret.rs", root.join("escape.rs")).unwrap();
+        let snap = Snapshot::capture("r", &root).unwrap();
+        let mut files: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
+        files.sort_unstable();
+        assert_eq!(files, ["a.rs", "outside/secret.rs", "sub/b.rs"]);
     }
 }
