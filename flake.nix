@@ -8,11 +8,12 @@
     # reviewed typedb-backend branch. Never a local path.
     harbor-db.url = "git+https://github.com/caniko/harbor-db.git?ref=trunk&rev=70407e3223a4b8fcf6db5986de691934f04e2028";
     harbor-db.inputs.nixpkgs.follows = "nixpkgs";
-    # TEMPORARY TypeDB packages until NixOS/nixpkgs#565068 merges: full
-    # nixpkgs at the reviewed packaging revision. Binaries substitute from
-    # the fleet cache (attic.candee.baby/canix); nothing here builds TypeDB
-    # locally. Removal: drop this input, use pkgs.typedb from nixpkgs.
-    nixpkgs-typedb.url = "github:caniko/nixpkgs/1b1716ac3aee32d9ace470c2ead394b05d8e6526";
+    # TEMPORARY TypeDB packages until NixOS/nixpkgs#565068 merges: the
+    # packaging commits on a current master (the PR branch itself cannot be
+    # rebased from here; same content, fresh toolchain). Binaries substitute
+    # from the fleet cache once built; otherwise CI builds locally.
+    # Removal: drop this input, use pkgs.typedb from nixpkgs.
+    nixpkgs-typedb.url = "github:caniko/nixpkgs/4d790ef4ff747a8f3e5ca6e1f4141cb111c2dded";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
     harbor-meta.follows = "harbor-rs/harbor-meta";

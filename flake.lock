@@ -650,17 +650,17 @@
     },
     "nixpkgs-typedb": {
       "locked": {
-        "lastModified": 1789883359,
-        "narHash": "sha256-oxKbY90WfvKEV1Oi0Yk4G1hB8fhklcm03znUrS4v0FQ=",
+        "lastModified": 1789888002,
+        "narHash": "sha256-Lc6OnjDqzYU/Zb38Lp/rz3+aT/VUUd/kD8cugxhbF+U=",
         "owner": "caniko",
         "repo": "nixpkgs",
-        "rev": "1b1716ac3aee32d9ace470c2ead394b05d8e6526",
+        "rev": "4d790ef4ff747a8f3e5ca6e1f4141cb111c2dded",
         "type": "github"
       },
       "original": {
         "owner": "caniko",
         "repo": "nixpkgs",
-        "rev": "1b1716ac3aee32d9ace470c2ead394b05d8e6526",
+        "rev": "4d790ef4ff747a8f3e5ca6e1f4141cb111c2dded",
         "type": "github"
       }
     },
