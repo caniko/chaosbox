@@ -13,6 +13,7 @@ include = ["/crates/chaosbox-extract/src/**/*.rs", "/../../README.md"]
 
 [dependencies]
 chaosbox-core = { workspace = true }
+ignore = "0.4"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

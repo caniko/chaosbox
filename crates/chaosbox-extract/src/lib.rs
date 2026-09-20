@@ -10,7 +10,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use chaosbox_core::{
@@ -58,48 +58,78 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// Walk `root`, read supported text files, hash each. Deterministic order.
+    ///
+    /// Repository boundary: symlinks are never followed (no escape, no
+    /// cycles, dangling links skipped), nested repositories (directories
+    /// containing `.git`) are not entered, and Git ignore rules
+    /// (.gitignore, .git/info/exclude, global excludes) are honored even
+    /// outside a git checkout. Indexing a workspace root must not leak
+    /// sibling checkouts, generated trees, or ignored files into the graph
+    /// or (via candidates) to inference.
     pub fn capture(repo: &str, root: &Path) -> Result<Self, ExtractError> {
         let mut files = Vec::new();
         let mut contents = BTreeMap::new();
-        let mut stack = vec![root.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            let entries = std::fs::read_dir(&dir).map_err(|e| ExtractError::Io(e.to_string()))?;
-            let mut sorted: Vec<PathBuf> = Vec::new();
-            for e in entries {
-                let e = e.map_err(|e| ExtractError::Io(e.to_string()))?;
-                sorted.push(e.path());
-            }
-            sorted.sort();
-            for p in sorted {
+        // Git-aware walk (ripgrep's `ignore` semantics): .gitignore,
+        // .git/info/exclude, and global excludes apply even outside a git
+        // checkout (`require_git(false)`), so ignored or generated files
+        // never enter the snapshot or reach inference. Hidden files are
+        // still traversed (`hidden(false)`); only the build-output
+        // directories below are pruned on top of ignore rules.
+        let walker = ignore::WalkBuilder::new(root)
+            .hidden(false)
+            .require_git(false)
+            .follow_links(false)
+            .sort_by_file_path(std::cmp::Ord::cmp)
+            .filter_entry(|e| {
+                if e.depth() == 0 {
+                    return true;
+                }
+                let ft = e.file_type();
                 // Never follow symlinks: no escape from the corpus root and
                 // no cycles. Symlinked content is out of scope for indexing.
-                if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) {
-                    continue;
+                if ft.is_some_and(|t| t.is_symlink()) {
+                    return false;
                 }
-                if p.is_dir() {
-                    let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                    if name == ".git" || name == "target" || name == "node_modules" {
-                        continue;
-                    }
-                    stack.push(p);
-                } else if p.is_file() {
-                    let rel = p
-                        .strip_prefix(root)
-                        .map_err(|e| ExtractError::Io(e.to_string()))?
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    if is_supported(&rel) {
-                        let text = std::fs::read_to_string(&p)
-                            .map_err(|e| ExtractError::Io(e.to_string()))?;
-                        let sha = sha256_hex(&[&text]);
-                        files.push(FileVersion {
-                            path: rel.clone(),
-                            sha256: sha,
-                            bytes: text.len() as u64,
-                        });
-                        contents.insert(rel, text);
-                    }
+                let name = e.file_name().to_str().unwrap_or("");
+                if name == ".git" || name == "target" || name == "node_modules" {
+                    return false;
                 }
+                // Nested repository boundary.
+                if ft.is_some_and(|t| t.is_dir()) && e.path().join(".git").exists() {
+                    return false;
+                }
+                true
+            })
+            .build();
+        for entry in walker {
+            let entry = entry.map_err(|e| ExtractError::Io(e.to_string()))?;
+            // Surface ignore-file errors: a partially applied exclusion
+            // policy must fail loudly, never publish an incomplete boundary.
+            if let Some(e) = entry.error() {
+                return Err(ExtractError::Io(e.to_string()));
+            }
+            let p = entry.path();
+            // Only regular files are read: directories structure the walk,
+            // symlinks are already filtered above, and anything else
+            // (pipes, sockets, devices) must never block a read.
+            if !entry.file_type().is_some_and(|t| t.is_file()) {
+                continue;
+            }
+            let rel = p
+                .strip_prefix(root)
+                .map_err(|e| ExtractError::Io(e.to_string()))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if is_supported(&rel) {
+                let text =
+                    std::fs::read_to_string(p).map_err(|e| ExtractError::Io(e.to_string()))?;
+                let sha = sha256_hex(&[&text]);
+                files.push(FileVersion {
+                    path: rel.clone(),
+                    sha256: sha,
+                    bytes: text.len() as u64,
+                });
+                contents.insert(rel, text);
             }
         }
         files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -595,6 +625,7 @@ fn rel_name(r: &RelationType) -> String {
 mod tests {
     use super::*;
     use std::io::Write as _;
+    use std::path::PathBuf;
 
     fn tmp_repo(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -660,6 +691,86 @@ mod tests {
         let cands = build_candidates(&ext, 10);
         // 3 defs would be 9 pairs cartesian; bounded co-occurrence gives <= 2 + structural
         assert!(cands.len() <= 10);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_skips_symlink_escape() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.rs"), "fn secret() {}\n").unwrap();
+        let (_t, root) = tmp_repo(&[("a.rs", "fn a() {}\n")]);
+        std::os::unix::fs::symlink(outside.path().join("secret.rs"), root.join("evil.rs")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("escape")).unwrap();
+        let snap = Snapshot::capture("r", &root).unwrap();
+        let paths: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            ["a.rs"],
+            "outside-root links must not leak in: {paths:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_skips_interior_links_and_cycles() {
+        let (_t, root) = tmp_repo(&[("sub/inner.rs", "fn inner() {}\n")]);
+        std::os::unix::fs::symlink(root.join("sub"), root.join("linked")).unwrap();
+        // Cycle: sub/loop -> root. Capture must terminate.
+        std::os::unix::fs::symlink(root.clone(), root.join("sub").join("loop")).unwrap();
+        let snap = Snapshot::capture("r", &root).unwrap();
+        let paths: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
+        // Symlinked content is out of scope: only the real tree is indexed.
+        assert_eq!(paths, ["sub/inner.rs"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_skips_special_files() {
+        let (_t, root) = tmp_repo(&[("a.rs", "fn a() {}\n")]);
+        // Unix socket at a supported extension: not a regular file, must
+        // never reach a blocking read.
+        std::os::unix::net::UnixListener::bind(root.join("events.txt")).unwrap();
+        let snap = Snapshot::capture("r", &root).unwrap();
+        let paths: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["a.rs"]);
+    }
+
+    #[test]
+    fn snapshot_rejects_broken_ignore_rules() {
+        let (_t, root) = tmp_repo(&[(".gitignore", "{unclosed\n"), ("a.rs", "fn a() {}\n")]);
+        let err = Snapshot::capture("r", &root).expect_err("broken ignore rules must fail loudly");
+        assert!(
+            !err.to_string().is_empty(),
+            "an explicit exclusion-policy error is required"
+        );
+    }
+
+    #[test]
+    fn snapshot_respects_gitignore() {
+        let (_t, root) = tmp_repo(&[
+            (".gitignore", "private.txt\ngen/\n"),
+            ("a.rs", "fn a() {}\n"),
+            ("private.txt", "excluded words\n"),
+            ("gen/out.rs", "fn out() {}\n"),
+        ]);
+        let snap = Snapshot::capture("r", &root).unwrap();
+        let mut paths: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
+        paths.sort();
+        assert_eq!(
+            paths,
+            ["a.rs"],
+            "ignored files must never reach inference: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn snapshot_skips_nested_git_repos() {
+        let (_t, root) = tmp_repo(&[("a.rs", "fn a() {}\n")]);
+        std::fs::create_dir_all(root.join("vendor/dep/.git")).unwrap();
+        std::fs::write(root.join("vendor/dep/b.rs"), "fn b() {}\n").unwrap();
+        let snap = Snapshot::capture("r", &root).unwrap();
+        let paths: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["a.rs"], "nested checkouts stay out: {paths:?}");
     }
 
     #[test]
