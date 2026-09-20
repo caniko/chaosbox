@@ -1,16 +1,17 @@
 # Render-only evaluation test for the Chaosbox deployment composition.
 #
-# Proves the harbor-db project (ready gate -> schema migration), the Gel
-# instance wiring, credential references, and systemd ordering evaluate
-# correctly without booting anything. Uses a dummy password FILE (never a
-# value in the config); nothing here executes.
+# Proves the harbor-db project (schema migration ordered after the TypeDB
+# service), the service wiring, credential references, and systemd ordering
+# evaluate correctly without booting anything. Uses a dummy password FILE
+# (never a value in the config); nothing here executes.
 {
   lib,
   pkgs,
   harborDbModule,
-  gelModule,
+  typedbModule,
   chaosboxModule,
   chaosboxPackage,
+  typedbPackage,
 }:
 let
   dummySecret = ../fixtures/eval-test-password;
@@ -18,7 +19,7 @@ let
     system = pkgs.system;
     modules = [
       harborDbModule
-      gelModule
+      typedbModule
       chaosboxModule
       {
         system.stateVersion = "24.11";
@@ -27,30 +28,30 @@ let
         # (no writeShellScriptBin) keeps this evaluation free of
         # import-from-derivation.
         services.harbor-db.package = pkgs.hello;
+        services.typedb.package = typedbPackage;
         services.chaosbox = {
           enable = true;
           package = chaosboxPackage;
-          adminPasswordFile = dummySecret;
-          adminCredsFile = dummySecret;
+          passwordFile = dummySecret;
         };
       }
     ];
   };
   project = eval.config.services.harbor-db.projects.chaosbox;
   schema = project.operations.schema;
-  ready = project.operations.ready;
-  container = eval.config.virtualisation.oci-containers.containers.harbor-db-gel-chaosbox;
+  typedb = eval.config.services.typedb;
   migration = eval.config.systemd.services.harbor-db-chaosbox;
   checks = [
     {
-      name = "gel-backend-operations";
-      assertion = schema.backend == "gel" && ready.backend == "gel";
-      message = "ready and schema operations must use the gel backend";
+      name = "typedb-backend-operation";
+      assertion = schema.backend == "typedb";
+      message = "schema operation must use the typedb backend";
     }
     {
-      name = "readiness-gates-migration";
-      assertion = schema.dependsOn == [ "ready" ];
-      message = "schema migration must depend on the readiness probe";
+      name = "ordering-gates-service";
+      assertion =
+        lib.elem "typedb.service" migration.after && lib.elem "typedb.service" migration.requires;
+      message = "the migration must order after and require the TypeDB service unit";
     }
     {
       name = "contract-commands";
@@ -70,18 +71,18 @@ let
             "--repo"
             "demo"
           ]
-        && schema.runner.credentialEnvironment.CHAOSBOX_GEL_CREDENTIALS_FILE == "admin-creds";
-      message = "schema runner must invoke the v1 contract commands with credential-file delivery";
+        && schema.runner.credentialEnvironment.CHAOSBOX_TYPEDB_PASSWORD_FILE == "typedb-password";
+      message = "schema runner must invoke the v2 contract commands with credential-file delivery";
     }
     {
-      name = "server-image-pinned";
-      assertion = lib.hasInfix "@sha256:" container.image;
-      message = "the Gel server image must stay digest-pinned";
+      name = "backend-selection-env";
+      assertion = project.environment.CHAOSBOX_DB_BACKEND == "typedb";
+      message = "the project must route CLI commands at the TypeDB backend";
     }
     {
-      name = "listener-loopback";
-      assertion = container.ports == [ "127.0.0.1:56561:5656" ];
-      message = "the Gel port must publish on loopback";
+      name = "service-loopback";
+      assertion = typedb.enable && typedb.listenHost == "127.0.0.1" && typedb.listenPort == 1729;
+      message = "the TypeDB service must be enabled on loopback";
     }
     {
       name = "migration-unit-exists";
@@ -90,11 +91,9 @@ let
       message = "the generated migration unit must exist";
     }
     {
-      name = "ordering-gates-container";
-      assertion =
-        lib.elem "podman-harbor-db-gel-chaosbox.service" migration.after
-        && lib.elem "podman-harbor-db-gel-chaosbox.service" migration.requires;
-      message = "the migration must order after and require the Gel container unit";
+      name = "credential-mapping";
+      assertion = schema.credentials.typedb-password == dummySecret;
+      message = "the password file must map through credentials, never values";
     }
   ];
   failed = builtins.filter (check: !check.assertion) checks;
