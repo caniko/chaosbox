@@ -30,7 +30,7 @@ let
     + "TYPEDB_BOOTSTRAP_APP_OWNER=testuser ";
   consoleFor =
     user: pwFile:
-    "${typedbConsolePackage}/bin/typedb-console --address 127.0.0.1:1729 --tls-disabled --username ${user} --password \"$(cat ${pwFile})\"";
+    "${typedbConsolePackage}/bin/typedb-console --address 127.0.0.1:1729 --tls-disabled --username ${user} --password $(cat ${pwFile})";
 in
 pkgs.testers.nixosTest {
   name = "typedb-bootstrap";
