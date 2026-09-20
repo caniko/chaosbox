@@ -612,6 +612,10 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
 
     /// Policy-controlled build + atomic publication with predecessor check.
     /// Async because the Gel backend needs network IO for the flush.
+    ///
+    /// Failed decisions (responder faults, exhausted budgets) never publish:
+    /// a partial graph would displace the last good active build while
+    /// reporting success. Fix the backend and re-run instead.
     pub async fn build_and_publish(
         &mut self,
         repo: &str,
@@ -621,6 +625,15 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
         mat: &Materialization,
         expected_predecessor: Option<String>,
     ) -> Result<GraphBuild, PipelineError> {
+        let failed = decided
+            .iter()
+            .filter(|(_, d, _)| matches!(d.outcome, DecisionOutcome::Failed(_)))
+            .count();
+        if failed > 0 {
+            return Err(PipelineError::Validation(format!(
+                "{failed} failed decisions; refusing to publish (retry once the responder is healthy)"
+            )));
+        }
         self.generation += 1;
         let mut build = GraphBuild::new(repo, vec![snapshot.id.clone()], self.generation);
         build.predecessor = expected_predecessor.clone();
@@ -732,6 +745,26 @@ impl<S: chaosbox_gel::Store + Default> Default for Pipeline<S> {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Outcome counts for one decided batch, for operator reporting.
+/// Keys: `accepted`, `rejected`, `abstained`, `negative`, `failed`.
+#[must_use]
+pub fn summarize_outcomes(
+    decided: &[(Candidate, Decision, Evidence)],
+) -> BTreeMap<&'static str, usize> {
+    let mut out: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for (_, d, _) in decided {
+        let key = match d.outcome {
+            DecisionOutcome::Accepted => "accepted",
+            DecisionOutcome::Rejected => "rejected",
+            DecisionOutcome::Abstained => "abstained",
+            DecisionOutcome::Negative => "negative",
+            DecisionOutcome::Failed(_) => "failed",
+        };
+        *out.entry(key).or_default() += 1;
+    }
+    out
 }
 
 /// Next publication chain for a fresh process: the live active build (if
@@ -1542,6 +1575,47 @@ mod tests {
         // The fault text is never copied into evidence.
         assert!(!decided[0].2.text.contains("transport"));
         assert_eq!(store.stats().decisions, 1, "failures persist for retry");
+    }
+
+    #[tokio::test]
+    async fn failed_decisions_refuse_publication() {
+        let (cand, entities) = one_candidate();
+        let mat = Materialization::default();
+        let mut store = MemoryStore::new();
+        ensure_a_rs(&mut store).await;
+        let mut failing = FailResponder;
+        let decided = Pipeline::<MemoryStore>::decide(
+            &[cand],
+            &entities,
+            &mut failing,
+            "jev-1.13.0",
+            &mat,
+            &mut store,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(decided[0].1.outcome, DecisionOutcome::Failed(_)));
+        let snap = Snapshot {
+            id: "s".into(),
+            repo: "r".into(),
+            files: vec![],
+            contents: BTreeMap::new(),
+        };
+        let ext = Extraction {
+            entities: entities.values().cloned().collect(),
+            explicit_refs: vec![],
+        };
+        let mut pipe = Pipeline::<MemoryStore>::new();
+        let err = pipe
+            .build_and_publish("r", &snap, &ext, &decided, &mat, None)
+            .await
+            .expect_err("failed batch must not publish");
+        assert!(
+            err.to_string().contains("refusing to publish"),
+            "unexpected error: {err}"
+        );
+        let counts = summarize_outcomes(&decided);
+        assert_eq!(counts.get("failed").copied().unwrap_or(0), 1);
     }
 
     /// Ensure helper for the single-file `one_candidate` fixture.

@@ -831,6 +831,20 @@ async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
             }
         }
     };
+    // Operator visibility: structural vs semantic coverage is a follow-up;
+    // today every candidate consumes the Jev budget, so report the outcome
+    // mix before publication (a failed batch refuses to publish below).
+    let counts = chaosbox::summarize_outcomes(&decided);
+    let n = |k: &str| counts.get(k).copied().unwrap_or(0);
+    eprintln!(
+        "decisions: accepted={} rejected={} abstained={} negative={} failed={} candidates={}",
+        n("accepted"),
+        n("rejected"),
+        n("abstained"),
+        n("negative"),
+        n("failed"),
+        cands.len()
+    );
     match pipe
         .build_and_publish(repo, &snap, &ext, &decided, &mat, expected_predecessor)
         .await
