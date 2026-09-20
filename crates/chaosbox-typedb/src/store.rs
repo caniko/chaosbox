@@ -112,14 +112,16 @@ impl TypeDbStore {
             .map_err(driver_error)?;
         drain(tx.query(crate::SCHEMA_TQL).await.map_err(driver_error)?)
             .await
-            .map_err(driver_error)?;
+            .map_err(|e| driver_error(*e))?;
         tx.commit().await.map_err(driver_error)?;
         Ok(())
     }
 
     /// Run one write pipeline and commit. Duplicate `@key` inserts surface
-    /// the caller's choice: map them to already-present or propagate.
-    async fn write_one(&self, query: &str) -> Result<(), typedb_driver::Error> {
+    /// the caller's choice: map them to already-present or propagate. The
+    /// driver error is boxed across the await boundary (`result_large_err`);
+    /// classification happens on the box before mapping.
+    async fn write_one(&self, query: &str) -> Result<(), Box<typedb_driver::Error>> {
         let driver = self.driver.as_ref().expect("connected before flush");
         let tx = driver
             .transaction_with_options(
@@ -127,10 +129,11 @@ impl TypeDbStore {
                 TransactionType::Write,
                 TransactionOptions::new().transaction_timeout(WRITE_TIMEOUT),
             )
-            .await?;
-        let answer = tx.query(query).await?;
+            .await
+            .map_err(Box::new)?;
+        let answer = tx.query(query).await.map_err(Box::new)?;
         drain(answer).await?;
-        tx.commit().await?;
+        tx.commit().await.map_err(Box::new)?;
         Ok(())
     }
 
@@ -144,11 +147,14 @@ impl TypeDbStore {
             match self.write_one(query).await {
                 Ok(()) => return Ok(()),
                 Err(e) if is_unique_violation(&e) => return Ok(()),
-                Err(typedb_driver::Error::Connection(_)) if attempt < FLUSH_RETRIES => {
+                Err(e)
+                    if matches!(&*e, typedb_driver::Error::Connection(_))
+                        && attempt < FLUSH_RETRIES =>
+                {
                     attempt += 1;
                     tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
                 }
-                Err(e) => return Err(driver_error(e)),
+                Err(e) => return Err(driver_error(*e)),
             }
         }
     }
@@ -353,7 +359,7 @@ impl TypeDbStore {
                 "match $d isa decision, has decision-key {}; delete $d;",
                 str_lit(&key)
             );
-            self.write_one(&q).await.map_err(driver_error)?;
+            self.write_one(&q).await.map_err(|e| driver_error(*e))?;
         }
         let outcome =
             serde_json::to_string(&d.outcome).map_err(|e| GelError::Query(e.to_string()))?;
@@ -635,7 +641,7 @@ impl TypeDbStore {
             );
             drain(tx.query(&q).await.map_err(driver_error)?)
                 .await
-                .map_err(driver_error)?;
+                .map_err(|e| driver_error(*e))?;
         } else {
             let q = format!(
                 "match $p isa active-pointer, has repo-name {}; update $p has build-id {}, has updated {};",
@@ -645,7 +651,7 @@ impl TypeDbStore {
             );
             drain(tx.query(&q).await.map_err(driver_error)?)
                 .await
-                .map_err(driver_error)?;
+                .map_err(|e| driver_error(*e))?;
         }
         let q = format!(
             "match $b isa graph-build, has build-id {}; update $b has status \"active\";",
@@ -653,7 +659,7 @@ impl TypeDbStore {
         );
         drain(tx.query(&q).await.map_err(driver_error)?)
             .await
-            .map_err(driver_error)?;
+            .map_err(|e| driver_error(*e))?;
         match tx.commit().await {
             Ok(()) => Ok(()),
             Err(e) if is_conflict(&e) => Err(GelError::Invariant(

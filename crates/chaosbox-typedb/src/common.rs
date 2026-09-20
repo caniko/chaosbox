@@ -128,17 +128,19 @@ pub(crate) fn fold(s: &str) -> String {
 }
 
 /// Drain a write answer: rows and documents are collected and dropped so
-/// the commit sees a fully-consumed pipeline.
-pub(crate) async fn drain(answer: QueryAnswer) -> Result<(), typedb_driver::Error> {
+/// the commit sees a fully-consumed pipeline. The driver error is boxed
+/// across the await boundary (`result_large_err`); callers classify the
+/// unboxed error before mapping it.
+pub(crate) async fn drain(answer: QueryAnswer) -> Result<(), Box<typedb_driver::Error>> {
     match answer {
         QueryAnswer::Ok(_) => Ok(()),
         QueryAnswer::ConceptRowStream(_, stream) => {
-            let rows: Vec<ConceptRow> = stream.try_collect().await?;
+            let rows: Vec<ConceptRow> = stream.try_collect().await.map_err(Box::new)?;
             let _ = rows.len();
             Ok(())
         }
         QueryAnswer::ConceptDocumentStream(_, stream) => {
-            let docs: Vec<_> = stream.try_collect().await?;
+            let docs: Vec<_> = stream.try_collect().await.map_err(Box::new)?;
             let _ = docs.len();
             Ok(())
         }
