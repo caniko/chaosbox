@@ -1449,7 +1449,7 @@ mod tests {
         let over_limit = Box::pin(mcp_call_tool(
             &serde_json::json!(1),
             "search",
-            &serde_json::json!({"arguments": {"query": "alpha", "repo": "demo", "limit": 100000}}),
+            &serde_json::json!({"arguments": {"query": "alpha", "repo": "demo", "limit": 100_000}}),
         ))
         .await;
         assert_eq!(over_limit["error"]["code"], -32602, "{over_limit}");
