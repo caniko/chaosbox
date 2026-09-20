@@ -755,7 +755,7 @@ mod tests {
         ]);
         let snap = Snapshot::capture("r", &root).unwrap();
         let mut paths: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
-        paths.sort();
+        paths.sort_unstable();
         assert_eq!(
             paths,
             ["a.rs"],
