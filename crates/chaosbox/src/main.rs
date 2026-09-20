@@ -219,7 +219,8 @@ enum Command {
         max_candidates: usize,
     },
     /// Run the full pipeline (live Jev decisions by default; fixture
-    /// decisions only with --fixture-decisions, for disposable/test graphs).
+    /// decisions only with --fixture-decisions, for disposable/test graphs;
+    /// entities-only with --no-decisions, no inference of any kind).
     Run {
         path: PathBuf,
         #[arg(long, default_value = "demo")]
@@ -228,13 +229,18 @@ enum Command {
         max_candidates: usize,
         /// Use the live Jev API (needs `CHAOSBOX_JEV_API_KEY_FILE`) instead of
         /// the deterministic fixture. Real inference, real spend.
-        #[arg(long, default_value_t = false)]
+        #[arg(long, default_value_t = false, conflicts_with = "no_decisions")]
         live_jev: bool,
         /// Accept deterministic fixture decisions (every choice `accept`) for
         /// a disposable or test graph. Fixture graphs are never authoritative:
         /// decisions are recorded under the `fixture-test` model identity.
-        #[arg(long, default_value_t = false)]
+        #[arg(long, default_value_t = false, conflicts_with = "no_decisions")]
         fixture_decisions: bool,
+        /// Publish extracted entities with no semantic decisions: no live
+        /// inference, no fixture accept-all. The graph has nodes but no
+        /// relations or claims; safe for real corpora before Jev approval.
+        #[arg(long, default_value_t = false)]
+        no_decisions: bool,
         /// Live-Jev spend guards (defaults = `JevPolicy::default`).
         #[arg(long)]
         max_requests: Option<u32>,
@@ -364,6 +370,7 @@ async fn main() {
             max_candidates,
             live_jev,
             fixture_decisions,
+            no_decisions,
             max_requests,
             max_input_tokens,
             max_retries,
@@ -377,6 +384,7 @@ async fn main() {
                         max_candidates,
                         live_jev,
                         fixture_decisions,
+                        no_decisions,
                         max_requests,
                         max_input_tokens,
                         max_retries,
@@ -418,6 +426,7 @@ async fn main() {
                         max_candidates,
                         live_jev,
                         fixture_decisions,
+                        no_decisions,
                         max_requests,
                         max_input_tokens,
                         max_retries,
@@ -710,6 +719,7 @@ async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
     max_candidates: usize,
     live_jev: bool,
     fixture_decisions: bool,
+    no_decisions: bool,
     max_requests: Option<u32>,
     max_input_tokens: Option<u64>,
     max_retries: Option<u32>,
@@ -763,7 +773,11 @@ async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
             return 1;
         }
     }
-    let decided = if live_jev {
+    let decided = if no_decisions {
+        // Entities-only publication: no live inference, no fixture
+        // accept-all. The build carries nodes but no relations or claims.
+        Vec::new()
+    } else if live_jev {
         // Fail fast without credentials: otherwise every decision degrades
         // to Failed and the run exits 0 with an empty graph.
         if chaosbox_jev::JevClient::api_key().is_none() {

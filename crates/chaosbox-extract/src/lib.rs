@@ -59,82 +59,69 @@ pub struct Snapshot {
 impl Snapshot {
     /// Walk `root`, read supported text files, hash each. Deterministic order.
     ///
-    /// Repository boundary: symlinks resolving outside `root` are skipped
-    /// (never followed, never read), dangling symlinks are skipped, and
-    /// nested repositories (directories containing `.git`) are not entered.
-    /// Indexing a workspace root must not leak sibling checkouts, generated
-    /// trees, or ignored files into the graph or (via candidates) to inference.
+    /// Repository boundary: symlinks are never followed (no escape, no
+    /// cycles, dangling links skipped), nested repositories (directories
+    /// containing `.git`) are not entered, and Git ignore rules
+    /// (.gitignore, .git/info/exclude, global excludes) are honored even
+    /// outside a git checkout. Indexing a workspace root must not leak
+    /// sibling checkouts, generated trees, or ignored files into the graph
+    /// or (via candidates) to inference.
     pub fn capture(repo: &str, root: &Path) -> Result<Self, ExtractError> {
-        let root_canon =
-            std::fs::canonicalize(root).map_err(|e| ExtractError::Io(e.to_string()))?;
         let mut files = Vec::new();
         let mut contents = BTreeMap::new();
-        // Canonical directories already traversed: bounds symlink cycles
-        // (a link pointing at an ancestor would otherwise loop forever).
-        let mut visited: BTreeSet<PathBuf> = BTreeSet::from([root_canon.clone()]);
-        let mut stack = vec![root.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            let entries = std::fs::read_dir(&dir).map_err(|e| ExtractError::Io(e.to_string()))?;
-            let mut sorted: Vec<PathBuf> = Vec::new();
-            for e in entries {
-                let e = e.map_err(|e| ExtractError::Io(e.to_string()))?;
-                sorted.push(e.path());
-            }
-            sorted.sort();
-            for p in sorted {
-                // Never follow a symlink out of the repository; skip dangling links.
-                let target: Option<PathBuf> = if std::fs::symlink_metadata(&p)
-                    .map_err(|e| ExtractError::Io(e.to_string()))?
-                    .file_type()
-                    .is_symlink()
-                {
-                    match std::fs::canonicalize(&p) {
-                        Ok(t) if t.starts_with(&root_canon) => Some(t),
-                        _ => continue,
-                    }
-                } else {
-                    None
-                };
-                let effective = target.as_deref().unwrap_or(&p);
-                if effective.is_dir() {
-                    let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                    if name == ".git" || name == "target" || name == "node_modules" {
-                        continue;
-                    }
-                    // Nested repository boundary.
-                    if effective.join(".git").exists() {
-                        continue;
-                    }
-                    // Canonicalize (resolves interior symlinks) and skip
-                    // directories already traversed: symlink-cycle bound.
-                    let canon = match target {
-                        Some(t) => t,
-                        None => match std::fs::canonicalize(&p) {
-                            Ok(t) => t,
-                            Err(_) => continue,
-                        },
-                    };
-                    if visited.insert(canon) {
-                        stack.push(p);
-                    }
-                } else if effective.is_file() {
-                    let rel = p
-                        .strip_prefix(root)
-                        .map_err(|e| ExtractError::Io(e.to_string()))?
-                        .to_string_lossy()
-                        .replace('\\', "/");
-                    if is_supported(&rel) {
-                        let text = std::fs::read_to_string(effective)
-                            .map_err(|e| ExtractError::Io(e.to_string()))?;
-                        let sha = sha256_hex(&[&text]);
-                        files.push(FileVersion {
-                            path: rel.clone(),
-                            sha256: sha,
-                            bytes: text.len() as u64,
-                        });
-                        contents.insert(rel, text);
-                    }
+        // Git-aware walk (ripgrep's `ignore` semantics): .gitignore,
+        // .git/info/exclude, and global excludes apply even outside a git
+        // checkout (`require_git(false)`), so ignored or generated files
+        // never enter the snapshot or reach inference. Hidden files are
+        // still traversed (`hidden(false)`); only the build-output
+        // directories below are pruned on top of ignore rules.
+        let walker = ignore::WalkBuilder::new(root)
+            .hidden(false)
+            .require_git(false)
+            .follow_links(false)
+            .sort_by_file_path(|a, b| a.cmp(b))
+            .filter_entry(|e| {
+                if e.depth() == 0 {
+                    return true;
                 }
+                let ft = e.file_type();
+                // Never follow symlinks: no escape from the corpus root and
+                // no cycles. Symlinked content is out of scope for indexing.
+                if ft.map(|t| t.is_symlink()).unwrap_or(false) {
+                    return false;
+                }
+                let name = e.file_name().to_str().unwrap_or("");
+                if name == ".git" || name == "target" || name == "node_modules" {
+                    return false;
+                }
+                // Nested repository boundary.
+                if ft.map(|t| t.is_dir()).unwrap_or(false) && e.path().join(".git").exists() {
+                    return false;
+                }
+                true
+            })
+            .build();
+        for entry in walker {
+            let entry = entry.map_err(|e| ExtractError::Io(e.to_string()))?;
+            let p = entry.path();
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(true) {
+                continue;
+            }
+            let rel = p
+                .strip_prefix(root)
+                .map_err(|e| ExtractError::Io(e.to_string()))?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if is_supported(&rel) {
+                let text =
+                    std::fs::read_to_string(p).map_err(|e| ExtractError::Io(e.to_string()))?;
+                let sha = sha256_hex(&[&text]);
+                files.push(FileVersion {
+                    path: rel.clone(),
+                    sha256: sha,
+                    bytes: text.len() as u64,
+                });
+                contents.insert(rel, text);
             }
         }
         files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -716,17 +703,33 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn snapshot_keeps_interior_links_but_bounds_cycles() {
+    fn snapshot_skips_interior_links_and_cycles() {
         let (_t, root) = tmp_repo(&[("sub/inner.rs", "fn inner() {}\n")]);
         std::os::unix::fs::symlink(root.join("sub"), root.join("linked")).unwrap();
-        // Cycle: linked/loop -> root. Capture must terminate.
+        // Cycle: sub/loop -> root. Capture must terminate.
         std::os::unix::fs::symlink(root.clone(), root.join("sub").join("loop")).unwrap();
+        let snap = Snapshot::capture("r", &root).unwrap();
+        let paths: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
+        // Symlinked content is out of scope: only the real tree is indexed.
+        assert_eq!(paths, ["sub/inner.rs"]);
+    }
+
+    #[test]
+    fn snapshot_respects_gitignore() {
+        let (_t, root) = tmp_repo(&[
+            (".gitignore", "private.txt\ngen/\n"),
+            ("a.rs", "fn a() {}\n"),
+            ("private.txt", "excluded words\n"),
+            ("gen/out.rs", "fn out() {}\n"),
+        ]);
         let snap = Snapshot::capture("r", &root).unwrap();
         let mut paths: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
         paths.sort();
-        // `sub` resolves to the same directory already seen via `linked`:
-        // indexed once, and the `loop` cycle terminates.
-        assert_eq!(paths, ["linked/inner.rs"]);
+        assert_eq!(
+            paths,
+            ["a.rs"],
+            "ignored files must never reach inference: {paths:?}"
+        );
     }
 
     #[test]
@@ -759,5 +762,22 @@ mod tests {
             .unwrap();
         assert_eq!(def.span.start_line, 1);
         assert_eq!(def.span.file, "a.rs");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_never_followed() {
+        use std::os::unix::fs::symlink;
+        let (_t, root) = tmp_repo(&[("a.rs", "fn foo() {}\n"), ("sub/b.rs", "fn bar() {}\n")]);
+        std::fs::create_dir_all(root.join("outside")).unwrap();
+        std::fs::write(root.join("outside/secret.rs"), "fn secret() {}\n").unwrap();
+        symlink("a.rs", root.join("link-file.rs")).unwrap();
+        symlink("sub", root.join("link-dir")).unwrap();
+        symlink("..", root.join("sub/loop")).unwrap();
+        symlink("outside/secret.rs", root.join("escape.rs")).unwrap();
+        let snap = Snapshot::capture("r", &root).unwrap();
+        let mut files: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
+        files.sort_unstable();
+        assert_eq!(files, ["a.rs", "outside/secret.rs", "sub/b.rs"]);
     }
 }

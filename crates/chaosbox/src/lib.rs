@@ -1770,6 +1770,41 @@ mod tests {
         assert!(chain_publication(Some(("b1".into(), -1))).is_err());
     }
 
+    #[tokio::test]
+    async fn empty_decisions_publish_entities_only() {
+        use chaosbox_core::EntityKind;
+        use chaosbox_extract::FileVersion;
+        let snap = Snapshot {
+            id: "snap:x".into(),
+            repo: "r".into(),
+            files: vec![FileVersion {
+                path: "a.rs".into(),
+                sha256: "00".into(),
+                bytes: 9,
+            }],
+            contents: BTreeMap::from([("a.rs".into(), "fn a() {}\n".into())]),
+        };
+        let ext = Extraction {
+            entities: vec![Entity::new(
+                EntityKind::Symbol,
+                "r",
+                &snap.id,
+                "a.rs",
+                "a",
+                "a",
+                SourceSpan::point("a.rs", 1, 1, 0),
+            )],
+            explicit_refs: vec![],
+        };
+        let mut pipe = Pipeline::<MemoryStore>::new();
+        let build = pipe
+            .build_and_publish("r", &snap, &ext, &[], &Materialization::default(), None)
+            .await
+            .unwrap();
+        assert!(!build.nodes.is_empty(), "entities must publish");
+        assert!(build.edges.is_empty(), "no decisions means no relations");
+    }
+
     #[test]
     fn rel_filter_validation_is_loud() {
         assert_eq!(
