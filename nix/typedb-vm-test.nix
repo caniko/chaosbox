@@ -76,8 +76,9 @@ pkgs.testers.nixosTest {
     code, out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox db check --json --repo test")
     assert code == 2, f"post-migration check must be pending(2), got {code}: {out}"
 
-    # Pipeline publishes a real graph; check turns ready.
-    machine.succeed(f"cd /tmp/cbtest && {ENV} chaosbox run demo-repo --repo test > /tmp/graph.json")
+    # Pipeline publishes a real graph (explicit disposable fixture
+    # decisions); check turns ready.
+    machine.succeed(f"cd /tmp/cbtest && {ENV} chaosbox run demo-repo --repo test --fixture-decisions > /tmp/graph.json")
     code, out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox db check --json --repo test")
     assert code == 0, f"post-run check must be ready(0), got {code}: {out}"
     assert '"status":"ready"' in out.replace(" ", ""), f"ready JSON expected: {out}"
@@ -86,6 +87,16 @@ pkgs.testers.nixosTest {
     code, out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox query search main --repo test")
     assert code == 0, f"search must succeed, got {code}: {out}"
     assert "src/main.rs" in out, f"search must hit fixture symbols: {out}"
+
+    # Repeat publication from a fresh process: touch a source, re-run, and
+    # the new build (generation 2) becomes active instead of failing the
+    # predecessor guard.
+    machine.succeed("printf '// reindex\\n' >> /tmp/cbtest/demo-repo/src/main.rs")
+    code, out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox run demo-repo --repo test --fixture-decisions")
+    assert code == 0, f"re-run must succeed, got {code}: {out}"
+    code, out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox query status --repo test")
+    assert code == 0, f"status must succeed, got {code}: {out}"
+    assert '"generation":2' in out.replace(" ", ""), f"re-run must publish generation 2: {out}"
 
     # Idempotent re-apply stays green.
     code, _out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox db migrate --json --repo test")

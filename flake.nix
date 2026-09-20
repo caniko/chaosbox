@@ -9,11 +9,11 @@
     harbor-db.url = "git+https://github.com/caniko/harbor-db.git?ref=trunk&rev=70407e3223a4b8fcf6db5986de691934f04e2028";
     harbor-db.inputs.nixpkgs.follows = "nixpkgs";
     # TEMPORARY TypeDB packages until NixOS/nixpkgs#565068 merges: the
-    # packaging commits on a current master (the PR branch itself cannot be
-    # rebased from here; same content, fresh toolchain). Binaries substitute
-    # from the fleet cache once built; otherwise CI builds locally.
+    # packaging PR head (reviewed module with typed host/port options).
+    # Binaries substitute from the fleet cache once built; otherwise CI
+    # builds locally.
     # Removal: drop this input, use pkgs.typedb from nixpkgs.
-    nixpkgs-typedb.url = "github:caniko/nixpkgs/cd2831605ded4b33c2b8d652bbb01bfdeedcb85c";
+    nixpkgs-typedb.url = "github:caniko/nixpkgs/66d42893ca51631cfb6443d2a2b57776e9b47c2a";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
     harbor-meta.follows = "harbor-rs/harbor-meta";

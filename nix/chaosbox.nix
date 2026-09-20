@@ -48,10 +48,16 @@ in
       description = "Repository name passed as --repo to db check|migrate.";
     };
 
-    serverAddress = mkOption {
+    serverHost = mkOption {
       type = types.str;
-      default = "127.0.0.1:1729";
-      description = "TypeDB driver address the CLI targets and the service listens on (loopback).";
+      default = "127.0.0.1";
+      description = "TypeDB driver host the CLI targets and the service listens on (loopback).";
+    };
+
+    serverPort = mkOption {
+      type = types.port;
+      default = 1729;
+      description = "TypeDB driver port the CLI targets and the service listens on.";
     };
 
     database = mkOption {
@@ -99,7 +105,8 @@ in
 
     services.typedb = {
       enable = true;
-      listenAddress = cfg.serverAddress;
+      listenHost = cfg.serverHost;
+      listenPort = cfg.serverPort;
     };
 
     services.harbor-db.dataDirectories = [
@@ -116,7 +123,7 @@ in
       description = "Chaosbox TypeDB schema migration";
       path = [ cfg.package ];
       environment.CHAOSBOX_DB_BACKEND = "typedb";
-      environment.CHAOSBOX_TYPEDB_ADDR = cfg.serverAddress;
+      environment.CHAOSBOX_TYPEDB_ADDR = "${cfg.serverHost}:${toString cfg.serverPort}";
       environment.CHAOSBOX_TYPEDB_USER = cfg.username;
       environment.CHAOSBOX_TYPEDB_DATABASE = cfg.database;
       operations.schema = {

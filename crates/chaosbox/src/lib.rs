@@ -734,6 +734,28 @@ impl<S: chaosbox_gel::Store + Default> Default for Pipeline<S> {
     }
 }
 
+/// Next publication chain for a fresh process: the live active build (if
+/// any) becomes the expected predecessor, and the pipeline's starting
+/// generation becomes the live generation so [`Pipeline::build_and_publish`]
+/// mints exactly one generation higher. The store still re-validates live
+/// state at swing time, so this only fixes the fresh-process default — it
+/// never weakens the exactly-once guard.
+pub fn chain_publication(
+    active: Option<(String, i64)>,
+) -> Result<(Option<String>, u64), PipelineError> {
+    let Some((build_id, generation)) = active else {
+        return Ok((None, 0));
+    };
+    let starting = u64::try_from(generation).map_err(|_| {
+        PipelineError::Validation(format!("live generation out of range: {generation}"))
+    })?;
+    // build_and_publish increments, so the mint must fit one higher.
+    starting.checked_add(1).ok_or_else(|| {
+        PipelineError::Validation(format!("live generation out of range: {generation}"))
+    })?;
+    Ok((Some(build_id), starting))
+}
+
 // ---- Shared read-only queries (CLI and MCP use these) ----
 
 /// Case-insensitive substring search over names. Bounded: sorts all matches
@@ -1639,6 +1661,16 @@ mod tests {
             DecisionOutcome::Accepted,
             "threshold change reuses raw decision"
         );
+    }
+
+    #[test]
+    fn fresh_process_chains_off_the_live_build() {
+        assert_eq!(chain_publication(None).unwrap(), (None, 0));
+        assert_eq!(
+            chain_publication(Some(("b1".into(), 3))).unwrap(),
+            (Some("b1".into()), 3)
+        );
+        assert!(chain_publication(Some(("b1".into(), -1))).is_err());
     }
 
     #[test]

@@ -12,8 +12,8 @@ use std::{
 };
 
 use chaosbox::{
-    all_relation_types, GelReader, LifecycleReport, Materialization, Pipeline, EXPORT_EDGE_CAP,
-    EXPORT_NODE_CAP,
+    all_relation_types, GelReader, LifecycleReport, Materialization, Pipeline, chain_publication,
+    EXPORT_EDGE_CAP, EXPORT_NODE_CAP,
 };
 use chaosbox::{FixtureResponder, LiveResponder, PipelineError};
 use chaosbox_extract::Snapshot;
@@ -56,6 +56,24 @@ fn typedb_config_from_env() -> Result<TypeDbConfig, String> {
         password: password.trim().to_owned(),
         database: std::env::var("CHAOSBOX_TYPEDB_DATABASE").unwrap_or_else(|_| "chaosbox".into()),
     })
+}
+
+/// Live publication chain for one repo: (expected predecessor, starting
+/// generation) for a fresh process. Missing database or no active build
+/// means a fresh chain; anything else is a hard error, never a guess.
+async fn typedb_publication_chain(
+    config: &TypeDbConfig,
+    repo: &str,
+) -> Result<(Option<String>, u64), String> {
+    let mut reader = TypeDbReader::new(config.clone());
+    Box::pin(reader.connect())
+        .await
+        .map_err(|e| format!("typedb connect: {e}"))?;
+    let active = Box::pin(reader.active_build(repo))
+        .await
+        .map_err(|e| format!("typedb active build: {e}"))?;
+    chain_publication(active.map(|b| (b.build_id, b.generation)))
+        .map_err(|e| format!("publication chain: {e}"))
 }
 
 /// Backend-erased consumer reader: every query arm below works unchanged
@@ -200,7 +218,8 @@ enum Command {
         #[arg(long, default_value_t = 200)]
         max_candidates: usize,
     },
-    /// Run the full pipeline (fixture decisions unless --live-jev).
+    /// Run the full pipeline (live Jev decisions by default; fixture
+    /// decisions only with --fixture-decisions, for disposable/test graphs).
     Run {
         path: PathBuf,
         #[arg(long, default_value = "demo")]
@@ -211,6 +230,11 @@ enum Command {
         /// the deterministic fixture. Real inference, real spend.
         #[arg(long, default_value_t = false)]
         live_jev: bool,
+        /// Accept deterministic fixture decisions (every choice `accept`) for
+        /// a disposable or test graph. Fixture graphs are never authoritative:
+        /// decisions are recorded under the `fixture-test` model identity.
+        #[arg(long, default_value_t = false)]
+        fixture_decisions: bool,
         /// Live-Jev spend guards (defaults = `JevPolicy::default`).
         #[arg(long)]
         max_requests: Option<u32>,
@@ -339,6 +363,7 @@ async fn main() {
             repo,
             max_candidates,
             live_jev,
+            fixture_decisions,
             max_requests,
             max_input_tokens,
             max_retries,
@@ -351,9 +376,11 @@ async fn main() {
                         &repo,
                         max_candidates,
                         live_jev,
+                        fixture_decisions,
                         max_requests,
                         max_input_tokens,
                         max_retries,
+                        None,
                     )
                     .await
                 }
@@ -365,23 +392,36 @@ async fn main() {
                             std::process::exit(1);
                         }
                     };
-                    let mut store = TypeDbStore::new(config);
+                    let mut store = TypeDbStore::new(config.clone());
                     if let Err(e) = Box::pin(store.migrate()).await {
                         eprintln!("typedb migrate: {e}");
                         std::process::exit(1);
                     }
+                    // Fresh processes start at generation zero: chain off the
+                    // live active build so repeat runs publish gen+1 with the
+                    // right predecessor instead of failing the guard.
+                    let (expected_predecessor, starting_generation) =
+                        match Box::pin(typedb_publication_chain(&config, &repo)).await {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("typedb publication chain: {e}");
+                                std::process::exit(1);
+                            }
+                        };
                     run_pipeline_with(
                         Pipeline {
                             store,
-                            generation: 0,
+                            generation: starting_generation,
                         },
                         &path,
                         &repo,
                         max_candidates,
                         live_jev,
+                        fixture_decisions,
                         max_requests,
                         max_input_tokens,
                         max_retries,
+                        expected_predecessor,
                     )
                     .await
                 }
@@ -669,9 +709,11 @@ async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
     repo: &str,
     max_candidates: usize,
     live_jev: bool,
+    fixture_decisions: bool,
     max_requests: Option<u32>,
     max_input_tokens: Option<u64>,
     max_retries: Option<u32>,
+    expected_predecessor: Option<String>,
 ) -> i32 {
     let (snap, ext, cands) = match Pipeline::<S>::snapshot_extract(repo, path, max_candidates) {
         Ok(v) => v,
@@ -763,12 +805,20 @@ async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
             }
         }
     } else {
+        if !fixture_decisions {
+            eprintln!(
+                "refusing to publish fixture decisions without --fixture-decisions (fixture graphs are disposable/test-only); pass --live-jev for real decisions"
+            );
+            return 1;
+        }
         let mut responder = FixtureResponder::new(true);
+        // Fixture decisions must never masquerade as Jev model output.
+        responder.model = "fixture-test".into();
         match Pipeline::<S>::decide(
             &cands,
             &entities,
             &mut responder,
-            chaosbox_jev::JEV_MODEL_PINNED,
+            "fixture-test",
             &mat,
             &mut pipe.store,
         )
@@ -782,7 +832,7 @@ async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
         }
     };
     match pipe
-        .build_and_publish(repo, &snap, &ext, &decided, &mat, None)
+        .build_and_publish(repo, &snap, &ext, &decided, &mat, expected_predecessor)
         .await
     {
         Ok(build) => {

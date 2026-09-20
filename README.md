@@ -27,13 +27,16 @@ atomic publication -> read-only consumers`.
 
 ```sh
 cargo test --workspace
-cargo run -p chaosbox -- run fixtures/demo-repo --repo demo
+cargo run -p chaosbox -- run fixtures/demo-repo --repo demo --fixture-decisions
 cargo run -p chaosbox -- db check --json --repo demo
 printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | cargo run -q -p chaosbox -- mcp
 ```
 
 Jev credentials: `CHAOSBOX_JEV_API_KEY_FILE` (or operator `TYPESAFE_API_KEY`).
 Backend: `CHAOSBOX_DB_BACKEND=typedb` (default `gel` until cutover).
+`run` without `--live-jev` refuses to publish unless `--fixture-decisions`
+is given; fixture graphs are disposable/test-only and recorded under the
+`fixture-test` model identity.
 TypeDB credentials: `CHAOSBOX_TYPEDB_PASSWORD_FILE` (+ optional
 `CHAOSBOX_TYPEDB_ADDR/USER/DATABASE`). OpenAI/Anthropic/Gemini/Ollama
 env vars are never read.

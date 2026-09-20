@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # test-typedb: disposable real-TypeDB integration gate for Chaosbox.
 # - Uses a temp TypeDB server only; never touches developer databases.
-# - Applies the packaged schema, runs the mock-Jev pipeline, and proves the
-#   db check/migrate contract matrix plus consumer queries.
+# - Applies the packaged schema, runs the pipeline with explicit disposable
+#   fixture decisions, and proves the db check/migrate contract matrix plus
+#   consumer queries.
 # - Deterministic cleanup via trap. Exits 3 with PENDING when the TypeDB
 #   binaries are unavailable (honest pending, not a passing placeholder).
 set -euo pipefail
@@ -61,8 +62,8 @@ fi
 echo "== migrations =="
 chaosbox db migrate --json --repo test
 
-echo "== pipeline with mock Jev =="
-chaosbox run fixtures/demo-repo --repo test >"$WORK/graph.json"
+echo "== pipeline with explicit disposable fixture decisions =="
+chaosbox run fixtures/demo-repo --repo test --fixture-decisions >"$WORK/graph.json"
 test -s "$WORK/graph.json"
 
 echo "== readiness =="
