@@ -25,6 +25,21 @@
 - `graphify/export.py`, `exporters/` — export; runtime output is NetworkX node-link JSON (`graphify-out/graph.json`: `nodes[{id,label,source_file,source_location}]`)
 - `tests/`, fixtures under `tests/` — reference behavior
 
+## TypeDB migration (2026-09-20, host atlas)
+
+| Repo | Ref | SHA |
+|---|---|---|
+| typedb/typedb | tag 3.13.0 | `7e3baa369a5afd3c42c3e21a4672785dbdbb09ec` |
+| typedb/typedb-tools | tag console-3.13.0 | `27547be8e39021dffd84c393185f4efcd049074c` |
+| typedb/typedb-driver | tag 3.12.3 (crates.io `typedb-driver` 3.12.3) | `f487d961884010ff305d4395c41e80fa620251c6` |
+| caniko/harbor-db | branch typedb-backend | `857d37eba84e9019dcb9ee7677b99ca3777daf04` (PR caniko/harbor-db#7) |
+| caniko/chaosbox | branch typedb-migration | `33738be` and follow-ups |
+| typedb/typedb | PR #7978 (Nix flake, caniko:nix-flake) | eval-verified; remote build pending |
+| NixOS/nixpkgs | PR #565068 (typedb packages, caniko:typedb-packaging) | review-gha builds pending/iterating |
+
+Driver 3.12.3 ↔ server 3.13.0 interop proven live (connect/define/write/read,
+read-tx rejection). No Gel data ever persisted (fixtures/disposable only).
+
 ## Harbor interfaces consumed
 
 - harbor-rs: `mkToolchain` (+`toolchainProfile`), `craneLib` dep/build split, `mkCross`, `mkDevShells`, flake `checks`/`formatter`/`packages`/`apps` layout (mirrored in `flake.nix`)

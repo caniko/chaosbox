@@ -56,6 +56,22 @@
 - Live Jev path: `LiveResponder` adapter + `run --live-jev` (real inference,
   real spend; default stays fixture); HTTP-level mock-service tests cover
   retries, auth-no-retry, and validation over the wire
+- TypeDB backend (`chaosbox-typedb`, authoritative): TypeQL schema mirroring
+  the domain with typed relations/roles (`relationship`, memberships,
+  occurrences, claim evidence), stable ids as `@key`s, deterministic relation
+  keys, epoch-millis timestamps; centralized literal encoder (adversarial
+  tests); staging-validated flush with CNT9 idempotency and bounded transient
+  retries; single-transaction pointer swing re-validating predecessor and
+  generation live (exactly-once publication proven with concurrent
+  publishers); uncertain-commit reconciliation by durable-state re-read;
+  read-tx mutation rejection; `TypeDbReader` implements `GelQueries` and
+  passes the reference conformance suite unchanged (fold-column `contains`
+  search preserving `ilike`, server-side ordering, build pinning)
+- `db check`/`db migrate` contract v2 JSON for the TypeDB path (same exit
+  mapping: 0 ready, 2 pending, 1 error); backend switch via
+  `CHAOSBOX_DB_BACKEND`, credentials via `CHAOSBOX_TYPEDB_PASSWORD_FILE`
+- Gel runtime path superseded (reference `MemoryStore`/conformance remain);
+  removal from the active path after cutover validation
 - `db check`/`db migrate` contract v1 JSON (stdout machine-readable, stderr diagnostics)
 - Vertical slice test: snapshot -> extract -> fixture Jev -> publish -> query ->
   change/delete source -> incremental replacement build

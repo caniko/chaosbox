@@ -1,99 +1,58 @@
-# Handoff (container-free gel-integration, 2026-09-19, atlas)
+# Handoff (TypeDB migration, 2026-09-20, atlas)
 
 ## Landed this round
 
-- `run_migrate` passes explicit `--credentials-file` (proven flag shape)
-  alongside the env passthrough; no `gel.toml` created (tools resolve
-  `dbschema/` from cwd; explicit config deferred until a failure demands it).
-- `nix/gel-vm-test.nix`: nixosTest guest (4G/4-core/10G disk) with
-  docker-in-guest + store-preloaded digest-pinned 7.1 image (same digest +
-  nar hash harbor-db enforces), chaosbox + gel + dbschema as store closures,
-  in-guest credentials (test-only, never leaves the guest).
-- Guest matrix: ready-probe → check pending/exit 2 → migrate exit 0 with
-  post-apply verification → check ready/exit 0 → idempotent re-apply →
-  wrong-credentials error with state intact.
-- `checks.gel-integration` runs the VM test (replaces the exit-3 script
-  check; `apps.test-gel` keeps the direct script for manual runs).
-- Verified without realizing: flake + test parse, check evaluates to a
-  `vm-test-run` derivation, dry-run resolves the 443-derivation closure.
-  Realization needs a build-capable session (policy-gated here).
-- Missing-package note stands: no native `gel-server` in nixpkgs (CLI-only
-  `geldata/gel-cli`); server arrives via pinned OCI only.
+- `chaosbox-typedb`: schema/encoder/store/reader, all live-proven against
+  TypeDB 3.13.0 (driver 3.12.3): migrate idempotent, publish+readback,
+  predecessor/generation guards, concurrent-publisher exactly-once,
+  reference `check_conformance` green. Rust 1.93.0 toolchain (driver needs
+  >=1.88). Workspace tests + clippy pedantic + fmt clean.
+- CLI/MCP/lifecycle switch (`CHAOSBOX_DB_BACKEND=typedb`, contract v2):
+  migrate/check/run/query/export verified live end to end (fixture run
+  published 22 nodes / 27 edges; search/neighbors/status/export answer).
+- Nix: harbor-db re-pinned to `typedb-backend`; deployment module rewritten
+  for `services.typedb` + harbor-db `typedb` operations (credential-file
+  delivery, systemd ordering); `typedb-integration` VM test replaces the Gel
+  one; `test-typedb.sh` disposable gate; simit gate `ci-chaosbox-typedb.yaml`.
+  `deployment-eval` (7 checks) and flake eval green; temp `nixpkgs-typedb`
+  pin (binaries substitute from `attic.candee.baby/canix`; removal:
+  nixpkgs#565068 merge).
+- Upstream: typedb/typedb#7978 (flake, eval-verified); companion
+  typedb-tools lock-refresh identified (tag pins driver 3.12.0 vs required
+  3.12.3; nixpkgs carries the one-liner until a fixed tag).
+- nixpkgs: NixOS/nixpkgs#565068 (draft; by-name layout fixed, duplicate
+  maintainer dropped). review-gha dispatched; iterating on evidence.
+- harbor-db#7 (`Backend::Typedb` label; generic runner/credentials/ordering
+  reused, readiness stays application-owned).
 
-## Landed since v0.7.0
+## Still blocked / pending
 
-- P0 upstream: `harbor-db@chaosbox/gel-cli-devshell` (`e6fee81`) puts pinned
-  `pkgs.gel` in devShells (verified: evaluates, locked nixpkgs → gel 7.10.2).
-- P1 consume: chaosbox default devShell includes `pkgs.gel`; `test-gel.sh`
-  asserts same-major 7.x CLI from the shell (no more silent ambient PATH).
-- P2 code: `run` budget flags (`--max-requests/--max-input-tokens/
-  --max-retries`); live-credential preflight guard (exit 1 before any spend
-  when no key); `fixtures/smoke-tiny` (1 fn, few candidates) ready.
-- Credentials idiom: native Gel credentials JSON (`gel --credentials-file`
-  proven; `gel-dsn` resolves `GEL_CREDENTIALS_FILE` for the Rust client).
-  Operator secret lives at `age/secrets/users/can/typesafe.age` (never read
-  here); live smoke needs it exported in-session as `TYPESAFE_API_KEY` or a
-  runtime file via `CHAOSBOX_JEV_API_KEY_FILE`.
-- NOTE: `crates/chaosbox/src/main.rs` still carries the foreign DbCmd hunk
-  (exit-2-pending, --repo, post-migrate verify) + this round's Run-area
-  hunks (flags, guard); split carefully on adopt, do not blanket-commit.
-
-## Still blocked
-
-- Live-Jev smoke: key absent in this session (`test -n` both vars → unset).
-- Live Gel proof: no `nix build/run` in this session to realize `gel`;
-  needs a devshell session (podman present) to pull the pinned 7.1 image
-  and run the live.sh-pattern proof.
-- simit gates; communities decision; packaging.
-
-## Commands + actual results (all executed this session)
-
-- `cargo test --workspace` — 46 passed, 0 failed; zero warnings
-- `cargo run -p chaosbox -- run fixtures/demo-repo --repo demo` — exit 0
-- `nix-instantiate --parse flake.nix` — ok (no flake changes this round)
-- gel-protocol audit: positional tuples cap at 12 params (span/evedence
-  statement splits), `Option<T>` args supported, `<uuid><str>` casts avoid
-  a new uuid dependency
-
-## Changes since v0.6.0 (Round 3 behavior: lookup + flush)
-
-- `Store::find_decision` on both stores (`GelHandle` select const +
-  JSON-outcome round-trip conversion); shared evidence assembler so cache
-  reuse rebuilds byte-identical rows; skip-on-key-match with failures
-  always re-asked
-- Supersedure generalized: replace on cache-key change (model/rubric/
-  catalog invalidation lands in the store, not just the pipeline);
-  conditional upsert const mirrors the rule for live Gel
-- Per-axis invalidation tests (catalog/model/rubric invalidate, thresholds
-  reuse via a failing responder that never gets called)
-- Full-chain flush in `GelStore.publish` (runs, sets, candidates,
-  decisions, evidence, claims, relationship evidence links) in FK order;
-  `LINK_EVIDENCE` const closes the relationship-evidence gap
-- Write conformance covers the new surface; live variant structured
-
-## Dependency handoff revisions
-
-- harbor-rs trunk `7a3328e` (flake input pinned)
-- harbor-db local `5c605fd` (trunk `a1ae83b` has the `gel` backend)
-- simit local `b16a5af` (branch `codex/release-whitespace`, trunk `39aed87`)
-- gel-tokio 0.11.0; Gel server pinned 7.2; nixpkgs Gel CLI 7.10.2; Jev `jev-1.13.0`
-
-## Remaining blockers (not copied, not faked)
-
-1. Disposable Gel instance + credentials/readiness flow (harbor-db branch).
-   Unblocks: live write/read conformance, cache proof, `test-gel` green.
-2. simit named gates + ordered publication; nothing published, no tags pushed.
-3. Live Jev quality: `run --live-jev` ready, needs operator key file.
-4. Note: `00001.edgeql` is a module stub — full SDL↔migration reconciliation
-   happens on the first live `gel migration create`/apply cycle.
+- Remote TypeDB builds (review-gha runs iterating; RocksDB unit gates TBD).
+- Flake-head remote build: OAuth token lacks `workflow` scope, so no ad-hoc
+  Actions validation from here (`gh auth refresh -s workflow`, then push the
+  saved `nix-verify` workflow and dispatch on `caniko/typedb@nix-flake-verify`).
+- NixOS VM test realization (needs substituted binaries from the review
+  run, then KVM run here; CI runs it under emulation).
+- Live-Jev smoke: key absent in this session.
+- Cutover: flip `CHAOSBOX_DB_BACKEND` default after validation; remove Gel
+  runtime wiring (crate stays as conformance reference).
 
 ## Exact next commands
 
 ```sh
 cd /data/nvme0/can/canix/projects/repos/owned/chaosbox
-git log --oneline -3
-nix run .#test-gel            # PENDING until the harbor-db branch lands
-simit init ci
-CHAOSBOX_JEV_API_KEY_FILE=/path/to/key cargo run -p chaosbox -- run fixtures/demo-repo --live-jev
-cargo package -p chaosbox-core
+git log --oneline -5   # typedb-migration
+gh pr list --head typedb-migration  # open when green
+nix flake show         # eval only (policy)
 ```
+
+## Prior rounds
+
+ Kept below for continuity; the Gel path above is superseded.
+
+### Container-free gel-integration (2026-09-19)
+
+- `run_migrate` passes explicit `--credentials-file` alongside the env
+  passthrough; `nix/gel-vm-test.nix` docker-in-guest 7.1 digest-pinned
+  matrix (pending → migrate → ready → idempotent → wrong-creds).
+- Verified without realizing (eval + dry-run only, policy-gated).
