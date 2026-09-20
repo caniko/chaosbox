@@ -9,11 +9,13 @@
     harbor-db.url = "git+https://github.com/caniko/harbor-db.git?ref=trunk&rev=70407e3223a4b8fcf6db5986de691934f04e2028";
     harbor-db.inputs.nixpkgs.follows = "nixpkgs";
     # TEMPORARY TypeDB packages until NixOS/nixpkgs#565068 merges: the
-    # packaging PR head (reviewed module with typed host/port options).
-    # Binaries substitute from the fleet cache once built; otherwise CI
-    # builds locally.
+    # GitHub-maintained PR merge (NixOS/nixpkgs#565068), pinned to the
+    # verified merge 26996c2a9 that review-gha built green (typedb,
+    # typedb-console, nixosTests.typedb). The bare PR head carries a stale
+    # base toolchain (rustc 1.89; the driver needs 1.98) and cannot build.
+    # Binaries substitute from the review cache; otherwise CI builds locally.
     # Removal: drop this input, use pkgs.typedb from nixpkgs.
-    nixpkgs-typedb.url = "github:caniko/nixpkgs/66d42893ca51631cfb6443d2a2b57776e9b47c2a";
+    nixpkgs-typedb.url = "git+https://github.com/NixOS/nixpkgs.git?rev=26996c2a9def51106563a8983abe3617c76b2db7";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
     harbor-meta.follows = "harbor-rs/harbor-meta";
