@@ -58,9 +58,20 @@ pub struct Snapshot {
 
 impl Snapshot {
     /// Walk `root`, read supported text files, hash each. Deterministic order.
+    ///
+    /// Repository boundary: symlinks resolving outside `root` are skipped
+    /// (never followed, never read), dangling symlinks are skipped, and
+    /// nested repositories (directories containing `.git`) are not entered.
+    /// Indexing a workspace root must not leak sibling checkouts, generated
+    /// trees, or ignored files into the graph or (via candidates) to inference.
     pub fn capture(repo: &str, root: &Path) -> Result<Self, ExtractError> {
+        let root_canon =
+            std::fs::canonicalize(root).map_err(|e| ExtractError::Io(e.to_string()))?;
         let mut files = Vec::new();
         let mut contents = BTreeMap::new();
+        // Canonical directories already traversed: bounds symlink cycles
+        // (a link pointing at an ancestor would otherwise loop forever).
+        let mut visited: BTreeSet<PathBuf> = BTreeSet::from([root_canon.clone()]);
         let mut stack = vec![root.to_path_buf()];
         while let Some(dir) = stack.pop() {
             let entries = std::fs::read_dir(&dir).map_err(|e| ExtractError::Io(e.to_string()))?;
@@ -71,20 +82,49 @@ impl Snapshot {
             }
             sorted.sort();
             for p in sorted {
-                if p.is_dir() {
+                // Never follow a symlink out of the repository; skip dangling links.
+                let target: Option<PathBuf> = if std::fs::symlink_metadata(&p)
+                    .map_err(|e| ExtractError::Io(e.to_string()))?
+                    .file_type()
+                    .is_symlink()
+                {
+                    match std::fs::canonicalize(&p) {
+                        Ok(t) if t.starts_with(&root_canon) => Some(t),
+                        _ => continue,
+                    }
+                } else {
+                    None
+                };
+                let effective = target.as_deref().unwrap_or(&p);
+                if effective.is_dir() {
                     let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
                     if name == ".git" || name == "target" || name == "node_modules" {
                         continue;
                     }
-                    stack.push(p);
-                } else if p.is_file() {
+                    // Nested repository boundary.
+                    if effective.join(".git").exists() {
+                        continue;
+                    }
+                    // Canonicalize (resolves interior symlinks) and skip
+                    // directories already traversed: symlink-cycle bound.
+                    let canon = match target {
+                        Some(t) => t,
+                        None => match std::fs::canonicalize(&p) {
+                            Ok(t) => t,
+                            Err(_) => continue,
+                        },
+                    };
+                    if visited.insert(canon) {
+                        stack.push(p);
+                    }
+                } else if effective.is_file() {
                     let rel = p
                         .strip_prefix(root)
                         .map_err(|e| ExtractError::Io(e.to_string()))?
                         .to_string_lossy()
                         .replace('\\', "/");
                     if is_supported(&rel) {
-                        let text = std::fs::read_to_string(&p)
+                        let text = std::fs::read_to_string(effective)
                             .map_err(|e| ExtractError::Io(e.to_string()))?;
                         let sha = sha256_hex(&[&text]);
                         files.push(FileVersion {
@@ -655,6 +695,48 @@ mod tests {
         let cands = build_candidates(&ext, 10);
         // 3 defs would be 9 pairs cartesian; bounded co-occurrence gives <= 2 + structural
         assert!(cands.len() <= 10);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_skips_symlink_escape() {
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.rs"), "fn secret() {}\n").unwrap();
+        let (_t, root) = tmp_repo(&[("a.rs", "fn a() {}\n")]);
+        std::os::unix::fs::symlink(outside.path().join("secret.rs"), root.join("evil.rs")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("escape")).unwrap();
+        let snap = Snapshot::capture("r", &root).unwrap();
+        let paths: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            ["a.rs"],
+            "outside-root links must not leak in: {paths:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_keeps_interior_links_but_bounds_cycles() {
+        let (_t, root) = tmp_repo(&[("sub/inner.rs", "fn inner() {}\n")]);
+        std::os::unix::fs::symlink(root.join("sub"), root.join("linked")).unwrap();
+        // Cycle: linked/loop -> root. Capture must terminate.
+        std::os::unix::fs::symlink(root.clone(), root.join("sub").join("loop")).unwrap();
+        let snap = Snapshot::capture("r", &root).unwrap();
+        let mut paths: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
+        paths.sort();
+        // `sub` resolves to the same directory already seen via `linked`:
+        // indexed once, and the `loop` cycle terminates.
+        assert_eq!(paths, ["linked/inner.rs"]);
+    }
+
+    #[test]
+    fn snapshot_skips_nested_git_repos() {
+        let (_t, root) = tmp_repo(&[("a.rs", "fn a() {}\n")]);
+        std::fs::create_dir_all(root.join("vendor/dep/.git")).unwrap();
+        std::fs::write(root.join("vendor/dep/b.rs"), "fn b() {}\n").unwrap();
+        let snap = Snapshot::capture("r", &root).unwrap();
+        let paths: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["a.rs"], "nested checkouts stay out: {paths:?}");
     }
 
     #[test]
