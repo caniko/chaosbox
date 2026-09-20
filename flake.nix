@@ -12,7 +12,7 @@
     # nixpkgs at the reviewed packaging revision. Binaries substitute from
     # the fleet cache (attic.candee.baby/canix); nothing here builds TypeDB
     # locally. Removal: drop this input, use pkgs.typedb from nixpkgs.
-    nixpkgs-typedb.url = "github:caniko/nixpkgs/2ae96a5d98e4121618742cda7e0a648e16ee5b4b";
+    nixpkgs-typedb.url = "github:caniko/nixpkgs/00d2bb3bb8a656a606d476cd2a2e3d7087c4728b";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
     harbor-meta.follows = "harbor-rs/harbor-meta";
