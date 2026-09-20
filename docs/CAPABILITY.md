@@ -70,6 +70,11 @@
 - `db check`/`db migrate` contract v2 JSON for the TypeDB path (same exit
   mapping: 0 ready, 2 pending, 1 error); backend switch via
   `CHAOSBOX_DB_BACKEND`, credentials via `CHAOSBOX_TYPEDB_PASSWORD_FILE`
+- Pilot safety: snapshot capture stays inside the repository boundary
+  (outside symlinks, dangling links, nested checkouts, and link cycles
+  excluded); batches with failed decisions refuse to publish so the last
+  good build stays active (outcome counts on stderr); MCP requires an
+  explicit repo and bounds search limits, path hops, and traversal visits
 - Gel runtime path superseded (reference `MemoryStore`/conformance remain);
   removal from the active path after cutover validation
 - `db check`/`db migrate` contract v1 JSON (stdout machine-readable, stderr diagnostics)
