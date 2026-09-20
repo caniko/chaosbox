@@ -59,7 +59,7 @@ pkgs.testers.nixosTest {
         "CHAOSBOX_TYPEDB_ADDR=127.0.0.1:1729 "
         "CHAOSBOX_TYPEDB_USER=admin "
         "CHAOSBOX_TYPEDB_PASSWORD_FILE=/etc/chaosbox-test-pw "
-        f"CHAOSBOX_TYPEDB_DATABASE=${testDb} "
+        "CHAOSBOX_TYPEDB_DATABASE=${testDb} "
     )
     machine.succeed("printf '%s' '${testPassword}' > /etc/chaosbox-test-pw && chmod 600 /etc/chaosbox-test-pw")
     machine.succeed("mkdir -p /tmp/cbtest && cp -r ${../fixtures/demo-repo} /tmp/cbtest/demo-repo && chmod -R u+rw /tmp/cbtest")
