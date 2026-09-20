@@ -13,7 +13,7 @@
     # rebased from here; same content, fresh toolchain). Binaries substitute
     # from the fleet cache once built; otherwise CI builds locally.
     # Removal: drop this input, use pkgs.typedb from nixpkgs.
-    nixpkgs-typedb.url = "github:caniko/nixpkgs/4d790ef4ff747a8f3e5ca6e1f4141cb111c2dded";
+    nixpkgs-typedb.url = "github:caniko/nixpkgs/c0f6ce55ddf60bdc07028aea8474be37c5eee989";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
     harbor-meta.follows = "harbor-rs/harbor-meta";
