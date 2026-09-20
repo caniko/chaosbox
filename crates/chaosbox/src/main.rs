@@ -919,6 +919,10 @@ const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_PROTOCOL_FALLBACKS: &[&str] = &["2024-11-05", "2025-03-26"];
 /// Tools per `tools/list` page.
 const MCP_PAGE_SIZE: usize = 5;
+/// Upper bound for caller-supplied search limits: paginate instead.
+const MCP_SEARCH_LIMIT_MAX: i64 = 200;
+/// Upper bound for caller-supplied path hop counts.
+const MCP_MAX_HOPS: usize = 8;
 
 fn mcp_tool_defs() -> Vec<serde_json::Value> {
     vec![
@@ -994,12 +998,10 @@ fn mcp_tool(
         "properties": properties,
         "required": required,
     });
-    // Every tool accepts an optional repo; the pinned active build serves reads.
+    // Every tool requires an explicit repo: the server holds no default
+    // (a silent `demo` fallback once sent agents to the wrong graph).
     if let Some(props) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
-        props.insert(
-            "repo".to_owned(),
-            serde_json::json!({"type": "string", "default": "demo"}),
-        );
+        props.insert("repo".to_owned(), serde_json::json!({"type": "string"}));
     }
     serde_json::json!({
         "name": name, "description": description,
@@ -1097,7 +1099,48 @@ async fn mcp_call_tool(
             None,
         );
     }
-    let repo = args.get("repo").and_then(|r| r.as_str()).unwrap_or("demo");
+    // Explicit repository: fail before touching the backend or credentials.
+    let repo = match args
+        .get("repo")
+        .and_then(|r| r.as_str())
+        .filter(|r| !r.is_empty())
+    {
+        Some(r) => r,
+        None => {
+            return mcp_error(
+                id,
+                -32602,
+                "missing required argument: repo".to_owned(),
+                None,
+            );
+        }
+    };
+    // Cheap service limits before any backend work: an unbounded query
+    // would block the serial stdio loop for every later call.
+    if name == "search" {
+        if let Some(l) = args.get("limit").and_then(serde_json::Value::as_i64) {
+            if l > MCP_SEARCH_LIMIT_MAX {
+                return mcp_error(
+                    id,
+                    -32602,
+                    format!("search limit exceeds maximum {MCP_SEARCH_LIMIT_MAX}"),
+                    None,
+                );
+            }
+        }
+    }
+    if name == "path" {
+        if let Some(h) = args.get("max_hops").and_then(serde_json::Value::as_u64) {
+            if h > MCP_MAX_HOPS as u64 {
+                return mcp_error(
+                    id,
+                    -32602,
+                    format!("max_hops exceeds maximum {MCP_MAX_HOPS}"),
+                    None,
+                );
+            }
+        }
+    }
     let reader = match Box::pin(AnyReader::connect(repo)).await {
         Ok(r) => r,
         Err(e) => {
@@ -1336,16 +1379,61 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_tools_rejected_without_gel() {
-        // No Gel needed: the closed tool set rejects first.
+        // No backend needed: the closed tool set rejects first.
         for name in ["migrate", "evaluate", "db", "edgeql", "ingest", "annotate"] {
             let resp = Box::pin(mcp_call_tool(
                 &serde_json::json!(1),
                 name,
-                &serde_json::json!({"name": name}),
+                &serde_json::json!({"name": name, "repo": "demo"}),
             ))
             .await;
             assert_eq!(resp["error"]["code"], -32601, "{name}: {resp}");
         }
+    }
+
+    #[tokio::test]
+    async fn missing_repo_rejected_before_backend() {
+        // No backend needed: the explicit-repo rule fires first.
+        let resp = Box::pin(mcp_call_tool(
+            &serde_json::json!(1),
+            "search",
+            &serde_json::json!({"arguments": {"query": "alpha"}}),
+        ))
+        .await;
+        assert_eq!(resp["error"]["code"], -32602, "{resp}");
+        assert!(
+            resp["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("repo"),
+            "{resp}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unbounded_queries_rejected_before_backend() {
+        // No backend needed: service limits fire before connecting.
+        let over_limit = Box::pin(mcp_call_tool(
+            &serde_json::json!(1),
+            "search",
+            &serde_json::json!({"arguments": {"query": "alpha", "repo": "demo", "limit": 100000}}),
+        ))
+        .await;
+        assert_eq!(over_limit["error"]["code"], -32602, "{over_limit}");
+        assert!(
+            over_limit["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("limit"),
+            "{over_limit}"
+        );
+        let over_hops = Box::pin(mcp_call_tool(
+            &serde_json::json!(1),
+            "path",
+            &serde_json::json!({"arguments": {"from": "a", "to": "b", "repo": "demo", "max_hops": 1000}}),
+        ))
+        .await;
+        assert_eq!(over_hops["error"]["code"], -32602, "{over_hops}");
     }
 
     #[tokio::test]

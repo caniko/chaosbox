@@ -1132,6 +1132,12 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
         Ok((out, inc))
     }
 
+    /// Upper bound on BFS node visits for one path query. Exceeding it is
+    /// an explicit budget error, never an unbounded traversal: callers
+    /// (MCP agents) retry with a narrower query instead of hanging the
+    /// serial server loop.
+    pub const PATH_VISITED_CAP: usize = 100_000;
+
     /// Bounded BFS path using iterative Gel neighborhood expansion.
     /// `ponytail: O(hops * degree) Gel round-trips; single-projection fetch if this dominates`.
     pub async fn path(
@@ -1139,6 +1145,18 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
         from: &str,
         to: &str,
         max_hops: usize,
+    ) -> Result<Option<Vec<String>>, PipelineError> {
+        self.path_with_cap(from, to, max_hops, Self::PATH_VISITED_CAP)
+            .await
+    }
+
+    /// [`GelReader::path`] with an explicit visit budget (tests + future policy).
+    pub async fn path_with_cap(
+        &self,
+        from: &str,
+        to: &str,
+        max_hops: usize,
+        visit_cap: usize,
     ) -> Result<Option<Vec<String>>, PipelineError> {
         use std::collections::{BTreeMap, BTreeSet, VecDeque};
         if from == to {
@@ -1161,6 +1179,11 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
             for nxt in nexts {
                 if nxt == cur || !seen.insert(nxt.clone()) {
                     continue;
+                }
+                if seen.len() > visit_cap {
+                    return Err(PipelineError::Consumer(
+                        "path traversal budget exceeded; narrow the query".into(),
+                    ));
                 }
                 prev.insert(nxt.clone(), cur.clone());
                 if nxt == to {
@@ -1820,5 +1843,23 @@ mod tests {
             .await
             .unwrap();
         assert!(!d["added_nodes"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn path_traversal_budget_is_explicit() {
+        let seed = chaosbox_gel::conformance_seed();
+        let reader: GelReader<chaosbox_gel::MemoryReader> =
+            GelReader::pinned(seed.reader, "conf").await.unwrap();
+        let gamma = &reader.search("Gamma", 10).await.unwrap()[0].entity_id;
+        let ok = reader.path(&seed.a2, gamma, 4).await.unwrap();
+        assert!(ok.is_some(), "a2 references Gamma in the pinned build");
+        let err = reader
+            .path_with_cap(&seed.a2, gamma, 4, 0)
+            .await
+            .expect_err("zero visit budget must fail, not hang");
+        assert!(
+            err.to_string().contains("budget exceeded"),
+            "unexpected error: {err}"
+        );
     }
 }
