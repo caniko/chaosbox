@@ -346,17 +346,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1789860332,
+        "lastModified": 1789883412,
         "narHash": "sha256-/MeuB2lckpggmxsSt5UyM7WCLNr4ufoKs6CuEHC/cNw=",
-        "ref": "typedb-backend",
-        "rev": "857d37eba84e9019dcb9ee7677b99ca3777daf04",
-        "revCount": 21,
+        "ref": "trunk",
+        "rev": "70407e3223a4b8fcf6db5986de691934f04e2028",
+        "revCount": 22,
         "type": "git",
         "url": "https://github.com/caniko/harbor-db.git"
       },
       "original": {
-        "ref": "typedb-backend",
-        "rev": "857d37eba84e9019dcb9ee7677b99ca3777daf04",
+        "ref": "trunk",
+        "rev": "70407e3223a4b8fcf6db5986de691934f04e2028",
         "type": "git",
         "url": "https://github.com/caniko/harbor-db.git"
       }

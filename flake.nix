@@ -4,9 +4,9 @@
   inputs = {
     harbor-rs.url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=7a3328e186258dca31f9801227bc4e6fd8db4f36";
     # Deployment/lifecycle infrastructure (TypeDB backend, server module,
-    # readiness gates). Pinned to the reviewed typedb-backend revision; moves
-    # to trunk after harbor-db#7 merges. Never a local path.
-    harbor-db.url = "git+https://github.com/caniko/harbor-db.git?ref=typedb-backend&rev=857d37eba84e9019dcb9ee7677b99ca3777daf04";
+    # readiness gates). Tracks trunk (harbor-db#7 merged); previously the
+    # reviewed typedb-backend branch. Never a local path.
+    harbor-db.url = "git+https://github.com/caniko/harbor-db.git?ref=trunk&rev=70407e3223a4b8fcf6db5986de691934f04e2028";
     harbor-db.inputs.nixpkgs.follows = "nixpkgs";
     # TEMPORARY TypeDB packages until NixOS/nixpkgs#565068 merges: full
     # nixpkgs at the reviewed packaging revision. Binaries substitute from
