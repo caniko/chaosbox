@@ -1,13 +1,19 @@
 {
-  description = "Chaosbox - native Rust code-graph pipeline (Gel-backed)";
+  description = "Chaosbox - native Rust code-graph pipeline (TypeDB-backed)";
 
   inputs = {
     harbor-rs.url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=7a3328e186258dca31f9801227bc4e6fd8db4f36";
-    # Deployment/lifecycle infrastructure (Gel backend, server module,
-    # readiness gates). Pinned to the reviewed Gel-support revision; moves
-    # to trunk after harbor-db#5 merges. Never a local path.
-    harbor-db.url = "git+https://github.com/caniko/harbor-db.git?ref=gel-support&rev=c5770090031e2a7c03144b2c739481ad0949ff42";
+    # Deployment/lifecycle infrastructure (TypeDB backend, server module,
+    # readiness gates). Tracks trunk (harbor-db#7 merged); previously the
+    # reviewed typedb-backend branch. Never a local path.
+    harbor-db.url = "git+https://github.com/caniko/harbor-db.git?ref=trunk&rev=70407e3223a4b8fcf6db5986de691934f04e2028";
     harbor-db.inputs.nixpkgs.follows = "nixpkgs";
+    # TEMPORARY TypeDB packages until NixOS/nixpkgs#565068 merges: the
+    # packaging PR head (reviewed module with typed host/port options).
+    # Binaries substitute from the fleet cache once built; otherwise CI
+    # builds locally.
+    # Removal: drop this input, use pkgs.typedb from nixpkgs.
+    nixpkgs-typedb.url = "github:caniko/nixpkgs/66d42893ca51631cfb6443d2a2b57776e9b47c2a";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
     harbor-meta.follows = "harbor-rs/harbor-meta";
@@ -25,6 +31,7 @@
       harbor-meta,
       treefmt-nix,
       nixpkgs,
+      nixpkgs-typedb,
       crane,
       ...
     }:
@@ -47,6 +54,11 @@
           f {
             inherit system pkgs toolchain;
             craneLib = toolchain.craneLib;
+            # Temporary TypeDB packages (see nixpkgs-typedb input): the
+            # same nixpkgs revision that carries the packaging PR, so the
+            # service module and the binaries agree. Substituted from the
+            # fleet cache, never built here.
+            typedbPkgs = import nixpkgs-typedb { inherit system; };
           }
         );
       treefmt =
@@ -61,9 +73,10 @@
           programs.rustfmt.edition = "2021";
           programs.taplo.enable = true;
         }).config.build;
-      # Cargo source plus the non-Cargo trees Rust embeds (dbschema via
-      # include_str!) or reads at test time (fixtures/). cleanCargoSource
-      # alone strips them and breaks nix builds while cargo works.
+      # Cargo source plus the non-Cargo trees Rust embeds (TypeQL schema
+      # via include_str!, the Gel SDL assets the gel crate packages, or
+      # files read at test time (fixtures/)). cleanCargoSource alone strips
+      # them and breaks nix builds while cargo works.
       workspaceSrc =
         { pkgs, craneLib }:
         pkgs.lib.cleanSourceWith {
@@ -71,6 +84,7 @@
           filter =
             path: type:
             craneLib.filterCargoSources path type
+            || pkgs.lib.hasSuffix ".tql" (toString path)
             || pkgs.lib.hasPrefix (toString ./dbschema + "/") (toString path)
             || pkgs.lib.hasPrefix (toString ./fixtures + "/") (toString path);
         };
@@ -103,20 +117,18 @@
           };
           db-migrate = pkgs.writeShellApplication {
             name = "chaosbox-db-migrate";
-            # Pinned Gel CLI (nixpkgs, locked in flake.lock) — never ambient PATH.
-            runtimeInputs = [
-              chaosbox
-              pkgs.gel
-            ];
+            # Migration runs through the driver inside chaosbox (no CLI
+            # tooling needed); connection arrives via environment + the
+            # credential file at runtime, never ambient PATH.
+            runtimeInputs = [ chaosbox ];
             text = ''exec ${pkgs.lib.getExe chaosbox} db migrate --json "$@"'';
           };
-          test-gel = pkgs.writeShellApplication {
-            name = "chaosbox-test-gel";
+          test-typedb = pkgs.writeShellApplication {
+            name = "chaosbox-test-typedb";
             runtimeInputs = [
               chaosbox
-              pkgs.gel
             ];
-            text = builtins.readFile ./scripts/test-gel.sh;
+            text = builtins.readFile ./scripts/test-typedb.sh;
           };
         in
         {
@@ -124,7 +136,7 @@
             chaosbox
             db-check
             db-migrate
-            test-gel
+            test-typedb
             ;
           default = chaosbox;
         }
@@ -152,9 +164,9 @@
             type = "app";
             program = "${pkgs.lib.getExe P.db-migrate}";
           };
-          test-gel = {
+          test-typedb = {
             type = "app";
-            program = "${pkgs.lib.getExe P.test-gel}";
+            program = "${pkgs.lib.getExe P.test-typedb}";
           };
         }
       );
@@ -164,6 +176,7 @@
           pkgs,
           toolchain,
           system,
+          typedbPkgs,
           ...
         }:
         let
@@ -177,11 +190,18 @@
           default = harbor-rs.lib.mkDevShell {
             inherit pkgs cross;
             inherit (toolchain) craneLib;
-            # Gel CLI for local lifecycle work (db migrate, test-gel). Same
-            # source as harbor-db's cliPackage default (pkgs.gel); the
-            # harbor-db devshell also provides it upstream
-            # (chaosbox/gel-cli-devshell). Expect 7.x; record exact on re-pin.
-            packages = [ pkgs.gel ];
+          };
+          # Live TypeDB work (db migrate, backend tests, test-typedb.sh):
+          # server + Console from the temporary packages. Opt-in so the
+          # default shell (and every CI gate using it) never builds them;
+          # binaries substitute from the fleet cache once review publishes.
+          typedb = harbor-rs.lib.mkDevShell {
+            inherit pkgs cross;
+            inherit (toolchain) craneLib;
+            packages = [
+              typedbPkgs.typedb
+              typedbPkgs.typedb-console
+            ];
           };
           # Simit-generated CI builds docs via `.#docs`; same shell.
           docs = default;
@@ -191,7 +211,12 @@
       formatter = forAllSystems (args: (treefmt args.system args.pkgs).wrapper);
 
       checks = forAllSystems (
-        { pkgs, craneLib, ... }:
+        {
+          pkgs,
+          craneLib,
+          typedbPkgs,
+          ...
+        }:
         let
           src = workspaceSrc { inherit pkgs craneLib; };
           commonArgs = {
@@ -217,13 +242,18 @@
           packaging = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
           deployment-eval = pkgs.callPackage ./nix/deployment-eval.nix {
             harborDbModule = harbor-db.nixosModules.default;
-            gelModule = harbor-db.nixosModules.gel;
+            typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
             chaosboxModule = self.nixosModules.chaosbox;
             chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
+            typedbPackage = typedbPkgs.typedb;
           };
-          gel-integration = pkgs.callPackage ./nix/gel-vm-test.nix {
+          typedb-integration = pkgs.callPackage ./nix/typedb-vm-test.nix {
+            harborDbModule = harbor-db.nixosModules.default;
+            typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
+            chaosboxModule = self.nixosModules.chaosbox;
             chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
-            gelPackage = pkgs.gel;
+            typedbPackage = typedbPkgs.typedb;
+            typedbConsolePackage = typedbPkgs.typedb-console;
           };
           # Fail if flake inputs ever point at the retired Codeberg/Codefloe
           # mirrors again (fleet migrated to github.com/caniko/*).
