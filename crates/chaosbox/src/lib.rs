@@ -612,6 +612,10 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
 
     /// Policy-controlled build + atomic publication with predecessor check.
     /// Async because the Gel backend needs network IO for the flush.
+    ///
+    /// Failed decisions (responder faults, exhausted budgets) never publish:
+    /// a partial graph would displace the last good active build while
+    /// reporting success. Fix the backend and re-run instead.
     pub async fn build_and_publish(
         &mut self,
         repo: &str,
@@ -621,6 +625,7 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
         mat: &Materialization,
         expected_predecessor: Option<String>,
     ) -> Result<GraphBuild, PipelineError> {
+        reject_failed(decided)?;
         self.generation += 1;
         let mut build = GraphBuild::new(repo, vec![snapshot.id.clone()], self.generation);
         build.predecessor = expected_predecessor.clone();
@@ -732,6 +737,42 @@ impl<S: chaosbox_gel::Store + Default> Default for Pipeline<S> {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Outcome counts for one decided batch, for operator reporting.
+/// Keys: `accepted`, `rejected`, `abstained`, `negative`, `failed`.
+#[must_use]
+pub fn summarize_outcomes(
+    decided: &[(Candidate, Decision, Evidence)],
+) -> BTreeMap<&'static str, usize> {
+    let mut out: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for (_, d, _) in decided {
+        let key = match d.outcome {
+            DecisionOutcome::Accepted => "accepted",
+            DecisionOutcome::Rejected => "rejected",
+            DecisionOutcome::Abstained => "abstained",
+            DecisionOutcome::Negative => "negative",
+            DecisionOutcome::Failed(_) => "failed",
+        };
+        *out.entry(key).or_default() += 1;
+    }
+    out
+}
+
+/// Reject batches containing failed decisions before publication: a partial
+/// graph must not displace the last good active build while reporting
+/// success. Fix the responder and re-run instead.
+fn reject_failed(decided: &[(Candidate, Decision, Evidence)]) -> Result<(), PipelineError> {
+    let failed = decided
+        .iter()
+        .filter(|(_, d, _)| matches!(d.outcome, DecisionOutcome::Failed(_)))
+        .count();
+    if failed > 0 {
+        return Err(PipelineError::Validation(format!(
+            "{failed} failed decisions; refusing to publish (retry once the responder is healthy)"
+        )));
+    }
+    Ok(())
 }
 
 /// Next publication chain for a fresh process: the live active build (if
@@ -1099,6 +1140,12 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
         Ok((out, inc))
     }
 
+    /// Upper bound on BFS node visits for one path query. Exceeding it is
+    /// an explicit budget error, never an unbounded traversal: callers
+    /// (MCP agents) retry with a narrower query instead of hanging the
+    /// serial server loop.
+    pub const PATH_VISITED_CAP: usize = 100_000;
+
     /// Bounded BFS path using iterative Gel neighborhood expansion.
     /// `ponytail: O(hops * degree) Gel round-trips; single-projection fetch if this dominates`.
     pub async fn path(
@@ -1106,6 +1153,18 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
         from: &str,
         to: &str,
         max_hops: usize,
+    ) -> Result<Option<Vec<String>>, PipelineError> {
+        self.path_with_cap(from, to, max_hops, Self::PATH_VISITED_CAP)
+            .await
+    }
+
+    /// [`GelReader::path`] with an explicit visit budget (tests + future policy).
+    pub async fn path_with_cap(
+        &self,
+        from: &str,
+        to: &str,
+        max_hops: usize,
+        visit_cap: usize,
     ) -> Result<Option<Vec<String>>, PipelineError> {
         use std::collections::{BTreeMap, BTreeSet, VecDeque};
         if from == to {
@@ -1128,6 +1187,11 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
             for nxt in nexts {
                 if nxt == cur || !seen.insert(nxt.clone()) {
                     continue;
+                }
+                if seen.len() > visit_cap {
+                    return Err(PipelineError::Consumer(
+                        "path traversal budget exceeded; narrow the query".into(),
+                    ));
                 }
                 prev.insert(nxt.clone(), cur.clone());
                 if nxt == to {
@@ -1544,6 +1608,70 @@ mod tests {
         assert_eq!(store.stats().decisions, 1, "failures persist for retry");
     }
 
+    #[tokio::test]
+    async fn failed_refresh_preserves_last_good_build() {
+        let (cand, entities) = one_candidate();
+        let mat = Materialization::default();
+        let snap = Snapshot {
+            id: "s".into(),
+            repo: "r".into(),
+            files: vec![],
+            contents: BTreeMap::new(),
+        };
+        let ext = Extraction {
+            entities: entities.values().cloned().collect(),
+            explicit_refs: vec![],
+        };
+        // First publish a good build on one pipeline/store.
+        let mut pipe = Pipeline::<MemoryStore>::new();
+        ensure_a_rs(&mut pipe.store).await;
+        let mut accept = ConfResponder { confidence: 0.95 };
+        let good = Pipeline::<MemoryStore>::decide(
+            &[cand.clone()],
+            &entities,
+            &mut accept,
+            "jev-1.13.0",
+            &mat,
+            &mut pipe.store,
+        )
+        .await
+        .unwrap();
+        let build = pipe
+            .build_and_publish("r", &snap, &ext, &good, &mat, None)
+            .await
+            .unwrap();
+        let active_before = pipe.store.active("r").map(|b| b.id);
+        assert_eq!(active_before, Some(build.id.clone()));
+        assert_eq!(pipe.generation, 1);
+        // A failed refresh on the same repository must not publish: the
+        // active build and generation stay exactly as-is. A new model
+        // identity forces re-asking instead of reusing the cached accept.
+        let mut failing = FailResponder;
+        let bad = Pipeline::<MemoryStore>::decide(
+            &[cand],
+            &entities,
+            &mut failing,
+            "jev-9.9.9",
+            &mat,
+            &mut pipe.store,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(bad[0].1.outcome, DecisionOutcome::Failed(_)));
+        let err = pipe
+            .build_and_publish("r", &snap, &ext, &bad, &mat, Some(build.id.clone()))
+            .await
+            .expect_err("failed batch must not publish");
+        assert!(
+            err.to_string().contains("refusing to publish"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(pipe.store.active("r").map(|b| b.id), active_before);
+        assert_eq!(pipe.generation, 1, "rejected batch mints no generation");
+        let counts = summarize_outcomes(&bad);
+        assert_eq!(counts.get("failed").copied().unwrap_or(0), 1);
+    }
+
     /// Ensure helper for the single-file `one_candidate` fixture.
     async fn ensure_a_rs(store: &mut MemoryStore) {
         store
@@ -1781,5 +1909,23 @@ mod tests {
             .await
             .unwrap();
         assert!(!d["added_nodes"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn path_traversal_budget_is_explicit() {
+        let seed = chaosbox_gel::conformance_seed();
+        let reader: GelReader<chaosbox_gel::MemoryReader> =
+            GelReader::pinned(seed.reader, "conf").await.unwrap();
+        let gamma = &reader.search("Gamma", 10).await.unwrap()[0].entity_id;
+        let ok = reader.path(&seed.a2, gamma, 4).await.unwrap();
+        assert!(ok.is_some(), "a2 references Gamma in the pinned build");
+        let err = reader
+            .path_with_cap(&seed.a2, gamma, 4, 0)
+            .await
+            .expect_err("zero visit budget must fail, not hang");
+        assert!(
+            err.to_string().contains("budget exceeded"),
+            "unexpected error: {err}"
+        );
     }
 }
