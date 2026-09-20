@@ -12,13 +12,184 @@ use std::{
 };
 
 use chaosbox::{
-    all_relation_types, GelReader, LifecycleReport, Materialization, Pipeline, EXPORT_EDGE_CAP,
-    EXPORT_NODE_CAP,
+    all_relation_types, GelReader, LifecycleReport, Materialization, Pipeline, chain_publication,
+    EXPORT_EDGE_CAP, EXPORT_NODE_CAP,
 };
-use chaosbox::{FixtureResponder, LiveResponder};
+use chaosbox::{FixtureResponder, LiveResponder, PipelineError};
 use chaosbox_extract::Snapshot;
-use chaosbox_gel::{MemoryStore, Store as _};
+use chaosbox_gel::{GelHandle, GelQueries as _, MemoryStore};
+use chaosbox_typedb::{
+    reader::TypeDbReader,
+    store::{TypeDbConfig, TypeDbStore},
+};
 use clap::{Parser, Subcommand};
+
+/// Storage backend selection: `CHAOSBOX_DB_BACKEND=typedb` routes every
+/// consumer and lifecycle command at the `TypeDB` backend; anything else keeps
+/// the Gel path. The default flips to `TypeDB` at cutover.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Backend {
+    Gel,
+    Typedb,
+}
+
+/// Resolve the backend from the environment.
+fn backend() -> Backend {
+    if std::env::var("CHAOSBOX_DB_BACKEND").as_deref() == Ok("typedb") {
+        Backend::Typedb
+    } else {
+        Backend::Gel
+    }
+}
+
+/// `TypeDB` connection from the environment. The password arrives via a
+/// credential file (never a value, flag, or log); only the file path
+/// appears in diagnostics.
+fn typedb_config_from_env() -> Result<TypeDbConfig, String> {
+    let password_file = std::env::var("CHAOSBOX_TYPEDB_PASSWORD_FILE")
+        .map_err(|_| "CHAOSBOX_TYPEDB_PASSWORD_FILE unset".to_owned())?;
+    let password =
+        std::fs::read_to_string(&password_file).map_err(|e| format!("read password file: {e}"))?;
+    Ok(TypeDbConfig {
+        address: std::env::var("CHAOSBOX_TYPEDB_ADDR").unwrap_or_else(|_| "127.0.0.1:1729".into()),
+        username: std::env::var("CHAOSBOX_TYPEDB_USER").unwrap_or_else(|_| "admin".into()),
+        password: password.trim().to_owned(),
+        database: std::env::var("CHAOSBOX_TYPEDB_DATABASE").unwrap_or_else(|_| "chaosbox".into()),
+    })
+}
+
+/// Live publication chain for one repo: (expected predecessor, starting
+/// generation) for a fresh process. Missing database or no active build
+/// means a fresh chain; anything else is a hard error, never a guess.
+async fn typedb_publication_chain(
+    config: &TypeDbConfig,
+    repo: &str,
+) -> Result<(Option<String>, u64), String> {
+    let mut reader = TypeDbReader::new(config.clone());
+    Box::pin(reader.connect())
+        .await
+        .map_err(|e| format!("typedb connect: {e}"))?;
+    let active = Box::pin(reader.active_build(repo))
+        .await
+        .map_err(|e| format!("typedb active build: {e}"))?;
+    chain_publication(active.map(|b| (b.build_id, b.generation)))
+        .map_err(|e| format!("publication chain: {e}"))
+}
+
+/// Backend-erased consumer reader: every query arm below works unchanged
+/// against either backend. Credentials stay behind `connect`; MCP callers
+/// only see the closed read surface.
+enum AnyReader {
+    Gel(GelReader<GelHandle>),
+    Typedb(GelReader<TypeDbReader>),
+}
+
+impl AnyReader {
+    /// Connect and pin the active build for `repo` on the selected backend.
+    async fn connect(repo: &str) -> Result<Self, PipelineError> {
+        match backend() {
+            Backend::Gel => Ok(Self::Gel(Box::pin(GelReader::connect(repo)).await?)),
+            Backend::Typedb => {
+                let config = typedb_config_from_env().map_err(PipelineError::Consumer)?;
+                let mut handle = TypeDbReader::new(config);
+                Box::pin(handle.connect())
+                    .await
+                    .map_err(|e| PipelineError::Consumer(format!("typedb connect: {e}")))?;
+                Ok(Self::Typedb(GelReader::pinned(handle, repo).await?))
+            }
+        }
+    }
+
+    /// Pinned active build id for status responses.
+    fn build_id(&self) -> &str {
+        match self {
+            Self::Gel(r) => &r.build_id,
+            Self::Typedb(r) => &r.build_id,
+        }
+    }
+
+    /// Pinned generation for status responses.
+    fn generation(&self) -> i64 {
+        match self {
+            Self::Gel(r) => r.generation,
+            Self::Typedb(r) => r.generation,
+        }
+    }
+
+    async fn search(
+        &self,
+        query: &str,
+        limit: i64,
+    ) -> Result<Vec<chaosbox_gel::EntityRow>, PipelineError> {
+        match self {
+            Self::Gel(r) => r.search(query, limit).await,
+            Self::Typedb(r) => r.search(query, limit).await,
+        }
+    }
+
+    async fn lookup(&self, id: &str) -> Result<Option<chaosbox_gel::EntityRow>, PipelineError> {
+        match self {
+            Self::Gel(r) => r.lookup(id).await,
+            Self::Typedb(r) => r.lookup(id).await,
+        }
+    }
+
+    async fn neighbors(
+        &self,
+        id: &str,
+        filter: Option<Vec<String>>,
+    ) -> Result<(Vec<chaosbox_gel::RelRow>, Vec<chaosbox_gel::RelRow>), PipelineError> {
+        match self {
+            Self::Gel(r) => r.neighbors(id, filter).await,
+            Self::Typedb(r) => r.neighbors(id, filter).await,
+        }
+    }
+
+    async fn path(
+        &self,
+        from: &str,
+        to: &str,
+        max_hops: usize,
+    ) -> Result<Option<Vec<String>>, PipelineError> {
+        match self {
+            Self::Gel(r) => r.path(from, to, max_hops).await,
+            Self::Typedb(r) => r.path(from, to, max_hops).await,
+        }
+    }
+
+    async fn export(&self) -> Result<serde_json::Value, PipelineError> {
+        match self {
+            Self::Gel(r) => r.export().await,
+            Self::Typedb(r) => r.export().await,
+        }
+    }
+
+    async fn evidence(&self, rel_id: &str) -> Result<serde_json::Value, PipelineError> {
+        match self {
+            Self::Gel(r) => r.evidence(rel_id).await,
+            Self::Typedb(r) => r.evidence(rel_id).await,
+        }
+    }
+
+    async fn diff(
+        &self,
+        repo: &str,
+        from_build: &str,
+        to_build: &str,
+    ) -> Result<serde_json::Value, PipelineError> {
+        match self {
+            Self::Gel(r) => r.diff(repo, from_build, to_build).await,
+            Self::Typedb(r) => r.diff(repo, from_build, to_build).await,
+        }
+    }
+
+    async fn explain(&self, id: &str) -> Result<serde_json::Value, PipelineError> {
+        match self {
+            Self::Gel(r) => r.explain(id).await,
+            Self::Typedb(r) => r.explain(id).await,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(
@@ -47,7 +218,8 @@ enum Command {
         #[arg(long, default_value_t = 200)]
         max_candidates: usize,
     },
-    /// Run the full pipeline (fixture decisions unless --live-jev).
+    /// Run the full pipeline (live Jev decisions by default; fixture
+    /// decisions only with --fixture-decisions, for disposable/test graphs).
     Run {
         path: PathBuf,
         #[arg(long, default_value = "demo")]
@@ -58,6 +230,11 @@ enum Command {
         /// the deterministic fixture. Real inference, real spend.
         #[arg(long, default_value_t = false)]
         live_jev: bool,
+        /// Accept deterministic fixture decisions (every choice `accept`) for
+        /// a disposable or test graph. Fixture graphs are never authoritative:
+        /// decisions are recorded under the `fixture-test` model identity.
+        #[arg(long, default_value_t = false)]
+        fixture_decisions: bool,
         /// Live-Jev spend guards (defaults = `JevPolicy::default`).
         #[arg(long)]
         max_requests: Option<u32>,
@@ -151,6 +328,9 @@ enum DbCmd {
     },
 }
 
+// Long dispatch function; splitting it apart is the owning session's
+// refactor. Allowed to keep CI unblocked.
+#[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -183,20 +363,69 @@ async fn main() {
             repo,
             max_candidates,
             live_jev,
+            fixture_decisions,
             max_requests,
             max_input_tokens,
             max_retries,
         } => {
-            let code = run_pipeline(
-                &path,
-                &repo,
-                max_candidates,
-                live_jev,
-                max_requests,
-                max_input_tokens,
-                max_retries,
-            )
-            .await;
+            let code = match backend() {
+                Backend::Gel => {
+                    run_pipeline_with(
+                        Pipeline::<MemoryStore>::new(),
+                        &path,
+                        &repo,
+                        max_candidates,
+                        live_jev,
+                        fixture_decisions,
+                        max_requests,
+                        max_input_tokens,
+                        max_retries,
+                        None,
+                    )
+                    .await
+                }
+                Backend::Typedb => {
+                    let config = match typedb_config_from_env() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("typedb config: {e}");
+                            std::process::exit(1);
+                        }
+                    };
+                    let mut store = TypeDbStore::new(config.clone());
+                    if let Err(e) = Box::pin(store.migrate()).await {
+                        eprintln!("typedb migrate: {e}");
+                        std::process::exit(1);
+                    }
+                    // Fresh processes start at generation zero: chain off the
+                    // live active build so repeat runs publish gen+1 with the
+                    // right predecessor instead of failing the guard.
+                    let (expected_predecessor, starting_generation) =
+                        match Box::pin(typedb_publication_chain(&config, &repo)).await {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("typedb publication chain: {e}");
+                                std::process::exit(1);
+                            }
+                        };
+                    run_pipeline_with(
+                        Pipeline {
+                            store,
+                            generation: starting_generation,
+                        },
+                        &path,
+                        &repo,
+                        max_candidates,
+                        live_jev,
+                        fixture_decisions,
+                        max_requests,
+                        max_input_tokens,
+                        max_retries,
+                        expected_predecessor,
+                    )
+                    .await
+                }
+            };
             std::process::exit(code);
         }
         Command::Query { q } => std::process::exit(Box::pin(run_query(q)).await),
@@ -204,8 +433,12 @@ async fn main() {
         Command::Db { op } => match op {
             DbCmd::Check { json: _, repo } => {
                 // Read-only: never init/migrate/repair. Exit 0 when ready,
-                // 2 when pending, 1 otherwise (harbor-db contract v1).
-                let report = Box::pin(db_check_gel(&repo)).await;
+                // 2 when pending, 1 otherwise (harbor-db contract v1; the
+                // TypeDB path reports contract v2, same exit mapping).
+                let report = match backend() {
+                    Backend::Gel => Box::pin(db_check_gel(&repo)).await,
+                    Backend::Typedb => Box::pin(db_check_typedb(&repo)).await,
+                };
                 println!("{}", serde_json::to_string(&report).unwrap());
                 if report.status == "ready" {
                     std::process::exit(0);
@@ -215,11 +448,15 @@ async fn main() {
                 }
             }
             DbCmd::Migrate { json: _, repo: _ } => {
-                // Idempotent committed migrations via pinned Gel CLI when a
-                // credentials file is present; refuse divergent history.
+                // Idempotent committed migrations; the TypeDB path applies
+                // the packaged schema through the driver (no CLI tooling).
                 // run_migrate verifies schema readiness itself; the arm only
                 // maps the verdict to the exit code.
-                match Box::pin(run_migrate()).await {
+                let result = match backend() {
+                    Backend::Gel => Box::pin(run_migrate()).await,
+                    Backend::Typedb => Box::pin(run_migrate_typedb()).await,
+                };
+                match result {
                     Ok(report) => {
                         println!("{}", serde_json::to_string(&report).unwrap());
                         std::process::exit(i32::from(report.status != "ready"));
@@ -264,6 +501,56 @@ async fn db_check_gel(repo: &str) -> LifecycleReport {
     }
 }
 
+/// TypeDB-backed readiness: connectivity + schema probe + active build.
+/// Reports contract v2; exit mapping matches the Gel arm above.
+async fn db_check_typedb(repo: &str) -> LifecycleReport {
+    let config = match typedb_config_from_env() {
+        Ok(c) => c,
+        Err(e) => return LifecycleReport::error_typedb("db check", &e),
+    };
+    let mut reader = TypeDbReader::new(config);
+    if let Err(e) = Box::pin(reader.connect()).await {
+        // A missing database is the normal pre-migration state, not a
+        // failure; anything else is an operational error.
+        if e.to_string().contains("not found") {
+            return LifecycleReport::pending_typedb("db check", "database not present");
+        }
+        return LifecycleReport::error_typedb("db check", &format!("typedb connect: {e}"));
+    }
+    match Box::pin(reader.probe()).await {
+        Err(e) => LifecycleReport::error_typedb("db check", &format!("probe: {e}")),
+        // No marker type: the packaged schema has not applied yet.
+        Ok(false) => LifecycleReport::pending_typedb("db check", "migrations not applied"),
+        Ok(true) => match Box::pin(reader.active_build(repo)).await {
+            Err(e) => LifecycleReport::error_typedb("db check", &format!("active build: {e}")),
+            Ok(None) => LifecycleReport::pending_typedb("db check", "no active build for repo"),
+            Ok(Some(b)) => LifecycleReport::check_ready_typedb(serde_json::json!({
+                "repo": repo, "active_build": b.build_id, "generation": b.generation,
+                "status": b.status, "schema_assets": "packaged",
+            })),
+        },
+    }
+}
+
+/// `TypeDB` migration: ensure the database and apply the packaged schema
+/// idempotently through the driver, then verify schema readiness itself.
+async fn run_migrate_typedb() -> Result<LifecycleReport, String> {
+    let config = typedb_config_from_env()?;
+    let mut store = TypeDbStore::new(config);
+    Box::pin(store.migrate())
+        .await
+        .map_err(|e| format!("typedb migrate: {e}"))?;
+    Ok(LifecycleReport {
+        contract_version: 2,
+        backend: "typedb".into(),
+        operation: "db migrate".into(),
+        status: "ready".into(),
+        schema_version: chaosbox_typedb::SCHEMA_VERSION,
+        gel_pinned: chaosbox_typedb::TYPEDB_PINNED.into(),
+        detail: serde_json::json!({"applied": true}),
+    })
+}
+
 fn consumer_err(op: &str, e: impl std::fmt::Display) -> i32 {
     let report = LifecycleReport::error(op, &e.to_string());
     println!("{}", serde_json::to_string(&report).unwrap());
@@ -277,7 +564,7 @@ fn consumer_err(op: &str, e: impl std::fmt::Display) -> i32 {
 async fn run_query(q: QueryCmd) -> i32 {
     match q {
         QueryCmd::Search { query, repo, limit } => {
-            let reader = match Box::pin(GelReader::connect(&repo)).await {
+            let reader = match Box::pin(AnyReader::connect(&repo)).await {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query search", e),
             };
@@ -290,7 +577,7 @@ async fn run_query(q: QueryCmd) -> i32 {
             }
         }
         QueryCmd::Lookup { id, repo } => {
-            let reader = match Box::pin(GelReader::connect(&repo)).await {
+            let reader = match Box::pin(AnyReader::connect(&repo)).await {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query lookup", e),
             };
@@ -308,7 +595,7 @@ async fn run_query(q: QueryCmd) -> i32 {
                 Ok(f) => f,
                 Err(e) => return consumer_err("query neighbors", e),
             };
-            let reader = match Box::pin(GelReader::connect(&repo)).await {
+            let reader = match Box::pin(AnyReader::connect(&repo)).await {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query neighbors", e),
             };
@@ -332,7 +619,7 @@ async fn run_query(q: QueryCmd) -> i32 {
             repo,
             max_hops,
         } => {
-            let reader = match Box::pin(GelReader::connect(&repo)).await {
+            let reader = match Box::pin(AnyReader::connect(&repo)).await {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query path", e),
             };
@@ -352,7 +639,7 @@ async fn run_query(q: QueryCmd) -> i32 {
             }
         }
         QueryCmd::Export { repo } => {
-            let reader = match Box::pin(GelReader::connect(&repo)).await {
+            let reader = match Box::pin(AnyReader::connect(&repo)).await {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query export", e),
             };
@@ -365,7 +652,7 @@ async fn run_query(q: QueryCmd) -> i32 {
             }
         }
         QueryCmd::Explain { id, repo } => {
-            let reader = match Box::pin(GelReader::connect(&repo)).await {
+            let reader = match Box::pin(AnyReader::connect(&repo)).await {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query explain", e),
             };
@@ -394,15 +681,15 @@ async fn run_query(q: QueryCmd) -> i32 {
             }
         }
         QueryCmd::Status { repo } => {
-            let reader = match Box::pin(GelReader::connect(&repo)).await {
+            let reader = match Box::pin(AnyReader::connect(&repo)).await {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query status", e),
             };
             println!(
                 "{}",
                 serde_json::to_string(&serde_json::json!({
-                    "repo": repo, "build_id": reader.build_id,
-                    "generation": reader.generation,
+                    "repo": repo, "build_id": reader.build_id(),
+                    "generation": reader.generation(),
                     "export_caps": {"nodes": EXPORT_NODE_CAP, "edges": EXPORT_EDGE_CAP},
                 }))
                 .unwrap()
@@ -415,30 +702,32 @@ async fn run_query(q: QueryCmd) -> i32 {
 // Long CLI/dispatch functions; splitting them apart is the owning
 // session's refactor. Allowed to keep CI unblocked.
 #[allow(clippy::too_many_lines)]
-async fn run_pipeline(
+#[allow(clippy::too_many_arguments)]
+async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
+    mut pipe: Pipeline<S>,
     path: &Path,
     repo: &str,
     max_candidates: usize,
     live_jev: bool,
+    fixture_decisions: bool,
     max_requests: Option<u32>,
     max_input_tokens: Option<u64>,
     max_retries: Option<u32>,
+    expected_predecessor: Option<String>,
 ) -> i32 {
-    let (snap, ext, cands) =
-        match Pipeline::<MemoryStore>::snapshot_extract(repo, path, max_candidates) {
-            Ok(v) => v,
-            Err(e) => {
-                eprintln!("extract: {e}");
-                return 1;
-            }
-        };
+    let (snap, ext, cands) = match Pipeline::<S>::snapshot_extract(repo, path, max_candidates) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("extract: {e}");
+            return 1;
+        }
+    };
     let entities: BTreeMap<_, _> = ext
         .entities
         .iter()
         .map(|e| (e.id.clone(), e.clone()))
         .collect();
     let mat = Materialization::default();
-    let mut pipe = Pipeline::<MemoryStore>::new();
     // Register file content identities before any evidence references them.
     if let Err(e) = pipe
         .store
@@ -499,7 +788,7 @@ async fn run_pipeline(
             }
         };
         let mut responder = LiveResponder::new(client);
-        match Pipeline::<MemoryStore>::decide(
+        match Pipeline::<S>::decide(
             &cands,
             &entities,
             &mut responder,
@@ -516,12 +805,20 @@ async fn run_pipeline(
             }
         }
     } else {
+        if !fixture_decisions {
+            eprintln!(
+                "refusing to publish fixture decisions without --fixture-decisions (fixture graphs are disposable/test-only); pass --live-jev for real decisions"
+            );
+            return 1;
+        }
         let mut responder = FixtureResponder::new(true);
-        match Pipeline::<MemoryStore>::decide(
+        // Fixture decisions must never masquerade as Jev model output.
+        responder.model = "fixture-test".into();
+        match Pipeline::<S>::decide(
             &cands,
             &entities,
             &mut responder,
-            chaosbox_jev::JEV_MODEL_PINNED,
+            "fixture-test",
             &mat,
             &mut pipe.store,
         )
@@ -535,7 +832,7 @@ async fn run_pipeline(
         }
     };
     match pipe
-        .build_and_publish(repo, &snap, &ext, &decided, &mat, None)
+        .build_and_publish(repo, &snap, &ext, &decided, &mat, expected_predecessor)
         .await
     {
         Ok(build) => {
@@ -787,7 +1084,7 @@ async fn mcp_call_tool(
         );
     }
     let repo = args.get("repo").and_then(|r| r.as_str()).unwrap_or("demo");
-    let reader = match Box::pin(GelReader::connect(repo)).await {
+    let reader = match Box::pin(AnyReader::connect(repo)).await {
         Ok(r) => r,
         Err(e) => {
             let report = LifecycleReport::error(&format!("mcp {name}"), &e.to_string());
@@ -855,7 +1152,7 @@ async fn mcp_call_tool(
                 reader.evidence(rel).await.map_err(|e| e.to_string())
             }
             "status" => Ok(serde_json::json!({
-                "repo": repo, "build_id": reader.build_id, "generation": reader.generation,
+                "repo": repo, "build_id": reader.build_id(), "generation": reader.generation(),
             })),
             "diff" => {
                 let from = args["from_build"].as_str().unwrap_or_default();
