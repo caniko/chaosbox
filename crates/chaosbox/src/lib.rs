@@ -1627,7 +1627,7 @@ mod tests {
         ensure_a_rs(&mut pipe.store).await;
         let mut accept = ConfResponder { confidence: 0.95 };
         let good = Pipeline::<MemoryStore>::decide(
-            &[cand.clone()],
+            std::slice::from_ref(&cand),
             &entities,
             &mut accept,
             "jev-1.13.0",
