@@ -43,6 +43,24 @@ What is proven instead (empty-install path):
   procedure is exercised, never improvised, before any production cutover.
 - Dual writes (two authoritative databases) are not maintained at any point.
 
+## Security boundary and residual limitations
+
+- TypeDB Community Edition has no read-only role: any credential holder can
+  write. The MCP surface stays closed (read-only tools, no endpoint or model
+  access), reads use read transactions (mutation rejected server-side), and
+  raw credentials never reach MCP callers — but compromise of a
+  credential-bearing service exceeds the read-only API by design. This is
+  disclosed, not fixed, by this migration (no upstream RBAC implementation
+  is added).
+- Loopback binding by default; firewall exposure opt-in; vendor telemetry
+  reporting off by default in the service module.
+- Bootstrap: the default admin credential is test-only. Production rotates
+  it via Console before exposure and provisions a dedicated application
+  user; the application credential arrives via file, never values, flags,
+  or logs.
+- TLS is disabled on loopback (same trust boundary as before); enable it
+  wherever connections cross a host boundary and verify it there.
+
 ## Production cutover: BLOCKED
 
 No deployment target, credentials, or restore point have been provided, so
