@@ -943,7 +943,7 @@ fn mcp_tool_defs() -> Vec<serde_json::Value> {
         mcp_tool(
             "search",
             "Substring search over entity names (sorted, bounded).",
-            serde_json::json!({"query": {"type": "string"}, "limit": {"type": "integer", "default": 20}}),
+            serde_json::json!({"query": {"type": "string"}, "limit": {"type": "integer", "default": 20, "maximum": 200}}),
             vec!["query"],
         ),
         mcp_tool(
@@ -962,7 +962,7 @@ fn mcp_tool_defs() -> Vec<serde_json::Value> {
             "path",
             "Bounded path between two entities (null when absent).",
             serde_json::json!({"from": {"type": "string"}, "to": {"type": "string"},
-                "max_hops": {"type": "integer", "default": 4}}),
+                "max_hops": {"type": "integer", "default": 4, "maximum": 8}}),
             vec!["from", "to"],
         ),
         mcp_tool(
@@ -1007,15 +1007,23 @@ fn mcp_tool(
     properties: serde_json::Value,
     required: Vec<&str>,
 ) -> serde_json::Value {
+    let mut required = required;
+    // Every tool requires an explicit repo: the server holds no default
+    // (a silent `demo` fallback once sent agents to the wrong graph).
+    // Declared here, not per tool, so schema and runtime validation agree.
+    if !required.contains(&"repo") {
+        required.push("repo");
+    }
     let mut schema = serde_json::json!({
         "type": "object",
         "properties": properties,
         "required": required,
     });
-    // Every tool requires an explicit repo: the server holds no default
-    // (a silent `demo` fallback once sent agents to the wrong graph).
     if let Some(props) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
-        props.insert("repo".to_owned(), serde_json::json!({"type": "string"}));
+        props.insert(
+            "repo".to_owned(),
+            serde_json::json!({"type": "string", "minLength": 1}),
+        );
     }
     serde_json::json!({
         "name": name, "description": description,
@@ -1382,6 +1390,20 @@ mod tests {
             assert_eq!(d["annotations"]["readOnlyHint"], true);
             assert!(d["inputSchema"]["properties"].is_object(), "{d}");
             assert!(d.get("_required").is_none(), "no internal fields leak: {d}");
+            // Schema and runtime validation agree: every tool requires a
+            // nonempty repo, so schema-valid calls cannot fail on identity.
+            let required = d["inputSchema"]["required"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                required.iter().any(|r| r == "repo"),
+                "repo must be required: {d}"
+            );
+            assert_eq!(
+                d["inputSchema"]["properties"]["repo"]["minLength"], 1,
+                "repo must be nonempty: {d}"
+            );
         }
     }
 
