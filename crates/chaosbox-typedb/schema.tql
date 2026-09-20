@@ -1,0 +1,288 @@
+# Chaosbox TypeDB schema (authoritative application database, TypeDB port).
+#
+# Mirrors dbschema/default.esdl with native TypeDB constructs:
+# - Stable Chaosbox ids are explicit @key attributes; TypeDB ids never
+#   substitute for content-derived identities.
+# - Relationship endpoints, membership, occurrences and claim evidence are
+#   typed relations with roles, not generic links or JSON blobs.
+# - Single-target references that Gel enforced via link columns are stored
+#   as id attributes and validated by the application in write transactions
+#   (file versions and spans must be registered first; see Store docs).
+# - Composite Gel exclusivity (snapshot,path) / (candidate,question) is
+#   replaced by deterministic Rust-computed @key values (file-version-id,
+#   decision-key) using the same sha256_hex helper as the domain ids.
+# - Membership and claim-evidence relations carry deterministic @key ids
+#   (membership-id, supporting-id, ...) so every row insert is idempotent
+#   under retry and concurrent flush: a duplicate insert fails with the
+#   @unique violation the backend treats as already-present.
+# - Timestamps are integer epoch millis (no datetime literal pitfalls).
+# - Schema validation is not evidence: outcome/evidence-class strings are
+#   validated by the application; the schema only constrains shape.
+
+define
+
+  # ---- scalar attributes ----
+  attribute repo-name value string;
+  attribute snapshot-id value string;
+  attribute path value string;
+  attribute sha256 value string;
+  attribute bytes value integer;
+  attribute file value string;
+  attribute start-line value integer;
+  attribute start-col value integer;
+  attribute end-line value integer;
+  attribute end-col value integer;
+  attribute byte-start value integer;
+  attribute byte-end value integer;
+  attribute kind value string;
+  attribute name value string;
+  attribute name-fold value string;
+  attribute qualified-name value string;
+  attribute qualified-name-fold value string;
+  attribute aliases value string;
+  attribute entity-id value string;
+  attribute span-id value string;
+  attribute file-version-id value string;
+  attribute occurrence-id value string;
+  attribute run-id value string;
+  attribute set-id value string;
+  attribute catalog-digest value string;
+  attribute rubric-version value string;
+  attribute candidate-id value string;
+  attribute rel-type value string;
+  attribute from-entity-id value string;
+  attribute to-entity-id value string;
+  attribute reason value string;
+  attribute state-excerpt value string;
+  attribute attempt-id value string;
+  attribute question-id value string;
+  attribute model-requested value string;
+  attribute model-returned value string;
+  attribute cache-key value string;
+  attribute input-tokens value integer;
+  attribute http-status value integer;
+  attribute error value string;
+  attribute raw-envelope value string;
+  attribute decision-id value string;
+  attribute decision-key value string;
+  attribute outcome value string;
+  attribute evidence-class value string;
+  attribute confidence value double;
+  attribute probability value double;
+  attribute evidence-id value string;
+  attribute class value string;
+  attribute supports value boolean;
+  attribute text value string;
+  attribute claim-id value string;
+  attribute relationship-id value string;
+  attribute accepted value boolean;
+  attribute rel-id value string;
+  attribute scope value string;
+  attribute build-id value string;
+  attribute generation value integer;
+  attribute predecessor value string;
+  attribute status value string;
+  attribute created value integer;
+  attribute updated value integer;
+  attribute community-id value string;
+  attribute label value string;
+  attribute version value integer;
+  attribute hyperedge-id value string;
+  attribute task-id value string;
+  attribute state value string;
+  attribute holder value string;
+  attribute expires-at value integer;
+  attribute membership-id value string;
+  attribute edge-membership-id value string;
+  attribute supporting-id value string;
+  attribute contradicting-id value string;
+
+  # ---- entities ----
+  entity repository owns repo-name @key;
+
+  entity source-snapshot
+    owns snapshot-id @key,
+    owns repo-name,
+    owns created;
+
+  entity file-version
+    owns file-version-id @key,
+    owns snapshot-id,
+    owns path,
+    owns sha256,
+    owns bytes;
+
+  entity source-span
+    owns span-id @key,
+    owns file,
+    owns start-line,
+    owns start-col,
+    owns end-line,
+    owns end-col,
+    owns byte-start,
+    owns byte-end;
+
+  entity code-entity
+    owns entity-id @key,
+    owns kind,
+    owns repo-name,
+    owns snapshot-id,
+    owns file,
+    owns name,
+    owns name-fold,
+    owns qualified-name,
+    owns qualified-name-fold,
+    owns aliases,
+    owns span-id,
+    plays relationship:from-entity,
+    plays relationship:to-entity,
+    plays node-membership:member,
+    plays occurrence:subject,
+    plays community-membership:member,
+    plays hyperedge-membership:member;
+
+  entity extraction-run
+    owns run-id @key,
+    owns repo-name,
+    owns snapshot-id,
+    owns created;
+
+  entity candidate-set
+    owns set-id @key,
+    owns run-id,
+    owns catalog-digest,
+    owns rubric-version;
+
+  entity candidate
+    owns candidate-id @key,
+    owns set-id,
+    owns rel-type,
+    owns from-entity-id,
+    owns to-entity-id,
+    owns reason,
+    owns state-excerpt;
+
+  entity jev-attempt
+    owns attempt-id @key,
+    owns candidate-id,
+    owns question-id,
+    owns model-requested,
+    owns model-returned,
+    owns cache-key,
+    owns created,
+    owns input-tokens,
+    owns http-status,
+    owns error,
+    owns raw-envelope;
+
+  entity decision
+    owns decision-key @key,
+    owns decision-id,
+    owns candidate-id,
+    owns question-id,
+    owns outcome,
+    owns evidence-class,
+    owns model-requested,
+    owns model-returned,
+    owns cache-key,
+    owns confidence,
+    owns probability;
+
+  entity evidence
+    owns evidence-id @key,
+    owns class,
+    owns supports,
+    owns text,
+    owns span-id,
+    owns file-version-id,
+    plays supporting:evidence,
+    plays contradicting:evidence;
+
+  entity claim
+    owns claim-id @key,
+    owns relationship-id,
+    owns accepted,
+    plays supporting:claim,
+    plays contradicting:claim;
+
+  entity graph-build
+    owns build-id @key,
+    owns repo-name,
+    owns snapshot-id,
+    owns generation,
+    owns predecessor,
+    owns status,
+    owns created,
+    plays node-membership:build,
+    plays edge-membership:build;
+
+  entity active-pointer
+    owns repo-name @key,
+    owns build-id,
+    owns updated;
+
+  entity community
+    owns community-id @key,
+    owns build-id,
+    owns label,
+    owns version,
+    plays community-membership:community;
+
+  entity hyperedge
+    owns hyperedge-id @key,
+    owns build-id,
+    owns label,
+    plays hyperedge-membership:hyperedge;
+
+  entity worker-task
+    owns task-id @key,
+    owns state,
+    owns holder,
+    owns expires-at,
+    owns generation,
+    owns updated;
+
+  # ---- relations ----
+  relation relationship
+    relates from-entity,
+    relates to-entity,
+    owns rel-id @key,
+    owns rel-type,
+    owns scope,
+    plays edge-membership:edge;
+
+  relation node-membership
+    relates build,
+    relates member,
+    owns membership-id @key;
+
+  relation edge-membership
+    relates build,
+    relates edge,
+    owns edge-membership-id @key;
+
+  relation occurrence
+    relates subject,
+    relates file,
+    owns occurrence-id @key,
+    owns span-id;
+
+  relation supporting
+    relates claim,
+    relates evidence,
+    owns supporting-id @key;
+
+  relation contradicting
+    relates claim,
+    relates evidence,
+    owns contradicting-id @key;
+
+  relation community-membership
+    relates community,
+    relates member;
+
+  relation hyperedge-membership
+    relates hyperedge,
+    relates member;
+
+  entity file-version plays occurrence:file;
