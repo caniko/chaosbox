@@ -5,6 +5,7 @@ members = [
   "crates/chaosbox-extract",
   "crates/chaosbox-jev",
   "crates/chaosbox-gel",
+  "crates/chaosbox-typedb",
   "crates/chaosbox",
 ]
 default-members = [
@@ -12,6 +13,7 @@ default-members = [
   "crates/chaosbox-extract",
   "crates/chaosbox-jev",
   "crates/chaosbox-gel",
+  "crates/chaosbox-typedb",
   "crates/chaosbox",
 ]
 
@@ -29,6 +31,9 @@ chaosbox-core = { version = "0.1.0", path = "crates/chaosbox-core" }
 chaosbox-extract = { version = "0.1.0", path = "crates/chaosbox-extract" }
 chaosbox-jev = { version = "0.1.0", path = "crates/chaosbox-jev" }
 chaosbox-gel = { version = "0.1.0", path = "crates/chaosbox-gel" }
+chaosbox-typedb = { version = "0.1.0", path = "crates/chaosbox-typedb" }
+typedb-driver = "3.12"
+futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

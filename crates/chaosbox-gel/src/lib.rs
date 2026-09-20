@@ -547,7 +547,59 @@ pub struct MemoryStore {
     candidates: BTreeMap<String, (String, Candidate)>,
 }
 
+/// Staged write-ahead contents for backends that flush at publication
+/// (`TypeDB` port): everything the staging [`MemoryStore`] validated, in
+/// deterministic key order, ready for idempotent row inserts.
+#[derive(Clone, Debug, Default)]
+pub struct StagedData {
+    /// run id -> (repo, snapshot id).
+    pub runs: Vec<(String, (String, String))>,
+    /// set id -> (run id, catalog digest, rubric version).
+    pub sets: Vec<(String, (String, String, String))>,
+    /// candidate id -> (set id, candidate).
+    pub candidates: Vec<(String, (String, Candidate))>,
+    /// Decisions keyed by (candidate, question), in key order.
+    pub decisions: Vec<Decision>,
+    /// Evidence by id, in id order.
+    pub evidence: Vec<Evidence>,
+    /// Claims by id, in id order.
+    pub claims: Vec<Claim>,
+    /// (snapshot, path) -> (sha256, bytes).
+    pub files: Vec<((String, String), (String, u64))>,
+}
+
 impl MemoryStore {
+    /// Export the staged contents for a publication flush. Ordering is
+    /// deterministic (`BTreeMap` key order) so retries replay identically.
+    #[must_use]
+    pub fn export_staged(&self) -> StagedData {
+        StagedData {
+            runs: self
+                .runs
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            sets: self
+                .sets
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            candidates: self
+                .candidates
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+            decisions: self.decisions.values().cloned().collect(),
+            evidence: self.evidence.values().cloned().collect(),
+            claims: self.claims.values().cloned().collect(),
+            files: self
+                .files
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        }
+    }
+
     /// An empty store with no builds and no active pointers.
     #[must_use]
     pub fn new() -> Self {
