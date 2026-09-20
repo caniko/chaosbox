@@ -1122,20 +1122,17 @@ async fn mcp_call_tool(
         );
     }
     // Explicit repository: fail before touching the backend or credentials.
-    let repo = match args
+    let Some(repo) = args
         .get("repo")
         .and_then(|r| r.as_str())
         .filter(|r| !r.is_empty())
-    {
-        Some(r) => r,
-        None => {
-            return mcp_error(
-                id,
-                -32602,
-                "missing required argument: repo".to_owned(),
-                None,
-            );
-        }
+    else {
+        return mcp_error(
+            id,
+            -32602,
+            "missing required argument: repo".to_owned(),
+            None,
+        );
     };
     // Cheap service limits before any backend work: an unbounded query
     // would block the serial stdio loop for every later call.

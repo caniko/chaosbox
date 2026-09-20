@@ -625,15 +625,7 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
         mat: &Materialization,
         expected_predecessor: Option<String>,
     ) -> Result<GraphBuild, PipelineError> {
-        let failed = decided
-            .iter()
-            .filter(|(_, d, _)| matches!(d.outcome, DecisionOutcome::Failed(_)))
-            .count();
-        if failed > 0 {
-            return Err(PipelineError::Validation(format!(
-                "{failed} failed decisions; refusing to publish (retry once the responder is healthy)"
-            )));
-        }
+        reject_failed(decided)?;
         self.generation += 1;
         let mut build = GraphBuild::new(repo, vec![snapshot.id.clone()], self.generation);
         build.predecessor = expected_predecessor.clone();
@@ -765,6 +757,22 @@ pub fn summarize_outcomes(
         *out.entry(key).or_default() += 1;
     }
     out
+}
+
+/// Reject batches containing failed decisions before publication: a partial
+/// graph must not displace the last good active build while reporting
+/// success. Fix the responder and re-run instead.
+fn reject_failed(decided: &[(Candidate, Decision, Evidence)]) -> Result<(), PipelineError> {
+    let failed = decided
+        .iter()
+        .filter(|(_, d, _)| matches!(d.outcome, DecisionOutcome::Failed(_)))
+        .count();
+    if failed > 0 {
+        return Err(PipelineError::Validation(format!(
+            "{failed} failed decisions; refusing to publish (retry once the responder is healthy)"
+        )));
+    }
+    Ok(())
 }
 
 /// Next publication chain for a fresh process: the live active build (if
@@ -1601,23 +1609,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_decisions_refuse_publication() {
+    async fn failed_refresh_preserves_last_good_build() {
         let (cand, entities) = one_candidate();
         let mat = Materialization::default();
-        let mut store = MemoryStore::new();
-        ensure_a_rs(&mut store).await;
-        let mut failing = FailResponder;
-        let decided = Pipeline::<MemoryStore>::decide(
-            &[cand],
-            &entities,
-            &mut failing,
-            "jev-1.13.0",
-            &mat,
-            &mut store,
-        )
-        .await
-        .unwrap();
-        assert!(matches!(decided[0].1.outcome, DecisionOutcome::Failed(_)));
         let snap = Snapshot {
             id: "s".into(),
             repo: "r".into(),
@@ -1628,16 +1622,53 @@ mod tests {
             entities: entities.values().cloned().collect(),
             explicit_refs: vec![],
         };
+        // First publish a good build on one pipeline/store.
         let mut pipe = Pipeline::<MemoryStore>::new();
+        ensure_a_rs(&mut pipe.store).await;
+        let mut accept = ConfResponder { confidence: 0.95 };
+        let good = Pipeline::<MemoryStore>::decide(
+            &[cand.clone()],
+            &entities,
+            &mut accept,
+            "jev-1.13.0",
+            &mat,
+            &mut pipe.store,
+        )
+        .await
+        .unwrap();
+        let build = pipe
+            .build_and_publish("r", &snap, &ext, &good, &mat, None)
+            .await
+            .unwrap();
+        let active_before = pipe.store.active("r").map(|b| b.id);
+        assert_eq!(active_before, Some(build.id.clone()));
+        assert_eq!(pipe.generation, 1);
+        // A failed refresh on the same repository must not publish: the
+        // active build and generation stay exactly as-is. A new model
+        // identity forces re-asking instead of reusing the cached accept.
+        let mut failing = FailResponder;
+        let bad = Pipeline::<MemoryStore>::decide(
+            &[cand],
+            &entities,
+            &mut failing,
+            "jev-9.9.9",
+            &mat,
+            &mut pipe.store,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(bad[0].1.outcome, DecisionOutcome::Failed(_)));
         let err = pipe
-            .build_and_publish("r", &snap, &ext, &decided, &mat, None)
+            .build_and_publish("r", &snap, &ext, &bad, &mat, Some(build.id.clone()))
             .await
             .expect_err("failed batch must not publish");
         assert!(
             err.to_string().contains("refusing to publish"),
             "unexpected error: {err}"
         );
-        let counts = summarize_outcomes(&decided);
+        assert_eq!(pipe.store.active("r").map(|b| b.id), active_before);
+        assert_eq!(pipe.generation, 1, "rejected batch mints no generation");
+        let counts = summarize_outcomes(&bad);
         assert_eq!(counts.get("failed").copied().unwrap_or(0), 1);
     }
 

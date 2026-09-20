@@ -10,7 +10,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use chaosbox_core::{
@@ -79,7 +79,7 @@ impl Snapshot {
             .hidden(false)
             .require_git(false)
             .follow_links(false)
-            .sort_by_file_path(|a, b| a.cmp(b))
+            .sort_by_file_path(std::cmp::Ord::cmp)
             .filter_entry(|e| {
                 if e.depth() == 0 {
                     return true;
@@ -87,7 +87,7 @@ impl Snapshot {
                 let ft = e.file_type();
                 // Never follow symlinks: no escape from the corpus root and
                 // no cycles. Symlinked content is out of scope for indexing.
-                if ft.map(|t| t.is_symlink()).unwrap_or(false) {
+                if ft.is_some_and(|t| t.is_symlink()) {
                     return false;
                 }
                 let name = e.file_name().to_str().unwrap_or("");
@@ -95,7 +95,7 @@ impl Snapshot {
                     return false;
                 }
                 // Nested repository boundary.
-                if ft.map(|t| t.is_dir()).unwrap_or(false) && e.path().join(".git").exists() {
+                if ft.is_some_and(|t| t.is_dir()) && e.path().join(".git").exists() {
                     return false;
                 }
                 true
@@ -103,8 +103,16 @@ impl Snapshot {
             .build();
         for entry in walker {
             let entry = entry.map_err(|e| ExtractError::Io(e.to_string()))?;
+            // Surface ignore-file errors: a partially applied exclusion
+            // policy must fail loudly, never publish an incomplete boundary.
+            if let Some(e) = entry.error() {
+                return Err(ExtractError::Io(e.to_string()));
+            }
             let p = entry.path();
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(true) {
+            // Only regular files are read: directories structure the walk,
+            // symlinks are already filtered above, and anything else
+            // (pipes, sockets, devices) must never block a read.
+            if !entry.file_type().is_some_and(|t| t.is_file()) {
                 continue;
             }
             let rel = p
@@ -617,6 +625,7 @@ fn rel_name(r: &RelationType) -> String {
 mod tests {
     use super::*;
     use std::io::Write as _;
+    use std::path::PathBuf;
 
     fn tmp_repo(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -712,6 +721,28 @@ mod tests {
         let paths: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
         // Symlinked content is out of scope: only the real tree is indexed.
         assert_eq!(paths, ["sub/inner.rs"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_skips_special_files() {
+        let (_t, root) = tmp_repo(&[("a.rs", "fn a() {}\n")]);
+        // Unix socket at a supported extension: not a regular file, must
+        // never reach a blocking read.
+        std::os::unix::net::UnixListener::bind(root.join("events.txt")).unwrap();
+        let snap = Snapshot::capture("r", &root).unwrap();
+        let paths: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, ["a.rs"]);
+    }
+
+    #[test]
+    fn snapshot_rejects_broken_ignore_rules() {
+        let (_t, root) = tmp_repo(&[(".gitignore", "{unclosed\n"), ("a.rs", "fn a() {}\n")]);
+        let err = Snapshot::capture("r", &root).expect_err("broken ignore rules must fail loudly");
+        assert!(
+            !err.to_string().is_empty(),
+            "an explicit exclusion-policy error is required"
+        );
     }
 
     #[test]
