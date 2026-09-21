@@ -54,10 +54,20 @@ What is proven instead (empty-install path):
   is added).
 - Loopback binding by default; firewall exposure opt-in; vendor telemetry
   reporting off by default in the service module.
-- Bootstrap: the default admin credential is test-only. Production rotates
-  it via Console before exposure and provisions a dedicated application
-  user; the application credential arrives via file, never values, flags,
-  or logs.
+- Bootstrap: the default admin credential is test-only. Single-host pilots
+  rotate it with the `typedb-bootstrap` package (console-only, idempotent,
+  safe on every boot): run as root after `typedb.service` starts, then
+  point the deployment at the generated application credential, e.g.
+  `services.chaosbox.passwordFile = "/var/lib/typedb-auth/app-password"`.
+  Ordering is typedb.service -> typedb-bootstrap -> db migrate ->
+  application. No secret ever appears in argv: console authentication
+  reads the password from stdin under a pty, secret-bearing commands run
+  from a root-only script file, and failures report only the operation,
+  never the transcript. Both rotated credentials are verified by
+  re-authenticating, so a silent non-application fails loudly instead of
+  reporting success. With no working credential left (stored password lost
+  after rotation) bootstrap fails closed: recover the admin password via
+  console and re-run.
 - TLS is disabled on loopback (same trust boundary as before); enable it
   wherever connections cross a host boundary and verify it there.
 
