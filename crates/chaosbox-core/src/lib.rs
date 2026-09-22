@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub mod intelligence;
+
 /// Hash `parts` with SHA-256, joined by `\0`, hex-encoded.
 #[must_use]
 pub fn sha256_hex(parts: &[&str]) -> String {

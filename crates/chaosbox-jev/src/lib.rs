@@ -155,7 +155,7 @@ pub struct SystemOneRequest {
 }
 
 /// The `POST /v1/systemone` response body.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SystemOneResponse {
     /// Model identity that actually served the request.
     pub model: String,
@@ -166,7 +166,7 @@ pub struct SystemOneResponse {
 }
 
 /// Token accounting returned with every response.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Usage {
     /// Input tokens consumed.
     pub input_tokens: u64,

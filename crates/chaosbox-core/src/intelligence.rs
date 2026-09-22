@@ -1,0 +1,133 @@
+//! Session-derived intelligence is a view over evidence, never new evidence.
+//! Scope is an operator-selected visibility boundary; repository membership
+//! limits applicability within it. Native message identities retain lineage
+//! across snapshots, so repeated summaries cannot become corroboration.
+
+use serde::{Deserialize, Serialize};
+
+/// A verbatim occurrence in a captured session record.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionEvidence {
+    /// Producer namespace (for example `opencode`).
+    pub source: String,
+    /// Full source-document digest, not a mutable database path.
+    pub snapshot: String,
+    /// Native session identifier.
+    pub session: String,
+    /// Native message identifier; namespace it before comparing producers.
+    pub message: String,
+    /// JSON pointer to the text-bearing field in the source record.
+    pub pointer: String,
+    /// One-based line within that text field.
+    pub line: usize,
+    /// Verbatim source line. Never generated or paraphrased.
+    pub quote: String,
+    /// Attribution: user, assistant, or tool. Not a truth classification.
+    pub speaker: String,
+    /// Timestamp supplied by the source record, if present; never ingestion time.
+    pub observed_at_ms: Option<i64>,
+}
+
+impl SessionEvidence {
+    /// Stable origin across snapshots, distinct from the occurrence identity.
+    #[must_use]
+    pub fn lineage(&self) -> String {
+        crate::sha256_hex(&[&self.source, &self.session, &self.message, &self.pointer])
+    }
+}
+
+/// Bounded proposal, copied from source and awaiting assessment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntelligenceCandidate {
+    /// Full content identity including scope, context and source reference.
+    pub id: String,
+    /// Explicit visibility boundary; not inferred from prose.
+    pub scope: String,
+    /// Operator-declared repository associations, sorted and unique.
+    pub repositories: Vec<String>,
+    /// The exact occurrence being considered.
+    pub evidence: SessionEvidence,
+    /// Bounded adjacent source text used to detect qualifications/negations.
+    pub context: String,
+}
+
+impl IntelligenceCandidate {
+    /// Compute identity without depending on mutable ids or model judgments.
+    #[must_use]
+    pub fn identity(&self) -> String {
+        format!(
+            "intel-candidate:{}",
+            crate::sha256_hex(&[
+                &self.scope,
+                &self.repositories.join("\0"),
+                &self.evidence.snapshot,
+                &self.evidence.lineage(),
+                &self.evidence.line.to_string(),
+                &self.evidence.quote,
+                &self.evidence.speaker,
+                &self
+                    .evidence
+                    .observed_at_ms
+                    .map_or_else(|| "unknown".into(), |v| v.to_string()),
+                &self.context,
+            ])
+        )
+    }
+}
+
+/// Selected category; labels are a closed vocabulary, not generated prose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntelligenceKind {
+    /// An explicit choice with a reason or consequence.
+    Decision,
+    /// An explicit applicable requirement.
+    Constraint,
+    /// A source-supported investigation result, still historically scoped.
+    Finding,
+    /// A consequential failure mode with conditions or a remedy.
+    Pitfall,
+}
+
+/// Lifecycle and truth are separate: admission does not make a claim true.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntelligenceStatus {
+    /// Eligible for retrieval, subject to its historical scope.
+    Admitted,
+    /// Contradicting evidence exists; return the dispute rather than advice.
+    Disputed,
+    /// Explicitly replaced; excluded from default context retrieval.
+    Superseded,
+}
+
+/// A sparse, source-backed item suitable for bounded session retrieval.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Intelligence {
+    /// Content identity of the original admitted proposal.
+    pub id: String,
+    /// Visibility scope inherited from the source proposal.
+    pub scope: String,
+    /// Repository applicability; never broadened by a model answer.
+    pub repositories: Vec<String>,
+    /// Verbatim wording from the original evidence.
+    pub statement: String,
+    /// Bounded assessment category.
+    pub kind: IntelligenceKind,
+    /// Semantic classification is inferred even though its quote is extracted.
+    /// Model confidence never upgrades this to an observed repository fact.
+    pub interpretation_class: crate::EvidenceClass,
+    /// Current admission/dispute state.
+    pub status: IntelligenceStatus,
+    /// Original evidence and duplicate occurrences; not independent votes.
+    pub evidence: Vec<SessionEvidence>,
+    /// Conflicting intelligence ids, preserved symmetrically.
+    pub contradicts: Vec<String>,
+    /// Explicit predecessor replaced by this item, when present.
+    pub supersedes: Option<String>,
+    /// Assessment receipts explaining admission and later consolidation.
+    pub assessments: Vec<String>,
+}
