@@ -325,6 +325,31 @@ fn extraction_reports_coverage_instead_of_silent_truncation() {
 }
 
 #[test]
+fn rubric_names_the_exact_proposition_and_allows_novelty_in_an_empty_catalog() {
+    let c = candidate(
+        "m1",
+        "We must preserve direnv removals at the subprocess boundary.",
+        "user",
+    );
+    let (_, asked, _) = questions(&c, &Bundle::new("private:can")).unwrap();
+    for question in asked.values() {
+        let text = match question {
+            Question::Noul { instructions, .. }
+            | Question::Choice { instructions, .. }
+            | Question::Score { instructions, .. } => instructions,
+        };
+        assert!(text.contains("candidate.evidence.quote"));
+    }
+    if let Question::Choice { instructions, .. } = &asked["novelty"] {
+        assert!(
+            instructions.contains("an empty related list does not by itself require abstention")
+        );
+    } else {
+        panic!("novelty must be a choice");
+    }
+}
+
+#[test]
 fn older_user_evidence_cannot_supersede_newer_policy() {
     let first = candidate(
         "m1",

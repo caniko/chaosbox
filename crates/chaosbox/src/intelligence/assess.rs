@@ -11,7 +11,7 @@ use super::{words, Bundle};
 
 /// Version every semantic change; initial strict policy is not a calibrated
 /// accuracy claim. Threshold changes require explicit policy review.
-pub const RUBRIC_VERSION: &str = "session-intelligence-v1";
+pub const RUBRIC_VERSION: &str = "session-intelligence-v2";
 
 /// A successful negative/abstention is durable and is not retried for a yes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,7 +64,10 @@ impl Assessment {
         if self.scope != scope
             || self.model_requested != JEV_MODEL_PINNED
             || self.response.model != self.model_requested
-            || self.rubric_version != RUBRIC_VERSION
+            || !matches!(
+                self.rubric_version.as_str(),
+                "session-intelligence-v1" | "session-intelligence-v2"
+            )
             || self.id != self.identity()?
             || !self.questions.keys().map(String::as_str).eq([
                 "atomic", "durable", "kind", "novelty", "scope", "support", "utility",
@@ -211,7 +214,15 @@ pub fn questions(
         ("generic", "Obvious or readily available documentation; little additional value"),
         ("unknown", "Insufficient context to judge"),
     ]));
-    asked.insert("novelty".into(), Question::Choice { instructions: "Choose a relation only to a listed item. Different snapshots and repeated summaries are not independent corroboration. Supersession requires an explicit user replacement, not merely a newer timestamp. Otherwise abstain.".into(), criteria: novelty });
+    asked.insert("novelty".into(), Question::Choice { instructions: "Compare the proposition in `candidate.evidence.quote` with `related`. Choose novel if no listed item represents this otherwise useful proposition; an empty related list does not by itself require abstention. Only duplicate/contradicts/supersedes may target a listed item. Choose unknown when the relationship is unclear. Repeated summaries are not independent corroboration. Supersession requires explicit user replacement, not merely a newer timestamp.".into(), criteria: novelty });
+    for question in asked.values_mut() {
+        let instructions = match question {
+            Question::Noul { instructions, .. }
+            | Question::Choice { instructions, .. }
+            | Question::Score { instructions, .. } => instructions,
+        };
+        *instructions = format!("The proposed intelligence is `candidate.evidence.quote`; its quoted source context is `candidate.context`. Attribution is `candidate.evidence.speaker`. Repository associations are supplied by the operator in `candidate.repositories`, not inferred from opaque identifiers. {instructions}");
+    }
     let neighbors: Vec<_> = related.iter().map(|(_, r)| serde_json::json!({
         "id":r.id,"statement":r.statement,"kind":r.kind,"status":r.status,"repositories":r.repositories,
         "source":r.evidence.first(),

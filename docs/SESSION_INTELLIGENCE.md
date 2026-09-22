@@ -28,7 +28,7 @@ durability, kind, reusable value, and relation to at most four same-scope,
 same-repository neighboring items. Jev receives bounded source context and
 closed answer vocabularies, not an entire archive or executable instructions.
 
-Initial policy `session-intelligence-v1` requires support/atomicity/scope Noul
+Initial policy `session-intelligence-v2` requires support/atomicity/scope Noul
 values >= 0.95 and durability >= 0.9. Kind, utility and consolidation require
 both confidence and chosen probability >= 0.9. Utility cannot compensate for
 weak support. These are deliberately conservative initial thresholds, **not a
