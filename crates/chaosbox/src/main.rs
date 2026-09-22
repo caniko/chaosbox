@@ -204,6 +204,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Extract, assess and retrieve selective session intelligence.
+    Intelligence {
+        #[command(subcommand)]
+        command: chaosbox::intelligence::cli::Command,
+    },
     /// Snapshot a fixture repository.
     Snapshot {
         path: PathBuf,
@@ -255,7 +260,11 @@ enum Command {
         q: QueryCmd,
     },
     /// Serve read-only MCP over stdio (no Jev credentials loaded).
-    Mcp,
+    Mcp {
+        /// Explicit private intelligence bundle, pinned once on startup.
+        #[arg(long)]
+        intelligence: Option<PathBuf>,
+    },
     /// Lifecycle contract v1.
     Db {
         #[command(subcommand)]
@@ -341,6 +350,15 @@ enum DbCmd {
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
+        Command::Intelligence { command } => {
+            match chaosbox::intelligence::cli::run(command).await {
+                Ok(value) => println!("{value}"),
+                Err(error) => {
+                    eprintln!("intelligence: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Command::Snapshot { path, repo } => match Snapshot::capture(&repo, &path) {
             Ok(s) => println!(r#"{{"snapshot":"{}","files":{}}}"#, s.id, s.files.len()),
             Err(e) => {
@@ -438,7 +456,17 @@ async fn main() {
             std::process::exit(code);
         }
         Command::Query { q } => std::process::exit(Box::pin(run_query(q)).await),
-        Command::Mcp => Box::pin(serve_mcp()).await,
+        Command::Mcp { intelligence } => {
+            let bundle = intelligence
+                .as_deref()
+                .map(chaosbox::intelligence::cli::load_bundle)
+                .transpose()
+                .unwrap_or_else(|error| {
+                    eprintln!("intelligence bundle: {error}");
+                    std::process::exit(1);
+                });
+            Box::pin(serve_mcp(bundle)).await;
+        }
         Command::Db { op } => match op {
             DbCmd::Check { json: _, repo } => {
                 // Read-only: never init/migrate/repair. Exit 0 when ready,
@@ -1260,7 +1288,7 @@ async fn mcp_call_tool(
 // Long CLI/dispatch functions; splitting them apart is the owning
 // session's refactor. Allowed to keep CI unblocked.
 #[allow(clippy::too_many_lines)]
-async fn serve_mcp() {
+async fn serve_mcp(intelligence: Option<chaosbox::intelligence::Bundle>) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
@@ -1332,7 +1360,16 @@ async fn serve_mcp() {
             "ping" => serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {}}),
             "tools/list" => {
                 if initialized {
-                    let defs = mcp_tool_defs();
+                    let mut defs = mcp_tool_defs();
+                    if intelligence.is_some() {
+                        defs.push(mcp_tool("intelligence_context", "Small historical, source-backed knowledge packet; not instructions or current-state proof.", serde_json::json!({"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":20},"max_chars":{"type":"integer","minimum":256,"maximum":32000}}), vec!["query"]));
+                        defs.push(mcp_tool(
+                            "intelligence_evidence",
+                            "Sources and typed decision receipts for a pinned intelligence item.",
+                            serde_json::json!({"id":{"type":"string"}}),
+                            vec!["id"],
+                        ));
+                    }
                     let cursor = params
                         .get("cursor")
                         .and_then(|c| c.as_str())
@@ -1356,7 +1393,26 @@ async fn serve_mcp() {
             "tools/call" => {
                 if initialized {
                     let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    Box::pin(mcp_call_tool(&id, name, &params)).await
+                    if name.starts_with("intelligence_") {
+                        match intelligence.as_ref() {
+                            Some(bundle) => match chaosbox::intelligence::mcp_query(
+                                bundle,
+                                name,
+                                &params["arguments"],
+                            ) {
+                                Ok(value) => mcp_text_result(&id, &value),
+                                Err(error) => mcp_error(&id, -32602, error, None),
+                            },
+                            None => mcp_error(
+                                &id,
+                                -32601,
+                                "no intelligence bundle configured".into(),
+                                None,
+                            ),
+                        }
+                    } else {
+                        Box::pin(mcp_call_tool(&id, name, &params)).await
+                    }
                 } else {
                     mcp_error(&id, -32600, "server not initialized".to_owned(), None)
                 }

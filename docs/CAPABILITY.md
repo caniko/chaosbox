@@ -2,6 +2,12 @@
 
 ## Implemented in native Rust
 
+- Session-intelligence staging: bounded JSONL proposals with native provenance,
+  typed Jev admission/consolidation, private immutable artifacts and decision
+  cache replay, scoped CLI and opt-in read-only MCP context/evidence tools.
+  This does not yet publish session knowledge into TypeDB or replace the
+  migration/compaction scripts; see `SESSION_INTELLIGENCE.md`.
+
 - Snapshot (content-addressed, repo-scoped), deterministic extraction for
   Rust/Python/JS-TS/Markdown/text (files, modules, symbols, definitions,
   imports, containment, explicit refs, headings, links, code mentions, spans)

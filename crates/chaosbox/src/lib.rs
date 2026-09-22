@@ -21,6 +21,8 @@ use chaosbox_jev::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod intelligence;
+
 /// Pipeline failures across extraction, inference, validation, storage, and consumers.
 #[derive(Debug, Error)]
 pub enum PipelineError {

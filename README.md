@@ -48,6 +48,8 @@ env vars are never read.
 - `docs/BASELINE.md` — pinned revisions, Graphify audit
 - `docs/CAPABILITY.md` — implemented / removed / pending matrix
 - `docs/HANDOFF.md` — results, handoffs, next commands
+- `docs/SESSION_INTELLIGENCE.md` — selective session knowledge, Jev admission,
+  private artifacts and read-only context/evidence retrieval
 
 ## License
 
