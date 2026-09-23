@@ -577,10 +577,9 @@ impl VariantPins {
     /// mapping but the staged one, or when the staged mapping does not hash
     /// to the pinned digest.
     fn load(campaign: &Campaign, effective: &[Effective]) -> Result<Option<Self>, VerifyError> {
-        let identity = campaign
-            .identities()?
-            .into_iter()
-            .find(|identity| identity.journal == "journal-v3" && identity.file == "identity-v3.json");
+        let identity = campaign.identities()?.into_iter().find(|identity| {
+            identity.journal == "journal-v3" && identity.file == "identity-v3.json"
+        });
         let has_variants = effective
             .iter()
             .any(|entry| entry.head.kind() == Some("divergent-variant"));
@@ -653,8 +652,8 @@ impl VariantPins {
 /// Message ids of one session in `(seq, id)` order, the order both the
 /// materializer and the two-sided re-key proof read them in.
 fn message_ids(connection: &Connection, session: &str) -> Result<Vec<String>, rusqlite::Error> {
-    let mut statement =
-        connection.prepare("SELECT id FROM session_message WHERE session_id = ? ORDER BY seq, id")?;
+    let mut statement = connection
+        .prepare("SELECT id FROM session_message WHERE session_id = ? ORDER BY seq, id")?;
     let mut rows = statement.query([session])?;
     let mut ids = Vec::new();
     while let Some(row) = rows.next()? {
@@ -718,7 +717,8 @@ pub fn verify(campaign: &Campaign, options: &VerifyOptions) -> Result<VerifyRepo
             source,
         })?;
 
-    report.inventory = InventoryReport::reconcile(campaign, &effective, &rows, &variant_ids, &delta_ids);
+    report.inventory =
+        InventoryReport::reconcile(campaign, &effective, &rows, &variant_ids, &delta_ids);
     report.complete = report.inventory.reconciled
         && report.inventory.progress_complete
         && selected.len() == effective.len();
@@ -734,7 +734,10 @@ pub fn verify(campaign: &Campaign, options: &VerifyOptions) -> Result<VerifyRepo
         report.sessions_checked += 1;
         let receipt = &entry.head;
         if let Some(driver) = receipt.body.get("driverDigest").and_then(Value::as_str) {
-            let digests = report.driver_digests.entry(receipt.journal.clone()).or_default();
+            let digests = report
+                .driver_digests
+                .entry(receipt.journal.clone())
+                .or_default();
             if !digests.contains(&driver.to_string()) {
                 digests.push(driver.to_string());
             }
@@ -1049,18 +1052,16 @@ fn check_message_pairs(
             detail,
         });
     };
-    let original = message_ids(source.connection(), source_session).map_err(|error| {
-        VerifyError::Read {
+    let original =
+        message_ids(source.connection(), source_session).map_err(|error| VerifyError::Read {
             path: source.path.clone(),
             source: error,
-        }
-    })?;
-    let derived = message_ids(destination.connection(), session).map_err(|error| {
-        VerifyError::Read {
+        })?;
+    let derived =
+        message_ids(destination.connection(), session).map_err(|error| VerifyError::Read {
             path: destination.path.clone(),
             source: error,
-        }
-    })?;
+        })?;
     let announced = usize::try_from(receipt.messages().unwrap_or_default()).unwrap_or(usize::MAX);
     if original.len() != derived.len() || original.len() != announced {
         fail(

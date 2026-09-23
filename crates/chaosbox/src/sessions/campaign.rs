@@ -167,7 +167,11 @@ impl Receipt {
                     }
                 }
                 if self.body.get("idAttempt").and_then(Value::as_u64).is_none() {
-                    return Err(invalid_field(key, "idAttempt", "expected a non-negative integer"));
+                    return Err(invalid_field(
+                        key,
+                        "idAttempt",
+                        "expected a non-negative integer",
+                    ));
                 }
                 digest(&self.body, "messageIDMapDigest", key)?;
             }

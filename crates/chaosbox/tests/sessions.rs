@@ -19,7 +19,9 @@ use chaosbox::sessions::{
     campaign::{Campaign, CampaignError, Receipt},
     cli::{self, Command},
     digest::{recovered_hash, session_digest},
-    remap::{is_native_message_shape, is_native_session_shape, variant_message_id, variant_session_id},
+    remap::{
+        is_native_message_shape, is_native_session_shape, variant_message_id, variant_session_id,
+    },
     verify::{verify, VerifyError, VerifyOptions},
 };
 use rusqlite::{Connection, OpenFlags};
@@ -1880,8 +1882,7 @@ fn a_malformed_source_session_id_is_rejected() {
 const VARIANT_DERIVED: &str = "ses_1b3f6d91093bv56ixKU9dt00rw";
 const VARIANT_SOURCE: &str = "ses_source01";
 const VARIANT_DERIVED_MSG: &str = "msg_5d9ffc9a9399P7pnzO1OaOxgtC";
-const VARIANT_MAP_DIGEST: &str =
-    "44986ea4f52469eee0833c76d1f9d8b0942cd1c08a245c0fa326a60c1d385606";
+const VARIANT_MAP_DIGEST: &str = "44986ea4f52469eee0833c76d1f9d8b0942cd1c08a245c0fa326a60c1d385606";
 const VARIANT_MAPPING_DIGEST: &str =
     "f0e13c3552a36056ecee0e1c32fc88b178ce9c7229860a222e2410055e1642d5";
 
@@ -2035,7 +2036,12 @@ fn a_variant_receipt_verifies_source_digests_against_its_source_session() {
         json!(recovered_hash(&recovery_connection, SOURCE).expect("recovery digest"));
     drop(source_connection);
     drop(recovery_connection);
-    write_receipt(&root, "journal-v3", "ses_1b3f6d91093bv56ixKU9dt00rw.json", &variant);
+    write_receipt(
+        &root,
+        "journal-v3",
+        "ses_1b3f6d91093bv56ixKU9dt00rw.json",
+        &variant,
+    );
     declare(&root, &[SESSION, DERIVED]);
 
     let campaign = Campaign::open(Some(root.clone())).expect("campaign");
@@ -2093,7 +2099,11 @@ fn variant_ids_rederive_from_provenance() {
     let messages = vectors["messageVectors"]
         .as_array()
         .expect("message vectors");
-    assert_eq!(messages.len(), 12, "the golden set must not shrink silently");
+    assert_eq!(
+        messages.len(),
+        12,
+        "the golden set must not shrink silently"
+    );
     for vector in messages {
         let derived = variant_message_id(
             vector["derivedSessionID"].as_str().expect("session"),

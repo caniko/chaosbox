@@ -211,7 +211,11 @@ fn render(prefix: &str, seed: &str, fields: &[&str], attempt: u64) -> String {
 
 /// One lowercase hex digit for a nibble.
 fn lower_hex(nibble: u8) -> char {
-    (if nibble < 10 { b'0' + nibble } else { b'a' + nibble - 10 }) as char
+    (if nibble < 10 {
+        b'0' + nibble
+    } else {
+        b'a' + nibble - 10
+    }) as char
 }
 
 /// Shape check shared by both identifier kinds.
