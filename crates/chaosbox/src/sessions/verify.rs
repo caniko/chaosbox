@@ -16,18 +16,23 @@
 //!    recomputed — a bounded pass cannot claim the sessions it skipped.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     path::PathBuf,
     time::Instant,
 };
 
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
+use serde_json::Value;
 
 use crate::sessions::{
     campaign::{Campaign, CampaignError, Effective},
     digest::{recovered_hash, session_digest, DigestError},
     inventory::Inventory,
+    remap::{
+        is_native_message_shape, mapping_variants_digest, message_map_digest,
+        parse_mapping_variants, variant_message_id, variant_session_id, VariantEntry,
+    },
 };
 
 /// What one verification pass should cover.
@@ -65,6 +70,21 @@ pub struct CountMismatch {
     pub actual: i64,
 }
 
+/// A variant receipt whose re-key proof failed: which check caught it and
+/// how. Every check re-derives from receipt fields and database row order,
+/// never from the mapping the driver wrote — the mapping pin is verified
+/// separately, once, before any receipt is checked against it.
+#[derive(Clone, Debug, Serialize)]
+pub struct RemapMismatch {
+    /// Variant session that failed re-derivation.
+    pub session: String,
+    /// Check that failed: `mapping-entry`, `session-id`, `message-map`,
+    /// `message-pair`, `transformation`, or `receipt-field`.
+    pub check: String,
+    /// What disagreed.
+    pub detail: String,
+}
+
 /// How the pinned inventory reconciles against the receipts and the
 /// destination rows actually present.
 ///
@@ -89,6 +109,12 @@ pub struct InventoryReport {
     pub deferred: usize,
     /// Sessions the driver could not migrate.
     pub errors: usize,
+    /// Variant sessions the pinned mapping sanctions, from
+    /// `identity-v3.json`'s `mappingDigest`. Zero before G3.
+    pub variants_expected: usize,
+    /// Delta-new sessions the pinned delta inventory sanctions. Zero until
+    /// the delta identity lands.
+    pub delta_expected: usize,
     /// Whether the driver finished the run that pinned this inventory.
     pub progress_complete: bool,
     /// Digest pinning the campaign identity, when `progress.json` recorded one.
@@ -122,10 +148,19 @@ pub struct InventoryReport {
 impl InventoryReport {
     /// Reconcile the pinned inventory against the receipts and destination
     /// rows that actually exist.
+    ///
+    /// The expectation is the union of three independent pins — the canonical
+    /// sessions from `progress.json`, the variant sessions from the pinned
+    /// mapping, and the delta-new sessions from the pinned delta inventory —
+    /// so a receipt for a session none of them sanctions is still an error.
+    /// The union never weakens reconciliation: it only lets each new receipt
+    /// trace to the pin that sanctions it.
     fn reconcile(
         campaign: &Campaign,
         effective: &[Effective],
         destination: &BTreeSet<String>,
+        variant_ids: &BTreeSet<String>,
+        delta_ids: &BTreeSet<String>,
     ) -> Self {
         let receipts: BTreeSet<String> = effective
             .iter()
@@ -146,8 +181,14 @@ impl InventoryReport {
             }
         };
 
-        let missing_receipts = difference(&inventory.expected, &receipts);
-        let unexpected_receipts = difference(&receipts, &inventory.expected);
+        let union: BTreeSet<String> = inventory
+            .expected
+            .union(variant_ids)
+            .chain(delta_ids.iter())
+            .cloned()
+            .collect();
+        let missing_receipts = difference(&union, &receipts);
+        let unexpected_receipts = difference(&receipts, &union);
         let absent_destination = difference(&receipts, destination);
         let unexpected_destination = difference(destination, &receipts);
         let reconciled = missing_receipts.is_empty()
@@ -163,6 +204,8 @@ impl InventoryReport {
             expected: inventory.expected.len(),
             deferred: inventory.deferred,
             errors: inventory.errors,
+            variants_expected: variant_ids.len(),
+            delta_expected: delta_ids.len(),
             progress_complete: inventory.complete,
             identity_digest: inventory.identity_digest,
             driver_digest: inventory.driver_digest,
@@ -233,6 +276,13 @@ pub struct VerifyReport {
     /// Sessions whose destination digest differs from the receipt.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub digest_mismatch: Vec<DigestMismatch>,
+    /// Sessions that have been superseded before and whose destination
+    /// digest differs from their effective receipt: changed again since the
+    /// head receipt was written, so they need re-verification rather than
+    /// being corrupt. A mismatch on a never-superseded session stays in
+    /// `digest_mismatch` — there its base attestation itself is broken.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub superseded_unverified: Vec<DigestMismatch>,
     /// Sessions whose destination message count differs from the receipt.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub message_count_mismatch: Vec<CountMismatch>,
@@ -242,6 +292,13 @@ pub struct VerifyReport {
     /// Sessions whose recovered-row digest differs from the receipt.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub recovery_mismatch: Vec<String>,
+    /// Variant receipts whose re-key proof failed re-derivation.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub remap_mismatch: Vec<RemapMismatch>,
+    /// Distinct `driverDigest` values found per journal. Reported, never
+    /// compared in-band: the gate compares them against the pinned driver.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub driver_digests: BTreeMap<String, Vec<String>>,
     /// Sessions that could not be read from the source snapshots.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub source_errors: Vec<String>,
@@ -278,9 +335,12 @@ impl VerifyReport {
             chain_errors: Vec::new(),
             missing: Vec::new(),
             digest_mismatch: Vec::new(),
+            superseded_unverified: Vec::new(),
             message_count_mismatch: Vec::new(),
             source_mismatch: Vec::new(),
             recovery_mismatch: Vec::new(),
+            remap_mismatch: Vec::new(),
+            driver_digests: BTreeMap::new(),
             source_errors: Vec::new(),
             checked_sources: options.sources,
             source_coverage: 0,
@@ -302,9 +362,11 @@ impl VerifyReport {
             && self.chain_errors.is_empty()
             && self.missing.is_empty()
             && self.digest_mismatch.is_empty()
+            && self.superseded_unverified.is_empty()
             && self.message_count_mismatch.is_empty()
             && self.source_mismatch.is_empty()
             && self.recovery_mismatch.is_empty()
+            && self.remap_mismatch.is_empty()
             && self.source_errors.is_empty()
             && self.sources_uncovered.is_empty()
             && (!self.checked_sources || self.source_coverage == self.sessions_checked)
@@ -355,6 +417,15 @@ pub enum VerifyError {
     /// A requested session is not in the campaign journals.
     #[error("session {0} has no receipt in this campaign")]
     UnknownSession(String),
+    /// The variant identity or pinned mapping could not be verified. A pass
+    /// that continued would check variant receipts against an unattested
+    /// mapping, which is exactly the "verify nothing" path the inventory
+    /// rules close everywhere else.
+    #[error("variant mapping: {reason}")]
+    Mapping {
+        /// What disagreed or could not be read.
+        reason: String,
+    },
 }
 
 /// Reopen a database read-only, so verification can never perturb a campaign.
@@ -553,11 +624,16 @@ pub fn verify(campaign: &Campaign, options: &VerifyOptions) -> Result<VerifyRepo
                 let actual_messages = i64::try_from(actual.messages).unwrap_or(i64::MAX);
                 let digest_matches = actual.digest == expected;
                 if !digest_matches {
-                    report.digest_mismatch.push(DigestMismatch {
+                    let mismatch = DigestMismatch {
                         session: entry.session.clone(),
                         expected,
                         actual: actual.digest,
-                    });
+                    };
+                    if entry.depth > 1 {
+                        report.superseded_unverified.push(mismatch);
+                    } else {
+                        report.digest_mismatch.push(mismatch);
+                    }
                 }
                 let count_matches = receipt.messages() == Some(actual_messages);
                 if !count_matches {
@@ -669,8 +745,11 @@ fn check_sources(
         let snapshot = Snapshot::open(&campaign.source(source))?;
         sources.insert(source.to_string(), snapshot);
     }
+    // Variant receipts attest to a derived session, but their source
+    // digests were computed against the session they derive from.
+    let source_session = receipt.source_session_id().unwrap_or(&entry.session);
     let snapshot = &sources[source];
-    match session_digest(snapshot.connection(), &entry.session) {
+    match session_digest(snapshot.connection(), source_session) {
         Ok(actual) => {
             if Some(actual.digest.as_str()) != Some(input) {
                 report.source_mismatch.push(entry.session.clone());
@@ -687,7 +766,7 @@ fn check_sources(
     }
 
     if let Some(recovery) = recovery {
-        match recovered_hash(recovery.connection(), &entry.session) {
+        match recovered_hash(recovery.connection(), source_session) {
             Ok(actual) => {
                 if actual != expected_recovery {
                     report.recovery_mismatch.push(entry.session.clone());

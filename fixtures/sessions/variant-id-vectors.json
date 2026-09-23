@@ -1,0 +1,200 @@
+{
+  "purpose": "byte-exact acceptance test for a re-implementation of chaosbox/variant-session-id/v1 and chaosbox/variant-message-id/v1",
+  "spec": {
+    "hash": "SHA-256 of the seed string encoded as UTF-8 bytes",
+    "separator": "single NUL byte 0x00 between every field",
+    "attemptTag": {
+      "attempt": 0,
+      "tag": "<empty>",
+      "otherwise": "NUL byte 0x00 followed by the ASCII text `attempt=` and the decimal attempt with no padding"
+    },
+    "session": {
+      "seed": "chaosbox.variant-session-id.v1",
+      "fields": [
+        "seed",
+        "variantSource",
+        "canonicalID",
+        "attemptTag"
+      ],
+      "algorithm": "chaosbox/variant-session-id/v1",
+      "prefix": "ses",
+      "hex12": "first 6 hash bytes, lowercase hex (12 chars)",
+      "suffix14": {
+        "input": "hash bytes 6..31 (26 bytes) as a big-endian unsigned integer",
+        "reduce": "integer modulo 62^14",
+        "render": "14 digits, most significant first, digit i = value / 62^i mod 62, mapped through BASE62",
+        "alphabet": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+        "alphabetOrder": "0-9, A-Z, a-z — digits are values 0..9, upper case 10..35, lower case 36..61"
+      },
+      "shape": "ses_[0-9a-f]{12}[0-9A-Za-z]{14} — 30 characters total"
+    },
+    "message": {
+      "seed": "chaosbox.variant-message-id.v1",
+      "fields": [
+        "seed",
+        "derivedSessionID",
+        "originalMessageID",
+        "attemptTag"
+      ],
+      "algorithm": "chaosbox/variant-message-id/v1",
+      "prefix": "msg",
+      "hex12": "first 6 hash bytes, lowercase hex (12 chars)",
+      "suffix14": "identical to the session rule above",
+      "shape": "msg_[0-9a-f]{12}[0-9A-Za-z]{14} — 30 characters total"
+    },
+    "note": "The 14-character suffix is NOT the raw base62 of the remaining 26 bytes; it is that integer reduced modulo 62^14. Treating it as a fixed-length base62 encoding without the modulus reproduces nothing."
+  },
+  "sessionVectors": [
+    {
+      "variantSource": "primary",
+      "canonicalID": "ses_12ee0feedffeZsjEwqVxWttEeJ",
+      "attempt": 0,
+      "derived": "ses_3e9b40f499d2Xs7Pq7wknWVXtA"
+    },
+    {
+      "variantSource": "primary",
+      "canonicalID": "ses_12ee0feedffeZsjEwqVxWttEeJ",
+      "attempt": 1,
+      "derived": "ses_75330ffd5b38kgB0tvHxP4QZvN"
+    },
+    {
+      "variantSource": "primary",
+      "canonicalID": "ses_12ee0feedffeZsjEwqVxWttEeJ",
+      "attempt": 2,
+      "derived": "ses_a34f968634edRP7HjXbBAfeEoJ"
+    },
+    {
+      "variantSource": "quarantine",
+      "canonicalID": "ses_12ee0feedffeZsjEwqVxWttEeJ",
+      "attempt": 0,
+      "derived": "ses_7e9866b273a3ymSLojRBSNjsIk"
+    },
+    {
+      "variantSource": "quarantine",
+      "canonicalID": "ses_12ee0feedffeZsjEwqVxWttEeJ",
+      "attempt": 1,
+      "derived": "ses_188cde07cc807pJWQGA72QypS0"
+    },
+    {
+      "variantSource": "quarantine",
+      "canonicalID": "ses_12ee0feedffeZsjEwqVxWttEeJ",
+      "attempt": 2,
+      "derived": "ses_b77af7f5874abYqUoWJNgi6baI"
+    },
+    {
+      "variantSource": "stable",
+      "canonicalID": "ses_1176f278cffeQsRl5RSspomd4U",
+      "attempt": 0,
+      "derived": "ses_d1a0676627d7pdMXd6X7KUWyCa"
+    },
+    {
+      "variantSource": "stable",
+      "canonicalID": "ses_1176f278cffeQsRl5RSspomd4U",
+      "attempt": 1,
+      "derived": "ses_83f73b2d1c24PHXMGO1Pc7pDF5"
+    },
+    {
+      "variantSource": "stable",
+      "canonicalID": "ses_1176f278cffeQsRl5RSspomd4U",
+      "attempt": 2,
+      "derived": "ses_6e073d45eef6SVJGKcp8MmfhMA"
+    }
+  ],
+  "messageVectors": [
+    {
+      "derivedSessionID": "ses_3e9b40f499d2Xs7Pq7wknWVXtA",
+      "originalMessageID": "msg_ed11f294b001R4EE4P47NkejiH",
+      "attempt": 0,
+      "derived": "msg_345f860bdc0f07iqIByMzxYSwQ"
+    },
+    {
+      "derivedSessionID": "ses_3e9b40f499d2Xs7Pq7wknWVXtA",
+      "originalMessageID": "msg_ed11f294b001R4EE4P47NkejiH",
+      "attempt": 1,
+      "derived": "msg_92b456417ec2X75d7LCQOG18MI"
+    },
+    {
+      "derivedSessionID": "ses_3e9b40f499d2Xs7Pq7wknWVXtA",
+      "originalMessageID": "msg_ed11f4b4f0017c3CeqRU4Mu1FC",
+      "attempt": 0,
+      "derived": "msg_d744500cd0c32fnWrUnLEFz7gA"
+    },
+    {
+      "derivedSessionID": "ses_3e9b40f499d2Xs7Pq7wknWVXtA",
+      "originalMessageID": "msg_ed11f4b4f0017c3CeqRU4Mu1FC",
+      "attempt": 1,
+      "derived": "msg_9e9ca87e7be6HcwGF4CFHY6pt6"
+    },
+    {
+      "derivedSessionID": "ses_7e9866b273a3ymSLojRBSNjsIk",
+      "originalMessageID": "msg_ed11f294b001R4EE4P47NkejiH",
+      "attempt": 0,
+      "derived": "msg_a303f868f4cd1Vr75lR9mB8yI0"
+    },
+    {
+      "derivedSessionID": "ses_7e9866b273a3ymSLojRBSNjsIk",
+      "originalMessageID": "msg_ed11f294b001R4EE4P47NkejiH",
+      "attempt": 1,
+      "derived": "msg_57a07396cc54oEjcQ8DIYWVAeL"
+    },
+    {
+      "derivedSessionID": "ses_7e9866b273a3ymSLojRBSNjsIk",
+      "originalMessageID": "msg_ed11f4b4f0017c3CeqRU4Mu1FC",
+      "attempt": 0,
+      "derived": "msg_44383da516cbMvCBjTMbbiUonV"
+    },
+    {
+      "derivedSessionID": "ses_7e9866b273a3ymSLojRBSNjsIk",
+      "originalMessageID": "msg_ed11f4b4f0017c3CeqRU4Mu1FC",
+      "attempt": 1,
+      "derived": "msg_ffe3a9727affz4vP7JngNdV6Ca"
+    },
+    {
+      "derivedSessionID": "ses_d1a0676627d7pdMXd6X7KUWyCa",
+      "originalMessageID": "msg_ee890d87f001vS1FLceWcUAzvG",
+      "attempt": 0,
+      "derived": "msg_c941d7631312PoWZxF3ftgeYch"
+    },
+    {
+      "derivedSessionID": "ses_d1a0676627d7pdMXd6X7KUWyCa",
+      "originalMessageID": "msg_ee890d87f001vS1FLceWcUAzvG",
+      "attempt": 1,
+      "derived": "msg_1fd1512f3b5eqdJF56Iucmmoa7"
+    },
+    {
+      "derivedSessionID": "ses_d1a0676627d7pdMXd6X7KUWyCa",
+      "originalMessageID": "msg_ee890d88c002dP8pVJhRivMMcT",
+      "attempt": 0,
+      "derived": "msg_a39c08ac8b9aUvjnt7iD3YvjMN"
+    },
+    {
+      "derivedSessionID": "ses_d1a0676627d7pdMXd6X7KUWyCa",
+      "originalMessageID": "msg_ee890d88c002dP8pVJhRivMMcT",
+      "attempt": 1,
+      "derived": "msg_2281b2213de7qPuZwBkiiiMNh4"
+    }
+  ],
+  "controls": [
+    {
+      "claim": "attempt 0 and attempt 1 must differ",
+      "ok": true
+    },
+    {
+      "claim": "the same canonical id under a different source must differ",
+      "ok": true
+    },
+    {
+      "claim": "different canonical ids under one source must differ",
+      "ok": true
+    },
+    {
+      "claim": "the attempt tag is appended, not prepended or injected earlier",
+      "ok": true
+    },
+    {
+      "claim": "session and message seeds must not be interchangeable",
+      "ok": true
+    }
+  ],
+  "mappingDigest": "a5ce09c5dcc2fa29b9ebc37c47a59fc3ae67754991fe51ddae110c994465a07d"
+}

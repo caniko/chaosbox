@@ -104,6 +104,141 @@ impl Receipt {
                     "expected a `journal-*/<receipt>.json` address",
                 ));
             }
+            self.check_link_agreement(target)?;
+        }
+        if let Some(value) = self.body.get("kind") {
+            let kind = value.as_str().ok_or_else(|| {
+                invalid_field(
+                    &key,
+                    "kind",
+                    "expected \"divergent-variant\", \"supersession\" or \"delta-new\"",
+                )
+            })?;
+            match kind {
+                "divergent-variant" => {
+                    // The source session shape is checked below; the rest here.
+                    if self.body.get("sourceSessionID").is_none() {
+                        return Err(missing(&key, "sourceSessionID"));
+                    }
+                    let transform = self
+                        .body
+                        .get("idTransformation")
+                        .ok_or_else(|| missing(&key, "idTransformation"))?;
+                    if !transform.is_object() {
+                        return Err(invalid_field(
+                            &key,
+                            "idTransformation",
+                            "expected an object",
+                        ));
+                    }
+                    for field in ["session", "message"] {
+                        if transform.get(field).and_then(Value::as_str).is_none() {
+                            return Err(invalid_field(
+                                &key,
+                                &format!("idTransformation.{field}"),
+                                "expected a string",
+                            ));
+                        }
+                    }
+                    if self.body.get("idAttempt").and_then(Value::as_u64).is_none() {
+                        return Err(invalid_field(
+                            &key,
+                            "idAttempt",
+                            "expected a non-negative integer",
+                        ));
+                    }
+                    digest(self.body, "messageIDMapDigest", &key)?;
+                }
+                "supersession" => {
+                    if self.body.get("supersedes").is_none() {
+                        return Err(missing(&key, "supersedes"));
+                    }
+                }
+                "delta-new" => {
+                    if self.body.get("supersedes").is_some() {
+                        return Err(invalid_field(
+                            &key,
+                            "supersedes",
+                            "a delta-new receipt replaces nothing",
+                        ));
+                    }
+                    if self.body.get("sourceSessionID").is_some() {
+                        return Err(invalid_field(
+                            &key,
+                            "sourceSessionID",
+                            "a delta-new receipt attests to its own session",
+                        ));
+                    }
+                }
+                _ => {
+                    return Err(invalid_field(
+                        &key,
+                        "kind",
+                        "expected \"divergent-variant\", \"supersession\" or \"delta-new\"",
+                    ));
+                }
+            }
+        }
+        if let Some(value) = self.body.get("sourceSessionID") {
+            match value.as_str() {
+                Some(id) if is_session_id(id) => {}
+                _ => {
+                    return Err(invalid_field(
+                        &key,
+                        "sourceSessionID",
+                        "expected a session identifier",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Enforce the filename/link agreement (contract R5) for a receipt that
+    /// carries `supersedes`, using only the receipt's own journal and file
+    /// name: `journal-v2` is append-immutable and never links onward, a plain
+    /// `journal-v3/<id>.json` may only re-attest its own `journal-v2` base,
+    /// and `<id>.<N>.json` (N ≥ 2) must continue `<id>.<N-1>.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignError::LinkAgreement`] when the target is not the
+    /// one the filename promises.
+    fn check_link_agreement(&self, target: &str) -> Result<(), CampaignError> {
+        let key = self.key();
+        let expected = match self.journal.as_str() {
+            "journal-v2" => {
+                return Err(CampaignError::LinkAgreement {
+                    key,
+                    target: target.to_string(),
+                    expected: "no supersedes on a journal-v2 receipt".to_string(),
+                });
+            }
+            "journal-v3" => {
+                let Some((base, index)) = parse_receipt_file(&self.file) else {
+                    return Err(CampaignError::LinkAgreement {
+                        key,
+                        target: target.to_string(),
+                        expected: "a receipt filename".to_string(),
+                    });
+                };
+                if index == 1 {
+                    format!("journal-v2/{base}.json")
+                } else if index == 2 {
+                    // Generation 1 is the plain `<id>.json`, never `<id>.1.json`.
+                    format!("journal-v3/{base}.json")
+                } else {
+                    format!("journal-v3/{base}.{}.json", index - 1)
+                }
+            }
+            _ => return Ok(()),
+        };
+        if target != expected {
+            return Err(CampaignError::LinkAgreement {
+                key,
+                target: target.to_string(),
+                expected,
+            });
         }
         Ok(())
     }
@@ -154,10 +289,50 @@ impl Receipt {
         self.body.get("source").and_then(Value::as_str)
     }
 
+    /// Session the receipt's source digests were computed against, when it
+    /// differs from the session the receipt attests to. Variant receipts
+    /// carry the v1 session they derive from here; canonical and
+    /// supersession receipts attest to their own session and leave it
+    /// absent. [`Receipt::validate`] already refused a malformed value, so
+    /// this only distinguishes absent from well-formed.
+    #[must_use]
+    pub fn source_session_id(&self) -> Option<&str> {
+        self.body.get("sourceSessionID").and_then(Value::as_str)
+    }
+
     /// Message count attested when the receipt was written.
     #[must_use]
     pub fn messages(&self) -> Option<i64> {
         self.body.get("messages").and_then(Value::as_i64)
+    }
+
+    /// Collision-resolve attempt behind a derived variant session id.
+    /// [`Receipt::validate`] already refused a malformed value; non-variant
+    /// receipts leave it absent.
+    #[must_use]
+    pub fn id_attempt(&self) -> Option<u64> {
+        self.body.get("idAttempt").and_then(Value::as_u64)
+    }
+
+    /// Two-sided re-key proof of a variant receipt. See
+    /// [`crate::sessions::remap::message_map_digest`].
+    #[must_use]
+    pub fn message_map_digest(&self) -> Option<&str> {
+        self.body.get("messageIDMapDigest").and_then(Value::as_str)
+    }
+
+    /// Derivation algorithms a variant receipt claims, to be deep-compared
+    /// against the variant identity.
+    #[must_use]
+    pub fn id_transformation(&self) -> Option<&Value> {
+        self.body.get("idTransformation")
+    }
+
+    /// Receipt kind: absent for canonical base receipts, otherwise one of
+    /// the literals [`Receipt::validate`] enforces.
+    #[must_use]
+    pub fn kind(&self) -> Option<&str> {
+        self.body.get("kind").and_then(Value::as_str)
     }
 }
 
@@ -228,6 +403,19 @@ pub enum CampaignError {
         key: String,
         /// Receipt it wrongly claimed to replace.
         target: String,
+    },
+    /// A receipt's `supersedes` target is not the one its own journal and
+    /// file name promise: `journal-v2` never links onward, a plain
+    /// `journal-v3/<id>.json` may only re-attest `journal-v2/<id>.json`,
+    /// and `<id>.<N>.json` must continue `<id>.<N-1>.json`.
+    #[error("receipt {key} links to {target} instead of {expected}")]
+    LinkAgreement {
+        /// Receipt whose link disagrees with its filename.
+        key: String,
+        /// Journal address the receipt named.
+        target: String,
+        /// Journal address the filename requires.
+        expected: String,
     },
     /// More than one receipt in the chain is unreferenced, so no single
     /// receipt is authoritative.
@@ -352,6 +540,18 @@ impl Campaign {
             .unwrap_or(&self.root)
             .join("work")
             .join(format!("{source}.db"))
+    }
+
+    /// Absolute path the variant mapping is staged at for the applied run.
+    /// The variant identity records where the mapping was actually read from;
+    /// the pass requires that record to name exactly this path, so a digest
+    /// recomputed here is recomputed over the file the identity pins.
+    #[must_use]
+    pub fn variant_mapping(&self) -> PathBuf {
+        self.root
+            .parent()
+            .unwrap_or(&self.root)
+            .join("variants-mapping.json")
     }
 
     /// Read `progress.json`, the run counters the driver writes.
@@ -642,20 +842,32 @@ fn walk_chain(
 /// Session promised by a receipt file name, rejecting anything that is not a
 /// receipt.
 fn session_of_receipt(file: &str) -> Option<String> {
+    parse_receipt_file(file).map(|(session, _)| session)
+}
+
+/// The session a receipt file name promises plus its generation: a plain
+/// `<id>.json` is generation 1, `<id>.<N>.json` is generation N for N ≥ 2.
+///
+/// The suffix must be `[1-9][0-9]*` — no zero, no leading zeros — so
+/// `<id>.0.json` is not a receipt name at all, matching the journal
+/// contract's filename rule. An index that names more than `u64` can hold is
+/// likewise not a name the chain walker could ever address.
+fn parse_receipt_file(file: &str) -> Option<(String, u64)> {
     let stem = file.strip_suffix(".json")?;
-    let session = match stem.split_once('.') {
+    let (session, index) = match stem.split_once('.') {
         Some((session, generation)) => {
-            if generation.is_empty() || !generation.bytes().all(|byte| byte.is_ascii_digit()) {
+            let bytes = generation.as_bytes();
+            if bytes.is_empty() || bytes[0] == b'0' || !bytes.iter().all(u8::is_ascii_digit) {
                 return None;
             }
-            session
+            (session, generation.parse::<u64>().ok()?)
         }
-        None => stem,
+        None => (stem, 1),
     };
     if !is_session_id(session) {
         return None;
     }
-    Some(session.to_string())
+    Some((session.to_string(), index))
 }
 
 /// Whether `value` is shaped like an `OpenCode` session identifier, which is

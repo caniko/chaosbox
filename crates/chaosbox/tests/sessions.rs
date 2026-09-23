@@ -16,9 +16,10 @@ use std::{
 };
 
 use chaosbox::sessions::{
-    campaign::{Campaign, CampaignError},
+    campaign::{Campaign, CampaignError, Receipt},
     cli::{self, Command},
     digest::{recovered_hash, session_digest},
+    remap::{is_native_message_shape, is_native_session_shape, variant_message_id, variant_session_id},
     verify::{verify, VerifyError, VerifyOptions},
 };
 use rusqlite::{Connection, OpenFlags};
@@ -278,7 +279,9 @@ fn a_supersession_chain_resolves_to_the_newest_receipt() {
 }
 
 /// A supersession naming a receipt that does not exist is an error, never a
-/// silently shorter chain.
+/// silently shorter chain. The target name is the conventionally correct one
+/// for the file, so the link agreement holds and the dangling target is what
+/// fails.
 #[test]
 fn a_dangling_supersession_is_rejected() {
     let (held, root) = fixture();
@@ -286,7 +289,7 @@ fn a_dangling_supersession_is_rejected() {
         &root,
         "journal-v3",
         "ses_fixture01.json",
-        &superseding(SESSION, "abc", "journal-v2/ses_absent.json"),
+        &superseding(SESSION, "abc", "journal-v2/ses_fixture01.json"),
     );
 
     let error = Campaign::open(Some(root.clone()))
@@ -296,34 +299,36 @@ fn a_dangling_supersession_is_rejected() {
 
     assert!(
         matches!(&error, CampaignError::DanglingSupersession { target, .. }
-            if target == "journal-v2/ses_absent.json"),
+            if target == "journal-v2/ses_fixture01.json"),
         "unexpected error: {error}"
     );
     drop(held);
 }
 
 /// A receipt may not replace a different session's receipt: that would let
-/// one session's digest stand in for another's.
+/// one session's digest stand in for another's. The link agreement only
+/// constrains `journal-v2`/`journal-v3`, so this cross-session link lives in
+/// another journal where the cross-session rule is what catches it.
 #[test]
 fn a_foreign_supersession_is_rejected() {
     let (held, root) = fixture();
     write_receipt(
         &root,
-        "journal-v2",
+        "journal-v9",
         "ses_fixture01.json",
         &receipt(SESSION, "abc"),
     );
     write_receipt(
         &root,
-        "journal-v2",
+        "journal-v9",
         "ses_other0009x.json",
         &receipt("ses_other0009x", "def"),
     );
     write_receipt(
         &root,
-        "journal-v3",
-        "ses_other0009x.2.json",
-        &superseding("ses_other0009x", "ghi", "journal-v2/ses_fixture01.json"),
+        "journal-v9",
+        "ses_fixture01.2.json",
+        &superseding(SESSION, "ghi", "journal-v9/ses_other0009x.json"),
     );
 
     let error = Campaign::open(Some(root.clone()))
@@ -367,21 +372,23 @@ fn competing_unreferenced_receipts_are_ambiguous() {
     drop(held);
 }
 
-/// A cycle has no head, so there is no receipt to call effective.
+/// A cycle has no head, so there is no receipt to call effective. Cycles
+/// cannot form inside `journal-v2`/`journal-v3` — the link agreement forces
+/// every link toward the base — so this one lives in another journal.
 #[test]
 fn a_cyclic_chain_is_rejected() {
     let (held, root) = fixture();
     write_receipt(
         &root,
-        "journal-v2",
+        "journal-v9",
         "ses_fixture01.json",
-        &superseding(SESSION, "abc", "journal-v2/ses_fixture01.2.json"),
+        &superseding(SESSION, "abc", "journal-v9/ses_fixture01.2.json"),
     );
     write_receipt(
         &root,
-        "journal-v2",
+        "journal-v9",
         "ses_fixture01.2.json",
-        &superseding(SESSION, "def", "journal-v2/ses_fixture01.json"),
+        &superseding(SESSION, "def", "journal-v9/ses_fixture01.json"),
     );
 
     let error = Campaign::open(Some(root.clone()))
@@ -397,7 +404,9 @@ fn a_cyclic_chain_is_rejected() {
 }
 
 /// A receipt outside the chain would otherwise be quietly ignored, so the
-/// walk has to prove it reached every receipt it started with.
+/// walk has to prove it reached every receipt it started with. The stray
+/// receipt self-links in another journal, where the link agreement does not
+/// constrain it.
 #[test]
 fn a_disconnected_chain_is_rejected() {
     let (held, root) = fixture();
@@ -417,9 +426,9 @@ fn a_disconnected_chain_is_rejected() {
     // A self-superseding receipt: referenced, but unreachable from the head.
     write_receipt(
         &root,
-        "journal-v3",
-        "ses_fixture01.3.json",
-        &superseding(SESSION, "def", "journal-v3/ses_fixture01.3.json"),
+        "journal-v9",
+        "ses_fixture01.json",
+        &superseding(SESSION, "def", "journal-v9/ses_fixture01.json"),
     );
 
     let error = Campaign::open(Some(root.clone()))
@@ -466,6 +475,197 @@ fn a_receipt_whose_body_disagrees_with_its_filename_is_rejected() {
         ),
         "unexpected error: {error}"
     );
+    drop(held);
+}
+
+/// `journal-v2` is append-immutable: it may never carry a successor link,
+/// even one that points at the conventionally correct file.
+#[test]
+fn a_journal_v2_receipt_must_not_carry_supersedes() {
+    let (held, root) = fixture();
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &superseding(SESSION, "abc", "journal-v3/ses_fixture01.json"),
+    );
+    write_receipt(
+        &root,
+        "journal-v3",
+        "ses_fixture01.json",
+        &receipt(SESSION, "def"),
+    );
+
+    let error = Campaign::open(Some(root.clone()))
+        .expect("campaign")
+        .effective_receipts()
+        .expect_err("must fail");
+
+    assert!(
+        matches!(&error, CampaignError::LinkAgreement { .. }),
+        "unexpected error: {error}"
+    );
+    drop(held);
+}
+
+/// A plain `journal-v3` file may only re-attest its own `journal-v2` base:
+/// reaching into another session is a link error before it is anything else.
+#[test]
+fn a_plain_v3_receipt_may_only_reattest_its_own_v2_base() {
+    let (held, root) = fixture();
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_other0009x.json",
+        &receipt("ses_other0009x", "abc"),
+    );
+    write_receipt(
+        &root,
+        "journal-v3",
+        "ses_fixture01.json",
+        &superseding(SESSION, "def", "journal-v2/ses_other0009x.json"),
+    );
+
+    let error = Campaign::open(Some(root.clone()))
+        .expect("campaign")
+        .effective_receipts()
+        .expect_err("must fail");
+
+    assert!(
+        matches!(
+            &error,
+            CampaignError::LinkAgreement { target, expected, .. }
+            if target == "journal-v2/ses_other0009x.json"
+                && expected == "journal-v2/ses_fixture01.json"
+        ),
+        "unexpected error: {error}"
+    );
+    drop(held);
+}
+
+/// An indexed file must continue its predecessor: `<id>.3.json` targets
+/// `<id>.2.json`, never an earlier generation. Skipping also strands the
+/// skipped file, so the chain rule would fire too — the link error fires
+/// first, at validation.
+#[test]
+fn an_indexed_receipt_must_continue_its_predecessor() {
+    let (held, root) = fixture();
+    let digest = recorded_digest(&root);
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, "base"),
+    );
+    write_receipt(
+        &root,
+        "journal-v3",
+        "ses_fixture01.json",
+        &superseding(SESSION, "one", "journal-v2/ses_fixture01.json"),
+    );
+    write_receipt(
+        &root,
+        "journal-v3",
+        "ses_fixture01.2.json",
+        &superseding(SESSION, "two", "journal-v3/ses_fixture01.json"),
+    );
+    write_receipt(
+        &root,
+        "journal-v3",
+        "ses_fixture01.3.json",
+        &superseding(SESSION, &digest, "journal-v3/ses_fixture01.json"),
+    );
+
+    let error = Campaign::open(Some(root.clone()))
+        .expect("campaign")
+        .effective_receipts()
+        .expect_err("must fail");
+
+    assert!(
+        matches!(
+            &error,
+            CampaignError::LinkAgreement { target, expected, .. }
+            if target == "journal-v3/ses_fixture01.json"
+                && expected == "journal-v3/ses_fixture01.2.json"
+        ),
+        "unexpected error: {error}"
+    );
+    drop(held);
+}
+
+/// Two successors of one file are a branch, and the mislinked one names the
+/// wrong predecessor: the link error reports it before the ambiguity does.
+#[test]
+fn a_branch_on_one_file_is_rejected_at_the_link() {
+    let (held, root) = fixture();
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, "base"),
+    );
+    write_receipt(
+        &root,
+        "journal-v3",
+        "ses_fixture01.json",
+        &superseding(SESSION, "one", "journal-v2/ses_fixture01.json"),
+    );
+    write_receipt(
+        &root,
+        "journal-v3",
+        "ses_fixture01.2.json",
+        &superseding(SESSION, "two", "journal-v2/ses_fixture01.json"),
+    );
+
+    let error = Campaign::open(Some(root.clone()))
+        .expect("campaign")
+        .effective_receipts()
+        .expect_err("must fail");
+
+    assert!(
+        matches!(&error, CampaignError::LinkAgreement { .. }),
+        "unexpected error: {error}"
+    );
+    drop(held);
+}
+
+/// Generation zero is not a receipt name: the file is ignored like any
+/// other non-receipt file, rather than resolved as a second head.
+#[test]
+fn a_zero_generation_is_not_a_receipt_name() {
+    let (held, root) = fixture();
+    let digest = recorded_digest(&root);
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, &digest),
+    );
+    write_receipt(
+        &root,
+        "journal-v3",
+        "ses_fixture01.0.json",
+        &receipt(SESSION, "other"),
+    );
+    write_receipt(
+        &root,
+        "journal-v3",
+        "ses_fixture01.01.json",
+        &receipt(SESSION, "other"),
+    );
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let receipts = campaign.receipts().expect("receipts");
+    assert!(
+        receipts
+            .iter()
+            .all(|receipt| receipt.file == "ses_fixture01.json"),
+        "generation-zero files must not resolve: {:?}",
+        receipts.iter().map(Receipt::key).collect::<Vec<_>>()
+    );
+    let effective = campaign.effective_receipts().expect("chain resolves");
+    assert_eq!(effective.len(), 1);
+    assert_eq!(effective[0].depth, 1);
     drop(held);
 }
 
@@ -1589,4 +1789,310 @@ fn a_broken_campaign_is_an_error_not_an_exit_code() {
     })
     .expect_err("must fail");
     assert!(error.contains("missing"), "unexpected error: {error}");
+}
+
+/// A digest mismatch on a session that has been superseded before means the
+/// session changed again since the head receipt was written: it needs
+/// re-verification, and it is reported apart from a broken base attestation.
+#[test]
+fn a_changed_session_needing_reverification_is_not_a_base_failure() {
+    let (held, root) = fixture();
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, "stale"),
+    );
+    write_receipt(
+        &root,
+        "journal-v3",
+        "ses_fixture01.json",
+        &superseding(SESSION, "also-stale", "journal-v2/ses_fixture01.json"),
+    );
+    declare(&root, &[SESSION]);
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let report = verify(&campaign, &every_receipt()).expect("verifies");
+
+    assert_eq!(report.sessions_checked, 1);
+    assert_eq!(report.sessions_verified, 0);
+    assert!(
+        report.digest_mismatch.is_empty(),
+        "a superseded session is not a base failure: {report:?}"
+    );
+    assert_eq!(report.superseded_unverified.len(), 1);
+    assert_eq!(report.superseded_unverified[0].session, SESSION);
+    assert!(!report.clean());
+    drop(held);
+}
+
+/// `kind`, when present, names one of the two receipt kinds a later journal
+/// may hold. Anything else is a schema violation, not a new kind.
+#[test]
+fn an_unknown_receipt_kind_is_rejected() {
+    let (held, root) = fixture();
+    let mut body = receipt(SESSION, "abc");
+    body["kind"] = json!("reimported");
+    write_receipt(&root, "journal-v3", "ses_fixture01.json", &body);
+
+    let error = Campaign::open(Some(root.clone()))
+        .expect("campaign")
+        .effective_receipts()
+        .expect_err("must fail");
+
+    assert!(
+        matches!(
+            &error,
+            CampaignError::InvalidField { field, .. } if field == "kind"
+        ),
+        "unexpected error: {error}"
+    );
+    drop(held);
+}
+
+/// `sourceSessionID`, when present, must be shaped like a session id: it is
+/// the identity the source digests are recomputed against.
+#[test]
+fn a_malformed_source_session_id_is_rejected() {
+    let (held, root) = fixture();
+    let mut body = receipt(SESSION, "abc");
+    body["sourceSessionID"] = json!("not a session id");
+    write_receipt(&root, "journal-v3", "ses_fixture01.json", &body);
+
+    let error = Campaign::open(Some(root.clone()))
+        .expect("campaign")
+        .effective_receipts()
+        .expect_err("must fail");
+
+    assert!(
+        matches!(
+            &error,
+            CampaignError::InvalidField { field, .. } if field == "sourceSessionID"
+        ),
+        "unexpected error: {error}"
+    );
+    drop(held);
+}
+
+/// A variant receipt attests to a derived session, but its source digests
+/// were computed against the session it derives from: `--sources` must
+/// recompute them there, not against the derived id that the source never
+/// held. The re-key proof, the id re-derivation, and the mapping pin are
+/// checked too — every id and digest below was computed by the JavaScript
+/// implementation independently, so agreement is not the test agreeing with
+/// itself.
+#[test]
+fn a_variant_receipt_verifies_source_digests_against_its_source_session() {
+    const DERIVED: &str = "ses_1b3f6d91093bv56ixKU9dt00rw";
+    const SOURCE: &str = "ses_source01";
+    const DERIVED_MSG: &str = "msg_5d9ffc9a9399P7pnzO1OaOxgtC";
+    const MAP_DIGEST: &str = "44986ea4f52469eee0833c76d1f9d8b0942cd1c08a245c0fa326a60c1d385606";
+    const MAPPING_DIGEST: &str =
+        "f0e13c3552a36056ecee0e1c32fc88b178ce9c7229860a222e2410055e1642d5";
+    let (held, root) = fixture();
+    let parent = root.parent().expect("parent").to_path_buf();
+
+    // Destination holds the derived session under its derived message id.
+    let destination_writable = Connection::open(root.join("destination.db")).expect("destination");
+    destination_writable
+        .execute(
+            "INSERT INTO session_v2 VALUES (?1, 1790166653727, 0.124597676, 'derived summary')",
+            [DERIVED],
+        )
+        .expect("derived session");
+    destination_writable
+        .execute(
+            "INSERT INTO session_message VALUES (?1, 1, ?2, 'user', 1790166653727)",
+            rusqlite::params![DERIVED, DERIVED_MSG],
+        )
+        .expect("derived message");
+    drop(destination_writable);
+
+    // Sources hold the session the variant derives from.
+    build_sources(&root, true);
+    let writable = Connection::open(parent.join("work/primary.db")).expect("source");
+    writable
+        .execute_batch(
+            "INSERT INTO session_v2 VALUES
+                ('ses_source01', 1790166653727, 0.124597676, 'source summary');
+             INSERT INTO session_message VALUES
+                ('ses_source01', 1, 'msg_source', 'user', 1790166653727);",
+        )
+        .expect("source session");
+    drop(writable);
+    let recovery_writable = Connection::open(parent.join("recovered-rows.db")).expect("recovery");
+    recovery_writable
+        .execute_batch(
+            "INSERT INTO recovered VALUES
+                ('r2', 'ses_source01', 'source recovery text');",
+        )
+        .expect("recovery row");
+    drop(recovery_writable);
+
+    // The staged mapping carries the one variant; the identity pins it.
+    let mapping = json!({
+        "variants": [{
+            "sessionID": DERIVED,
+            "idAttempt": 0,
+            "source": "primary",
+            "sourceSessionID": SOURCE,
+            "kind": "divergent",
+            "messages": 1,
+            "sessionAttempt": 0,
+            "canonicalSource": "primary",
+            "sourceTimeCreated": 1790166653727_i64,
+            "sourceTimeUpdated": 1790166653727_i64,
+            "parentID": null,
+            "title": "t",
+            "directory": "/d",
+            "remappedDirectory": "/d",
+            "sourceSnapshotSha256": "0".repeat(64),
+            "occurrenceTable": "session",
+            "messageIDs": [{ "original": "msg_source", "derived": DERIVED_MSG, "attempt": 0 }],
+        }],
+    });
+    let mapping_path = parent.join("variants-mapping.json");
+    fs::write(&mapping_path, mapping.to_string()).expect("mapping");
+    write_receipt(
+        &root,
+        "journal-v3",
+        "identity-v3.json",
+        &json!({
+            "version": 3,
+            "journal": "journal-v3",
+            "mappingFile": mapping_path.display().to_string(),
+            "mappingDigest": MAPPING_DIGEST,
+            "variantIdTransformation": {
+                "session": "chaosbox/variant-session-id/v1",
+                "message": "chaosbox/variant-message-id/v1",
+            },
+        }),
+    );
+
+    let source_connection = Connection::open_with_flags(
+        parent.join("work/primary.db"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("source");
+    let recovery_connection = Connection::open_with_flags(
+        parent.join("recovered-rows.db"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("recovery");
+
+    // Base receipt for the canonical session, with source digests covering
+    // its own session id.
+    let mut base = receipt(SESSION, &recorded_digest(&root));
+    base["inputDigest"] = json!(
+        session_digest(&source_connection, SESSION)
+            .expect("source digest")
+            .digest
+    );
+    base["recoveryDigest"] =
+        json!(recovered_hash(&recovery_connection, SESSION).expect("recovery digest"));
+    write_receipt(&root, "journal-v2", "ses_fixture01.json", &base);
+
+    // Variant receipt for the derived session, with source digests covering
+    // the session it derives from.
+    let mut variant = receipt(DERIVED, &digest_for(&root, DERIVED));
+    variant["kind"] = json!("divergent-variant");
+    variant["sourceSessionID"] = json!(SOURCE);
+    variant["source"] = json!("primary");
+    variant["idTransformation"] = json!({
+        "session": "chaosbox/variant-session-id/v1",
+        "message": "chaosbox/variant-message-id/v1",
+    });
+    variant["idAttempt"] = json!(0);
+    variant["messageIDMapDigest"] = json!(MAP_DIGEST);
+    variant["inputDigest"] = json!(
+        session_digest(&source_connection, SOURCE)
+            .expect("source digest")
+            .digest
+    );
+    variant["recoveryDigest"] =
+        json!(recovered_hash(&recovery_connection, SOURCE).expect("recovery digest"));
+    drop(source_connection);
+    drop(recovery_connection);
+    write_receipt(&root, "journal-v3", "ses_1b3f6d91093bv56ixKU9dt00rw.json", &variant);
+    declare(&root, &[SESSION, DERIVED]);
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let report = verify(
+        &campaign,
+        &VerifyOptions {
+            sources: true,
+            ..every_receipt()
+        },
+    )
+    .expect("verifies");
+
+    assert_eq!(report.sessions_checked, 2);
+    assert_eq!(
+        report.source_coverage, report.sessions_checked,
+        "both sessions had source digests recomputed: {report:?}"
+    );
+    assert!(report.source_mismatch.is_empty(), "{report:?}");
+    assert!(report.recovery_mismatch.is_empty(), "{report:?}");
+    assert!(report.source_errors.is_empty(), "{report:?}");
+    assert!(report.remap_mismatch.is_empty(), "{report:?}");
+    assert!(report.clean(), "variant and base both agree: {report:?}");
+    drop(held);
+}
+
+/// The variant-id derivation is proved against JavaScript's golden vectors:
+/// every session and message vector re-derives byte-for-byte from its
+/// provenance inputs, and the controls hold.
+#[test]
+fn variant_ids_rederive_from_provenance() {
+    const VECTORS: &str = include_str!("../../../fixtures/sessions/variant-id-vectors.json");
+    let vectors: Value = serde_json::from_str(VECTORS).expect("golden vectors parse");
+
+    let sessions = vectors["sessionVectors"]
+        .as_array()
+        .expect("session vectors");
+    assert_eq!(sessions.len(), 9, "the golden set must not shrink silently");
+    for vector in sessions {
+        let derived = variant_session_id(
+            vector["variantSource"].as_str().expect("source"),
+            vector["canonicalID"].as_str().expect("canonical"),
+            vector["attempt"].as_u64().expect("attempt"),
+        );
+        assert_eq!(
+            derived,
+            vector["derived"].as_str().expect("derived"),
+            "session vector disagrees: {vector:?}"
+        );
+        assert!(
+            is_native_session_shape(&derived),
+            "derived session id lost the native shape: {derived}"
+        );
+    }
+
+    let messages = vectors["messageVectors"]
+        .as_array()
+        .expect("message vectors");
+    assert_eq!(messages.len(), 12, "the golden set must not shrink silently");
+    for vector in messages {
+        let derived = variant_message_id(
+            vector["derivedSessionID"].as_str().expect("session"),
+            vector["originalMessageID"].as_str().expect("original"),
+            vector["attempt"].as_u64().expect("attempt"),
+        );
+        assert_eq!(
+            derived,
+            vector["derived"].as_str().expect("derived"),
+            "message vector disagrees: {vector:?}"
+        );
+        assert!(
+            is_native_message_shape(&derived),
+            "derived message id lost the native shape: {derived}"
+        );
+    }
+
+    for control in vectors["controls"].as_array().expect("controls") {
+        assert!(
+            control["ok"].as_bool().unwrap_or(false),
+            "control failed: {control:?}"
+        );
+    }
 }

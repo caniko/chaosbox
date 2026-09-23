@@ -10,4 +10,5 @@ pub mod campaign;
 pub mod cli;
 pub mod digest;
 pub mod inventory;
+pub mod remap;
 pub mod verify;
