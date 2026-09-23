@@ -2,7 +2,6 @@
   description = "Chaosbox - native Rust code-graph pipeline (TypeDB-backed)";
 
   inputs = {
-    canscribe.url = "path:./python/canscribe";
     harbor-rs.url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=7a3328e186258dca31f9801227bc4e6fd8db4f36";
     # Deployment/lifecycle infrastructure (TypeDB backend, server module,
     # readiness gates). Tracks trunk (harbor-db#7 merged); previously the
@@ -44,7 +43,6 @@
       nixpkgs,
       nixpkgs-typedb,
       crane,
-      canscribe,
       ...
     }:
     let
@@ -156,15 +154,6 @@
             test-typedb
             ;
           default = chaosbox;
-          canscribe-cpu = canscribe.packages.${pkgs.stdenv.hostPlatform.system}.canscribe-cpu;
-          chaosbox-transcription = pkgs.symlinkJoin {
-            name = "chaosbox-transcription";
-            paths = [ chaosbox ];
-            nativeBuildInputs = [ pkgs.makeWrapper ];
-            postBuild = ''
-              wrapProgram $out/bin/chaosbox --set CHAOSBOX_CANSCRIBE_BIN ${canscribe.packages.${pkgs.stdenv.hostPlatform.system}.canscribe-cpu}/bin/canscribe
-            '';
-          };
           site = docs;
         }
       );

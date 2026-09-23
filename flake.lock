@@ -1113,7 +1113,6 @@
     },
     "root": {
       "inputs": {
-        "canscribe": "canscribe",
         "crane": "crane",
         "harbor-db": "harbor-db",
         "harbor-docs": "harbor-docs",
