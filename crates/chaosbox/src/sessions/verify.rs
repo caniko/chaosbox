@@ -3,7 +3,7 @@
 //! A pass answers one question — *does the destination still hold exactly
 //! what the receipts attest to* — and it has to answer it without being able
 //! to talk itself into "yes" over nothing. Three things pin that down, and
-//! `docs/SESSION_VERIFICATION.md` writes each one out:
+//! `docs/src/session-verification.md` writes each one out:
 //!
 //! 1. **An inventory from outside the receipts.** `progress.json` lists every
 //!    session the driver intended to migrate, so an empty journal cannot

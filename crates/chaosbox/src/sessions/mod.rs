@@ -4,7 +4,7 @@
 //!
 //! The contract these surfaces enforce — the pinned inventory, the receipt
 //! schema, and what a passing check is allowed to claim — is written down in
-//! `docs/SESSION_VERIFICATION.md`.
+//! `docs/src/session-verification.md`.
 
 pub mod campaign;
 pub mod cli;

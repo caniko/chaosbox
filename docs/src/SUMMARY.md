@@ -3,6 +3,7 @@
 - [Chaosbox](index.md)
 - [Selective intelligence](intelligence.md)
 - [First delivery: session migration](session-migration.md)
+- [Session verification contract](session-verification.md)
 
 # Implementation and historical reference
 
