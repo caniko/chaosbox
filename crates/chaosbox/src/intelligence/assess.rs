@@ -11,7 +11,7 @@ use super::{words, Bundle};
 
 /// Version every semantic change; initial strict policy is not a calibrated
 /// accuracy claim. Threshold changes require explicit policy review.
-pub const RUBRIC_VERSION: &str = "session-intelligence-v5";
+pub const RUBRIC_VERSION: &str = "session-intelligence-v6";
 
 /// A successful negative/abstention is durable and is not retried for a yes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +74,7 @@ impl Assessment {
                     | "session-intelligence-v3"
                     | "session-intelligence-v4"
                     | "session-intelligence-v5"
+                    | "session-intelligence-v6"
             )
             || self.id != self.identity()?
             || !self.questions.keys().map(String::as_str).eq([
@@ -173,7 +174,9 @@ pub fn questions(
         .records
         .iter()
         .filter(|r| {
-            r.status != IntelligenceStatus::Superseded && r.repositories == candidate.repositories
+            r.status != IntelligenceStatus::Superseded
+                && r.repositories == candidate.repositories
+                && !same_occurrence(r, candidate)
         })
         .filter_map(|r| {
             let overlap = words(&r.statement).intersection(&tokens).count();
@@ -243,7 +246,7 @@ pub fn questions(
         "latest_user_evidence_ms":r.evidence.iter().filter(|e|e.speaker=="user").filter_map(|e|e.observed_at_ms).max(),
     })).collect();
     let evidence:Vec<_>=candidate.evidence_bundle.iter().map(|e|serde_json::json!({"speaker":e.speaker,"text":e.text,"partial":e.partial,"tool":e.tool,"operation":e.operation,"status":e.status,"exit_code":e.exit_code})).collect();
-    let state = serde_json::json!({"proposition":candidate.evidence.quote,"speaker":candidate.evidence.speaker,"context":candidate.context,"evidence":evidence,"repositories":candidate.repositories,"related":neighbors});
+    let state = serde_json::json!({"proposition":candidate.evidence.quote,"speaker":candidate.evidence.speaker,"context":candidate.context,"evidence":evidence,"context_coverage":candidate.context_coverage,"repositories":candidate.repositories,"related":neighbors});
     let cache = sha256_hex(&[
         &candidate.id,
         RUBRIC_VERSION,
@@ -385,9 +388,20 @@ fn classify(
         .filter(|(name, _)| name.as_str() != "noise")
         .map(|(_, p)| p)
         .sum();
-    let outcome = if !gates || kind.choice == "noise" {
+    // High precision is an admission requirement, not a reason to label all
+    // uncertainty as noise. Preserve the middle region as recoverable abstention.
+    let negative = ["support", "atomic", "scope", "durable", "utility"]
+        .iter()
+        .any(|name| probability(name) <= 0.1)
+        || (kind.choice == "noise" && strong("kind"));
+    let outcome = if negative {
         Outcome::Rejected
-    } else if meaningful_kind < 0.9 || !strong("novelty") || novelty.choice == "unknown" {
+    } else if !gates
+        || kind.choice == "noise"
+        || meaningful_kind < 0.9
+        || !strong("novelty")
+        || novelty.choice == "unknown"
+    {
         Outcome::Abstained
     } else if novelty.choice == "novel" {
         Outcome::Admitted

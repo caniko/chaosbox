@@ -14,6 +14,7 @@ use super::{assess, extract_window, questions, Bundle, Candidates};
 use crate::{LiveResponder, Responder};
 
 const MAX_ARTIFACT_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_BUNDLE_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Session intelligence commands. Inference is an explicit operator action.
 #[derive(Debug, Subcommand)]
@@ -131,7 +132,14 @@ fn receipt_path(bundle: &Path, id: &str) -> Result<PathBuf, String> {
 }
 
 fn load_bundle_mode(path: &Path, all_receipts: bool) -> Result<Bundle, String> {
-    let value: serde_json::Value = read_json(path)?;
+    load_bundle_with_budget(path, all_receipts, MAX_BUNDLE_BYTES)
+}
+
+fn load_bundle_with_budget(path: &Path, all_receipts: bool, budget: u64) -> Result<Bundle, String> {
+    let text = read_text_limited(path, budget.min(MAX_ARTIFACT_BYTES))?;
+    let mut remaining = budget - text.len() as u64;
+    let value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|_| "invalid intelligence manifest")?;
     let bundle: Bundle = if value.get("version").and_then(serde_json::Value::as_u64) == Some(2) {
         let stored: BundleFile =
             serde_json::from_value(value).map_err(|_| "invalid intelligence manifest")?;
@@ -145,7 +153,11 @@ fn load_bundle_mode(path: &Path, all_receipts: bool) -> Result<Bundle, String> {
             if !all_receipts && !needed.contains(id) {
                 continue;
             }
-            let assessment: super::Assessment = read_json(&receipt_path(path, id)?)?;
+            let text =
+                read_text_limited(&receipt_path(path, id)?, remaining.min(MAX_ARTIFACT_BYTES))?;
+            remaining -= text.len() as u64;
+            let assessment: super::Assessment =
+                serde_json::from_str(&text).map_err(|_| "invalid assessment receipt")?;
             if &assessment.id != id {
                 return Err("receipt reference mismatch".into());
             }
@@ -202,16 +214,23 @@ fn publish_bundle(path: &Path, bundle: &Bundle) -> Result<(), String> {
 }
 
 fn read_text(path: &Path) -> Result<String, String> {
+    read_text_limited(path, MAX_ARTIFACT_BYTES)
+}
+
+fn read_text_limited(path: &Path, limit: u64) -> Result<String, String> {
     let file = fs::File::open(path).map_err(|e| format!("open {}: {e}", path.display()))?;
     if !file.metadata().map_err(|e| e.to_string())?.is_file() {
         return Err("artifact must be a regular file".into());
     }
     let mut bytes = Vec::new();
-    file.take(MAX_ARTIFACT_BYTES + 1)
+    file.take(limit + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
-    if bytes.len() as u64 > MAX_ARTIFACT_BYTES {
-        return Err("artifact exceeds 32 MiB; split input explicitly, never truncate".into());
+    if bytes.len() as u64 > limit {
+        return Err(
+            "artifact exceeds file or aggregate read budget; partition explicitly, never truncate"
+                .into(),
+        );
     }
     String::from_utf8(bytes).map_err(|_| "artifact must be UTF-8".into())
 }
@@ -385,14 +404,14 @@ async fn assess_catalog(
             .map_err(|e| e.to_string())?;
     }
     for candidate in &candidates.candidates {
-        if bundle
-            .assessments
-            .iter()
-            .any(|a| a.candidate_id == candidate.id && a.rubric_version == super::RUBRIC_VERSION)
-        {
+        let (state, asked, key) = questions(candidate, &bundle)?;
+        if bundle.assessments.iter().any(|a| {
+            a.candidate_id == candidate.id
+                && a.rubric_version == super::RUBRIC_VERSION
+                && a.cache_key == key
+        }) {
             continue;
         }
-        let (state, asked, key) = questions(candidate, &bundle)?;
         let path = cache.join(format!("{key}.json"));
         let response: SystemOneResponse = if path.exists() {
             read_json(&path)?
@@ -510,6 +529,9 @@ mod tests {
         assert!(manifest.get("assessments").is_none());
         assert_eq!(manifest["receipts"].as_array().unwrap().len(), 1);
         assert_eq!(load_bundle_mode(&first, true).unwrap().assessments.len(), 1);
+        let manifest_size = fs::metadata(&first).unwrap().len();
+        assert!(load_bundle_with_budget(&first, true, manifest_size + 16).is_err());
+        assert!(load_bundle_with_budget(&first, false, manifest_size + 16).is_ok());
         assert!(load_bundle(&first).unwrap().assessments.is_empty());
         assert!(publish_bundle(&first, &bundle).is_err());
         let receipt = receipt_path(&first, &bundle.assessments[0].id).unwrap();

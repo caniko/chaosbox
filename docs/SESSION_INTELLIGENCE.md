@@ -31,7 +31,7 @@ durability, kind, reusable value, and relation to at most four same-scope,
 same-repository neighboring items. Jev receives bounded source context and
 closed answer vocabularies, not an entire archive or executable instructions.
 
-Current policy `session-intelligence-v5` requires support/atomicity/scope Noul
+Current policy `session-intelligence-v6` requires support/atomicity/scope Noul
 values >= 0.95 and durability/usefulness >= 0.9. Consolidation requires
 both confidence and chosen probability >= 0.9. Taxonomic uncertainty between
 meaningful kinds is retained in the receipt rather than being mistaken for
@@ -40,6 +40,10 @@ Utility cannot compensate for
 weak support. These are deliberately conservative initial thresholds, **not a
 measured accuracy claim**; calibrate against labelled examples before changing
 them. Rejection and abstention are successful outcomes, not retry opportunities.
+A gate value <= 0.1 or confidently classified noise is a rejection; the region
+below automatic admission but above decisive negative evidence is an abstention.
+Abstained candidates remain recoverable, require no mandatory human queue, and
+do not block lossless session transfer. Neither outcome deletes source history.
 
 Consolidation admits a new item, merges duplicate occurrences, retains both
 sides of a contradiction, or supersedes an older item. Supersession requires
@@ -95,8 +99,17 @@ responses are cached under the output's `.decisions/` sibling (0700), keyed by
 the complete candidate state, neighbor state, questions, rubric and pinned model.
 Rerunning an interrupted assessment with the same inputs replays cached responses
 through validation. API failures do not produce accepted knowledge or replace a
-previous bundle. Existing receipts prevent repeated assessment of unchanged
-source occurrences under the same rubric.
+previous bundle. Existing receipts prevent repeated assessment only when the
+full current state/rubric/model cache identity matches. The item's own
+materialization is excluded from comparison neighbors so it does not invalidate
+its own cache; new relevant knowledge does. Source-local and consolidation
+answers still share one bounded request, so a changed neighbor set currently
+reassesses that request rather than claiming unverified source-local reuse.
+
+Manifest-plus-receipt loading has a 64 MiB aggregate byte budget in addition to
+the 32 MiB per-file ceiling. Oversize artifacts fail explicitly; partition them
+rather than truncate. Evidence windows record total/window/omitted source-record
+counts and omitted text fields, independently of excerpt truncation flags.
 
 Reevaluation retains the original admission and evidence but marks the item
 `withheld` when the current assessment rejects or abstains. Default retrieval
@@ -118,10 +131,12 @@ suite's intentional live-test skip as a model-quality pass.
 The initial multi-record policy rejected all four labelled positives and all
 four negatives. After clarifying normative-policy evidence, separating binary
 usefulness from overlapping category labels, and projecting simpler model state,
-the current policy still misses both calibration positives. These changes did
-not lower the numeric support/scope/atomicity thresholds. Corpus-wide semantic
-promotion remains blocked pending measured calibration. No rejected source data
-is deleted. Protocol/integrity tests passing does not establish semantic quality.
+v5 still missed both calibration positives. V6 changes their recorded-score
+classification from rejection to abstention; it does not lower the automatic
+admission thresholds or claim a new live calibration pass. Corpus-wide semantic
+promotion remains blocked pending measured calibration, but lossless history
+transfer proceeds independently. No source data is deleted for uncertainty.
+Protocol/integrity tests passing does not establish semantic quality.
 
 ## Other sessions: read-only MCP
 

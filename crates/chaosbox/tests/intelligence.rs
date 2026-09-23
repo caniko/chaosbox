@@ -122,11 +122,52 @@ fn high_utility_cannot_compensate_for_unsupported_claims() {
             .insert(gate.into(), Answer::Noul(NoulAnswer { noul: 0.4 }));
         assert_eq!(
             assess(&c, &mut bundle, response).unwrap().outcome,
-            Outcome::Rejected
+            Outcome::Abstained
         );
         assert!(bundle.records.is_empty());
         assert_eq!(bundle.assessments.len(), 1);
     }
+}
+
+#[test]
+fn clear_negative_evidence_is_rejected_but_near_admission_is_abstained() {
+    let c = candidate(
+        "m1",
+        "We must preserve direnv removals at the subprocess boundary.",
+        "user",
+    );
+    for (support, expected) in [(0.01, Outcome::Rejected), (0.94, Outcome::Abstained)] {
+        let mut bundle = Bundle::new("private:can");
+        let mut response = answer(&c, &bundle, "novel");
+        response
+            .answers
+            .insert("support".into(), Answer::Noul(NoulAnswer { noul: support }));
+        assert_eq!(assess(&c, &mut bundle, response).unwrap().outcome, expected);
+        assert!(bundle.records.is_empty());
+        assert_eq!(bundle.assessments.len(), 1);
+    }
+}
+
+#[test]
+fn assessment_cache_changes_for_new_neighbors_but_not_its_own_materialization() {
+    let c = candidate(
+        "m1",
+        "We must preserve direnv removals at the subprocess boundary.",
+        "user",
+    );
+    let mut bundle = Bundle::new("private:can");
+    let (_, _, before) = questions(&c, &bundle).unwrap();
+    let response = answer(&c, &bundle, "novel");
+    assess(&c, &mut bundle, response).unwrap();
+    assert_eq!(questions(&c, &bundle).unwrap().2, before);
+    let other = candidate(
+        "m2",
+        "Direnv approval must remain explicit for protected projects.",
+        "user",
+    );
+    let response = answer(&other, &bundle, "novel");
+    assess(&other, &mut bundle, response).unwrap();
+    assert_ne!(questions(&c, &bundle).unwrap().2, before);
 }
 
 #[test]
@@ -389,13 +430,12 @@ fn policy_reevaluation_withholds_then_can_readmit_without_losing_history() {
     let mut bundle = Bundle::new("private:can");
     let response = answer(&first, &bundle, "novel");
     assess(&first, &mut bundle, response).unwrap();
-    let id = bundle.records[0].id.clone();
     let mut revised = first.clone();
     revised
         .context
         .push_str("\nMore source context invalidates the earlier interpretation.");
     revised.id = revised.identity();
-    let mut response = answer(&revised, &bundle, &format!("duplicate:{id}"));
+    let mut response = answer(&revised, &bundle, "novel");
     response
         .answers
         .insert("support".into(), Answer::Noul(NoulAnswer { noul: 0.1 }));
@@ -410,7 +450,7 @@ fn policy_reevaluation_withholds_then_can_readmit_without_losing_history() {
         .context
         .push_str("\nThe interpretation is now independently checked.");
     revised.id = revised.identity();
-    let response = answer(&revised, &bundle, &format!("duplicate:{id}"));
+    let response = answer(&revised, &bundle, "novel");
     assess(&revised, &mut bundle, response).unwrap();
     assert_eq!(bundle.records.len(), 1);
     assert_eq!(bundle.records[0].status, IntelligenceStatus::Admitted);
@@ -466,6 +506,20 @@ fn evidence_bundle_keeps_execution_metadata_and_affects_identity() {
     assert_eq!(evidence.exit_code, Some(1));
     assert_eq!(evidence.operation.as_deref(), Some("cargo check"));
     assert!(evidence.partial);
+    let records=(0..10).map(|i|serde_json::json!({"id":format!("u{i}"),"type":"user","text":"We must preserve native process permissions."}).to_string()).collect::<Vec<_>>().join("\n");
+    let window = extract(
+        &records,
+        "opencode",
+        "s",
+        "private:can",
+        &["canix".into()],
+        20,
+    )
+    .unwrap();
+    let coverage = window.candidates[0].context_coverage.as_ref().unwrap();
+    assert_eq!(coverage.total_records, 10);
+    assert_eq!(coverage.window_records, 3);
+    assert_eq!(coverage.omitted_records, 7);
 }
 
 #[test]

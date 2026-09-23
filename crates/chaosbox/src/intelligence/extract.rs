@@ -1,5 +1,5 @@
 use chaosbox_core::{
-    intelligence::{ContextEvidence, IntelligenceCandidate, SessionEvidence},
+    intelligence::{ContextCoverage, ContextEvidence, IntelligenceCandidate, SessionEvidence},
     sha256_hex,
 };
 use serde::{Deserialize, Serialize};
@@ -86,26 +86,10 @@ pub fn extract_window(
     let records = parse_records(input)?;
     let mut message_ids = std::collections::BTreeSet::new();
     for (index, record) in records.iter().enumerate() {
-        let id = record
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| format!("record {} lacks a message id", index + 1))?;
+        let (id, kind) = record_identity(record, index, session)?;
         if !message_ids.insert(id.to_owned()) {
             return Err("duplicate message id: reconcile source variants before extraction".into());
         }
-        if record
-            .get("sessionID")
-            .or_else(|| record.get("session_id"))
-            .and_then(Value::as_str)
-            .is_some_and(|id| id != session)
-        {
-            return Err("record belongs to a different session".into());
-        }
-        let kind = record
-            .get("type")
-            .and_then(Value::as_str)
-            .ok_or("record lacks type")?;
         if matches!(kind, "compaction" | "synthetic" | "system") {
             result.excluded_derived += 1;
         }
@@ -130,15 +114,17 @@ pub fn extract_window(
                     result.has_more = true;
                     continue;
                 }
+                let (evidence_bundle, context_coverage) = bundles
+                    .entry(pointer.clone())
+                    .or_insert_with(|| evidence_window(&records, index, &pointer))
+                    .clone();
                 let mut candidate = IntelligenceCandidate {
                     id: String::new(),
                     scope: scope.into(),
                     repositories: repos.clone(),
                     context,
-                    evidence_bundle: bundles
-                        .entry(pointer.clone())
-                        .or_insert_with(|| evidence_window(&records, index, &pointer))
-                        .clone(),
+                    evidence_bundle,
+                    context_coverage: Some(context_coverage),
                     evidence: SessionEvidence {
                         source: source.into(),
                         snapshot: snapshot.clone(),
@@ -170,6 +156,31 @@ fn parse_records(input: &str) -> Result<Vec<Value>, String> {
         .collect()
 }
 
+fn record_identity<'a>(
+    record: &'a Value,
+    index: usize,
+    session: &str,
+) -> Result<(&'a str, &'a str), String> {
+    let id = record
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| format!("record {} lacks a message id", index + 1))?;
+    if record
+        .get("sessionID")
+        .or_else(|| record.get("session_id"))
+        .and_then(Value::as_str)
+        .is_some_and(|id| id != session)
+    {
+        return Err("record belongs to a different session".into());
+    }
+    let kind = record
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or("record lacks type")?;
+    Ok((id, kind))
+}
+
 fn clipped(text: &str, limit: usize) -> (String, bool) {
     let mut end = text.len().min(limit);
     while !text.is_char_boundary(end) {
@@ -178,14 +189,26 @@ fn clipped(text: &str, limit: usize) -> (String, bool) {
     (text[..end].into(), end < text.len())
 }
 
-fn evidence_window(records: &[Value], index: usize, primary_pointer: &str) -> Vec<ContextEvidence> {
+fn evidence_window(
+    records: &[Value],
+    index: usize,
+    primary_pointer: &str,
+) -> (Vec<ContextEvidence>, ContextCoverage) {
     let mut result = Vec::new();
-    for record in &records[index.saturating_sub(2)..(index + 3).min(records.len())] {
+    let window = &records[index.saturating_sub(2)..(index + 3).min(records.len())];
+    let mut coverage = ContextCoverage {
+        total_records: records.len(),
+        window_records: window.len(),
+        omitted_records: records.len() - window.len(),
+        omitted_text_fields: 0,
+    };
+    for record in window {
         let Some(message) = record.get("id").and_then(Value::as_str) else {
             continue;
         };
         let kind = record.get("type").and_then(Value::as_str).unwrap_or("");
         let mut texts = source_texts(record, kind);
+        coverage.omitted_text_fields += texts.len().saturating_sub(2);
         if record.get("id") == records[index].get("id") {
             texts.sort_by_key(|(pointer, _, _)| pointer != primary_pointer);
         }
@@ -260,7 +283,7 @@ fn evidence_window(records: &[Value], index: usize, primary_pointer: &str) -> Ve
             });
         }
     }
-    result
+    (result, coverage)
 }
 
 fn source_texts<'a>(record: &'a Value, kind: &str) -> Vec<(String, &'static str, &'a str)> {

@@ -54,6 +54,23 @@ pub struct IntelligenceCandidate {
     /// Bounded adjacent records; context, not automatically corroborating votes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence_bundle: Vec<ContextEvidence>,
+    /// Explicit context-window omissions; not a claim of exhaustive support.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_coverage: Option<ContextCoverage>,
+}
+
+/// Counts explain what the bounded evidence window did not include.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextCoverage {
+    /// Number of source records in the input snapshot.
+    pub total_records: usize,
+    /// Records considered around this proposal.
+    pub window_records: usize,
+    /// Records outside the window.
+    pub omitted_records: usize,
+    /// Eligible text fields within the window omitted by its field cap.
+    pub omitted_text_fields: usize,
 }
 
 /// An anchored excerpt and its execution metadata from the same snapshot.
@@ -101,14 +118,14 @@ impl IntelligenceCandidate {
                 &self.context,
             ])
         );
-        if self.evidence_bundle.is_empty() {
+        if self.evidence_bundle.is_empty() && self.context_coverage.is_none() {
             return base;
         }
         format!(
             "intel-candidate:{}",
             crate::sha256_hex(&[
                 &base,
-                &serde_json::to_string(&self.evidence_bundle)
+                &serde_json::to_string(&(&self.evidence_bundle, &self.context_coverage))
                     .expect("context evidence contains only JSON-safe fields"),
             ])
         )
