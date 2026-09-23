@@ -358,6 +358,16 @@ impl Receipt {
             .and_then(|provenance| provenance.get("boundary"))
             .and_then(Value::as_str)
     }
+
+    /// Digest of the boundary record named above, binding the receipt to
+    /// the exact record bytes.
+    #[must_use]
+    pub fn provenance_record_digest(&self) -> Option<&str> {
+        self.body
+            .get("provenance")
+            .and_then(|provenance| provenance.get("boundaryRecordSha256"))
+            .and_then(Value::as_str)
+    }
 }
 
 /// The single receipt a session currently resolves to, and how deep its
