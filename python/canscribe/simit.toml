@@ -1,0 +1,19 @@
+[flake]
+scope = "full"
+mode = "custom"
+backend = "py-harbor"
+components = ["treefmt", "nix-flake-check", "uv-mypy"]
+
+[flake.expected_outputs]
+packages = ["canscribe-cpu", "docs", "site"]
+apps = ["canscribe-cpu"]
+dev_shells = ["cpu", "docs", "nvidia", "amd", "apple"]
+checks = ["flake-eval", "offline-tests", "typecheck"]
+
+[ci]
+runtime = "nix"
+runner = "ubuntu-24.04"
+with_pypi_publish = true
+provider = "actions"
+platform = "github"
+all_features = false

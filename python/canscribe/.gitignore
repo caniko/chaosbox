@@ -1,0 +1,31 @@
+# Local media and development state
+bobby.mp4
+2026-06-08_15-14-01.mp4
+.agents/
+.opencode/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.so
+build/
+dist/
+*.egg-info/
+.venv/
+.env
+.envrc
+
+# Test and formatter caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage*
+
+# Generated documentation and Nix outputs
+docs/book/
+target/
+result
+result-*
+
+# Local publishing credentials
+.pypirc
