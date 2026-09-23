@@ -124,9 +124,11 @@ pass has to prove before it may answer `0`.
 
 Then rebased onto trunk `dc30fef` (`fefa183` + `dc30fef`, the jev and
 extract refactors — neither touches this crate) and re-run unchanged:
-**every field identical**, only `elapsed_ms 99430`. Binary 23692488
-bytes, built 2026-09-23 16:37, report
-`/data/scratch/tmp/opencode/verify-7644-postrebase.json`.
+**identical to `verify-7644-hardened.json` field for field, except
+`elapsed_ms 99430`** — that is, the hardened pass before the rebase versus
+the hardened pass after it, not a comparison against the original
+pre-hardening run above. Binary 23692488 bytes, built 2026-09-23 16:37,
+report `/data/scratch/tmp/opencode/verify-7644-postrebase.json`.
 
 ### G1 fields, unchanged
 
@@ -212,3 +214,71 @@ the stricter validation was enforced: all 7644 receipts already carry
 `transformation`, `messages`, `drafts` with correct types and 64-lowercase-hex
 digests — **0 contract violations**. So the stricter rules reject no receipt
 that exists today; they only constrain the 204 variants Phase 2 will write.
+
+---
+
+## Re-run after the inventory closeout
+
+A review found that `total`, `deferred` and `errors` were defaulted when
+absent — `total` to the number of `verified` entries, the other two to zero.
+That defaulting manufactures the very agreement those counters exist to
+measure: an inventory reporting none of them would still have reconciled,
+and `--allow-partial` would have waved it through. They are now required,
+`complete` must be a boolean when present rather than decaying into `false`,
+and `identityDigest`/`driverDigest` must be 64 lowercase hex digits when
+present.
+
+The campaign was checked against the new rules *before* they were enforced:
+its `progress.json` carries all six fields with the expected shapes, so the
+tightened parser accepts it.
+
+The same review also corrected two overstatements in this document and in
+`docs/SESSION_VERIFICATION.md`: `PRAGMA data_version` is a per-connection
+change counter rather than a generation identity for the database, and the
+comparison recorded above is hardened-pre-rebase against
+hardened-post-rebase, not against the original pre-hardening run.
+
+### Executable
+
+- Binary: `target/release/chaosbox` (23693168 bytes, built 2026-09-23 17:15)
+- Command: unchanged — `chaosbox sessions verify --root .../canonical-staging-FP6mrj`
+- Exit code: `0`, `elapsed_ms 100024`
+- The campaign was opened read-only; nothing in it was written.
+- Report: `/data/scratch/tmp/opencode/verify-7644-closeout.json`
+- **Identical to `verify-7644-postrebase.json` field for field except
+  `elapsed_ms 99430 → 100024`** (24 fields compared).
+
+### G1 criteria, still met
+
+| criterion | value |
+| --- | --- |
+| reconciled totals | `true` — `total = expected = receipts = destination_rows = 7644` |
+| `deferred` / `errors` | 0 / 0, both **read** rather than defaulted |
+| driver digest | `62f6fb3544875b4f22c63d3df315e2c7d5106eff21bedc26c7e1fd696b9f6604` |
+| sessions effective / checked / verified | 7644 / 7644 / 7644 |
+| `complete` | `true` |
+| `quick_check` / foreign-key violations | `ok` / 0 |
+| exit code | `0` |
+| `checked_sources` | `false` (deliberate — G1 is destination-only) |
+
+### Checks
+
+- `cargo fmt -p chaosbox -- --check` → **0**
+- `cargo clippy -p chaosbox --all-targets -- --deny warnings` → **0**
+- `cargo test -p chaosbox` → **104 passed, 1 pre-existing ignored**
+  (101 → 104: a missing counter cannot be allowed partial, a mistyped
+  `complete` is refused rather than read as `false`, and a present but
+  malformed campaign digest is refused)
+
+### Status of this branch
+
+**Not integrated.** Trunk is `dc30fef`; `session-verifier` sits on top of it
+and has not been merged. The shared checkout
+(`/data/nvme0/can/canix/projects/repos/owned/chaosbox`) holds *untracked*
+copies of `crates/chaosbox/src/sessions/`, `tests/sessions*.rs` and
+`docs/SESSION_VERIFICATION.md` synced from an earlier tip — whoever lands
+this branch must reconcile those against it rather than delete them blind,
+since other sessions may have edited them since.
+
+The campaign directory `2026-09-22-v2/` remains read-only and untouched;
+this file stays outside it as G1's evidence slot.

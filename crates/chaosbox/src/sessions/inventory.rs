@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 
 use serde_json::Value;
 
-use crate::sessions::campaign::{is_session_id, CampaignError};
+use crate::sessions::campaign::{is_digest, is_session_id, CampaignError};
 
 /// The session inventory a campaign pins, plus the counters that say whether
 /// the run that pinned it finished.
@@ -39,10 +39,22 @@ impl Inventory {
     ///
     /// # Errors
     ///
-    /// Returns [`CampaignError::InvalidProgress`] when a field has the wrong
-    /// shape: `verified` has to be an array of objects each naming one
-    /// distinct session, and the counters have to be non-negative integers
-    /// (or, for `deferred` and `errors`, arrays of the sessions behind them).
+    /// Returns [`CampaignError::InvalidProgress`] when a field is absent or
+    /// has the wrong shape.
+    ///
+    /// `total`, `deferred` and `errors` have to be present. They are the
+    /// counters that say whether the run that pinned the inventory left work
+    /// behind, and defaulting them would invent agreement: `total` defaulted
+    /// to the number of `verified` entries matches by construction, and
+    /// `deferred`/`errors` defaulted to zero report work as never having been
+    /// reported. An inventory that cannot be read leaves `reconciled` false,
+    /// and a pass over it can never succeed — not under `--allow-partial`
+    /// either, because `clean()` includes reconciliation.
+    ///
+    /// `verified` has to be an array of objects each naming one distinct
+    /// session. `complete` may be absent (which reads as "not finished", the
+    /// conservative answer) but must be a boolean when present. The digests
+    /// may be absent but must be 64 lowercase hex digits when present.
     pub fn from_progress(progress: &Value) -> Result<Self, CampaignError> {
         let entries = progress
             .get("verified")
@@ -64,16 +76,12 @@ impl Inventory {
             }
         }
 
-        let default = i64::try_from(expected.len()).unwrap_or(i64::MAX);
         Ok(Self {
-            total: count(progress, "total", default)?,
+            total: count(progress, "total")?,
             expected,
             deferred: size(progress, "deferred")?,
             errors: size(progress, "errors")?,
-            complete: progress
-                .get("complete")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
+            complete: completion(progress)?,
             identity_digest: digest(progress, "identityDigest")?,
             driver_digest: digest(progress, "driverDigest")?,
         })
@@ -88,12 +96,35 @@ fn invalid(field: &str, problem: impl std::fmt::Display) -> CampaignError {
     }
 }
 
-/// A non-negative integer counter, defaulting when the field is absent so a
-/// driver that never wrote one still yields a usable expectation.
-fn count(progress: &Value, field: &str, default: i64) -> Result<usize, CampaignError> {
-    let Some(value) = progress.get(field) else {
-        return Ok(usize::try_from(default).unwrap_or(0));
-    };
+/// A required non-negative integer counter.
+///
+/// It is required rather than defaulted. `total` defaulted to the number of
+/// `verified` entries matches by construction, so an inventory that reported
+/// no total at all would reconcile perfectly; `deferred` and `errors`
+/// defaulted to zero would assert that nothing was left behind. All three are
+/// claims, and a claim nobody wrote down is not a claim this pass may make
+/// on the driver's behalf.
+fn count(progress: &Value, field: &str) -> Result<usize, CampaignError> {
+    let value = progress.get(field).ok_or_else(|| required(field))?;
+    non_negative(value, field)
+}
+
+/// A required counter the driver may write either as a bare number or as the
+/// array of sessions behind it.
+///
+/// The elements are counted, not interpreted: a non-empty array already
+/// fails reconciliation, so what the entries look like never decides whether
+/// the campaign agrees with itself.
+fn size(progress: &Value, field: &str) -> Result<usize, CampaignError> {
+    let value = progress.get(field).ok_or_else(|| required(field))?;
+    if let Some(entries) = value.as_array() {
+        return Ok(entries.len());
+    }
+    non_negative(value, field)
+}
+
+/// A counter shaped the way the driver should have written it.
+fn non_negative(value: &Value, field: &str) -> Result<usize, CampaignError> {
     let integer = value
         .as_i64()
         .ok_or_else(|| invalid(field, "expected a non-negative integer"))?;
@@ -103,19 +134,34 @@ fn count(progress: &Value, field: &str, default: i64) -> Result<usize, CampaignE
     Ok(usize::try_from(integer).unwrap_or(usize::MAX))
 }
 
-/// A counter that the driver may write either as a bare number or as the
-/// array of sessions behind it.
-fn size(progress: &Value, field: &str) -> Result<usize, CampaignError> {
-    let Some(value) = progress.get(field) else {
-        return Ok(0);
-    };
-    if let Some(entries) = value.as_array() {
-        return Ok(entries.len());
-    }
-    count(progress, field, 0)
+/// A field the inventory parser needs and `progress.json` did not carry.
+fn required(field: &str) -> CampaignError {
+    invalid(field, "required field is missing")
 }
 
-/// An optional digest field: absent is allowed, a non-string is not.
+/// Whether the driver finished its run.
+///
+/// Absent reads as `false`, which is the conservative answer and is reported
+/// as `progress_complete: false` rather than silently granted. Present but
+/// mistyped is an error instead of a fallback, so `"true"` cannot decay into
+/// `false` and hide behind `--allow-partial`.
+fn completion(progress: &Value) -> Result<bool, CampaignError> {
+    let Some(value) = progress.get("complete") else {
+        return Ok(false);
+    };
+    value
+        .as_bool()
+        .ok_or_else(|| invalid("complete", "expected a boolean"))
+}
+
+/// An optional digest field: absence is reported as absence, but a digest
+/// that is present has to be one.
+///
+/// These are carried into the report as the campaign's own assertions. The
+/// pass echoes what `progress.json` pinned; it does not re-derive them from
+/// the artifacts they name, so matching `driverDigest` against the frozen
+/// `assemble-canonical-history.mjs` stays G1's job rather than something a
+/// clean report silently implies it performed.
 fn digest(progress: &Value, field: &str) -> Result<Option<String>, CampaignError> {
     let Some(value) = progress.get(field) else {
         return Ok(None);
@@ -123,5 +169,8 @@ fn digest(progress: &Value, field: &str) -> Result<Option<String>, CampaignError
     let text = value
         .as_str()
         .ok_or_else(|| invalid(field, "expected a hex digest string"))?;
+    if !is_digest(text) {
+        return Err(invalid(field, "expected 64 lowercase hex digits"));
+    }
     Ok(Some(text.to_string()))
 }

@@ -722,15 +722,21 @@ fn text<'body>(body: &'body Value, field: &str, key: &str) -> Result<&'body str,
         .ok_or_else(|| invalid_field(key, field, "expected a string"))
 }
 
-/// A required digest field: 64 lowercase hex digits, exactly the shape
-/// `crypto.createHash("sha256").digest("hex")` produces.
-fn digest<'body>(body: &'body Value, field: &str, key: &str) -> Result<&'body str, CampaignError> {
-    let value = text(body, field, key)?;
-    let well_formed = value.len() == 64
+/// Whether `value` is the 64 lowercase hex digits that
+/// `crypto.createHash("sha256").digest("hex")` produces, and therefore
+/// whether it can stand in as a digest anywhere in a campaign.
+#[must_use]
+pub fn is_digest(value: &str) -> bool {
+    value.len() == 64
         && value
             .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-    if !well_formed {
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// A required digest field: see [`is_digest`].
+fn digest<'body>(body: &'body Value, field: &str, key: &str) -> Result<&'body str, CampaignError> {
+    let value = text(body, field, key)?;
+    if !is_digest(value) {
         return Err(invalid_field(
             key,
             field,

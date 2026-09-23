@@ -918,6 +918,127 @@ fn an_inventory_listing_a_session_twice_is_refused() {
     drop(held);
 }
 
+/// The counters are the reason an external inventory is worth having: they
+/// are how a pass learns the driver reported no leftovers. Written as
+/// defaults they manufacture the very agreement they are supposed to
+/// measure — `total` defaulted to `verified.len()` matches by construction
+/// and `deferred`/`errors` defaulted to zero say nothing was left behind —
+/// so all three are required instead.
+///
+/// Every set difference here is empty: the receipt, the destination and the
+/// declared sessions all agree. Only the missing counters stand between this
+/// campaign and a clean pass, and `--allow-partial` must not move them.
+#[test]
+fn an_inventory_missing_its_counters_is_refused_even_when_partial() {
+    let (held, root) = fixture();
+    let digest = recorded_digest(&root);
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, &digest),
+    );
+    let full = json!({
+        "total": 1,
+        "verified": [{"id": SESSION}],
+        "deferred": [],
+        "errors": [],
+        "complete": true,
+        "identityDigest": sha("identity"),
+        "driverDigest": sha("driver"),
+    });
+
+    for omitted in ["total", "deferred", "errors"] {
+        let mut progress = full.clone();
+        progress
+            .as_object_mut()
+            .expect("progress is an object")
+            .remove(omitted);
+        write_progress(&root, &progress);
+
+        let error = Campaign::open(Some(root.clone()))
+            .expect("campaign")
+            .inventory()
+            .expect_err("a counter nobody wrote is not a counter");
+        assert!(
+            matches!(&error, CampaignError::InvalidProgress { field, .. } if field == omitted),
+            "omitting `{omitted}` gave: {error}"
+        );
+
+        let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+        let report = verify(&campaign, &every_receipt()).expect("report still produced");
+        assert!(
+            !report.inventory.reconciled,
+            "`{omitted}` was invented on the driver's behalf"
+        );
+        assert!(!report.clean());
+        assert!(
+            !report.succeeded(true),
+            "`{omitted}` absent, yet --allow-partial passed"
+        );
+    }
+    drop(held);
+}
+
+/// `complete` is the driver's own claim to have finished. Absent reads as
+/// "not finished", which the report shows; present with the wrong type must
+/// not quietly become `false`, or a mistyped campaign hides behind
+/// `--allow-partial` looking merely incomplete.
+#[test]
+fn a_mistyped_completion_is_refused_rather_than_read_as_false() {
+    let (held, root) = fixture();
+    write_progress(
+        &root,
+        &json!({
+            "total": 0,
+            "verified": [],
+            "deferred": [],
+            "errors": [],
+            "complete": "true",
+        }),
+    );
+
+    let error = Campaign::open(Some(root.clone()))
+        .expect("campaign")
+        .inventory()
+        .expect_err("a string is not a completion state");
+    assert!(
+        matches!(&error, CampaignError::InvalidProgress { field, .. } if field == "complete"),
+        "unexpected error: {error}"
+    );
+    drop(held);
+}
+
+/// The campaign digests are echoed into the report as the campaign's own
+/// assertions, so a value that is not a digest must never leave the parser
+/// wearing the same shape as a real one.
+#[test]
+fn a_present_but_malformed_campaign_digest_is_refused() {
+    let (held, root) = fixture();
+    write_progress(
+        &root,
+        &json!({
+            "total": 0,
+            "verified": [],
+            "deferred": [],
+            "errors": [],
+            "complete": true,
+            "identityDigest": sha("identity"),
+            "driverDigest": "62f6fb35",
+        }),
+    );
+
+    let error = Campaign::open(Some(root.clone()))
+        .expect("campaign")
+        .inventory()
+        .expect_err("a short hex string is not a digest");
+    assert!(
+        matches!(&error, CampaignError::InvalidProgress { field, .. } if field == "driverDigest"),
+        "unexpected error: {error}"
+    );
+    drop(held);
+}
+
 // ---- verification behavior ----
 
 /// A pass that checks every receipt and finds no disagreement succeeds, and

@@ -33,8 +33,34 @@ writes before and during its run:
 every id must be a real session id. Anything else is `InvalidProgress`, and
 the pass reports it instead of inventing an inventory.
 
-`deferred`, `errors`, and a `total` that does not match `verified` are
-reported and fail reconciliation: they mean the driver left work undone.
+`total`, `deferred` and `errors` are **required**. They are the pass's only
+statement about work it did not do, and they are precisely what a default
+would invent: `total` defaulted to the number of `verified` entries makes an
+inventory that reported no total agree with itself, while the other two
+defaulted to zero report work as never having been reported at all. A
+missing counter is `InvalidProgress`, which leaves `reconciled` false — and
+because `clean()` includes reconciliation, the pass fails even under
+`--allow-partial`.
+
+`deferred` and `errors` may be written either as a bare count or as the
+array of sessions behind them. The elements are counted, not interpreted: a
+non-empty array already fails reconciliation, so their shape never decides
+whether the campaign agrees with itself.
+
+`complete` may be absent, which reads as "not finished" and is shown as
+`progress_complete: false`; when present it must be a boolean, so a
+mistyped value is refused instead of decaying into `false`. The two digests
+may be absent but must be 64 lowercase hex digits when present.
+
+Those digests are **reported, not verified**. The pass echoes what
+`progress.json` pinned; it does not re-derive either one from the artifact
+it names. Comparing `driverDigest` against the frozen
+`assemble-canonical-history.mjs` is therefore a check G1 performs in its own
+evidence — a clean report does not imply it happened.
+
+A `total` that does not match `verified`, or a non-zero `deferred` or
+`errors`, is reported and fails reconciliation: they mean the driver left
+work undone.
 
 ---
 
@@ -98,13 +124,24 @@ transaction before the first query:
   **one snapshot** of the destination, reported as `consistent_read`.
 - Each source snapshot and `recovered-rows.db` get their own transaction, so
   an `inputDigest` recomputation does not straddle a rewrite of a 27 GB file.
-- `PRAGMA data_version` is read before the snapshot opens and after it
-  commits. A change between the two is `concurrent_write: true`.
+- `PRAGMA data_version` is read before the transaction opens and again after
+  it commits. It is a **per-connection change counter**, not an identifier
+  for the database: unrelated databases share its values and it resets with
+  the connection. What it can say is whether *this* connection observed
+  another connection commit to this file between those two reads, which is
+  reported as `snapshot.concurrent_write`.
+- Because `data_version_before` is taken before `BEGIN`, it is not sampled
+  atomically with the snapshot. Reads *inside* the transaction all see one
+  snapshot; only the bookend comparison is approximate, which is a second
+  reason it is reported rather than gated.
 
 `concurrent_write` is reported, not failed. The pass itself stayed
-consistent — it read one snapshot and everything in the report describes
-those bytes — but the destination has moved since, so the result is stale
-and should be re-run before anyone relies on it.
+consistent — every number in the report describes the one snapshot it read —
+but a `true` means the destination has moved since, so the result is stale
+and should be re-run before anyone relies on it. A `false` means no external
+commit was observed on that path and nothing more: it is not a generation
+identity for the database, and it does not travel with the report the way a
+digest does.
 
 ---
 
