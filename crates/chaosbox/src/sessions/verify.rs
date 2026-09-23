@@ -553,6 +553,116 @@ fn difference(left: &BTreeSet<String>, right: &BTreeSet<String>) -> Vec<String> 
     left.difference(right).cloned().collect()
 }
 
+/// The variant identity and pinned mapping a pass checks variant receipts
+/// against. Loaded whenever `journal-v3/identity-v3.json` exists — reading
+/// two small JSON files needs no database, so destination-only passes get it
+/// too — and absent before G3, when there is nothing variant-shaped to
+/// check. Variant receipts without this identity are a hard error: without
+/// the pin, their provenance is unattested.
+struct VariantPins {
+    /// Pinned mapping entries by derived session id.
+    entries: HashMap<String, VariantEntry>,
+    /// Derivation algorithms the identity pins, deep-compared against every
+    /// variant receipt's claim.
+    transformation: Option<Value>,
+}
+
+impl VariantPins {
+    /// Load and verify the pin, or report that there is nothing to check.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`VerifyError::Mapping`] when variant receipts exist without
+    /// an identity, when the identity is malformed, when it names any
+    /// mapping but the staged one, or when the staged mapping does not hash
+    /// to the pinned digest.
+    fn load(campaign: &Campaign, effective: &[Effective]) -> Result<Option<Self>, VerifyError> {
+        let identity = campaign
+            .identities()?
+            .into_iter()
+            .find(|identity| identity.journal == "journal-v3" && identity.file == "identity-v3.json");
+        let has_variants = effective
+            .iter()
+            .any(|entry| entry.head.kind() == Some("divergent-variant"));
+        let Some(identity) = identity else {
+            if has_variants {
+                return Err(VerifyError::Mapping {
+                    reason: "variant receipts without journal-v3/identity-v3.json".to_string(),
+                });
+            }
+            return Ok(None);
+        };
+
+        let malformed = |what: &str| VerifyError::Mapping {
+            reason: format!("journal-v3/identity-v3.json: {what}"),
+        };
+        if identity.body.get("version").and_then(Value::as_u64) != Some(3) {
+            return Err(malformed("version is not 3"));
+        }
+        if identity.body.get("journal").and_then(Value::as_str) != Some("journal-v3") {
+            return Err(malformed("journal is not journal-v3"));
+        }
+        let expected_digest = identity
+            .body
+            .get("mappingDigest")
+            .and_then(Value::as_str)
+            .ok_or_else(|| malformed("no mappingDigest"))?;
+        let staged = campaign.variant_mapping();
+        let named = identity
+            .body
+            .get("mappingFile")
+            .and_then(Value::as_str)
+            .ok_or_else(|| malformed("no mappingFile"))?;
+        if PathBuf::from(named) != staged {
+            return Err(malformed(&format!(
+                "mappingFile names {named} instead of the staged mapping {}",
+                staged.display()
+            )));
+        }
+        let text = std::fs::read_to_string(&staged).map_err(|source| VerifyError::Mapping {
+            reason: format!("cannot read {}: {source}", staged.display()),
+        })?;
+        let recomputed = mapping_variants_digest(&text).map_err(|source| VerifyError::Mapping {
+            reason: format!("staged mapping does not parse: {source}"),
+        })?;
+        if recomputed != expected_digest {
+            return Err(VerifyError::Mapping {
+                reason: format!(
+                    "staged mapping digests as {recomputed} instead of the pinned {expected_digest}"
+                ),
+            });
+        }
+        let mut entries = HashMap::new();
+        for entry in parse_mapping_variants(&text).map_err(|source| VerifyError::Mapping {
+            reason: format!("staged mapping does not parse: {source}"),
+        })? {
+            entries.insert(entry.session_id.clone(), entry);
+        }
+        Ok(Some(Self {
+            entries,
+            transformation: identity.body.get("variantIdTransformation").cloned(),
+        }))
+    }
+
+    /// Session ids the pinned mapping sanctions, for inventory union.
+    fn sanctioned(&self) -> BTreeSet<String> {
+        self.entries.keys().cloned().collect()
+    }
+}
+
+/// Message ids of one session in `(seq, id)` order, the order both the
+/// materializer and the two-sided re-key proof read them in.
+fn message_ids(connection: &Connection, session: &str) -> Result<Vec<String>, rusqlite::Error> {
+    let mut statement =
+        connection.prepare("SELECT id FROM session_message WHERE session_id = ? ORDER BY seq, id")?;
+    let mut rows = statement.query([session])?;
+    let mut ids = Vec::new();
+    while let Some(row) = rows.next()? {
+        ids.push(row.get::<_, String>(0)?);
+    }
+    Ok(ids)
+}
+
 /// Run one read-only verification pass over a campaign.
 ///
 /// # Errors
@@ -580,6 +690,14 @@ pub fn verify(campaign: &Campaign, options: &VerifyOptions) -> Result<VerifyRepo
 
     let selected = select(&effective, options)?;
 
+    // The variant pin needs no database, so it loads on every pass — but a
+    // broken pin is a hard error, never a skipped check.
+    let pins = VariantPins::load(campaign, &effective)?;
+    let variant_ids: BTreeSet<String> = pins
+        .as_ref()
+        .map_or_else(BTreeSet::new, VariantPins::sanctioned);
+    let delta_ids = BTreeSet::new();
+
     let destination = Snapshot::open(&campaign.destination())?;
     report.snapshot.consistent_read = true;
     report.snapshot.data_version_before = destination.version_before;
@@ -600,7 +718,7 @@ pub fn verify(campaign: &Campaign, options: &VerifyOptions) -> Result<VerifyRepo
             source,
         })?;
 
-    report.inventory = InventoryReport::reconcile(campaign, &effective, &rows);
+    report.inventory = InventoryReport::reconcile(campaign, &effective, &rows, &variant_ids, &delta_ids);
     report.complete = report.inventory.reconciled
         && report.inventory.progress_complete
         && selected.len() == effective.len();
@@ -615,6 +733,12 @@ pub fn verify(campaign: &Campaign, options: &VerifyOptions) -> Result<VerifyRepo
     for entry in &selected {
         report.sessions_checked += 1;
         let receipt = &entry.head;
+        if let Some(driver) = receipt.body.get("driverDigest").and_then(Value::as_str) {
+            let digests = report.driver_digests.entry(receipt.journal.clone()).or_default();
+            if !digests.contains(&driver.to_string()) {
+                digests.push(driver.to_string());
+            }
+        }
         let expected = receipt.destination_digest().unwrap_or_default().to_string();
 
         let actual = session_digest(destination.connection(), &entry.session);
@@ -663,6 +787,8 @@ pub fn verify(campaign: &Campaign, options: &VerifyOptions) -> Result<VerifyRepo
                 entry,
                 &mut sources,
                 recovery.as_ref(),
+                &destination,
+                pins.as_ref(),
                 &mut report,
             )?;
         }
@@ -726,6 +852,8 @@ fn check_sources(
     entry: &Effective,
     sources: &mut HashMap<String, Snapshot>,
     recovery: Option<&Snapshot>,
+    destination: &Snapshot,
+    pins: Option<&VariantPins>,
     report: &mut VerifyReport,
 ) -> Result<(), VerifyError> {
     let receipt = &entry.head;
@@ -782,7 +910,146 @@ fn check_sources(
         }
     }
 
+    if receipt.kind() == Some("divergent-variant") {
+        let snapshot = &sources[source];
+        check_variant_remap(entry, snapshot, destination, pins, report)?;
+    }
+
     report.source_coverage += 1;
+    Ok(())
+}
+
+/// Re-derive a variant receipt's re-key proof from receipt fields and row
+/// order: the session id from its provenance, the two-sided message map
+/// digest from source and destination id lists, and every message id at
+/// attempt 0, plus the transformation claim against the variant identity.
+///
+/// Nothing here reads the mapping the driver wrote except through the pin
+/// the pass already verified: the mapping entry is looked up for
+/// cross-checking, but every digest is recomputed from first principles.
+#[allow(clippy::too_many_arguments)]
+fn check_variant_remap(
+    entry: &Effective,
+    source: &Snapshot,
+    destination: &Snapshot,
+    pins: Option<&VariantPins>,
+    report: &mut VerifyReport,
+) -> Result<(), VerifyError> {
+    let receipt = &entry.head;
+    let mut fail = |check: &str, detail: String| {
+        report.remap_mismatch.push(RemapMismatch {
+            session: entry.session.clone(),
+            check: check.to_string(),
+            detail,
+        });
+    };
+
+    // The schema guarantees these for this kind; their absence means the
+    // schema moved under the verifier, which is a finding, not a panic.
+    let (Some(source_name), Some(source_session), Some(attempt), Some(expected_map)) = (
+        receipt.source(),
+        receipt.source_session_id(),
+        receipt.id_attempt(),
+        receipt.message_map_digest(),
+    ) else {
+        fail(
+            "receipt-field",
+            "a divergent-variant receipt without source, sourceSessionID, idAttempt, or messageIDMapDigest".to_string(),
+        );
+        return Ok(());
+    };
+
+    if let Some(pins) = pins {
+        match pins.entries.get(&entry.session) {
+            Some(mapping) => {
+                if u64::try_from(receipt.messages().unwrap_or_default()).unwrap_or(u64::MAX)
+                    != mapping.messages
+                {
+                    fail(
+                        "mapping-entry",
+                        format!(
+                            "receipt attests {} messages, the pinned mapping has {}",
+                            receipt.messages().unwrap_or_default(),
+                            mapping.messages
+                        ),
+                    );
+                }
+            }
+            None => fail(
+                "mapping-entry",
+                "session has no entry in the pinned mapping".to_string(),
+            ),
+        }
+        if let Some(expected) = &pins.transformation {
+            if receipt.id_transformation() != Some(expected) {
+                fail(
+                    "transformation",
+                    "idTransformation differs from the variant identity".to_string(),
+                );
+            }
+        }
+    }
+
+    let rederived = variant_session_id(source_name, source_session, attempt);
+    if rederived != entry.session {
+        fail(
+            "session-id",
+            format!("provenance re-derives as {rederived}"),
+        );
+    }
+
+    let original = message_ids(source.connection(), source_session).map_err(|error| {
+        VerifyError::Read {
+            path: source.path.clone(),
+            source: error,
+        }
+    })?;
+    let derived = message_ids(destination.connection(), &entry.session).map_err(|error| {
+        VerifyError::Read {
+            path: destination.path.clone(),
+            source: error,
+        }
+    })?;
+    let announced = usize::try_from(receipt.messages().unwrap_or_default()).unwrap_or(usize::MAX);
+    if original.len() != derived.len() || original.len() != announced {
+        fail(
+            "message-map",
+            format!(
+                "source holds {}, destination holds {}, receipt attests {announced}",
+                original.len(),
+                derived.len()
+            ),
+        );
+        return Ok(());
+    }
+
+    let pairs: Vec<(&str, &str)> = original
+        .iter()
+        .map(String::as_str)
+        .zip(derived.iter().map(String::as_str))
+        .collect();
+    if message_map_digest(pairs) != expected_map {
+        fail(
+            "message-map",
+            "two-sided re-key digest differs from messageIDMapDigest".to_string(),
+        );
+    }
+    for (original_id, derived_id) in original.iter().zip(derived.iter()) {
+        if variant_message_id(&entry.session, original_id, 0) != *derived_id {
+            fail(
+                "message-pair",
+                format!("{original_id} does not re-derive at attempt 0"),
+            );
+            break;
+        }
+        if !is_native_message_shape(derived_id) {
+            fail(
+                "message-pair",
+                format!("{derived_id} lost the native shape"),
+            );
+            break;
+        }
+    }
     Ok(())
 }
 
