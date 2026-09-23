@@ -2,6 +2,7 @@
   description = "Chaosbox - native Rust code-graph pipeline (TypeDB-backed)";
 
   inputs = {
+    canscribe.url = "path:./python/canscribe";
     harbor-rs.url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=7a3328e186258dca31f9801227bc4e6fd8db4f36";
     # Deployment/lifecycle infrastructure (TypeDB backend, server module,
     # readiness gates). Tracks trunk (harbor-db#7 merged); previously the
@@ -19,6 +20,13 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
     harbor-meta.follows = "harbor-rs/harbor-meta";
+    # github:caniko/harbor-docs redirects to the renamed harbor-projects repo.
+    harbor-docs = {
+      url = "github:caniko/harbor-projects/627df187070815ae286bd2061a6d0c30eaf5d6d1";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.harbor-meta.follows = "harbor-meta";
+      inputs.treefmt-nix.follows = "treefmt-nix";
+    };
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -31,10 +39,12 @@
       harbor-db,
       harbor-rs,
       harbor-meta,
+      harbor-docs,
       treefmt-nix,
       nixpkgs,
       nixpkgs-typedb,
       crane,
+      canscribe,
       ...
     }:
     let
@@ -112,6 +122,11 @@
           };
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
           chaosbox = craneLib.buildPackage (commonArgs // { inherit cargoArtifacts; });
+          docs = harbor-docs.lib.mkDocs {
+            inherit pkgs;
+            src = ./docs;
+            pname = "chaosbox-docs";
+          };
           db-check = pkgs.writeShellApplication {
             name = "chaosbox-db-check";
             text = ''exec ${pkgs.lib.getExe chaosbox} db check --json "$@"'';
@@ -135,11 +150,22 @@
         {
           inherit
             chaosbox
+            docs
             db-check
             db-migrate
             test-typedb
             ;
           default = chaosbox;
+          canscribe-cpu = canscribe.packages.${pkgs.stdenv.hostPlatform.system}.canscribe-cpu;
+          chaosbox-transcription = pkgs.symlinkJoin {
+            name = "chaosbox-transcription";
+            paths = [ chaosbox ];
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            postBuild = ''
+              wrapProgram $out/bin/chaosbox --set CHAOSBOX_CANSCRIBE_BIN ${canscribe.packages.${pkgs.stdenv.hostPlatform.system}.canscribe-cpu}/bin/canscribe
+            '';
+          };
+          site = docs;
         }
       );
 
@@ -204,8 +230,7 @@
               typedbPkgs.typedb-console
             ];
           };
-          # Simit-generated CI builds docs via `.#docs`; same shell.
-          docs = default;
+          docs = pkgs.mkShell { packages = [ pkgs.mdbook ]; };
         }
       );
 
@@ -240,6 +265,11 @@
           );
           unit = craneLib.cargoTest (commonArgs // { inherit cargoArtifacts; });
           doc = craneLib.cargoDoc (commonArgs // { inherit cargoArtifacts; });
+          docs = self.packages.${pkgs.stdenv.hostPlatform.system}.docs;
+          docs-summary = harbor-docs.lib.mkSummaryCheck {
+            inherit pkgs;
+            src = ./docs;
+          };
           packaging = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
           deployment-eval = pkgs.callPackage ./nix/deployment-eval.nix {
             harborDbModule = harbor-db.nixosModules.default;
