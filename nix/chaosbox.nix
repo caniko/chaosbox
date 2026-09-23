@@ -81,7 +81,7 @@ in
     passwordFile = mkOption {
       type = types.nullOr types.path;
       default = null;
-      description = "File holding the TypeDB application password, delivered as CHAOSBOX_TYPEDB_PASSWORD_FILE. Provision via age/sops; never store a value here.";
+      description = "File holding the TypeDB application password, delivered as CHAOSBOX_TYPEDB_PASSWORD_FILE. Provision via age/sops or the typedb-bootstrap package output; never store a value here.";
     };
 
     runtimeUnits = mkOption {

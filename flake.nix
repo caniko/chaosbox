@@ -144,6 +144,21 @@
             ];
             text = builtins.readFile ./scripts/test-typedb.sh;
           };
+          # Local TypeDB bootstrap for single-host pilots: generates
+          # credentials once, converges passwords over the loopback
+          # console, ensures the application user + database. Tested by
+          # the typedb-bootstrap check below; consumed by host modules.
+          typedb-bootstrap = pkgs.writeShellApplication {
+            name = "typedb-bootstrap";
+            runtimeInputs = [
+              pkgs.bash
+              pkgs.coreutils
+              pkgs.gnugrep
+              pkgs.openssl
+              pkgs.util-linux
+            ];
+            text = builtins.readFile ./nix/typedb-bootstrap.sh;
+          };
         in
         {
           inherit
@@ -152,6 +167,7 @@
             db-check
             db-migrate
             test-typedb
+            typedb-bootstrap
             ;
           default = chaosbox;
           site = docs;
@@ -271,6 +287,16 @@
             harborDbModule = harbor-db.nixosModules.default;
             typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
             chaosboxModule = self.nixosModules.chaosbox;
+            chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
+            typedbPackage = typedbPkgs.typedb;
+            typedbConsolePackage = typedbPkgs.typedb-console;
+          };
+          # Full bootstrap lifecycle against the packaged server: empty
+          # install, credential rotation, app auth, permissions, reboot,
+          # interruption recovery, mismatch handling, non-default names.
+          typedb-bootstrap-test = pkgs.callPackage ./nix/typedb-bootstrap-test.nix {
+            typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
+            bootstrapPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.typedb-bootstrap;
             chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
             typedbPackage = typedbPkgs.typedb;
             typedbConsolePackage = typedbPkgs.typedb-console;
