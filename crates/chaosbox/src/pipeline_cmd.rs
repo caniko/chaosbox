@@ -105,27 +105,30 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         // Publishing that graph would swing the active pointer onto a build
         // with fewer relations than the one consumers are querying today;
         // keep it instead and report the pending work. Exit 4 means "kept
-        // the previous build (or could not read it), spent nothing", which
-        // callers defer on rather than retry with backoff. The one exception
-        // is a repository with no active build at all: there is nothing to
-        // keep, so the first capture-only publish goes ahead and bootstraps
-        // the query view without spending anything.
+        // the previous build, spent nothing", which callers defer on rather
+        // than retry with backoff. The one exception is a repository with
+        // no active build at all: there is nothing to keep, so the first
+        // capture-only publish goes ahead and bootstraps the query view
+        // without spending anything. An unreadable active build is neither:
+        // it fails outright (exit 1, no `coverage:` line) so the batch
+        // reports failure rather than a successful deferral.
         let active = active_publishes_relations(&pipe.store, repo).await;
-        if !chaosbox::capture_only_publishable(active, cands.len(), reused.len()) {
-            // Publishable states (no build yet, or a relationless one) never
-            // reach this branch: what remains is partial coverage over a
-            // relation-bearing build, or state too unreadable to risk.
-            if active.is_err() {
-                eprintln!(
-                    "coverage: cannot read the active build's relations; keeping them untouched (Chaosbox never replaces a build it cannot account for)"
-                );
-            } else {
-                eprintln!(
-                    "coverage: {} of {} candidate(s) reusable while the active build still publishes relations; keeping it (assess them with `chaosbox run --live-jev`)",
-                    reused.len(),
-                    cands.len()
-                );
-            }
+        if let Err(error) = &active {
+            eprintln!(
+                "active build: cannot read the active build's relations ({error}); keeping them untouched and failing"
+            );
+            return 1;
+        }
+        if !chaosbox::capture_only_publishable(&active, cands.len(), reused.len()) {
+            // Only partial coverage over a relation-bearing build reaches
+            // this branch: publishable states (no build yet, or a
+            // relationless one) return early above, and unreadable state
+            // already failed outright.
+            eprintln!(
+                "coverage: {} of {} candidate(s) reusable while the active build still publishes relations; keeping it (assess them with `chaosbox run --live-jev`)",
+                reused.len(),
+                cands.len()
+            );
             return 4;
         }
         reused

@@ -70,31 +70,35 @@ pub(super) async fn typedb_publication_chain(
 ///
 /// Returns `Ok(None)` when the store definitively has no active build for
 /// the repository (nothing consumers could lose), `Ok(Some(_))` when the
-/// answer is known, and `Err(())` when it cannot be determined.
+/// answer is known, and `Err(msg)` when it cannot be determined.
 ///
 /// The in-process staging store answers for the memory backend and for a
 /// same-process republish; a fresh `TypeDB` process has empty staging by
 /// design, so it probes the pinned active build through the query reader
 /// instead. Publication state is never inferred from an empty staging area:
 /// `Err` means "cannot tell" (unreachable backend, failed query), and
-/// callers must then leave the active build alone rather than risk
-/// replacing a relation-bearing one. A successful query that simply finds
+/// callers must fail rather than defer — a read failure is operational, not
+/// a kept query view. A successful query that simply finds
 /// no build is `Ok(None)`, not an error: a first capture-only publish is
 /// what lets any build exist at all.
 pub(super) async fn active_publishes_relations<S: chaosbox_store::Store>(
     store: &S,
     repo: &str,
-) -> Result<Option<bool>, ()> {
+) -> Result<Option<bool>, String> {
     if let Some(build) = store.active(repo) {
         return Ok(Some(!build.edges.is_empty()));
     }
     if backend() != Backend::Typedb {
         return Ok(Some(false));
     }
-    let config = typedb_config_from_env().map_err(|_| ())?;
+    let config = typedb_config_from_env().map_err(|e| format!("typedb config: {e}"))?;
     let mut handle = TypeDbReader::new(config);
-    Box::pin(handle.connect()).await.map_err(|_| ())?;
-    let build = Box::pin(handle.active_build(repo)).await.map_err(|_| ())?;
+    Box::pin(handle.connect())
+        .await
+        .map_err(|e| format!("typedb connect: {e}"))?;
+    let build = Box::pin(handle.active_build(repo))
+        .await
+        .map_err(|e| format!("typedb active build: {e}"))?;
     let Some(build) = build else {
         return Ok(None);
     };
@@ -102,7 +106,7 @@ pub(super) async fn active_publishes_relations<S: chaosbox_store::Store>(
     // whole relation set out of the store.
     let relations = Box::pin(handle.build_relationships(&build.build_id, 1))
         .await
-        .map_err(|_| ())?;
+        .map_err(|e| format!("typedb relationships: {e}"))?;
     Ok(Some(!relations.is_empty()))
 }
 

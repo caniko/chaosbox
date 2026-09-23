@@ -180,16 +180,19 @@ pub async fn decide_cached<S: chaosbox_store::Store>(
 ///
 /// The refused run reports its pending work instead of publishing; the
 /// decisions run is what clears it.
+///
+/// The error type is `String` so callers keep their diagnostics: any
+/// `Err` means "cannot tell" and must fail, never publish.
 #[must_use]
 pub fn capture_only_publishable(
-    active_publishes_relations: Result<Option<bool>, ()>,
+    active_publishes_relations: &Result<Option<bool>, String>,
     candidates: usize,
     reusable: usize,
 ) -> bool {
     match active_publishes_relations {
         Ok(None | Some(false)) => true,
         Ok(Some(true)) => candidates > 0 && reusable >= candidates,
-        Err(()) => false,
+        Err(_) => false,
     }
 }
 

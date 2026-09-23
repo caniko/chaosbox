@@ -84,6 +84,10 @@ defer without parsing prose, alongside these exit codes:
   were allowed. `N <=` the caller's own batch cap means "defer this one to a
   fresh allowance", `N >` the cap means it can never fit.
 - `coverage: …` — the exit-4 condition above, one human-readable line.
+  Only exit 4 in `--no-decisions` mode carries it. An unreadable active
+  build prints `active build: …` instead and exits 1: it keeps the current
+  build untouched but fails, so a batching caller never mistakes an
+  operational backend failure for a successful deferral.
 TypeDB credentials: `CHAOSBOX_TYPEDB_PASSWORD_FILE` (+ optional
 `CHAOSBOX_TYPEDB_ADDR/USER/DATABASE`). OpenAI/Anthropic/Gemini/Ollama
 env vars are never read.

@@ -421,31 +421,31 @@ async fn cache_only_refresh_skips_uncached_candidates() {
 #[test]
 fn capture_only_gate_keeps_the_active_query_view() {
     assert!(
-        capture_only_publishable(Ok(None), 3, 0),
+        capture_only_publishable(&Ok(None), 3, 0),
         "no active build at all: a first capture-only publish bootstraps the query view"
     );
     assert!(
-        capture_only_publishable(Ok(Some(false)), 0, 0),
+        capture_only_publishable(&Ok(Some(false)), 0, 0),
         "a repository that publishes no relations keeps indexing entities"
     );
     assert!(
-        capture_only_publishable(Ok(Some(false)), 3, 0),
+        capture_only_publishable(&Ok(Some(false)), 3, 0),
         "full cache misses are harmless with no relations on the line"
     );
     assert!(
-        capture_only_publishable(Ok(Some(true)), 3, 3),
+        capture_only_publishable(&Ok(Some(true)), 3, 3),
         "complete coverage republishes"
     );
     assert!(
-        !capture_only_publishable(Ok(Some(true)), 3, 2),
+        !capture_only_publishable(&Ok(Some(true)), 3, 2),
         "partial coverage must keep the active build"
     );
     assert!(
-        !capture_only_publishable(Ok(Some(true)), 0, 0),
+        !capture_only_publishable(&Ok(Some(true)), 0, 0),
         "assessing nothing is not coverage of a relation-bearing build"
     );
     assert!(
-        !capture_only_publishable(Err(()), 3, 3),
+        !capture_only_publishable(&Err("typedb connect: refused".to_owned()), 3, 3),
         "an unreadable active build is never replaced"
     );
 }
@@ -525,7 +525,7 @@ async fn source_edit_leaves_capture_only_refresh_without_coverage() {
         "an edited source invalidates every cached decision"
     );
     assert!(
-        !capture_only_publishable(Ok(active_relations), 1, reused.len()),
+        !capture_only_publishable(&Ok(active_relations), 1, reused.len()),
         "an uncovered capture-only run must keep the active build"
     );
     assert_eq!(
