@@ -1874,42 +1874,37 @@ fn a_malformed_source_session_id_is_rejected() {
     drop(held);
 }
 
-/// A variant receipt attests to a derived session, but its source digests
-/// were computed against the session it derives from: `--sources` must
-/// recompute them there, not against the derived id that the source never
-/// held. The re-key proof, the id re-derivation, and the mapping pin are
-/// checked too — every id and digest below was computed by the JavaScript
-/// implementation independently, so agreement is not the test agreeing with
-/// itself.
-#[test]
-fn a_variant_receipt_verifies_source_digests_against_its_source_session() {
-    const DERIVED: &str = "ses_1b3f6d91093bv56ixKU9dt00rw";
-    const SOURCE: &str = "ses_source01";
-    const DERIVED_MSG: &str = "msg_5d9ffc9a9399P7pnzO1OaOxgtC";
-    const MAP_DIGEST: &str = "44986ea4f52469eee0833c76d1f9d8b0942cd1c08a245c0fa326a60c1d385606";
-    const MAPPING_DIGEST: &str =
-        "f0e13c3552a36056ecee0e1c32fc88b178ce9c7229860a222e2410055e1642d5";
-    let (held, root) = fixture();
-    let parent = root.parent().expect("parent").to_path_buf();
+/// Derived session, message, and digests for the variant integration test.
+/// Every value was computed by the JavaScript implementation independently,
+/// so agreement is not the test agreeing with itself.
+const VARIANT_DERIVED: &str = "ses_1b3f6d91093bv56ixKU9dt00rw";
+const VARIANT_SOURCE: &str = "ses_source01";
+const VARIANT_DERIVED_MSG: &str = "msg_5d9ffc9a9399P7pnzO1OaOxgtC";
+const VARIANT_MAP_DIGEST: &str =
+    "44986ea4f52469eee0833c76d1f9d8b0942cd1c08a245c0fa326a60c1d385606";
+const VARIANT_MAPPING_DIGEST: &str =
+    "f0e13c3552a36056ecee0e1c32fc88b178ce9c7229860a222e2410055e1642d5";
 
-    // Destination holds the derived session under its derived message id.
-    let destination_writable = Connection::open(root.join("destination.db")).expect("destination");
-    destination_writable
+/// Destination holds the derived session under its derived message id.
+fn insert_derived_session(root: &Path) {
+    let writable = Connection::open(root.join("destination.db")).expect("destination");
+    writable
         .execute(
             "INSERT INTO session_v2 VALUES (?1, 1790166653727, 0.124597676, 'derived summary')",
-            [DERIVED],
+            [VARIANT_DERIVED],
         )
         .expect("derived session");
-    destination_writable
+    writable
         .execute(
             "INSERT INTO session_message VALUES (?1, 1, ?2, 'user', 1790166653727)",
-            rusqlite::params![DERIVED, DERIVED_MSG],
+            rusqlite::params![VARIANT_DERIVED, VARIANT_DERIVED_MSG],
         )
         .expect("derived message");
-    drop(destination_writable);
+}
 
-    // Sources hold the session the variant derives from.
-    build_sources(&root, true);
+/// Sources hold the session the variant derives from, alongside the base
+/// fixture rows.
+fn extend_sources_with_variant_origin(parent: &Path) {
     let writable = Connection::open(parent.join("work/primary.db")).expect("source");
     writable
         .execute_batch(
@@ -1920,39 +1915,67 @@ fn a_variant_receipt_verifies_source_digests_against_its_source_session() {
         )
         .expect("source session");
     drop(writable);
-    let recovery_writable = Connection::open(parent.join("recovered-rows.db")).expect("recovery");
-    recovery_writable
+    let recovery = Connection::open(parent.join("recovered-rows.db")).expect("recovery");
+    recovery
         .execute_batch(
             "INSERT INTO recovered VALUES
                 ('r2', 'ses_source01', 'source recovery text');",
         )
         .expect("recovery row");
-    drop(recovery_writable);
+}
 
-    // The staged mapping carries the one variant; the identity pins it.
+/// Stage a one-variant mapping at the path the variant identity must name,
+/// returning that path.
+fn stage_variant_mapping(parent: &Path) -> PathBuf {
     let mapping = json!({
         "variants": [{
-            "sessionID": DERIVED,
+            "sessionID": VARIANT_DERIVED,
             "idAttempt": 0,
             "source": "primary",
-            "sourceSessionID": SOURCE,
+            "sourceSessionID": VARIANT_SOURCE,
             "kind": "divergent",
             "messages": 1,
             "sessionAttempt": 0,
             "canonicalSource": "primary",
-            "sourceTimeCreated": 1790166653727_i64,
-            "sourceTimeUpdated": 1790166653727_i64,
+            "sourceTimeCreated": 1_790_166_653_727_i64,
+            "sourceTimeUpdated": 1_790_166_653_727_i64,
             "parentID": null,
             "title": "t",
             "directory": "/d",
             "remappedDirectory": "/d",
             "sourceSnapshotSha256": "0".repeat(64),
             "occurrenceTable": "session",
-            "messageIDs": [{ "original": "msg_source", "derived": DERIVED_MSG, "attempt": 0 }],
+            "messageIDs": [{
+                "original": "msg_source",
+                "derived": VARIANT_DERIVED_MSG,
+                "attempt": 0,
+            }],
         }],
     });
-    let mapping_path = parent.join("variants-mapping.json");
-    fs::write(&mapping_path, mapping.to_string()).expect("mapping");
+    let path = parent.join("variants-mapping.json");
+    fs::write(&path, mapping.to_string()).expect("mapping");
+    path
+}
+
+/// A variant receipt attests to a derived session, but its source digests
+/// were computed against the session it derives from: `--sources` must
+/// recompute them there, not against the derived id that the source never
+/// held. The re-key proof, the id re-derivation, and the mapping pin are
+/// checked too.
+#[test]
+fn a_variant_receipt_verifies_source_digests_against_its_source_session() {
+    const DERIVED: &str = VARIANT_DERIVED;
+    const SOURCE: &str = VARIANT_SOURCE;
+    const DERIVED_MSG: &str = VARIANT_DERIVED_MSG;
+    const MAP_DIGEST: &str = VARIANT_MAP_DIGEST;
+    const MAPPING_DIGEST: &str = VARIANT_MAPPING_DIGEST;
+    let (held, root) = fixture();
+    let parent = root.parent().expect("parent").to_path_buf();
+
+    insert_derived_session(&root);
+    build_sources(&root, true);
+    extend_sources_with_variant_origin(&parent);
+    let mapping_path = stage_variant_mapping(&parent);
     write_receipt(
         &root,
         "journal-v3",
