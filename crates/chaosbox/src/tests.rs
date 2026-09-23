@@ -333,6 +333,208 @@ async fn failed_refresh_preserves_last_good_build() {
     assert_eq!(counts.get("failed").copied().unwrap_or(0), 1);
 }
 
+/// A capture-only refresh must republish relations an earlier decisions
+/// run already paid for, instead of swinging the active pointer to a
+/// node-only build. It must never re-ask: no responder exists here.
+#[tokio::test]
+async fn cache_only_refresh_republishes_paid_for_relations() {
+    let (cand, entities) = one_candidate();
+    let mat = Materialization::default();
+    let snap = Snapshot {
+        id: "s".into(),
+        repo: "r".into(),
+        files: vec![],
+        contents: BTreeMap::new(),
+    };
+    let ext = Extraction {
+        entities: entities.values().cloned().collect(),
+        explicit_refs: vec![],
+    };
+    let mut pipe = Pipeline::<MemoryStore>::new();
+    ensure_a_rs(&mut pipe.store).await;
+    let mut accept = ConfResponder { confidence: 0.95 };
+    let paid = Pipeline::<MemoryStore>::decide(
+        std::slice::from_ref(&cand),
+        &entities,
+        &mut accept,
+        "jev-1.13.0",
+        &mat,
+        &mut pipe.store,
+    )
+    .await
+    .unwrap();
+    let build = pipe
+        .build_and_publish("r", &snap, &ext, &paid, &mat, None)
+        .await
+        .unwrap();
+    assert!(!build.edges.is_empty(), "paid-for decisions publish edges");
+
+    let reused = decide_cached(
+        std::slice::from_ref(&cand),
+        &entities,
+        "jev-1.13.0",
+        &mat,
+        &mut pipe.store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(reused.len(), 1, "cache hit must be reused, not re-asked");
+    assert_eq!(reused[0].1.id, paid[0].1.id, "reuses the stored decision");
+
+    let refreshed = pipe
+        .build_and_publish("r", &snap, &ext, &reused, &mat, Some(build.id.clone()))
+        .await
+        .unwrap();
+    assert_eq!(
+        refreshed.edges.len(),
+        build.edges.len(),
+        "capture-only refresh must not drop published relations"
+    );
+    assert_eq!(pipe.store.active("r").map(|b| b.id), Some(refreshed.id));
+}
+
+/// An uncached candidate contributes nothing to a capture-only refresh:
+/// it must be skipped rather than answered with an invented inference.
+#[tokio::test]
+async fn cache_only_refresh_skips_uncached_candidates() {
+    let (cand, entities) = one_candidate();
+    let mat = Materialization::default();
+    let mut store = MemoryStore::new();
+    ensure_a_rs(&mut store).await;
+    let reused = decide_cached(
+        std::slice::from_ref(&cand),
+        &entities,
+        "jev-1.13.0",
+        &mat,
+        &mut store,
+    )
+    .await
+    .unwrap();
+    assert!(
+        reused.is_empty(),
+        "no stored decision means nothing to republish"
+    );
+}
+
+/// The capture-only gate: refresh freely while nothing can be lost, keep
+/// the active query view the moment coverage stops being complete.
+#[test]
+fn capture_only_gate_keeps_the_active_query_view() {
+    assert!(
+        capture_only_publishable(Ok(None), 3, 0),
+        "no active build at all: a first capture-only publish bootstraps the query view"
+    );
+    assert!(
+        capture_only_publishable(Ok(Some(false)), 0, 0),
+        "a repository that publishes no relations keeps indexing entities"
+    );
+    assert!(
+        capture_only_publishable(Ok(Some(false)), 3, 0),
+        "full cache misses are harmless with no relations on the line"
+    );
+    assert!(
+        capture_only_publishable(Ok(Some(true)), 3, 3),
+        "complete coverage republishes"
+    );
+    assert!(
+        !capture_only_publishable(Ok(Some(true)), 3, 2),
+        "partial coverage must keep the active build"
+    );
+    assert!(
+        !capture_only_publishable(Ok(Some(true)), 0, 0),
+        "assessing nothing is not coverage of a relation-bearing build"
+    );
+    assert!(
+        !capture_only_publishable(Err(()), 3, 3),
+        "an unreadable active build is never replaced"
+    );
+}
+
+/// Cache identity carries the source snapshot, so an edited file leaves
+/// every stored decision unreusable: a capture-only refresh then covers
+/// none of the relations it would republish, which is exactly what the
+/// gate refuses to publish over.
+#[tokio::test]
+async fn source_edit_leaves_capture_only_refresh_without_coverage() {
+    use chaosbox_core::{EntityKind, RelationType, SourceSpan};
+    let (cand, entities) = one_candidate();
+    let mat = Materialization::default();
+    let snap = Snapshot {
+        id: "s".into(),
+        repo: "r".into(),
+        files: vec![],
+        contents: BTreeMap::new(),
+    };
+    let ext = Extraction {
+        entities: entities.values().cloned().collect(),
+        explicit_refs: vec![],
+    };
+    let mut pipe = Pipeline::<MemoryStore>::new();
+    ensure_a_rs(&mut pipe.store).await;
+    let paid = Pipeline::<MemoryStore>::decide(
+        std::slice::from_ref(&cand),
+        &entities,
+        &mut ConfResponder { confidence: 0.95 },
+        "jev-1.13.0",
+        &mat,
+        &mut pipe.store,
+    )
+    .await
+    .unwrap();
+    let build = pipe
+        .build_and_publish("r", &snap, &ext, &paid, &mat, None)
+        .await
+        .unwrap();
+    assert!(!build.edges.is_empty(), "the paid-for relations publish");
+    let active_relations = pipe.store.active("r").map(|b| !b.edges.is_empty());
+    assert_eq!(active_relations, Some(true));
+
+    // The same sources, one edit later: new snapshot, so new identities,
+    // so no stored decision matches any current candidate.
+    let span = SourceSpan::point("a.rs", 1, 1, 0);
+    let from = Entity::new(
+        EntityKind::Symbol,
+        "r",
+        "s2",
+        "a.rs",
+        "a",
+        "a",
+        span.clone(),
+    );
+    let to = Entity::new(EntityKind::Symbol, "r", "s2", "a.rs", "b", "b", span);
+    let edited = Candidate {
+        id: "cand:edited".into(),
+        rel_type: RelationType::Calls,
+        from_entity: from.id.clone(),
+        to_entity: to.id.clone(),
+        reason: "structural".into(),
+        state_excerpt: "a calls b".into(),
+    };
+    let edited_entities = BTreeMap::from([(from.id.clone(), from), (to.id.clone(), to)]);
+    let reused = decide_cached(
+        std::slice::from_ref(&edited),
+        &edited_entities,
+        "jev-1.13.0",
+        &mat,
+        &mut pipe.store,
+    )
+    .await
+    .unwrap();
+    assert!(
+        reused.is_empty(),
+        "an edited source invalidates every cached decision"
+    );
+    assert!(
+        !capture_only_publishable(Ok(active_relations), 1, reused.len()),
+        "an uncovered capture-only run must keep the active build"
+    );
+    assert_eq!(
+        pipe.store.active("r").map(|b| b.id),
+        Some(build.id),
+        "refusing to publish leaves the active pointer untouched"
+    );
+}
+
 /// Ensure helper for the single-file `one_candidate` fixture.
 async fn ensure_a_rs(store: &mut MemoryStore) {
     store

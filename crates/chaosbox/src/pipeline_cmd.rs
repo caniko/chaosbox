@@ -1,6 +1,9 @@
 //! The `run` command: snapshot, extract, decide, publish, and operator reporting.
 
-use super::{Pipeline, Path, BTreeMap, Materialization, LiveResponder, FixtureResponder};
+use super::{
+    Pipeline, Path, RunSpend, BTreeMap, Materialization, active_publishes_relations, LiveResponder,
+    Ordering, FixtureResponder,
+};
 
 // Long CLI/dispatch functions; splitting them apart is the owning
 // session's refactor. Allowed to keep CI unblocked.
@@ -18,6 +21,7 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
     max_input_tokens: Option<u64>,
     max_retries: Option<u32>,
     expected_predecessor: Option<String>,
+    spend: &RunSpend,
 ) -> i32 {
     let (snap, ext, cat) = match Pipeline::<S>::snapshot_extract(repo, path, max_candidates) {
         Ok(v) => v,
@@ -77,9 +81,54 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         }
     }
     let decided = if no_decisions {
-        // Entities-only publication: no live inference, no fixture
-        // accept-all. The build carries nodes but no relations or claims.
-        Vec::new()
+        // No live inference and no fixture accept-all: republish the
+        // decisions an earlier run already paid for and skip the rest, so
+        // an entities-only refresh can never swing the active pointer to a
+        // build that silently drops published relations.
+        let reused = match chaosbox::decide_cached(
+            cands,
+            &entities,
+            chaosbox_jev::JEV_MODEL_PINNED,
+            &mat,
+            &mut pipe.store,
+        )
+        .await
+        {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("decide: {e}");
+                return 1;
+            }
+        };
+        // Cache identity carries the repository snapshot and the whole
+        // catalog, so an ordinary source edit leaves nothing reusable.
+        // Publishing that graph would swing the active pointer onto a build
+        // with fewer relations than the one consumers are querying today;
+        // keep it instead and report the pending work. Exit 4 means "kept
+        // the previous build (or could not read it), spent nothing", which
+        // callers defer on rather than retry with backoff. The one exception
+        // is a repository with no active build at all: there is nothing to
+        // keep, so the first capture-only publish goes ahead and bootstraps
+        // the query view without spending anything.
+        let active = active_publishes_relations(&pipe.store, repo).await;
+        if !chaosbox::capture_only_publishable(active, cands.len(), reused.len()) {
+            // Publishable states (no build yet, or a relationless one) never
+            // reach this branch: what remains is partial coverage over a
+            // relation-bearing build, or state too unreadable to risk.
+            if active.is_err() {
+                eprintln!(
+                    "coverage: cannot read the active build's relations; keeping them untouched (Chaosbox never replaces a build it cannot account for)"
+                );
+            } else {
+                eprintln!(
+                    "coverage: {} of {} candidate(s) reusable while the active build still publishes relations; keeping it (assess them with `chaosbox run --live-jev`)",
+                    reused.len(),
+                    cands.len()
+                );
+            }
+            return 4;
+        }
+        reused
     } else if live_jev {
         // Fail fast without credentials: otherwise every decision degrades
         // to Failed and the run exits 0 with an empty graph.
@@ -122,6 +171,11 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
                 "live-jev budget: {pending} uncached candidates need one request each but max_requests={}; raise --max-requests or lower --max-candidates (already-cached decisions do not count)",
                 policy.max_requests
             );
+            // Machine-readable companion to the line above: a batching caller
+            // has to tell "this repository does not fit what is left of the
+            // allowance, defer it" apart from "this repository can never fit
+            // the batch cap, that is a configuration failure".
+            eprintln!("budget: pending={pending} allowed={}", policy.max_requests);
             return 1;
         }
         let client = match chaosbox_jev::JevClient::new(policy) {
@@ -132,7 +186,7 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
             }
         };
         let mut responder = LiveResponder::new(client);
-        match Pipeline::<S>::decide(
+        let decided = Pipeline::<S>::decide(
             cands,
             &entities,
             &mut responder,
@@ -140,8 +194,14 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
             &mat,
             &mut pipe.store,
         )
-        .await
-        {
+        .await;
+        let (requests, tokens) = responder.usage();
+        // Record the spend before branching: the caller's single `usage:`
+        // line must still say what this run dispatched when it exits here
+        // without publishing.
+        spend.requests.store(requests, Ordering::Relaxed);
+        spend.tokens.store(tokens, Ordering::Relaxed);
+        match decided {
             Ok(d) => d,
             Err(e) => {
                 eprintln!("decide: {e}");

@@ -101,6 +101,14 @@ impl LiveResponder {
     pub fn new(client: JevClient) -> Self {
         Self { client }
     }
+
+    /// Spend for this run as `(requests dispatched, input tokens)`. Every
+    /// dispatch counts, including retries, because callers budget a whole
+    /// batch against what each run actually sent.
+    #[must_use]
+    pub fn usage(&self) -> (u32, u64) {
+        (self.client.sent_requests(), self.client.spent_tokens())
+    }
 }
 
 #[async_trait::async_trait]

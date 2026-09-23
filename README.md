@@ -54,9 +54,36 @@ TypeDB; `run` publishes through TypeDB with `CHAOSBOX_DB_BACKEND=typedb`,
 in-memory otherwise.
 `run` without `--live-jev` refuses to publish unless `--fixture-decisions`
 is given; fixture graphs are disposable/test-only and recorded under the
-`fixture-test` model identity. `run --no-decisions` publishes extracted
-entities with no semantic decisions at all (nodes, no relations or claims):
-no inference, no fixture accept-all, safe for real corpora.
+`fixture-test` model identity. `run --no-decisions` publishes extracted entities with no new semantic
+decisions: no inference, no fixture accept-all, safe for real corpora.
+Decisions an earlier run already paid for are republished from cache, so a
+refresh whose cache covers every current candidate keeps the active build's
+relations; only a refresh with nothing reusable publishes nodes alone. When
+the cache cannot cover every candidate while the active build still
+publishes relations, the run keeps that build and exits 4 (see below)
+instead of publishing an under-covered graph.
+
+### Machine-readable run contract
+
+`run` speaks three stable stderr lines so a batching caller can budget and
+defer without parsing prose, alongside these exit codes:
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Published (or published nothing because there was nothing to do) |
+| 1 | Configuration, budget preflight, or pipeline failure |
+| 4 | `--no-decisions` kept the active build: the decision cache could not cover every current candidate while that build still publishes relations. Nothing was published and nothing was spent; assess the candidates with `run --live-jev` |
+
+- `usage: requests=N input_tokens=M` — printed on **every** live-Jev exit
+  path, including failures and pre-spend refusals (which report zeros), so
+  a caller debits what this run dispatched (retries and timed-out sends
+  included) rather than assuming a failed run spent nothing. Non-live runs
+  print no `usage:` line: they cannot dispatch.
+- `budget: pending=N allowed=M` — accompanies the human `live-jev budget:`
+  refusal: `N` uncached candidates still need a decision each and `M` requests
+  were allowed. `N <=` the caller's own batch cap means "defer this one to a
+  fresh allowance", `N >` the cap means it can never fit.
+- `coverage: …` — the exit-4 condition above, one human-readable line.
 TypeDB credentials: `CHAOSBOX_TYPEDB_PASSWORD_FILE` (+ optional
 `CHAOSBOX_TYPEDB_ADDR/USER/DATABASE`). OpenAI/Anthropic/Gemini/Ollama
 env vars are never read.

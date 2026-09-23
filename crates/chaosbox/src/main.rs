@@ -9,6 +9,7 @@
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    sync::atomic::Ordering,
 };
 
 use chaosbox::{
@@ -31,8 +32,8 @@ mod pipeline_cmd;
 mod query_cmd;
 
 use backend_cmd::{
-    AnyReader, Backend, backend, consumer_err, db_check_typedb, run_migrate_typedb,
-    typedb_config_from_env, typedb_publication_chain,
+    AnyReader, Backend, RunSpend, active_publishes_relations, backend, consumer_err,
+    db_check_typedb, run_migrate_typedb, typedb_config_from_env, typedb_publication_chain,
 };
 use mcp_server::serve_mcp;
 use pipeline_cmd::run_pipeline_with;
@@ -79,7 +80,8 @@ enum Command {
     },
     /// Run the full pipeline (live Jev decisions by default; fixture
     /// decisions only with --fixture-decisions, for disposable/test graphs;
-    /// entities-only with --no-decisions, no inference of any kind).
+    /// entities-only with --no-decisions, which reuses cached decisions and
+    /// spends nothing).
     Run {
         path: PathBuf,
         #[arg(long, default_value = "demo")]
@@ -95,9 +97,17 @@ enum Command {
         /// decisions are recorded under the `fixture-test` model identity.
         #[arg(long, default_value_t = false, conflicts_with = "no_decisions")]
         fixture_decisions: bool,
-        /// Publish extracted entities with no semantic decisions: no live
-        /// inference, no fixture accept-all. The graph has nodes but no
-        /// relations or claims; safe for real corpora before Jev approval.
+        /// Publish extracted entities with no new inference: no live Jev
+        /// requests, no fixture accept-all. Decisions an earlier run paid
+        /// for are republished from cache, so an entities-only refresh
+        /// keeps the active build's relations instead of replacing it with
+        /// a node-only one; uncached candidates are left for the next
+        /// decisions run to ask. When the cache cannot cover every current
+        /// candidate while the active build still publishes relations
+        /// (an ordinary source edit does exactly that), the run keeps the
+        /// active build and exits 4 with a `coverage:` line instead of
+        /// publishing an under-covered graph. Safe for real corpora before
+        /// Jev approval.
         #[arg(long, default_value_t = false)]
         no_decisions: bool,
         /// Live-Jev spend guards (defaults = `JevPolicy::default`).
@@ -268,6 +278,21 @@ async fn main() {
             max_input_tokens,
             max_retries,
         } => {
+            // Live spend of this run. Every exit prints it exactly once (via
+            // `usage`), so a batching caller can debit what this repository
+            // dispatched even when the run dies before it publishes.
+            let spend = RunSpend::default();
+            let usage = || {
+                if live_jev {
+                    // Stable parseable spend line: `canix chaosbox sync`
+                    // budgets a whole batch against what this run dispatched.
+                    eprintln!(
+                        "usage: requests={} input_tokens={}",
+                        spend.requests.load(Ordering::Relaxed),
+                        spend.tokens.load(Ordering::Relaxed)
+                    );
+                }
+            };
             let code = match backend() {
                 Backend::Memory => {
                     run_pipeline_with(
@@ -282,6 +307,7 @@ async fn main() {
                         max_input_tokens,
                         max_retries,
                         None,
+                        &spend,
                     )
                     .await
                 }
@@ -290,12 +316,14 @@ async fn main() {
                         Ok(c) => c,
                         Err(e) => {
                             eprintln!("typedb config: {e}");
+                            usage();
                             std::process::exit(1);
                         }
                     };
                     let mut store = TypeDbStore::new(config.clone());
                     if let Err(e) = Box::pin(store.migrate()).await {
                         eprintln!("typedb migrate: {e}");
+                        usage();
                         std::process::exit(1);
                     }
                     // Fresh processes start at generation zero: chain off the
@@ -306,6 +334,7 @@ async fn main() {
                             Ok(v) => v,
                             Err(e) => {
                                 eprintln!("typedb publication chain: {e}");
+                                usage();
                                 std::process::exit(1);
                             }
                         };
@@ -324,10 +353,12 @@ async fn main() {
                         max_input_tokens,
                         max_retries,
                         expected_predecessor,
+                        &spend,
                     )
                     .await
                 }
             };
+            usage();
             std::process::exit(code);
         }
         Command::Query { q } => std::process::exit(Box::pin(run_query(q)).await),

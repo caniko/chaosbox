@@ -327,6 +327,24 @@ impl JevClient {
         None
     }
 
+    /// HTTP requests actually dispatched, counting every attempt: retries
+    /// and timed-out sends are billable too, so a request budget must be
+    /// spent against dispatches rather than against parsed successes.
+    /// Authoritative for budgeting — unlike [`Self::spent_tokens`] it needs
+    /// no provider cooperation to be correct.
+    #[must_use]
+    pub fn sent_requests(&self) -> u32 {
+        self.sent_requests
+    }
+
+    /// Input tokens the provider reported as consumed across all calls.
+    /// Provider-reported, so a transport failure can understate the bill;
+    /// `sent_requests` is the load-bearing budget number.
+    #[must_use]
+    pub fn spent_tokens(&self) -> u64 {
+        self.spent_tokens
+    }
+
     fn api_key_for_request() -> Result<String, JevError> {
         Self::api_key().ok_or_else(|| {
             JevError::Auth("missing CHAOSBOX_JEV_API_KEY_FILE / TYPESAFE_API_KEY".into())
@@ -361,6 +379,12 @@ impl JevClient {
         let mut attempt = 0u32;
         loop {
             attempt += 1;
+            // Retries spend real requests too: re-check the attempt-based
+            // budget before every dispatch, not only before the first, so a
+            // flapping endpoint cannot walk the spend past `max_requests`.
+            if attempt > 1 && self.sent_requests >= self.policy.max_requests {
+                return Err(JevError::Budget("max_requests".into()));
+            }
             let res = self
                 .http
                 .post(&self.policy.endpoint)
@@ -368,6 +392,9 @@ impl JevClient {
                 .json(&body)
                 .send()
                 .await;
+            // Count the dispatch, not the response: a timed-out or rejected
+            // request still reached the provider's billing.
+            self.sent_requests += 1;
             match res {
                 Err(e) if e.is_timeout() || e.is_connect() => {
                     self.attempts.push(AttemptRecord {
@@ -438,7 +465,6 @@ impl JevClient {
                     }
                     let parsed: SystemOneResponse = serde_json::from_slice(&bytes)
                         .map_err(|e| JevError::Schema(sanitized(&e.to_string())))?;
-                    self.sent_requests += 1;
                     self.spent_tokens += parsed.usage.input_tokens;
                     if self.spent_tokens > self.policy.max_input_tokens {
                         return Err(JevError::Budget("max_input_tokens".into()));

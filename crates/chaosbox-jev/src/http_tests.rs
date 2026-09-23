@@ -1,4 +1,3 @@
-
 //! Wire-level tests for [`super::JevClient::evaluate`] against a scripted
 //! mock `POST /v1/systemone` server on 127.0.0.1 (raw `tokio` TCP, no new
 //! dependencies, no credentials, no network beyond loopback).

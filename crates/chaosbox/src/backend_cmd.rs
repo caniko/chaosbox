@@ -20,6 +20,18 @@ pub(super) fn backend() -> Backend {
     }
 }
 
+/// Live spend of one `run`, recorded where every exit path can read it back.
+///
+/// The `usage:` line the batching caller budgets against is emitted once, by
+/// the command arm, so a run that fails after dispatching requests still
+/// reports what it spent instead of handing the next repository a fresh
+/// allowance.
+#[derive(Default)]
+pub(super) struct RunSpend {
+    pub(super) requests: std::sync::atomic::AtomicU32,
+    pub(super) tokens: std::sync::atomic::AtomicU64,
+}
+
 /// `TypeDB` connection from the environment. The password arrives via a
 /// credential file (never a value, flag, or log); only the file path
 /// appears in diagnostics.
@@ -52,6 +64,46 @@ pub(super) async fn typedb_publication_chain(
         .map_err(|e| format!("typedb active build: {e}"))?;
     chain_publication(active.map(|b| (b.build_id, b.generation)))
         .map_err(|e| format!("publication chain: {e}"))
+}
+
+/// Whether the active build still publishes relations.
+///
+/// Returns `Ok(None)` when the store definitively has no active build for
+/// the repository (nothing consumers could lose), `Ok(Some(_))` when the
+/// answer is known, and `Err(())` when it cannot be determined.
+///
+/// The in-process staging store answers for the memory backend and for a
+/// same-process republish; a fresh `TypeDB` process has empty staging by
+/// design, so it probes the pinned active build through the query reader
+/// instead. Publication state is never inferred from an empty staging area:
+/// `Err` means "cannot tell" (unreachable backend, failed query), and
+/// callers must then leave the active build alone rather than risk
+/// replacing a relation-bearing one. A successful query that simply finds
+/// no build is `Ok(None)`, not an error: a first capture-only publish is
+/// what lets any build exist at all.
+pub(super) async fn active_publishes_relations<S: chaosbox_store::Store>(
+    store: &S,
+    repo: &str,
+) -> Result<Option<bool>, ()> {
+    if let Some(build) = store.active(repo) {
+        return Ok(Some(!build.edges.is_empty()));
+    }
+    if backend() != Backend::Typedb {
+        return Ok(Some(false));
+    }
+    let config = typedb_config_from_env().map_err(|_| ())?;
+    let mut handle = TypeDbReader::new(config);
+    Box::pin(handle.connect()).await.map_err(|_| ())?;
+    let build = Box::pin(handle.active_build(repo)).await.map_err(|_| ())?;
+    let Some(build) = build else {
+        return Ok(None);
+    };
+    // Presence is all the gate asks: one row answers it without pulling the
+    // whole relation set out of the store.
+    let relations = Box::pin(handle.build_relationships(&build.build_id, 1))
+        .await
+        .map_err(|_| ())?;
+    Ok(Some(!relations.is_empty()))
 }
 
 /// Consumer read surface over the live backend: a pinned `TypeDB` reader.
