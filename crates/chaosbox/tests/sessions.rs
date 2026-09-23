@@ -1966,7 +1966,6 @@ fn stage_variant_mapping(parent: &Path) -> PathBuf {
 fn a_variant_receipt_verifies_source_digests_against_its_source_session() {
     const DERIVED: &str = VARIANT_DERIVED;
     const SOURCE: &str = VARIANT_SOURCE;
-    const DERIVED_MSG: &str = VARIANT_DERIVED_MSG;
     const MAP_DIGEST: &str = VARIANT_MAP_DIGEST;
     const MAPPING_DIGEST: &str = VARIANT_MAPPING_DIGEST;
     let (held, root) = fixture();
