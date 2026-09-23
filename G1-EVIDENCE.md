@@ -122,6 +122,12 @@ pass has to prove before it may answer `0`.
 - The campaign was opened read-only; nothing in it was written.
 - Report: `/data/scratch/tmp/opencode/verify-7644-hardened.json`
 
+Then rebased onto trunk `dc30fef` (`fefa183` + `dc30fef`, the jev and
+extract refactors — neither touches this crate) and re-run unchanged:
+**every field identical**, only `elapsed_ms 99430`. Binary 23692488
+bytes, built 2026-09-23 16:37, report
+`/data/scratch/tmp/opencode/verify-7644-postrebase.json`.
+
 ### G1 fields, unchanged
 
 | field | value |
