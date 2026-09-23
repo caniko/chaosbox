@@ -165,7 +165,7 @@ pub fn message_map_digest<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)
         hasher.update(original.as_bytes());
         hasher.update([0_u8]);
         hasher.update(derived.as_bytes());
-        hasher.update([b'\n']);
+        hasher.update(b"\n");
     }
     hex(&hasher.finalize())
 }
@@ -224,7 +224,7 @@ fn is_native_shape(id: &str, prefix: &str) -> bool {
         && bytes[..12]
             .iter()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
-        && bytes[12..].iter().all(|byte| byte.is_ascii_alphanumeric())
+        && bytes[12..].iter().all(u8::is_ascii_alphanumeric)
 }
 
 /// Lowercase hex, matching Node's `digest("hex")`.
