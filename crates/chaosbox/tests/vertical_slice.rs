@@ -7,7 +7,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use chaosbox::{export_json, search, FixtureResponder, Materialization, Pipeline};
 use chaosbox_core::diff_builds;
 use chaosbox_extract::Snapshot;
-use chaosbox_gel::{MemoryStore, Store as _};
+use chaosbox_store::{MemoryStore, Store as _};
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo-repo")

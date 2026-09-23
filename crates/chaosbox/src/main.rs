@@ -1,8 +1,8 @@
 //! `chaosbox` CLI + read-only MCP server.
 //!
 //! Consumers (CLI queries, MCP tools) share one query implementation in the
-//! library, served Gel-backed through [`chaosbox::GelReader`]. MCP is
-//! read-only: no mutation, ingestion, annotations, arbitrary EdgeQL/SQL,
+//! library, served TypeDB-backed through [`chaosbox::GraphReader`]. MCP is
+//! read-only: no mutation, ingestion, annotations, arbitrary SQL,
 //! migrations, or model configuration tools. The read-only server never loads
 //! Jev credentials. Indexing/administration are operator commands.
 
@@ -12,33 +12,33 @@ use std::{
 };
 
 use chaosbox::{
-    all_relation_types, GelReader, LifecycleReport, Materialization, Pipeline, chain_publication,
+    all_relation_types, GraphReader, LifecycleReport, Materialization, Pipeline, chain_publication,
     EXPORT_EDGE_CAP, EXPORT_NODE_CAP,
 };
 use chaosbox::{FixtureResponder, LiveResponder, PipelineError};
 use chaosbox_extract::Snapshot;
-use chaosbox_gel::{GelHandle, GelQueries as _, MemoryStore};
+use chaosbox_store::{GraphQueries as _, MemoryStore};
 use chaosbox_typedb::{
     reader::TypeDbReader,
     store::{TypeDbConfig, TypeDbStore},
 };
 use clap::{Parser, Subcommand};
 
-/// Storage backend selection: `CHAOSBOX_DB_BACKEND=typedb` routes every
-/// consumer and lifecycle command at the `TypeDB` backend; anything else keeps
-/// the Gel path. The default flips to `TypeDB` at cutover.
+/// Pipeline store selection: `CHAOSBOX_DB_BACKEND=typedb` publishes through
+/// `TypeDB`; anything else runs the disposable in-memory store. Lifecycle
+/// and consumer commands always target `TypeDB`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Backend {
-    Gel,
+    Memory,
     Typedb,
 }
 
-/// Resolve the backend from the environment.
+/// Resolve the pipeline store from the environment.
 fn backend() -> Backend {
     if std::env::var("CHAOSBOX_DB_BACKEND").as_deref() == Ok("typedb") {
         Backend::Typedb
     } else {
-        Backend::Gel
+        Backend::Memory
     }
 }
 
@@ -76,134 +76,47 @@ async fn typedb_publication_chain(
         .map_err(|e| format!("publication chain: {e}"))
 }
 
-/// Backend-erased consumer reader: every query arm below works unchanged
-/// against either backend. Credentials stay behind `connect`; MCP callers
-/// only see the closed read surface.
-enum AnyReader {
-    Gel(GelReader<GelHandle>),
-    Typedb(GelReader<TypeDbReader>),
-}
+/// Consumer read surface over the live backend: a pinned `TypeDB` reader.
+/// Credentials stay behind `connect`; MCP callers only see the closed
+/// read surface. Query methods deref through to the pinned reader.
+struct AnyReader(GraphReader<TypeDbReader>);
 
 impl AnyReader {
-    /// Connect and pin the active build for `repo` on the selected backend.
+    /// Connect and pin the active build for `repo` on `TypeDB`.
     async fn connect(repo: &str) -> Result<Self, PipelineError> {
-        match backend() {
-            Backend::Gel => Ok(Self::Gel(Box::pin(GelReader::connect(repo)).await?)),
-            Backend::Typedb => {
-                let config = typedb_config_from_env().map_err(PipelineError::Consumer)?;
-                let mut handle = TypeDbReader::new(config);
-                Box::pin(handle.connect())
-                    .await
-                    .map_err(|e| PipelineError::Consumer(format!("typedb connect: {e}")))?;
-                Ok(Self::Typedb(GelReader::pinned(handle, repo).await?))
-            }
-        }
+        let config = typedb_config_from_env().map_err(PipelineError::Consumer)?;
+        let mut handle = TypeDbReader::new(config);
+        Box::pin(handle.connect())
+            .await
+            .map_err(|e| PipelineError::Consumer(format!("typedb connect: {e}")))?;
+        Ok(Self(GraphReader::pinned(handle, repo).await?))
     }
 
     /// Pinned active build id for status responses.
     fn build_id(&self) -> &str {
-        match self {
-            Self::Gel(r) => &r.build_id,
-            Self::Typedb(r) => &r.build_id,
-        }
+        &self.0.build_id
     }
 
     /// Pinned generation for status responses.
     fn generation(&self) -> i64 {
-        match self {
-            Self::Gel(r) => r.generation,
-            Self::Typedb(r) => r.generation,
-        }
+        self.0.generation
     }
 
     /// Pinned build status for status responses.
     fn status(&self) -> &str {
-        match self {
-            Self::Gel(r) => &r.status,
-            Self::Typedb(r) => &r.status,
-        }
+        &self.0.status
     }
 
     /// Pinned snapshot ids (freshness fingerprint) for status responses.
     fn snapshots(&self) -> &[String] {
-        match self {
-            Self::Gel(r) => &r.snapshots,
-            Self::Typedb(r) => &r.snapshots,
-        }
+        &self.0.snapshots
     }
+}
 
-    async fn search(
-        &self,
-        query: &str,
-        limit: i64,
-    ) -> Result<Vec<chaosbox_gel::EntityRow>, PipelineError> {
-        match self {
-            Self::Gel(r) => r.search(query, limit).await,
-            Self::Typedb(r) => r.search(query, limit).await,
-        }
-    }
-
-    async fn lookup(&self, id: &str) -> Result<Option<chaosbox_gel::EntityRow>, PipelineError> {
-        match self {
-            Self::Gel(r) => r.lookup(id).await,
-            Self::Typedb(r) => r.lookup(id).await,
-        }
-    }
-
-    async fn neighbors(
-        &self,
-        id: &str,
-        filter: Option<Vec<String>>,
-    ) -> Result<(Vec<chaosbox_gel::RelRow>, Vec<chaosbox_gel::RelRow>), PipelineError> {
-        match self {
-            Self::Gel(r) => r.neighbors(id, filter).await,
-            Self::Typedb(r) => r.neighbors(id, filter).await,
-        }
-    }
-
-    async fn path(
-        &self,
-        from: &str,
-        to: &str,
-        max_hops: usize,
-    ) -> Result<Option<Vec<String>>, PipelineError> {
-        match self {
-            Self::Gel(r) => r.path(from, to, max_hops).await,
-            Self::Typedb(r) => r.path(from, to, max_hops).await,
-        }
-    }
-
-    async fn export(&self) -> Result<serde_json::Value, PipelineError> {
-        match self {
-            Self::Gel(r) => r.export().await,
-            Self::Typedb(r) => r.export().await,
-        }
-    }
-
-    async fn evidence(&self, rel_id: &str) -> Result<serde_json::Value, PipelineError> {
-        match self {
-            Self::Gel(r) => r.evidence(rel_id).await,
-            Self::Typedb(r) => r.evidence(rel_id).await,
-        }
-    }
-
-    async fn diff(
-        &self,
-        repo: &str,
-        from_build: &str,
-        to_build: &str,
-    ) -> Result<serde_json::Value, PipelineError> {
-        match self {
-            Self::Gel(r) => r.diff(repo, from_build, to_build).await,
-            Self::Typedb(r) => r.diff(repo, from_build, to_build).await,
-        }
-    }
-
-    async fn explain(&self, id: &str) -> Result<serde_json::Value, PipelineError> {
-        match self {
-            Self::Gel(r) => r.explain(id).await,
-            Self::Typedb(r) => r.explain(id).await,
-        }
+impl std::ops::Deref for AnyReader {
+    type Target = GraphReader<TypeDbReader>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -211,7 +124,7 @@ impl AnyReader {
 #[command(
     name = "chaosbox",
     version,
-    about = "Chaosbox deterministic code-graph pipeline (Gel-backed)"
+    about = "Chaosbox deterministic code-graph pipeline"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -270,7 +183,7 @@ enum Command {
         #[arg(long)]
         max_retries: Option<u32>,
     },
-    /// Query helpers (read-only; Gel-backed, shared with MCP).
+    /// Query helpers (read-only; TypeDB-backed, shared with MCP).
     Query {
         #[command(subcommand)]
         q: QueryCmd,
@@ -281,7 +194,7 @@ enum Command {
         #[arg(long)]
         intelligence: Option<PathBuf>,
     },
-    /// Lifecycle contract v1.
+    /// Database readiness and migration reports (JSON contract v2).
     Db {
         #[command(subcommand)]
         op: DbCmd,
@@ -343,15 +256,15 @@ enum QueryCmd {
 enum DbCmd {
     /// Read-only readiness check. Exit 0 only when ready.
     Check {
-        /// Emit the versioned JSON envelope (contract v1; always on).
+        /// Emit the versioned JSON envelope (contract v2; always on).
         #[arg(long, default_value_t = true)]
         json: bool,
         #[arg(long, default_value = "demo")]
         repo: String,
     },
-    /// Apply committed migrations idempotently via pinned Gel tooling.
+    /// Apply the packaged `TypeDB` schema idempotently through the driver.
     Migrate {
-        /// Emit the versioned JSON envelope (contract v1; always on).
+        /// Emit the versioned JSON envelope (contract v2; always on).
         #[arg(long, default_value_t = true)]
         json: bool,
         #[arg(long, default_value = "demo")]
@@ -412,7 +325,7 @@ async fn main() {
             max_retries,
         } => {
             let code = match backend() {
-                Backend::Gel => {
+                Backend::Memory => {
                     run_pipeline_with(
                         Pipeline::<MemoryStore>::new(),
                         &path,
@@ -488,12 +401,8 @@ async fn main() {
         Command::Db { op } => match op {
             DbCmd::Check { json: _, repo } => {
                 // Read-only: never init/migrate/repair. Exit 0 when ready,
-                // 2 when pending, 1 otherwise (harbor-db contract v1; the
-                // TypeDB path reports contract v2, same exit mapping).
-                let report = match backend() {
-                    Backend::Gel => Box::pin(db_check_gel(&repo)).await,
-                    Backend::Typedb => Box::pin(db_check_typedb(&repo)).await,
-                };
+                // 2 when pending, 1 otherwise (harbor-db contract v2).
+                let report = Box::pin(db_check_typedb(&repo)).await;
                 println!("{}", serde_json::to_string(&report).unwrap());
                 if report.status == "ready" {
                     std::process::exit(0);
@@ -503,14 +412,11 @@ async fn main() {
                 }
             }
             DbCmd::Migrate { json: _, repo: _ } => {
-                // Idempotent committed migrations; the TypeDB path applies
-                // the packaged schema through the driver (no CLI tooling).
-                // run_migrate verifies schema readiness itself; the arm only
-                // maps the verdict to the exit code.
-                let result = match backend() {
-                    Backend::Gel => Box::pin(run_migrate()).await,
-                    Backend::Typedb => Box::pin(run_migrate_typedb()).await,
-                };
+                // Idempotent packaged-schema application through the driver
+                // (no CLI tooling). run_migrate_typedb verifies schema
+                // readiness itself; the arm only maps the verdict to the
+                // exit code.
+                let result = Box::pin(run_migrate_typedb()).await;
                 match result {
                     Ok(report) => {
                         println!("{}", serde_json::to_string(&report).unwrap());
@@ -528,58 +434,30 @@ async fn main() {
     }
 }
 
-/// Gel-backed readiness: connectivity + probe + active build for the repo.
-async fn db_check_gel(repo: &str) -> LifecycleReport {
-    let handle = match Box::pin(chaosbox_gel::GelHandle::connect()).await {
-        Ok(h) => h,
-        Err(e) => return LifecycleReport::error("db check", &format!("gel connect: {e}")),
-    };
-    if let Err(e) = Box::pin(handle.probe()).await {
-        return LifecycleReport::error("db check", &format!("gel probe: {e}"));
-    }
-    match Box::pin(handle.active_build(repo)).await {
-        Err(e) => match Box::pin(handle.schema_present()).await {
-            // No marker type: committed migrations have not applied yet.
-            // This is the normal pre-migration state, not a failure.
-            Ok(false) => LifecycleReport::pending("db check", "migrations not applied"),
-            Ok(true) => LifecycleReport::error("db check", &format!("active build: {e}")),
-            Err(probe) => LifecycleReport::error(
-                "db check",
-                &format!("active build: {e}; schema probe: {probe}"),
-            ),
-        },
-        Ok(None) => LifecycleReport::pending("db check", "no active build for repo"),
-        Ok(Some(b)) => LifecycleReport::check_ready(serde_json::json!({
-            "repo": repo, "active_build": b.build_id, "generation": b.generation,
-            "status": b.status, "schema_assets": "packaged",
-        })),
-    }
-}
-
 /// TypeDB-backed readiness: connectivity + schema probe + active build.
-/// Reports contract v2; exit mapping matches the Gel arm above.
+/// Reports contract v2; exit 0 ready, 2 pending, 1 otherwise.
 async fn db_check_typedb(repo: &str) -> LifecycleReport {
     let config = match typedb_config_from_env() {
         Ok(c) => c,
-        Err(e) => return LifecycleReport::error_typedb("db check", &e),
+        Err(e) => return LifecycleReport::error("db check", &e),
     };
     let mut reader = TypeDbReader::new(config);
     if let Err(e) = Box::pin(reader.connect()).await {
         // A missing database is the normal pre-migration state, not a
         // failure; anything else is an operational error.
         if e.to_string().contains("not found") {
-            return LifecycleReport::pending_typedb("db check", "database not present");
+            return LifecycleReport::pending("db check", "database not present");
         }
-        return LifecycleReport::error_typedb("db check", &format!("typedb connect: {e}"));
+        return LifecycleReport::error("db check", &format!("typedb connect: {e}"));
     }
     match Box::pin(reader.probe()).await {
-        Err(e) => LifecycleReport::error_typedb("db check", &format!("probe: {e}")),
+        Err(e) => LifecycleReport::error("db check", &format!("probe: {e}")),
         // No marker type: the packaged schema has not applied yet.
-        Ok(false) => LifecycleReport::pending_typedb("db check", "migrations not applied"),
+        Ok(false) => LifecycleReport::pending("db check", "migrations not applied"),
         Ok(true) => match Box::pin(reader.active_build(repo)).await {
-            Err(e) => LifecycleReport::error_typedb("db check", &format!("active build: {e}")),
-            Ok(None) => LifecycleReport::pending_typedb("db check", "no active build for repo"),
-            Ok(Some(b)) => LifecycleReport::check_ready_typedb(serde_json::json!({
+            Err(e) => LifecycleReport::error("db check", &format!("active build: {e}")),
+            Ok(None) => LifecycleReport::pending("db check", "no active build for repo"),
+            Ok(Some(b)) => LifecycleReport::check_ready(serde_json::json!({
                 "repo": repo, "active_build": b.build_id, "generation": b.generation,
                 "status": b.status, "schema_assets": "packaged",
             })),
@@ -601,7 +479,7 @@ async fn run_migrate_typedb() -> Result<LifecycleReport, String> {
         operation: "db migrate".into(),
         status: "ready".into(),
         schema_version: chaosbox_typedb::SCHEMA_VERSION,
-        gel_pinned: chaosbox_typedb::TYPEDB_PINNED.into(),
+        pinned: chaosbox_typedb::TYPEDB_PINNED.into(),
         detail: serde_json::json!({"applied": true}),
     })
 }
@@ -645,7 +523,7 @@ async fn run_query(q: QueryCmd) -> i32 {
             }
         }
         QueryCmd::Neighbors { id, repo, rel } => {
-            // Validate the filter before touching Gel: typos must fail loudly.
+            // Validate the filter before touching the backend: typos must fail loudly.
             let filter = match chaosbox::validate_rel_filter(rel.map(|r| vec![r])) {
                 Ok(f) => f,
                 Err(e) => return consumer_err("query neighbors", e),
@@ -760,7 +638,7 @@ async fn run_query(q: QueryCmd) -> i32 {
 // session's refactor. Allowed to keep CI unblocked.
 #[allow(clippy::too_many_lines)]
 #[allow(clippy::too_many_arguments)]
-async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
+async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
     mut pipe: Pipeline<S>,
     path: &Path,
     repo: &str,
@@ -959,56 +837,6 @@ async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
     }
 }
 
-async fn run_migrate() -> Result<LifecycleReport, String> {
-    let creds = std::env::var("CHAOSBOX_GEL_CREDENTIALS_FILE")
-        .map_err(|_| "CHAOSBOX_GEL_CREDENTIALS_FILE unset".to_owned())?;
-    // Pinned binary under Nix (`db-migrate` app); ambient `gel` only for
-    // cargo-run development. Never log secret values; only reference the file.
-    // GEL_CREDENTIALS_FILE is a documented Gel connection parameter. No
-    // --non-interactive flag: Gel CLI 7.x has none and applies without
-    // prompting when stdin is not a TTY.
-    let gel_bin = std::env::var("CHAOSBOX_GEL_BIN").unwrap_or_else(|_| "gel".to_owned());
-    let out = tokio::process::Command::new(gel_bin)
-        .args(["--credentials-file", &creds, "migration", "apply"])
-        .env("GEL_CREDENTIALS_FILE", &creds)
-        .output()
-        .await
-        .map_err(|e| format!("gel CLI: {e}"))?;
-    if out.status.success() {
-        // Schema-level verification only: server reachable, authenticated,
-        // committed schema present. Active builds are published by pipelines
-        // AFTER migration, so a fresh database legitimately has none;
-        // deployment distinguishes schema readiness (migrate exit 0) from
-        // application readiness (check exit 0 only with an active build).
-        // Reuses the same connection the CLI just proved.
-        std::env::set_var("GEL_CREDENTIALS_FILE", &creds);
-        match Box::pin(chaosbox_gel::GelHandle::connect()).await {
-            Err(e) => Err(format!("post-apply connect: {e}")),
-            Ok(handle) => match Box::pin(handle.schema_present()).await {
-                Err(e) => Err(format!("post-apply schema probe: {e}")),
-                Ok(false) => Err("post-apply schema probe: marker type absent".into()),
-                Ok(true) => Ok(chaosbox::LifecycleReport {
-                    contract_version: 1,
-                    backend: "gel".into(),
-                    operation: "db migrate".into(),
-                    status: "ready".into(),
-                    schema_version: chaosbox_gel::SCHEMA_VERSION,
-                    gel_pinned: chaosbox_gel::GEL_PINNED.into(),
-                    detail: serde_json::json!({"applied": true}),
-                }),
-            },
-        }
-    } else {
-        Err(format!(
-            "gel migration apply failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-                .chars()
-                .take(300)
-                .collect::<String>()
-        ))
-    }
-}
-
 // ---- Read-only MCP (JSON-RPC over stdio, full handshake) ----
 
 /// MCP protocol version served here.
@@ -1185,7 +1013,7 @@ async fn mcp_call_tool(
         }
     };
     // Closed read-only tool set: reject unknown (write/mutation) tools before
-    // touching Gel or credentials of any kind.
+    // touching the backend or credentials of any kind.
     if !matches!(
         name,
         "search"
@@ -1519,15 +1347,15 @@ mod tests {
     }
 
     #[test]
-    fn missing_args_rejected_before_gel() {
+    fn missing_args_rejected_before_backend() {
         let err = mcp_args("search", &serde_json::json!({})).unwrap_err();
         assert_eq!(err["code"], -32602);
     }
 
     #[tokio::test]
-    async fn unknown_tools_rejected_without_gel() {
+    async fn unknown_tools_rejected_without_backend() {
         // No backend needed: the closed tool set rejects first.
-        for name in ["migrate", "evaluate", "db", "edgeql", "ingest", "annotate"] {
+        for name in ["migrate", "evaluate", "db", "ingest", "annotate"] {
             let resp = Box::pin(mcp_call_tool(
                 &serde_json::json!(1),
                 name,
@@ -1585,7 +1413,7 @@ mod tests {
 
     #[tokio::test]
     async fn calls_require_initialization_shape() {
-        // Malformed (non-object) params fail arg validation, not Gel.
+        // Malformed (non-object) params fail arg validation, not the backend.
         let resp = Box::pin(mcp_call_tool(
             &serde_json::json!(1),
             "search",

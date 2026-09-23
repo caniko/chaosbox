@@ -170,7 +170,7 @@ pub enum RelationType {
 }
 
 /// Canonical storage name for a relation type (serde `snake_case`).
-/// Both the in-memory projection and future Gel inserts must use this.
+/// Both the in-memory projection and backend inserts must use this.
 #[must_use]
 pub fn relation_type_name(r: &RelationType) -> String {
     serde_json::to_value(r)
@@ -253,7 +253,7 @@ pub fn evidence_class_name(c: EvidenceClass) -> String {
 }
 
 /// Canonical storage name for an entity kind (serde `snake_case`).
-/// Both the in-memory projection and Gel inserts must use this.
+/// Both the in-memory projection and backend inserts must use this.
 #[must_use]
 pub fn entity_kind_name(k: &EntityKind) -> String {
     serde_json::to_value(k)
@@ -281,9 +281,8 @@ pub struct Evidence {
     pub source_file_version: String,
 }
 
-/// Content identity of one source file version: what the Gel `FileVersion`
-/// link resolves from. Both backends key evidence files by
-/// (snapshot, path); hashes are never invented.
+/// Content identity of one source file version. Both backends key
+/// evidence files by (snapshot, path); hashes are never invented.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SnapshotFile {
     /// Snapshot id.

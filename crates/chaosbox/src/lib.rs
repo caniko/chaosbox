@@ -13,7 +13,7 @@ use chaosbox_core::{
     RelationScope,
 };
 use chaosbox_extract::{build_candidates, extract_snapshot, CandidateCatalog, Extraction, Snapshot};
-use chaosbox_gel::MemoryStore;
+use chaosbox_store::MemoryStore;
 use chaosbox_jev::{
     cache_key, Answer, ChoiceAnswer, JevClient, NoulAnswer, Question, ScoreAnswer,
     SystemOneResponse,
@@ -172,7 +172,7 @@ pub trait Responder: Send + Sync {
     ) -> Result<SystemOneResponse, String>;
 }
 
-/// Deterministic fixture responder for tests and `test-gel`.
+/// Deterministic fixture responder for tests and `test-typedb`.
 pub struct FixtureResponder {
     /// When true every Choice answer is `accept`; otherwise `none`.
     pub accept_all: bool,
@@ -306,7 +306,7 @@ fn assemble_evidence(
 }
 
 /// Full pipeline state held by the operator commands.
-/// Generic over [`chaosbox_gel::Store`] with [`MemoryStore`] as the default.
+/// Generic over [`chaosbox_store::Store`] with [`MemoryStore`] as the default.
 pub struct Pipeline<S = MemoryStore> {
     /// Backing store (decisions, evidence, builds, active pointer).
     pub store: S,
@@ -323,7 +323,7 @@ pub struct Pipeline<S = MemoryStore> {
 /// The cache test mirrors [`Pipeline::decide`] verbatim (same catalog
 /// digest, question set, model and rubric inputs); if decide's reuse rule
 /// changes, this function must change with it.
-pub async fn uncached_decisions<S: chaosbox_gel::Store>(
+pub async fn uncached_decisions<S: chaosbox_store::Store>(
     candidates: &[Candidate],
     entities: &BTreeMap<String, Entity>,
     model_requested: &str,
@@ -363,7 +363,7 @@ pub async fn uncached_decisions<S: chaosbox_gel::Store>(
     Ok(uncached)
 }
 
-impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
+impl<S: chaosbox_store::Store + Default> Pipeline<S> {
     /// A pipeline with an empty store at generation zero.
     #[must_use]
     pub fn new() -> Self {
@@ -664,7 +664,7 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
     }
 
     /// Policy-controlled build + atomic publication with predecessor check.
-    /// Async because the Gel backend needs network IO for the flush.
+    /// Async because the live backend needs network IO for the flush.
     ///
     /// Failed decisions (responder faults, exhausted budgets) never publish:
     /// a partial graph would displace the last good active build while
@@ -786,7 +786,7 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
     }
 }
 
-impl<S: chaosbox_gel::Store + Default> Default for Pipeline<S> {
+impl<S: chaosbox_store::Store + Default> Default for Pipeline<S> {
     fn default() -> Self {
         Self::new()
     }
@@ -918,115 +918,59 @@ pub fn explain_entity(build: &GraphBuild, id: &str) -> Option<serde_json::Value>
     }))
 }
 
-// ---- Lifecycle contract v1 (db check / db migrate) ----
+// ---- Lifecycle contract (db check / db migrate) ----
 
 /// Versioned JSON envelope. Diagnostics go to stderr; stdout is this JSON.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LifecycleReport {
-    /// Contract version (currently 1).
+    /// Contract version (currently 2).
     pub contract_version: u32,
-    /// Storage backend label (`gel`).
+    /// Storage backend label (`typedb`).
     pub backend: String,
     /// Operation name (`db check`, `db migrate`).
     pub operation: String,
-    /// `ready`, `pending`, `incompatible`, or `error`.
+    /// `ready`, `pending`, or `error`.
     pub status: String,
     /// Schema compatibility marker.
     pub schema_version: u32,
-    /// Pinned Gel version the schema targets.
-    pub gel_pinned: String,
+    /// Pinned backend version the schema targets.
+    pub pinned: String,
     /// Sanitized machine-readable detail (never secret values).
     #[serde(default)]
     pub detail: serde_json::Value,
 }
 
 impl LifecycleReport {
-    /// A ready report: exit 0 after the caller prints it.
-    #[must_use]
-    pub fn check_ready(detail: serde_json::Value) -> Self {
-        Self {
-            contract_version: 1,
-            backend: "gel".into(),
-            operation: "db check".into(),
-            status: "ready".into(),
-            schema_version: chaosbox_gel::SCHEMA_VERSION,
-            gel_pinned: chaosbox_gel::GEL_PINNED.into(),
-            detail,
-        }
-    }
-    /// A non-ready report: the caller prints it and exits nonzero.
-    #[must_use]
-    pub fn pending(operation: &str, reason: &str) -> Self {
-        Self {
-            contract_version: 1,
-            backend: "gel".into(),
-            operation: operation.into(),
-            status: "pending".into(),
-            schema_version: chaosbox_gel::SCHEMA_VERSION,
-            gel_pinned: chaosbox_gel::GEL_PINNED.into(),
-            detail: serde_json::json!({"reason": reason}),
-        }
-    }
-
-    /// An incompatible-history report: refuse rather than drop/recreate data.
-    #[must_use]
-    pub fn incompatible(operation: &str, reason: &str) -> Self {
-        Self {
-            contract_version: 1,
-            backend: "gel".into(),
-            operation: operation.into(),
-            status: "incompatible".into(),
-            schema_version: chaosbox_gel::SCHEMA_VERSION,
-            gel_pinned: chaosbox_gel::GEL_PINNED.into(),
-            detail: serde_json::json!({"reason": reason}),
-        }
-    }
-
-    /// An operational-error report: sanitized diagnostics, stdout stays parseable.
-    #[must_use]
-    pub fn error(operation: &str, reason: &str) -> Self {
-        Self {
-            contract_version: 1,
-            backend: "gel".into(),
-            operation: operation.into(),
-            status: "error".into(),
-            schema_version: chaosbox_gel::SCHEMA_VERSION,
-            gel_pinned: chaosbox_gel::GEL_PINNED.into(),
-            detail: serde_json::json!({"reason": reason}),
-        }
-    }
-
-    /// Shared builder for `TypeDB` (contract v2) reports: the v1 envelope
-    /// names the Gel pin, so `TypeDB` reports bump the contract and carry the
-    /// `TypeDB` pin instead. Shape is otherwise identical.
-    fn typedb_report(operation: &str, status: &str, detail: serde_json::Value) -> Self {
+    /// Shared builder (contract v2): the envelope carries the pinned
+    /// `TypeDB` version the schema targets.
+    fn report(operation: &str, status: &str, detail: serde_json::Value) -> Self {
         Self {
             contract_version: 2,
             backend: "typedb".into(),
             operation: operation.into(),
             status: status.into(),
             schema_version: chaosbox_typedb::SCHEMA_VERSION,
-            gel_pinned: chaosbox_typedb::TYPEDB_PINNED.into(),
+            pinned: chaosbox_typedb::TYPEDB_PINNED.into(),
             detail,
         }
     }
 
-    /// A ready `TypeDB` report: exit 0 after the caller prints it.
+    /// A ready report: exit 0 after the caller prints it.
     #[must_use]
-    pub fn check_ready_typedb(detail: serde_json::Value) -> Self {
-        Self::typedb_report("db check", "ready", detail)
+    pub fn check_ready(detail: serde_json::Value) -> Self {
+        Self::report("db check", "ready", detail)
     }
 
-    /// A non-ready `TypeDB` report: the caller prints it and exits nonzero.
+    /// A non-ready report: the caller prints it and exits nonzero.
     #[must_use]
-    pub fn pending_typedb(operation: &str, reason: &str) -> Self {
-        Self::typedb_report(operation, "pending", serde_json::json!({"reason": reason}))
+    pub fn pending(operation: &str, reason: &str) -> Self {
+        Self::report(operation, "pending", serde_json::json!({"reason": reason}))
     }
 
-    /// A `TypeDB` operational-error report.
+    /// An operational-error report: sanitized diagnostics, stdout stays parseable.
     #[must_use]
-    pub fn error_typedb(operation: &str, reason: &str) -> Self {
-        Self::typedb_report(operation, "error", serde_json::json!({"reason": reason}))
+    pub fn error(operation: &str, reason: &str) -> Self {
+        Self::report(operation, "error", serde_json::json!({"reason": reason}))
     }
 }
 
@@ -1046,7 +990,7 @@ pub fn claim_survives_source_removal(claim: &Claim, removed_evidence: &str) -> b
     !remaining_support.is_empty() || !remaining_contra.is_empty() || claim.supporting.is_empty()
 }
 
-// ---- Gel-backed read-only consumer path (CLI and MCP share this) ----
+// ---- Read-only consumer path (CLI and MCP share this) ----
 
 /// Escape LIKE wildcards (`\`, `%`, `_`) so user input matches literally.
 /// Shared by both backends: the live path relies on backslash LIKE escapes.
@@ -1061,7 +1005,7 @@ fn escape_like(query: &str) -> String {
     out
 }
 
-/// Relation vocabulary for Gel filters; an empty filter matches nothing, so
+/// Relation vocabulary for relationship-type filters; an empty filter matches nothing, so
 /// callers pass [`all_relation_types`] for unfiltered neighborhoods.
 #[must_use]
 pub fn all_relation_types() -> Vec<String> {
@@ -1111,11 +1055,11 @@ pub const EXPORT_NODE_CAP: i64 = 10_000;
 /// Hard cap for exported edges.
 pub const EXPORT_EDGE_CAP: i64 = 20_000;
 
-/// Gel-backed read-only queries. One build id is pinned per reader from the
+/// Backend read-only queries. One build id is pinned per reader from the
 /// active-build pointer; readers never mutate, migrate, or load Jev credentials.
-/// Generic over [`chaosbox_gel::GelQueries`] with [`chaosbox_gel::GelHandle`]
-/// as the live backend and [`chaosbox_gel::MemoryReader`] for tests.
-pub struct GelReader<R = chaosbox_gel::GelHandle> {
+/// Generic over [`chaosbox_store::GraphQueries`] with `TypeDbReader` as the
+/// live backend and [`chaosbox_store::MemoryReader`] for tests.
+pub struct GraphReader<R> {
     handle: R,
     /// Pinned active build id for every request this reader serves.
     pub build_id: String,
@@ -1125,25 +1069,13 @@ pub struct GelReader<R = chaosbox_gel::GelHandle> {
     pub status: String,
     /// Snapshot ids pinned by the build: the freshness fingerprint status
     /// reports so consumers can detect a build that no longer matches its
-    /// sources. Empty when the backend does not project it (the superseded
-    /// Gel runtime predates the field; `TypeDB` and memory report it).
+    /// sources. Empty when the backend's projection predates the field.
     pub snapshots: Vec<String>,
 }
 
-impl GelReader<chaosbox_gel::GelHandle> {
-    /// Connect and pin the active build for `repo`. Errors when no Gel is
-    /// reachable or no build is published (callers report pending/error).
-    pub async fn connect(repo: &str) -> Result<Self, PipelineError> {
-        let handle = Box::pin(chaosbox_gel::GelHandle::connect())
-            .await
-            .map_err(|e| PipelineError::Consumer(format!("gel connect: {e}")))?;
-        Self::pinned(handle, repo).await
-    }
-}
-
-impl<R: chaosbox_gel::GelQueries> GelReader<R> {
+impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
     /// Pin the active build for `repo` on an existing query backend.
-    /// Used by tests with [`chaosbox_gel::MemoryReader`].
+    /// Used by tests with [`chaosbox_store::MemoryReader`].
     pub async fn pinned(handle: R, repo: &str) -> Result<Self, PipelineError> {
         let build = handle
             .active_build(repo)
@@ -1165,7 +1097,7 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
         &self,
         query: &str,
         limit: i64,
-    ) -> Result<Vec<chaosbox_gel::EntityRow>, PipelineError> {
+    ) -> Result<Vec<chaosbox_store::EntityRow>, PipelineError> {
         let like = format!("%{}%", escape_like(query));
         self.handle
             .search_entities(&self.build_id, &like, limit)
@@ -1174,7 +1106,10 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
     }
 
     /// Typed entity lookup within the pinned build.
-    pub async fn lookup(&self, id: &str) -> Result<Option<chaosbox_gel::EntityRow>, PipelineError> {
+    pub async fn lookup(
+        &self,
+        id: &str,
+    ) -> Result<Option<chaosbox_store::EntityRow>, PipelineError> {
         self.handle
             .entity_by_id(&self.build_id, id)
             .await
@@ -1187,7 +1122,7 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
         &self,
         id: &str,
         filter: Option<Vec<String>>,
-    ) -> Result<(Vec<chaosbox_gel::RelRow>, Vec<chaosbox_gel::RelRow>), PipelineError> {
+    ) -> Result<(Vec<chaosbox_store::RelRow>, Vec<chaosbox_store::RelRow>), PipelineError> {
         let types = validate_rel_filter(filter)?.unwrap_or_else(all_relation_types);
         let out = self
             .handle
@@ -1208,8 +1143,8 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
     /// serial server loop.
     pub const PATH_VISITED_CAP: usize = 100_000;
 
-    /// Bounded BFS path using iterative Gel neighborhood expansion.
-    /// `ponytail: O(hops * degree) Gel round-trips; single-projection fetch if this dominates`.
+    /// Bounded BFS path using iterative backend neighborhood expansion.
+    /// `ponytail: O(hops * degree) round-trips; single-projection fetch if this dominates`.
     pub async fn path(
         &self,
         from: &str,
@@ -1220,7 +1155,7 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
             .await
     }
 
-    /// [`GelReader::path`] with an explicit visit budget (tests + future policy).
+    /// [`GraphReader::path`] with an explicit visit budget (tests + future policy).
     pub async fn path_with_cap(
         &self,
         from: &str,
@@ -1359,8 +1294,8 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
         to_build: &str,
     ) -> Result<serde_json::Value, PipelineError> {
         use std::collections::BTreeSet;
-        async fn members<R2: chaosbox_gel::GelQueries>(
-            reader: &GelReader<R2>,
+        async fn members<R2: chaosbox_store::GraphQueries>(
+            reader: &GraphReader<R2>,
             build: &str,
         ) -> Result<(BTreeSet<String>, BTreeSet<String>), PipelineError> {
             let ents = reader
@@ -1403,7 +1338,7 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
 mod tests {
     use super::*;
     use chaosbox_core::{diff_builds, SourceSpan};
-    use chaosbox_gel::Store as _;
+    use chaosbox_store::Store as _;
 
     #[test]
     fn export_is_deterministic_and_compatible() {
@@ -1943,11 +1878,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gel_reader_serves_fake_backend() {
+    async fn graph_reader_serves_fake_backend() {
         // The Phase 0 seam: the same reader code serves the in-memory fake.
-        let seed = chaosbox_gel::conformance_seed();
-        let reader: GelReader<chaosbox_gel::MemoryReader> =
-            GelReader::pinned(seed.reader, "conf").await.unwrap();
+        let seed = chaosbox_store::conformance_seed();
+        let reader: GraphReader<chaosbox_store::MemoryReader> =
+            GraphReader::pinned(seed.reader, "conf").await.unwrap();
         assert_eq!(reader.build_id, seed.builds.1);
         // Reads are scoped to the pinned build: only the second Alpha shows.
         let hits = reader.search("alpha", 10).await.unwrap();
@@ -1975,9 +1910,9 @@ mod tests {
 
     #[tokio::test]
     async fn path_traversal_budget_is_explicit() {
-        let seed = chaosbox_gel::conformance_seed();
-        let reader: GelReader<chaosbox_gel::MemoryReader> =
-            GelReader::pinned(seed.reader, "conf").await.unwrap();
+        let seed = chaosbox_store::conformance_seed();
+        let reader: GraphReader<chaosbox_store::MemoryReader> =
+            GraphReader::pinned(seed.reader, "conf").await.unwrap();
         let gamma = &reader.search("Gamma", 10).await.unwrap()[0].entity_id;
         let ok = reader.path(&seed.a2, gamma, 4).await.unwrap();
         assert!(ok.is_some(), "a2 references Gamma in the pinned build");

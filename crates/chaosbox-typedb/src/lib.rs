@@ -1,9 +1,9 @@
 //! Chaosbox persistence on `TypeDB`: schema asset, literal encoding, and the
-//! driver-backed [`Store`](chaosbox_gel::Store) implementation.
+//! driver-backed [`Store`](chaosbox_store::Store) implementation.
 //!
-//! The `TypeQL` schema mirrors `dbschema/default.esdl`: stable Chaosbox ids
-//! are `@key` attributes, endpoints/membership/evidence are typed relations
-//! with roles, and timestamps are integer epoch millis. Schema validation
+//! The `TypeQL` schema uses `@key` attributes for stable Chaosbox ids,
+//! typed relations with roles for endpoints/membership/evidence, and
+//! integer epoch millis for timestamps. Schema validation
 //! is not evidence: outcome and evidence-class strings are validated by the
 //! application before insert.
 

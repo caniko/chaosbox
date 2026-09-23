@@ -6,7 +6,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 
 use chaosbox::{uncached_decisions, FixtureResponder, Materialization, Pipeline};
 use chaosbox_core::DecisionOutcome;
-use chaosbox_gel::{MemoryStore, Store as _};
+use chaosbox_store::{MemoryStore, Store as _};
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo-repo")

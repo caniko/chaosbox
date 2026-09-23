@@ -1,12 +1,12 @@
 //! Shared driver plumbing for the `TypeDB` backend: connection config,
 //! bounded timeouts, error classification, row collection, and the
-//! deterministic key helpers that replace Gel's exclusive constraints.
+//! deterministic key helpers that provide row uniqueness.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use chaosbox_core::deterministic_id;
-use chaosbox_gel::GelError;
+use chaosbox_store::StoreError;
 use futures::TryStreamExt;
 use typedb_driver::{
     TransactionOptions, TransactionType, TypeDBDriver,
@@ -49,14 +49,14 @@ pub(crate) fn is_conflict(e: &typedb_driver::Error) -> bool {
     e.code() == "STC2"
 }
 
-/// Classify a driver failure for the [`Store`](chaosbox_gel::Store) and
-/// [`GelQueries`](chaosbox_gel::GelQueries) surfaces. Takes ownership for
+/// Classify a driver failure for the [`Store`](chaosbox_store::Store) and
+/// [`GraphQueries`](chaosbox_store::GraphQueries) surfaces. Takes ownership for
 /// direct use as `map_err(driver_error)` across the backend.
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn driver_error(e: typedb_driver::Error) -> GelError {
+pub(crate) fn driver_error(e: typedb_driver::Error) -> StoreError {
     match &e {
-        typedb_driver::Error::Connection(_) => GelError::Client(e.to_string()),
-        _ => GelError::Query(format!("[{}] {e}", e.code())),
+        typedb_driver::Error::Connection(_) => StoreError::Connection(e.to_string()),
+        _ => StoreError::Query(format!("[{}] {e}", e.code())),
     }
 }
 
@@ -70,8 +70,8 @@ pub(crate) fn now_millis() -> i64 {
     .unwrap_or(i64::MAX)
 }
 
-/// Deterministic key for a file version: replaces Gel's exclusive
-/// `(snapshot, path)` constraint with a content-derived `@key`.
+/// Deterministic key for a file version: a content-derived `@key` makes
+/// `(snapshot, path)` unique without a backend constraint.
 pub(crate) fn file_version_id(snapshot: &str, path: &str) -> String {
     deterministic_id("fv", &[snapshot, path])
 }
@@ -100,8 +100,8 @@ pub(crate) fn span_id_of(
     )
 }
 
-/// Deterministic key for a decision: `(candidate, question)` replaces Gel's
-/// exclusive constraint of the same shape.
+/// Deterministic key for a decision: one `@key` per `(candidate, question)`
+/// pair, so duplicate decisions collide instead of stacking.
 pub(crate) fn decision_key(candidate_id: &str, question_id: &str) -> String {
     deterministic_id("decq", &[candidate_id, question_id])
 }
@@ -121,8 +121,9 @@ pub(crate) fn link_id(prefix: &str, claim_id: &str, evidence_id: &str) -> String
     deterministic_id(prefix, &[claim_id, evidence_id])
 }
 
-/// Case folding for the `name-fold` search columns (mirrors the Gel `ilike`
-/// semantics the reader preserves; ASCII-tested, Unicode `to_lowercase`).
+/// Case folding for the `name-fold` search columns (the case-insensitive
+/// substring semantics the reader preserves; ASCII-tested, Unicode
+/// `to_lowercase`).
 pub(crate) fn fold(s: &str) -> String {
     s.to_lowercase()
 }
@@ -154,7 +155,7 @@ pub(crate) async fn read_rows(
     db: &str,
     query: &str,
     columns: &[&str],
-) -> Result<Vec<BTreeMap<String, Value>>, GelError> {
+) -> Result<Vec<BTreeMap<String, Value>>, StoreError> {
     let tx = driver
         .transaction_with_options(
             db,
@@ -169,7 +170,7 @@ pub(crate) async fn read_rows(
             stream.try_collect().await.map_err(driver_error)?
         }
         other => {
-            return Err(GelError::Query(format!("expected rows, got {other:?}")));
+            return Err(StoreError::Query(format!("expected rows, got {other:?}")));
         }
     };
     let mut out = Vec::with_capacity(rows.len());
@@ -182,7 +183,7 @@ pub(crate) async fn read_rows(
                     map.insert((*col).to_owned(), attr.value.clone());
                 }
                 Some(other) => {
-                    return Err(GelError::Query(format!(
+                    return Err(StoreError::Query(format!(
                         "column {col} is not an attribute: {other:?}"
                     )));
                 }
@@ -194,25 +195,25 @@ pub(crate) async fn read_rows(
 }
 
 /// Required string column.
-pub(crate) fn col_string(row: &BTreeMap<String, Value>, col: &str) -> Result<String, GelError> {
+pub(crate) fn col_string(row: &BTreeMap<String, Value>, col: &str) -> Result<String, StoreError> {
     row.get(col)
         .and_then(Value::get_string)
         .map(str::to_owned)
-        .ok_or_else(|| GelError::Query(format!("missing string column {col}")))
+        .ok_or_else(|| StoreError::Query(format!("missing string column {col}")))
 }
 
 /// Required integer column.
-pub(crate) fn col_int(row: &BTreeMap<String, Value>, col: &str) -> Result<i64, GelError> {
+pub(crate) fn col_int(row: &BTreeMap<String, Value>, col: &str) -> Result<i64, StoreError> {
     row.get(col)
         .and_then(Value::get_integer)
-        .ok_or_else(|| GelError::Query(format!("missing integer column {col}")))
+        .ok_or_else(|| StoreError::Query(format!("missing integer column {col}")))
 }
 
 /// Required boolean column.
-pub(crate) fn col_bool(row: &BTreeMap<String, Value>, col: &str) -> Result<bool, GelError> {
+pub(crate) fn col_bool(row: &BTreeMap<String, Value>, col: &str) -> Result<bool, StoreError> {
     row.get(col)
         .and_then(Value::get_boolean)
-        .ok_or_else(|| GelError::Query(format!("missing boolean column {col}")))
+        .ok_or_else(|| StoreError::Query(format!("missing boolean column {col}")))
 }
 
 /// Optional double column (absent when the `try {}` branch did not bind).

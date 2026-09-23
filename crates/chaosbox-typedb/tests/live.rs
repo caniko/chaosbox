@@ -16,7 +16,7 @@ use chaosbox_core::{
     Candidate, Claim, Decision, DecisionOutcome, Entity, EntityKind, Evidence, EvidenceClass,
     GraphBuild, Relation, RelationScope, RelationType, SnapshotFile, SourceSpan,
 };
-use chaosbox_gel::{GelQueries, Store, check_conformance};
+use chaosbox_store::{GraphQueries, Store, check_conformance};
 use chaosbox_typedb::reader::TypeDbReader;
 use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
 

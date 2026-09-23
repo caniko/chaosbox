@@ -76,9 +76,9 @@
           programs.taplo.enable = true;
         }).config.build;
       # Cargo source plus the non-Cargo trees Rust embeds (TypeQL schema
-      # via include_str!, the Gel SDL assets the gel crate packages, or
-      # files read at test time (fixtures/)). cleanCargoSource alone strips
-      # them and breaks nix builds while cargo works.
+      # via include_str! or files read at test time (fixtures/)).
+      # cleanCargoSource alone strips them and breaks nix builds while
+      # cargo works.
       workspaceSrc =
         { pkgs, craneLib }:
         pkgs.lib.cleanSourceWith {
@@ -87,7 +87,6 @@
             path: type:
             craneLib.filterCargoSources path type
             || pkgs.lib.hasSuffix ".tql" (toString path)
-            || pkgs.lib.hasPrefix (toString ./dbschema + "/") (toString path)
             || pkgs.lib.hasPrefix (toString ./fixtures + "/") (toString path);
         };
     in

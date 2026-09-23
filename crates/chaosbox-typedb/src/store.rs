@@ -1,7 +1,7 @@
-//! Driver-backed `TypeDB` [`Store`](chaosbox_gel::Store) implementation.
+//! Driver-backed `TypeDB` [`Store`](chaosbox_store::Store) implementation.
 //!
-//! Write path mirrors [`chaosbox_gel::GelStore`]: every `put_*` validates
-//! into an in-memory [`MemoryStore`](chaosbox_gel::MemoryStore) staging
+//! Write path: every `put_*` validates
+//! into an in-memory [`MemoryStore`](chaosbox_store::MemoryStore) staging
 //! area with identical semantics, and [`TypeDbStore::publish`] flushes the
 //! staged rows idempotently before swinging the active-build pointer.
 //!
@@ -25,7 +25,7 @@ use chaosbox_core::{
     Candidate, Claim, Decision, DecisionOutcome, Entity, Evidence, EvidenceClass, GraphBuild,
     Relation, SnapshotFile, evidence_class_name, relation_type_name,
 };
-use chaosbox_gel::{GelError, MemoryStore, Store, StoreStats};
+use chaosbox_store::{StoreError, MemoryStore, Store, StoreStats};
 use futures::TryStreamExt;
 use typedb_driver::{
     Address, Addresses, Credentials, DriverOptions, DriverTlsConfig, TransactionOptions,
@@ -66,13 +66,13 @@ impl TypeDbStore {
     }
 
     /// Connect the driver and ensure the database exists.
-    async fn ensure_connected(&mut self) -> Result<(), GelError> {
+    async fn ensure_connected(&mut self) -> Result<(), StoreError> {
         if self.driver.is_none() {
             let address: Address = self
                 .config
                 .address
                 .parse()
-                .map_err(|e| GelError::Client(format!("bad address: {e}")))?;
+                .map_err(|e| StoreError::Connection(format!("bad address: {e}")))?;
             let driver = TypeDBDriver::new(
                 Addresses::from_address(address),
                 Credentials::new(&self.config.username, &self.config.password),
@@ -99,7 +99,7 @@ impl TypeDbStore {
 
     /// Apply the packaged schema. Idempotent: re-defining the identical
     /// schema commits cleanly, so `migrate` is safe to re-run.
-    pub async fn migrate(&mut self) -> Result<(), GelError> {
+    pub async fn migrate(&mut self) -> Result<(), StoreError> {
         self.ensure_connected().await?;
         let driver = self.driver.as_ref().expect("connected above");
         let tx = driver
@@ -139,7 +139,7 @@ impl TypeDbStore {
 
     /// Insert-or-ignore: the `@unique` violation means a rival (or an
     /// earlier retry) already wrote this key.
-    async fn insert_ignoring_duplicates(&self, query: &str) -> Result<(), GelError> {
+    async fn insert_ignoring_duplicates(&self, query: &str) -> Result<(), StoreError> {
         // Bounded transient retries on connection loss; conflicts and
         // constraint outcomes are decided, never retried.
         let mut attempt = 0;
@@ -160,13 +160,13 @@ impl TypeDbStore {
     }
 
     /// Insert the repository row (idempotent).
-    async fn flush_repository(&self, repo: &str) -> Result<(), GelError> {
+    async fn flush_repository(&self, repo: &str) -> Result<(), StoreError> {
         let q = format!("insert $x isa repository, has repo-name {};", str_lit(repo));
         self.insert_ignoring_duplicates(&q).await
     }
 
     /// Insert one snapshot row (idempotent).
-    async fn flush_snapshot(&self, repo: &str, snapshot_id: &str) -> Result<(), GelError> {
+    async fn flush_snapshot(&self, repo: &str, snapshot_id: &str) -> Result<(), StoreError> {
         let q = format!(
             "insert $x isa source-snapshot, has snapshot-id {}, has repo-name {}, has created {};",
             str_lit(snapshot_id),
@@ -183,9 +183,9 @@ impl TypeDbStore {
         path: &str,
         sha: &str,
         bytes: u64,
-    ) -> Result<(), GelError> {
+    ) -> Result<(), StoreError> {
         let bytes = i64::try_from(bytes)
-            .map_err(|_| GelError::Invariant("file size overflows i64".into()))?;
+            .map_err(|_| StoreError::Invariant("file size overflows i64".into()))?;
         let q = format!(
             "insert $x isa file-version, has file-version-id {}, has snapshot-id {}, has path {}, has sha256 {}, has bytes {};",
             str_lit(&file_version_id(snapshot_id, path)),
@@ -198,7 +198,7 @@ impl TypeDbStore {
     }
 
     /// Insert one span row (idempotent by deterministic key).
-    async fn flush_span(&self, span: &chaosbox_core::SourceSpan) -> Result<(), GelError> {
+    async fn flush_span(&self, span: &chaosbox_core::SourceSpan) -> Result<(), StoreError> {
         let conv = |v: u32| int_lit(i64::from(v));
         let q = format!(
             "insert $x isa source-span, has span-id {}, has file {}, has start-line {}, has start-col {}, has end-line {}, has end-col {}, has byte-start {}, has byte-end {};",
@@ -223,8 +223,8 @@ impl TypeDbStore {
     }
 
     /// Insert one entity row with its span (idempotent; first write wins,
-    /// matching the Gel upsert that keeps the existing row on conflict).
-    async fn flush_entity(&self, e: &Entity) -> Result<(), GelError> {
+    /// first write wins: the existing row is kept on conflict).
+    async fn flush_entity(&self, e: &Entity) -> Result<(), StoreError> {
         self.flush_span(&e.span).await?;
         let kind = serde_json::to_value(&e.kind)
             .ok()
@@ -255,7 +255,7 @@ impl TypeDbStore {
     }
 
     /// Insert one relationship with typed endpoint roles (idempotent).
-    async fn flush_relationship(&self, r: &Relation) -> Result<(), GelError> {
+    async fn flush_relationship(&self, r: &Relation) -> Result<(), StoreError> {
         let rel_type = relation_type_name(&r.rel_type);
         let scope = serde_json::to_value(&r.scope)
             .ok()
@@ -273,7 +273,11 @@ impl TypeDbStore {
     }
 
     /// Insert one node-membership relation (idempotent by deterministic key).
-    async fn flush_node_membership(&self, build_id: &str, entity_id: &str) -> Result<(), GelError> {
+    async fn flush_node_membership(
+        &self,
+        build_id: &str,
+        entity_id: &str,
+    ) -> Result<(), StoreError> {
         let q = format!(
             "match $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id {}; insert (build: $b, member: $e) isa node-membership, has membership-id {};",
             str_lit(build_id),
@@ -284,7 +288,7 @@ impl TypeDbStore {
     }
 
     /// Insert one edge-membership relation (idempotent by deterministic key).
-    async fn flush_edge_membership(&self, build_id: &str, rel_id: &str) -> Result<(), GelError> {
+    async fn flush_edge_membership(&self, build_id: &str, rel_id: &str) -> Result<(), StoreError> {
         let q = format!(
             "match $b isa graph-build, has build-id {}; $rel isa relationship, has rel-id {}; insert (build: $b, edge: $rel) isa edge-membership, has edge-membership-id {};",
             str_lit(build_id),
@@ -295,7 +299,12 @@ impl TypeDbStore {
     }
 
     /// Insert one extraction-run row (idempotent).
-    async fn flush_run(&self, run_id: &str, repo: &str, snapshot_id: &str) -> Result<(), GelError> {
+    async fn flush_run(
+        &self,
+        run_id: &str,
+        repo: &str,
+        snapshot_id: &str,
+    ) -> Result<(), StoreError> {
         let q = format!(
             "insert $x isa extraction-run, has run-id {}, has repo-name {}, has snapshot-id {}, has created {};",
             str_lit(run_id),
@@ -313,7 +322,7 @@ impl TypeDbStore {
         run_id: &str,
         catalog_digest: &str,
         rubric_version: &str,
-    ) -> Result<(), GelError> {
+    ) -> Result<(), StoreError> {
         let q = format!(
             "insert $x isa candidate-set, has set-id {}, has run-id {}, has catalog-digest {}, has rubric-version {};",
             str_lit(set_id),
@@ -325,7 +334,7 @@ impl TypeDbStore {
     }
 
     /// Insert one candidate row (idempotent).
-    async fn flush_candidate(&self, set_id: &str, c: &Candidate) -> Result<(), GelError> {
+    async fn flush_candidate(&self, set_id: &str, c: &Candidate) -> Result<(), StoreError> {
         let q = format!(
             "insert $x isa candidate, has candidate-id {}, has set-id {}, has rel-type {}, has from-entity-id {}, has to-entity-id {}, has reason {}, has state-excerpt {};",
             str_lit(&c.id),
@@ -341,8 +350,9 @@ impl TypeDbStore {
 
     /// Conditional decision write: insert when absent, replace when the
     /// cache key changed or a recorded failure is retried, keep otherwise.
-    /// Mirrors the Gel `UPSERT_DECISION` row contract.
-    async fn flush_decision(&self, d: &Decision) -> Result<(), GelError> {
+    /// One row per `(candidate, question)` key; retry-safe under retry and
+    /// concurrent flush.
+    async fn flush_decision(&self, d: &Decision) -> Result<(), StoreError> {
         let key = decision_key(&d.candidate_id, &d.question_id);
         let existing = self.read_decision_row(&key).await?;
         let replace = match &existing {
@@ -362,7 +372,7 @@ impl TypeDbStore {
             self.write_one(&q).await.map_err(|e| driver_error(*e))?;
         }
         let outcome =
-            serde_json::to_string(&d.outcome).map_err(|e| GelError::Query(e.to_string()))?;
+            serde_json::to_string(&d.outcome).map_err(|e| StoreError::Query(e.to_string()))?;
         let class = evidence_class_name(d.evidence_class);
         let mut owns = format!(
             "has decision-key {}, has decision-id {}, has candidate-id {}, has question-id {}, has outcome {}, has evidence-class {}, has model-requested {}, has model-returned {}, has cache-key {}",
@@ -378,11 +388,11 @@ impl TypeDbStore {
         );
         if let Some(c) = d.confidence {
             owns.push_str(", has confidence ");
-            owns.push_str(&double_lit(c).map_err(|e| GelError::Query(e.to_string()))?);
+            owns.push_str(&double_lit(c).map_err(|e| StoreError::Query(e.to_string()))?);
         }
         if let Some(p) = d.probability {
             owns.push_str(", has probability ");
-            owns.push_str(&double_lit(p).map_err(|e| GelError::Query(e.to_string()))?);
+            owns.push_str(&double_lit(p).map_err(|e| StoreError::Query(e.to_string()))?);
         }
         let q = format!("insert $d isa decision, {owns};");
         self.insert_ignoring_duplicates(&q).await
@@ -392,7 +402,7 @@ impl TypeDbStore {
     async fn read_decision_row(
         &self,
         key: &str,
-    ) -> Result<Option<(String, String, Decision)>, GelError> {
+    ) -> Result<Option<(String, String, Decision)>, StoreError> {
         let q = format!(
             "match $d isa decision, has decision-key {}, has decision-id $id, has candidate-id $c, has question-id $q, has outcome $o, has evidence-class $e, has model-requested $mr, has model-returned $mrr, has cache-key $k; try {{ $d has confidence $cf; }}; try {{ $d has probability $p; }}; select $id, $c, $q, $o, $e, $mr, $mrr, $k, $cf, $p;",
             str_lit(key)
@@ -400,7 +410,7 @@ impl TypeDbStore {
         let driver = self
             .driver
             .as_ref()
-            .ok_or_else(|| GelError::Client("TypeDbStore disconnected".into()))?;
+            .ok_or_else(|| StoreError::Connection("TypeDbStore disconnected".into()))?;
         let rows = read_rows(
             driver,
             &self.config.database,
@@ -413,10 +423,10 @@ impl TypeDbStore {
         };
         let outcome_str = col_string(&row, "o")?;
         let outcome: DecisionOutcome = serde_json::from_str(&outcome_str)
-            .map_err(|e| GelError::Query(format!("bad outcome json: {e}")))?;
+            .map_err(|e| StoreError::Query(format!("bad outcome json: {e}")))?;
         let class_str = col_string(&row, "e")?;
         let evidence_class: EvidenceClass = serde_json::from_str(&format!("\"{class_str}\""))
-            .map_err(|e| GelError::Query(format!("bad evidence class: {e}")))?;
+            .map_err(|e| StoreError::Query(format!("bad evidence class: {e}")))?;
         let cache_key = col_string(&row, "k")?;
         let d = Decision {
             id: col_string(&row, "id")?,
@@ -434,7 +444,7 @@ impl TypeDbStore {
     }
 
     /// Insert one evidence row (idempotent).
-    async fn flush_evidence(&self, e: &Evidence) -> Result<(), GelError> {
+    async fn flush_evidence(&self, e: &Evidence) -> Result<(), StoreError> {
         let mut owns = format!(
             "has evidence-id {}, has class {}, has supports {}, has text {}, has file-version-id {}",
             str_lit(&e.id),
@@ -460,7 +470,7 @@ impl TypeDbStore {
     }
 
     /// Insert one claim with its supporting/contradicting links.
-    async fn flush_claim(&self, c: &Claim) -> Result<(), GelError> {
+    async fn flush_claim(&self, c: &Claim) -> Result<(), StoreError> {
         let q = format!(
             "insert $x isa claim, has claim-id {}, has relationship-id {}, has accepted {};",
             str_lit(&c.id),
@@ -490,13 +500,13 @@ impl TypeDbStore {
     }
 
     /// Insert one build row plus its staged node/edge memberships.
-    async fn flush_build_rows(&self, build: &GraphBuild) -> Result<(), GelError> {
+    async fn flush_build_rows(&self, build: &GraphBuild) -> Result<(), StoreError> {
         self.flush_repository(&build.repo).await?;
         for snapshot_id in &build.snapshot_ids {
             self.flush_snapshot(&build.repo, snapshot_id).await?;
         }
         let generation = i64::try_from(build.generation)
-            .map_err(|_| GelError::Invariant("generation overflows i64".into()))?;
+            .map_err(|_| StoreError::Invariant("generation overflows i64".into()))?;
         let mut owns = format!(
             "has build-id {}, has repo-name {}, has generation {}, has status \"staging\", has created {}",
             str_lit(&build.id),
@@ -531,7 +541,7 @@ impl TypeDbStore {
 
     /// Flush staged runs, sets, candidates, decisions, evidence, and claims
     /// in dependency order (all idempotent; safe to retry after a crash).
-    async fn flush_chain(&self) -> Result<(), GelError> {
+    async fn flush_chain(&self) -> Result<(), StoreError> {
         let staged = self.staging.export_staged();
         for (run_id, (repo, snapshot_id)) in &staged.runs {
             self.flush_repository(repo).await?;
@@ -561,7 +571,7 @@ impl TypeDbStore {
     }
 
     /// Live pointer read: (build id, generation, status) for a repository.
-    async fn live_pointer(&self, repo: &str) -> Result<Option<(String, i64, String)>, GelError> {
+    async fn live_pointer(&self, repo: &str) -> Result<Option<(String, i64, String)>, StoreError> {
         let q = format!(
             "match $p isa active-pointer, has repo-name {}, has build-id $b; $g isa graph-build, has build-id $b, has generation $gen, has status $st; select $b, $gen, $st;",
             str_lit(repo)
@@ -569,7 +579,7 @@ impl TypeDbStore {
         let driver = self
             .driver
             .as_ref()
-            .ok_or_else(|| GelError::Client("TypeDbStore disconnected".into()))?;
+            .ok_or_else(|| StoreError::Connection("TypeDbStore disconnected".into()))?;
         let rows = read_rows(driver, &self.config.database, &q, &["b", "gen", "st"]).await?;
         let Some(row) = rows.into_iter().next() else {
             return Ok(None);
@@ -588,7 +598,7 @@ impl TypeDbStore {
         build_id: &str,
         expected: Option<(String, i64)>,
         generation: i64,
-    ) -> Result<(), GelError> {
+    ) -> Result<(), StoreError> {
         let driver = self.driver.as_ref().expect("connected before publish");
         let tx = driver
             .transaction_with_options(
@@ -622,13 +632,13 @@ impl TypeDbStore {
                 stream.try_collect().await.map_err(driver_error)?
             }
             other => {
-                return Err(GelError::Query(format!(
+                return Err(StoreError::Query(format!(
                     "guard expected rows, got {other:?}"
                 )));
             }
         };
         if guard_rows.is_empty() {
-            return Err(GelError::Invariant(
+            return Err(StoreError::Invariant(
                 "concurrent publisher moved the pointer; build staged but not activated".into(),
             ));
         }
@@ -662,7 +672,7 @@ impl TypeDbStore {
             .map_err(|e| driver_error(*e))?;
         match tx.commit().await {
             Ok(()) => Ok(()),
-            Err(e) if is_conflict(&e) => Err(GelError::Invariant(
+            Err(e) if is_conflict(&e) => Err(StoreError::Invariant(
                 "concurrent publisher moved the pointer; build staged but not activated".into(),
             )),
             Err(e) => {
@@ -700,7 +710,7 @@ impl Store for TypeDbStore {
         snapshot_id: &str,
         repo: &str,
         files: &[SnapshotFile],
-    ) -> Result<(), GelError> {
+    ) -> Result<(), StoreError> {
         self.staging
             .ensure_snapshot_files(snapshot_id, repo, files)
             .await
@@ -714,7 +724,7 @@ impl Store for TypeDbStore {
         set_id: &str,
         catalog_digest: &str,
         rubric_version: &str,
-    ) -> Result<(), GelError> {
+    ) -> Result<(), StoreError> {
         self.staging
             .ensure_run(
                 run_id,
@@ -727,26 +737,26 @@ impl Store for TypeDbStore {
             .await
     }
 
-    async fn put_candidate(&mut self, set_id: &str, c: &Candidate) -> Result<(), GelError> {
+    async fn put_candidate(&mut self, set_id: &str, c: &Candidate) -> Result<(), StoreError> {
         self.staging.put_candidate(set_id, c).await
     }
 
-    async fn put_entity(&mut self, e: Entity) -> Result<(), GelError> {
+    async fn put_entity(&mut self, e: Entity) -> Result<(), StoreError> {
         self.staging.put_entity(e).await
     }
 
-    async fn put_relation(&mut self, r: Relation, build_id: &str) -> Result<(), GelError> {
+    async fn put_relation(&mut self, r: Relation, build_id: &str) -> Result<(), StoreError> {
         self.staging.put_relation(r, build_id).await
     }
 
-    async fn put_decision(&mut self, d: Decision) -> Result<(), GelError> {
+    async fn put_decision(&mut self, d: Decision) -> Result<(), StoreError> {
         // Non-finite floats have no TypeQL form: reject at the boundary
         // instead of failing mid-flush.
         if let Some(c) = d.confidence {
-            double_lit(c).map_err(|e| GelError::Invariant(e.to_string()))?;
+            double_lit(c).map_err(|e| StoreError::Invariant(e.to_string()))?;
         }
         if let Some(p) = d.probability {
-            double_lit(p).map_err(|e| GelError::Invariant(e.to_string()))?;
+            double_lit(p).map_err(|e| StoreError::Invariant(e.to_string()))?;
         }
         self.staging.put_decision(d.clone()).await?;
         // Write-through: the decision is paid inference — persist it in a
@@ -759,7 +769,7 @@ impl Store for TypeDbStore {
         self.flush_decision(&d).await
     }
 
-    async fn put_evidence(&mut self, e: Evidence) -> Result<(), GelError> {
+    async fn put_evidence(&mut self, e: Evidence) -> Result<(), StoreError> {
         self.staging.put_evidence(e.clone()).await?;
         // Write-through alongside its decision (deterministic evidence id:
         // re-assembly and the publish-time flush stay idempotent).
@@ -767,7 +777,7 @@ impl Store for TypeDbStore {
         self.flush_evidence(&e).await
     }
 
-    async fn put_claim(&mut self, c: Claim) -> Result<(), GelError> {
+    async fn put_claim(&mut self, c: Claim) -> Result<(), StoreError> {
         self.staging.put_claim(c).await
     }
 
@@ -775,7 +785,7 @@ impl Store for TypeDbStore {
         &self,
         candidate_id: &str,
         question_id: &str,
-    ) -> Result<Option<Decision>, GelError> {
+    ) -> Result<Option<Decision>, StoreError> {
         if let Some(d) = self
             .staging
             .find_decision(candidate_id, question_id)
@@ -794,9 +804,9 @@ impl Store for TypeDbStore {
         &mut self,
         build: GraphBuild,
         expected_predecessor: Option<String>,
-    ) -> Result<(), GelError> {
-        // 1. Live-pointer guard before writing anything (mirrors GelStore:
-        // idempotent retry returns early, stale predecessors fail here).
+    ) -> Result<(), StoreError> {
+        // 1. Live-pointer guard before writing anything (idempotent retry
+        // returns early, stale predecessors fail here).
         self.ensure_connected().await?;
         let live = self.live_pointer(&build.repo).await?;
         let pred_gen = match (&live, &expected_predecessor) {
@@ -804,31 +814,31 @@ impl Store for TypeDbStore {
             (Some((active_id, gen, _)), _) if *active_id == build.id => return Ok(()),
             (Some((active_id, gen, _)), Some(pred))
                 if *pred == *active_id
-                    && i64::try_from(build.generation)
-                        .map_err(|_| GelError::Invariant("generation overflows i64".into()))?
-                        > *gen =>
+                    && i64::try_from(build.generation).map_err(|_| {
+                        StoreError::Invariant("generation overflows i64".into())
+                    })? > *gen =>
             {
                 Some((pred.clone(), *gen))
             }
             (Some((active_id, gen, _)), None) => {
-                return Err(GelError::Invariant(format!(
+                return Err(StoreError::Invariant(format!(
                     "predecessor mismatch: expected None, live active is {active_id} (gen {gen})"
                 )));
             }
             (Some((active_id, gen, _)), Some(pred)) => {
                 let build_gen = i64::try_from(build.generation)
-                    .map_err(|_| GelError::Invariant("generation overflows i64".into()))?;
+                    .map_err(|_| StoreError::Invariant("generation overflows i64".into()))?;
                 if *pred == *active_id && build_gen <= *gen {
-                    return Err(GelError::Invariant(
+                    return Err(StoreError::Invariant(
                         "older worker cannot replace newer build".into(),
                     ));
                 }
-                return Err(GelError::Invariant(format!(
+                return Err(StoreError::Invariant(format!(
                     "predecessor mismatch: expected {pred:?}, live active is {active_id} (gen {gen})"
                 )));
             }
             (None, Some(pred)) => {
-                return Err(GelError::Invariant(format!(
+                return Err(StoreError::Invariant(format!(
                     "expected predecessor {pred} but no live active build"
                 )));
             }
@@ -852,7 +862,7 @@ impl Store for TypeDbStore {
         // failed swing leaves this instance's staging ahead of live; retry
         // publication with a fresh store.
         let generation = i64::try_from(build.generation)
-            .map_err(|_| GelError::Invariant("generation overflows i64".into()))?;
+            .map_err(|_| StoreError::Invariant("generation overflows i64".into()))?;
         self.swing(&build.repo, &build.id, pred_gen, generation)
             .await
     }

@@ -35,13 +35,13 @@ jobs:
         run: nix flake check
 
       - name: Test
-        run: nix develop -c cargo test -p chaosbox-gel
+        run: nix develop -c cargo test -p chaosbox-store
 
       - name: Build docs
-        run: nix develop .#docs -c cargo doc -p chaosbox-gel --no-deps --all-features
+        run: nix develop .#docs -c cargo doc -p chaosbox-store --no-deps --all-features
 
       - name: Clippy
-        run: nix develop -c cargo clippy -p chaosbox-gel --all-targets -- --deny warnings
+        run: nix develop -c cargo clippy -p chaosbox-store --all-targets -- --deny warnings
 
       - name: Package crate
-        run: nix develop -c cargo package -p chaosbox-gel --allow-dirty --list
+        run: nix develop -c cargo package -p chaosbox-store --allow-dirty --list

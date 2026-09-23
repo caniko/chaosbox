@@ -1,4 +1,4 @@
-//! Read-only `TypeDB` [`GelQueries`](chaosbox_gel::GelQueries) implementation.
+//! Read-only `TypeDB` [`GraphQueries`](chaosbox_store::GraphQueries) implementation.
 //!
 //! Every read is scoped to one pinned build id through the membership
 //! relations: rows outside the build are invisible by construction. Read
@@ -7,7 +7,8 @@
 //! entity lists sort by qualified name, relationship and evidence lists are
 //! sets (sorted by id here for determinism).
 //!
-//! Search preserves the Gel `ilike` contract through the `name-fold`
+//! Search preserves case-insensitive substring (`ilike`) semantics through
+//! the `name-fold`
 //! columns: the caller-side `like` pattern is unescaped to a literal
 //! needle, folded, and matched with `contains` (`TypeQL` `like` is
 //! case-sensitive and has no case-insensitive form). An empty relation-type
@@ -15,7 +16,7 @@
 
 use std::collections::BTreeMap;
 
-use chaosbox_gel::{BuildRow, EntityRow, EndpointRef, EvidenceRow, GelError, GelQueries, RelRow};
+use chaosbox_store::{BuildRow, EntityRow, EndpointRef, EvidenceRow, StoreError, GraphQueries, RelRow};
 use typedb_driver::{Address, Addresses, Credentials, DriverOptions, DriverTlsConfig, TypeDBDriver};
 
 use crate::common::{TypeDbConfig, col_bool, col_int, col_string, driver_error, read_rows};
@@ -29,7 +30,7 @@ const REL_COLS: &[&str] = &["r", "rt", "fid", "tid"];
 /// Project an attribute column map into an [`EntityRow`].
 fn row_to_entity(
     row: &BTreeMap<String, typedb_driver::concept::Value>,
-) -> Result<EntityRow, GelError> {
+) -> Result<EntityRow, StoreError> {
     Ok(EntityRow {
         entity_id: col_string(row, "id")?,
         kind: col_string(row, "kind")?,
@@ -42,7 +43,7 @@ fn row_to_entity(
 }
 
 /// Project an attribute column map into a [`RelRow`].
-fn row_to_rel(row: &BTreeMap<String, typedb_driver::concept::Value>) -> Result<RelRow, GelError> {
+fn row_to_rel(row: &BTreeMap<String, typedb_driver::concept::Value>) -> Result<RelRow, StoreError> {
     Ok(RelRow {
         rel_id: col_string(row, "r")?,
         rel_type: col_string(row, "rt")?,
@@ -56,7 +57,7 @@ fn row_to_rel(row: &BTreeMap<String, typedb_driver::concept::Value>) -> Result<R
 }
 
 /// Undo `%`-wrapping and `\` escapes of a `like` pattern into a literal
-/// substring needle (mirrors `unescape_like` in `chaosbox-gel`).
+/// substring needle (mirrors the in-memory reader's `unescape_like`).
 fn unescape_like(like: &str) -> String {
     let mut out = String::with_capacity(like.len());
     let mut chars = like.chars();
@@ -91,13 +92,13 @@ impl TypeDbReader {
     /// Connect the driver. Unlike the store, the read path never creates
     /// the database: a missing database is a client error the caller maps
     /// to the pending contract.
-    pub async fn connect(&mut self) -> Result<(), GelError> {
+    pub async fn connect(&mut self) -> Result<(), StoreError> {
         if self.driver.is_none() {
             let address: Address = self
                 .config
                 .address
                 .parse()
-                .map_err(|e| GelError::Client(format!("bad address: {e}")))?;
+                .map_err(|e| StoreError::Connection(format!("bad address: {e}")))?;
             let driver = TypeDBDriver::new(
                 Addresses::from_address(address),
                 Credentials::new(&self.config.username, &self.config.password),
@@ -111,7 +112,7 @@ impl TypeDbReader {
                 .await
                 .map_err(driver_error)?
             {
-                return Err(GelError::Client(format!(
+                return Err(StoreError::Connection(format!(
                     "database {} not found",
                     self.config.database
                 )));
@@ -122,17 +123,17 @@ impl TypeDbReader {
     }
 
     /// Borrow the connected driver or report a client error.
-    fn driver(&self) -> Result<&TypeDBDriver, GelError> {
+    fn driver(&self) -> Result<&TypeDBDriver, StoreError> {
         self.driver
             .as_ref()
-            .ok_or_else(|| GelError::Client("TypeDbReader disconnected".into()))
+            .ok_or_else(|| StoreError::Connection("TypeDbReader disconnected".into()))
     }
 
     /// Schema presence probe: true when the Chaosbox schema is applied
     /// (the marker query executes, rows or not), false when the schema
     /// types are unknown (`INF2`: migrations have not applied). Connection
     /// failures propagate as client errors.
-    pub async fn probe(&self) -> Result<bool, GelError> {
+    pub async fn probe(&self) -> Result<bool, StoreError> {
         use typedb_driver::{TransactionOptions, TransactionType, answer::QueryAnswer};
         use crate::common::READ_TIMEOUT;
         let driver = self.driver()?;
@@ -170,7 +171,7 @@ impl TypeDbReader {
         &self,
         build_id: &str,
         limit: Option<i64>,
-    ) -> Result<Vec<EntityRow>, GelError> {
+    ) -> Result<Vec<EntityRow>, StoreError> {
         let mut q = format!(
             "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; select $id, $kind, $repo, $snap, $file, $name, $qn; sort $qn;",
             str_lit(build_id)
@@ -189,7 +190,7 @@ impl TypeDbReader {
         &self,
         build_id: &str,
         limit: Option<i64>,
-    ) -> Result<Vec<RelRow>, GelError> {
+    ) -> Result<Vec<RelRow>, StoreError> {
         let mut q = format!(
             "match (build: $b, edge: $rel) isa edge-membership; $b isa graph-build, has build-id {}; $rel isa relationship (from-entity: $f, to-entity: $t), has rel-id $r, has rel-type $rt; $f isa code-entity, has entity-id $fid; $t isa code-entity, has entity-id $tid; select $r, $rt, $fid, $tid; sort $r;",
             str_lit(build_id)
@@ -205,8 +206,8 @@ impl TypeDbReader {
 }
 
 #[async_trait::async_trait]
-impl GelQueries for TypeDbReader {
-    async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, GelError> {
+impl GraphQueries for TypeDbReader {
+    async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, StoreError> {
         let q = format!(
             "match $p isa active-pointer, has repo-name {}, has build-id $b; $g isa graph-build, has build-id $b, has generation $gen, has status $st; select $b, $gen, $st;",
             str_lit(repo)
@@ -248,7 +249,7 @@ impl GelQueries for TypeDbReader {
         build_id: &str,
         like: &str,
         limit: i64,
-    ) -> Result<Vec<EntityRow>, GelError> {
+    ) -> Result<Vec<EntityRow>, StoreError> {
         let needle = unescape_like(like).to_lowercase();
         let lim = int_lit(limit.max(0));
         // Two bounded subqueries (name fold, qualified-name fold), each
@@ -273,7 +274,11 @@ impl GelQueries for TypeDbReader {
         Ok(v)
     }
 
-    async fn entity_by_id(&self, build_id: &str, id: &str) -> Result<Option<EntityRow>, GelError> {
+    async fn entity_by_id(
+        &self,
+        build_id: &str,
+        id: &str,
+    ) -> Result<Option<EntityRow>, StoreError> {
         // The id is known from the argument; select the remaining columns.
         let q = format!(
             "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id {}, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; select $kind, $repo, $snap, $file, $name, $qn;",
@@ -306,7 +311,7 @@ impl GelQueries for TypeDbReader {
         build_id: &str,
         id: &str,
         rel_types: Vec<String>,
-    ) -> Result<Vec<RelRow>, GelError> {
+    ) -> Result<Vec<RelRow>, StoreError> {
         self.neighbors(build_id, id, rel_types, true).await
     }
 
@@ -315,11 +320,15 @@ impl GelQueries for TypeDbReader {
         build_id: &str,
         id: &str,
         rel_types: Vec<String>,
-    ) -> Result<Vec<RelRow>, GelError> {
+    ) -> Result<Vec<RelRow>, StoreError> {
         self.neighbors(build_id, id, rel_types, false).await
     }
 
-    async fn build_entities(&self, build_id: &str, limit: i64) -> Result<Vec<EntityRow>, GelError> {
+    async fn build_entities(
+        &self,
+        build_id: &str,
+        limit: i64,
+    ) -> Result<Vec<EntityRow>, StoreError> {
         self.members(build_id, Some(limit)).await
     }
 
@@ -327,7 +336,7 @@ impl GelQueries for TypeDbReader {
         &self,
         build_id: &str,
         limit: i64,
-    ) -> Result<Vec<RelRow>, GelError> {
+    ) -> Result<Vec<RelRow>, StoreError> {
         self.member_rels(build_id, Some(limit)).await
     }
 
@@ -335,7 +344,7 @@ impl GelQueries for TypeDbReader {
         &self,
         build_id: &str,
         rel_id: &str,
-    ) -> Result<Vec<EvidenceRow>, GelError> {
+    ) -> Result<Vec<EvidenceRow>, StoreError> {
         // Claims about this relationship, gated on its membership in the
         // pinned build; supporting and contradicting links union below.
         let mut out: BTreeMap<String, EvidenceRow> = BTreeMap::new();
@@ -378,7 +387,7 @@ impl TypeDbReader {
         id: &str,
         rel_types: Vec<String>,
         outgoing: bool,
-    ) -> Result<Vec<RelRow>, GelError> {
+    ) -> Result<Vec<RelRow>, StoreError> {
         if rel_types.is_empty() {
             return Ok(Vec::new());
         }

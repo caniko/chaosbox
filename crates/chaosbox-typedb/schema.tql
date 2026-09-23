@@ -1,15 +1,15 @@
 # Chaosbox TypeDB schema (authoritative application database, TypeDB port).
 #
-# Mirrors dbschema/default.esdl with native TypeDB constructs:
+# Application-database schema with native TypeDB constructs:
 # - Stable Chaosbox ids are explicit @key attributes; TypeDB ids never
 #   substitute for content-derived identities.
 # - Relationship endpoints, membership, occurrences and claim evidence are
 #   typed relations with roles, not generic links or JSON blobs.
-# - Single-target references that Gel enforced via link columns are stored
-#   as id attributes and validated by the application in write transactions
+# - Single-target references are stored as id attributes and validated by
+#   the application in write transactions
 #   (file versions and spans must be registered first; see Store docs).
-# - Composite Gel exclusivity (snapshot,path) / (candidate,question) is
-#   replaced by deterministic Rust-computed @key values (file-version-id,
+# - Composite uniqueness (snapshot,path) / (candidate,question) comes
+#   from deterministic Rust-computed @key values (file-version-id,
 #   decision-key) using the same sha256_hex helper as the domain ids.
 # - Membership and claim-evidence relations carry deterministic @key ids
 #   (membership-id, supporting-id, ...) so every row insert is idempotent
