@@ -114,70 +114,7 @@ impl Receipt {
                     "expected \"divergent-variant\", \"supersession\" or \"delta-new\"",
                 )
             })?;
-            match kind {
-                "divergent-variant" => {
-                    // The source session shape is checked below; the rest here.
-                    if self.body.get("sourceSessionID").is_none() {
-                        return Err(missing(&key, "sourceSessionID"));
-                    }
-                    let transform = self
-                        .body
-                        .get("idTransformation")
-                        .ok_or_else(|| missing(&key, "idTransformation"))?;
-                    if !transform.is_object() {
-                        return Err(invalid_field(
-                            &key,
-                            "idTransformation",
-                            "expected an object",
-                        ));
-                    }
-                    for field in ["session", "message"] {
-                        if transform.get(field).and_then(Value::as_str).is_none() {
-                            return Err(invalid_field(
-                                &key,
-                                &format!("idTransformation.{field}"),
-                                "expected a string",
-                            ));
-                        }
-                    }
-                    if self.body.get("idAttempt").and_then(Value::as_u64).is_none() {
-                        return Err(invalid_field(
-                            &key,
-                            "idAttempt",
-                            "expected a non-negative integer",
-                        ));
-                    }
-                    digest(self.body, "messageIDMapDigest", &key)?;
-                }
-                "supersession" => {
-                    if self.body.get("supersedes").is_none() {
-                        return Err(missing(&key, "supersedes"));
-                    }
-                }
-                "delta-new" => {
-                    if self.body.get("supersedes").is_some() {
-                        return Err(invalid_field(
-                            &key,
-                            "supersedes",
-                            "a delta-new receipt replaces nothing",
-                        ));
-                    }
-                    if self.body.get("sourceSessionID").is_some() {
-                        return Err(invalid_field(
-                            &key,
-                            "sourceSessionID",
-                            "a delta-new receipt attests to its own session",
-                        ));
-                    }
-                }
-                _ => {
-                    return Err(invalid_field(
-                        &key,
-                        "kind",
-                        "expected \"divergent-variant\", \"supersession\" or \"delta-new\"",
-                    ));
-                }
-            }
+            self.check_kind(kind, &key)?;
         }
         if let Some(value) = self.body.get("sourceSessionID") {
             match value.as_str() {
@@ -189,6 +126,78 @@ impl Receipt {
                         "expected a session identifier",
                     ));
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Per-kind receipt requirements, beyond the shared attestation fields.
+    ///
+    /// A variant receipt must carry everything the re-key proof recomputes;
+    /// a supersession must name what it replaces; a delta-new receipt must
+    /// name neither a predecessor nor a source session, because it attests
+    /// to its own session.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignError::MissingField`] when a required field is
+    /// absent, and [`CampaignError::InvalidField`] when one is present but
+    /// has the wrong type or shape.
+    fn check_kind(&self, kind: &str, key: &str) -> Result<(), CampaignError> {
+        match kind {
+            "divergent-variant" => {
+                // The source session shape is checked with the other fields.
+                if self.body.get("sourceSessionID").is_none() {
+                    return Err(missing(key, "sourceSessionID"));
+                }
+                let transform = self
+                    .body
+                    .get("idTransformation")
+                    .ok_or_else(|| missing(key, "idTransformation"))?;
+                if !transform.is_object() {
+                    return Err(invalid_field(key, "idTransformation", "expected an object"));
+                }
+                for field in ["session", "message"] {
+                    if transform.get(field).and_then(Value::as_str).is_none() {
+                        return Err(invalid_field(
+                            key,
+                            &format!("idTransformation.{field}"),
+                            "expected a string",
+                        ));
+                    }
+                }
+                if self.body.get("idAttempt").and_then(Value::as_u64).is_none() {
+                    return Err(invalid_field(key, "idAttempt", "expected a non-negative integer"));
+                }
+                digest(&self.body, "messageIDMapDigest", key)?;
+            }
+            "supersession" => {
+                if self.body.get("supersedes").is_none() {
+                    return Err(missing(key, "supersedes"));
+                }
+            }
+            "delta-new" => {
+                if self.body.get("supersedes").is_some() {
+                    return Err(invalid_field(
+                        key,
+                        "supersedes",
+                        "a delta-new receipt replaces nothing",
+                    ));
+                }
+                if self.body.get("sourceSessionID").is_some() {
+                    return Err(invalid_field(
+                        key,
+                        "sourceSessionID",
+                        "a delta-new receipt attests to its own session",
+                    ));
+                }
+            }
+            _ => {
+                return Err(invalid_field(
+                    key,
+                    "kind",
+                    "expected \"divergent-variant\", \"supersession\" or \"delta-new\"",
+                ));
             }
         }
         Ok(())
