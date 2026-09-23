@@ -116,6 +116,11 @@ enum Command {
         #[command(subcommand)]
         op: DbCmd,
     },
+    /// Inspect and verify a session-migration campaign.
+    Sessions {
+        #[command(subcommand)]
+        command: chaosbox::sessions::cli::Command,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -205,6 +210,13 @@ async fn main() {
                 }
             }
         }
+        Command::Sessions { command } => match chaosbox::sessions::cli::run(command) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("sessions: {error}");
+                std::process::exit(1);
+            }
+        },
         Command::Snapshot { path, repo } => match Snapshot::capture(&repo, &path) {
             Ok(s) => println!(r#"{{"snapshot":"{}","files":{}}}"#, s.id, s.files.len()),
             Err(e) => {
