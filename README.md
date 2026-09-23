@@ -35,9 +35,9 @@ See [Selective intelligence](docs/src/intelligence.md) and
 - `chaosbox-core` — domain types, deterministic ids, evidence contracts, graph logic
 - `chaosbox-extract` — snapshot, deterministic parsing (Rust/Python/JS-TS/Nix/Markdown/text), bounded candidates (selected/omitted accounting)
 - `chaosbox-jev` — typed `POST /v1/systemone` client (`jev-1.13.0` pinned), budgets/retries/validation
-- `chaosbox-gel` — SDL + migrations, typed EdgeQL ops, `gel-tokio` handle, idempotent store (reference backend; runtime path superseded)
+- `chaosbox-store` — shared persistence abstractions: `Store`/`GraphQueries` traits, row types, in-memory backends, conformance suite
 - `chaosbox-typedb` — TypeQL schema, driver-backed store + reader, literal encoder (authoritative backend)
-- `chaosbox` — orchestration, CLI, read-only MCP, `db check`/`db migrate` (contract v1 Gel / v2 TypeDB)
+- `chaosbox` — orchestration, CLI, read-only MCP, `db check`/`db migrate` (JSON contract v2)
 
 ## Quick start (no credentials)
 
@@ -49,7 +49,9 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | cargo run -q -p
 ```
 
 Jev credentials: `CHAOSBOX_JEV_API_KEY_FILE` (or operator `TYPESAFE_API_KEY`).
-Backend: `CHAOSBOX_DB_BACKEND=typedb` (default `gel` until cutover).
+Backend: TypeDB only — `db check`/`db migrate`/query/MCP always target
+TypeDB; `run` publishes through TypeDB with `CHAOSBOX_DB_BACKEND=typedb`,
+in-memory otherwise.
 `run` without `--live-jev` refuses to publish unless `--fixture-decisions`
 is given; fixture graphs are disposable/test-only and recorded under the
 `fixture-test` model identity. `run --no-decisions` publishes extracted

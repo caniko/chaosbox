@@ -1,5 +1,9 @@
 # Cutover and rollback (TypeDB migration)
 
+Historical scope: this records the 2026-09-20 backend rehearsal, not a current
+fleet inventory or the status of external session archives. The proposed
+session migration has its own preservation and rollback requirements.
+
 ## Data status
 
 No real data exists on either backend: the Gel history held fixtures and
@@ -26,16 +30,17 @@ What is proven instead (empty-install path):
 2. Re-run the full matrix: migrate → run → check ready → every consumer
    query → wrong-credential negative → reboot persistence
    (`scripts/test-typedb.sh` automates the disposable version).
-3. Remove the Gel runtime path: `nix/chaosbox.nix` Gel remnants (none left),
-   `dbschema/` + `chaosbox-gel` EdgeQL (keep the crate: `MemoryStore` and
-   the conformance reference stay), Gel CI jobs, Gel docs.
+3. Remove the Gel runtime path: DONE (2026-09-23) — `dbschema/` and the
+   `chaosbox-gel` crate removed outright (shared `MemoryStore`/conformance
+   relocated to `chaosbox-store`), Gel CI jobs and Gel docs deleted.
 4. Move `harbor-db` pin to trunk after harbor-db#7 merges; drop the
    `nixpkgs-typedb` input after NixOS/nixpkgs#565068 merges.
 
 ## Rollback boundaries
 
-- Before the first TypeDB-only write: rollback is the endpoint switch
-  (`CHAOSBOX_DB_BACKEND=gel`); nothing is lost.
+- Before the first TypeDB-only write: rollback was the endpoint switch
+  (`CHAOSBOX_DB_BACKEND=gel`); that switch was removed with the backend on
+  2026-09-23 and nothing is lost.
 - After TypeDB-only writes exist: flipping the endpoint back abandons those
   writes (there is no Gel replica). Rollback then means freeze the TypeDB
   database, export the affected builds/decisions/evidence through the

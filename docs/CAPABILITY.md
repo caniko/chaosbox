@@ -35,17 +35,16 @@ in the new book chapters are not yet implemented.
   become recorded `Failed` decisions with catch-and-continue (fault text never
   copied into evidence); `Failed` rows are supersedable once, other outcomes
   immutable
-- Storage seams: `Pipeline` generic over `Store`, `GelReader` generic over
-  `GelQueries` (live `GelHandle` + in-memory fake + conformance suite proving
-  parity); all reads scoped to the pinned build (leakage-tested), LIKE
-  wildcards escaped
-- Gel write path (graph half): `GelStore` stages in `MemoryStore` and flushes
-  snapshots, files, entities (+spans), relationships, memberships, builds at
-  publication with a generation-guarded pointer swing (concurrent publisher
-  wins; idempotent retry; last-good stays active on failure); `Store` is
-  async end-to-end; decision/evidence/claim row flushing waits for the
-  candidate chain (Round 3); full decision-chain EdgeQL consts reviewed
-  (12-param tuple ceiling forced span/evedence statement splits)
+- Storage seams: `Pipeline` generic over `Store`, `GraphReader` generic over
+  `GraphQueries` (live `TypeDbReader` + in-memory fake + conformance suite
+  proving parity); all reads scoped to the pinned build (leakage-tested),
+  LIKE wildcards escaped
+- Write path (graph half): `Store::put_*` stages in `MemoryStore` and the
+  publication flush writes snapshots, files, entities (+spans),
+  relationships, memberships, builds with a generation-guarded pointer
+  swing (concurrent publisher wins; idempotent retry; last-good stays
+  active on failure); `Store` is async end-to-end;
+  decision/evidence/claim flushing waits for the candidate chain (Round 3)
 - Decisions, evidence, and claims persist in-pipeline: `decide()` writes each
   record as produced; `build_and_publish()` assembles one claim per
   materialized relation (same-triple rejections as contradicting evidence);
@@ -54,22 +53,18 @@ in the new book chapters are not yet implemented.
   (byte-identical rebuilds); recorded failures always re-asked; per-axis
   invalidation (catalog/model/rubric invalidate, thresholds reuse); stale
   rows replaced on key change, valid rows immutable
-- Full-chain Gel flush: run/set/candidate/decision/evidence/claim rows plus
-  relationship evidence links in FK order; conditional decision upsert mirrors
-  the store supersedure rule; FK-chain consts reviewed (12-param ceiling,
-  `<uuid><str>` casts, no new deps)
-- Durable worker leases: `WorkerTask` SDL + `m2` migration; claim/heartbeat/
-  reclaim with injected clocks and generation guards; stale holders recognizable
-- Gel SDL + migration, first-class Relationship objects, typed EdgeQL ops with
-  bound params, `gel-tokio` handle with typed decoding, idempotent writes,
-  predecessor-checked atomic publication, durable task claim/recovery
+- Full-chain flush: run/set/candidate/decision/evidence/claim rows plus
+  relationship evidence links in flush order; conditional decision write
+  mirrors the store supersedure rule
+- Worker leases: claim/heartbeat/reclaim with injected clocks and generation
+  guards; stale holders recognizable (backend persistence pending)
 - Shared read-only queries (search/lookup/neighbors/path/evidence/status/diff/
-  export/explain), deterministic + Graphify-compatible export, Gel-backed
-  `GelReader` with per-request active-build pinning and capped projections.
-  Full MCP handshake (`initialize` negotiation, paginated `tools/list` with
-  `inputSchema`, validated `tools/call`, JSON-RPC errors); closed read-only
-  tool set rejected before touching Gel (writes/EdgeQL/migrations/model tools
-  rejected, no Jev creds, no prose evidence)
+  export/explain), deterministic + Graphify-compatible export,
+  backend-backed `GraphReader` with per-request active-build pinning and
+  capped projections. Full MCP handshake (`initialize` negotiation, paginated
+  `tools/list` with `inputSchema`, validated `tools/call`, JSON-RPC errors);
+  closed read-only tool set rejected before connecting (writes, migrations,
+  and model tools rejected, no Jev creds, no prose evidence)
 - Live Jev path: `LiveResponder` adapter + `run --live-jev` (real inference,
   real spend; default stays fixture); HTTP-level mock-service tests cover
   retries, auth-no-retry, and validation over the wire; budget preflight
@@ -90,7 +85,7 @@ in the new book chapters are not yet implemented.
   retries; single-transaction pointer swing re-validating predecessor and
   generation live (exactly-once publication proven with concurrent
   publishers); uncertain-commit reconciliation by durable-state re-read;
-  read-tx mutation rejection; `TypeDbReader` implements `GelQueries` and
+  read-tx mutation rejection; `TypeDbReader` implements `GraphQueries` and
   passes the reference conformance suite unchanged (fold-column `contains`
   search preserving `ilike`, server-side ordering, build pinning)
 - `db check`/`db migrate` contract v2 JSON for the TypeDB path (same exit
@@ -100,15 +95,16 @@ in the new book chapters are not yet implemented.
   build's `status` and `snapshots` (sorted snapshot-id fingerprint, so
   consumers can detect a build that no longer matches its sources) alongside
   repo/build/generation/export caps; the in-memory and TypeDB backends fill
-  it, the superseded Gel projection defaults to an empty list
+  it, readers whose projection predates the field report an empty list
 - Pilot safety: snapshot capture stays inside the repository boundary
   (outside symlinks, dangling links, nested checkouts, and link cycles
   excluded); batches with failed decisions refuse to publish so the last
   good build stays active (outcome counts on stderr); MCP requires an
   explicit repo and bounds search limits, path hops, and traversal visits
-- Gel runtime path superseded (reference `MemoryStore`/conformance remain);
-  removal from the active path after cutover validation
-- `db check`/`db migrate` contract v1 JSON (stdout machine-readable, stderr diagnostics)
+- Gel backend removed (2026-09-23): `chaosbox-gel` crate, `dbschema/`,
+  EdgeQL assets, and Gel CI jobs deleted; shared abstractions relocated to
+  `chaosbox-store` (`Store`/`GraphQueries` traits, `MemoryStore`, conformance
+  suite)
 - Vertical slice test: snapshot -> extract -> fixture Jev -> publish -> query ->
   change/delete source -> incremental replacement build
 
@@ -128,11 +124,8 @@ admission policy; it does not turn fluent summaries into facts.
 
 - Live proof: VM test realization (needs a build-capable session),
   write/read conformance in-guest, cache-reuse demo
-- Real Gel integration gate green (blocked on realization, not on design);
-  Gel write-path integration (`Pipeline` through a Gel-backed `Store`,
-  candidate/decision/evidence inserts) and decision-cache reuse/invalidation
-- harbor-db Gel runtime/test interfaces for the disposable instance +
-  credentials/readiness flow (plan validates against the `gel` backend)
+- Decision-cache reuse/invalidation live proof (the Gel integration gate was
+  removed with the backend; TypeDB is the authoritative write path)
 - simit named gates + ordered publication (await parallel simit session)
 - Live Jev quality runs (adapter + `--live-jev` ready; needs operator key file)
 - Broader language coverage (grammar parsing beyond the current path set),

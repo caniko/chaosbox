@@ -4,8 +4,7 @@
 # generic services.typedb module (binaries substitute from the fleet cache;
 # nothing here builds TypeDB), applies Chaosbox's packaged schema, and
 # proves the db check/migrate contract matrix plus consumer queries.
-# Shape follows the retired gel-vm-test.nix; the server arrives as a Nix
-# package now, not a container image.
+# The server arrives as a Nix package, not a container image.
 {
   pkgs,
   chaosboxModule,
