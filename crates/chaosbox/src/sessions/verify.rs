@@ -625,8 +625,11 @@ impl VariantPins {
                     component,
                     std::path::Component::ParentDir | std::path::Component::CurDir
                 )
-            }) {
-            return Err(malformed(&format!("mappingFile names {named}, not an absolute clean path")));
+            })
+        {
+            return Err(malformed(&format!(
+                "mappingFile names {named}, not an absolute clean path"
+            )));
         }
         let text = std::fs::read_to_string(named_path).map_err(|source| VerifyError::Mapping {
             reason: format!("cannot read {named}: {source}"),

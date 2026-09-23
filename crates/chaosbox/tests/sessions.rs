@@ -2139,9 +2139,7 @@ fn source_snapshots_resolve_to_the_files_receipts_were_written_from() {
 
     assert_eq!(
         campaign.source("canary"),
-        root.parent()
-            .expect("parent")
-            .join("snapshots/canary.db")
+        root.parent().expect("parent").join("snapshots/canary.db")
     );
     assert_eq!(
         campaign.source("primary"),
@@ -2197,11 +2195,9 @@ fn a_supersession_receipt_verifies_against_its_boundary_snapshot() {
     .expect("record");
 
     // Base receipt plus a supersession head attesting to the boundary.
-    let boundary_connection = Connection::open_with_flags(
-        &boundary_db,
-        OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .expect("boundary");
+    let boundary_connection =
+        Connection::open_with_flags(&boundary_db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("boundary");
     let input = session_digest(&boundary_connection, SESSION)
         .expect("boundary digest")
         .digest;
@@ -2211,11 +2207,19 @@ fn a_supersession_receipt_verifies_against_its_boundary_snapshot() {
         OpenFlags::SQLITE_OPEN_READ_ONLY,
     )
     .expect("recovery");
-    let recovery_digest =
-        recovered_hash(&recovery_connection, SESSION).expect("recovery digest");
+    let recovery_digest = recovered_hash(&recovery_connection, SESSION).expect("recovery digest");
     drop(recovery_connection);
-    write_receipt(&root, "journal-v2", "ses_fixture01.json", &receipt(SESSION, "stale"));
-    let mut head = superseding(SESSION, &recorded_digest(&root), "journal-v2/ses_fixture01.json");
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, "stale"),
+    );
+    let mut head = superseding(
+        SESSION,
+        &recorded_digest(&root),
+        "journal-v2/ses_fixture01.json",
+    );
     head["kind"] = json!("supersession");
     head["inputDigest"] = json!(input);
     head["recoveryDigest"] = json!(recovery_digest);
@@ -2248,7 +2252,12 @@ fn a_supersession_receipt_verifies_against_its_boundary_snapshot() {
 fn an_unresolvable_boundary_is_a_source_error() {
     let (held, root) = fixture();
     build_sources(&root, true);
-    write_receipt(&root, "journal-v2", "ses_fixture01.json", &receipt(SESSION, "stale"));
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, "stale"),
+    );
     let mut head = superseding(
         SESSION,
         &recorded_digest(&root),

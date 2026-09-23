@@ -358,7 +358,14 @@ fn adopt_registers_a_store_and_exits_zero() {
     let db_arg = root.join("destination.db").to_string_lossy().into_owned();
 
     let output = run(&[
-        "sessions", "adopt", "--root", &campaign_arg, "--name", "staging", "--db", &db_arg,
+        "sessions",
+        "adopt",
+        "--root",
+        &campaign_arg,
+        "--name",
+        "staging",
+        "--db",
+        &db_arg,
     ]);
 
     assert_eq!(
@@ -398,7 +405,14 @@ fn adopt_refuses_a_held_store_without_the_flag() {
     let _writer = Connection::open(&db_path).expect("holder");
 
     let refused = run(&[
-        "sessions", "adopt", "--root", &campaign_arg, "--name", "staging", "--db", &db_arg,
+        "sessions",
+        "adopt",
+        "--root",
+        &campaign_arg,
+        "--name",
+        "staging",
+        "--db",
+        &db_arg,
     ]);
     assert_eq!(refused.status.code(), Some(1));
     assert!(
@@ -524,14 +538,8 @@ fn install_dry_run_prints_the_plan_without_executing() {
         String::from_utf8_lossy(&output.stderr)
     );
     let plan = report(&output);
-    assert_eq!(
-        plan["installer"],
-        script.to_string_lossy().into_owned()
-    );
-    assert!(
-        !marker.exists(),
-        "dry-run must not execute the installer"
-    );
+    assert_eq!(plan["installer"], script.to_string_lossy().into_owned());
+    assert!(!marker.exists(), "dry-run must not execute the installer");
 }
 
 /// A tool whose bytes do not match the pin is refused before anything runs.
@@ -570,7 +578,10 @@ fn install_refuses_a_mismatched_tool_digest() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("refusing to run"), "unexpected stderr: {stderr}");
+    assert!(
+        stderr.contains("refusing to run"),
+        "unexpected stderr: {stderr}"
+    );
 }
 
 /// `rollback` forwards to the pinned script and its exit code: the script

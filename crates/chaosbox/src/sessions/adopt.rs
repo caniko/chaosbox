@@ -287,21 +287,23 @@ fn file_sha256(path: &Path) -> std::io::Result<String> {
 
 /// One lowercase hex digit for a nibble.
 fn hex(nibble: u8) -> char {
-    (if nibble < 10 { b'0' + nibble } else { b'a' + nibble - 10 }) as char
+    (if nibble < 10 {
+        b'0' + nibble
+    } else {
+        b'a' + nibble - 10
+    }) as char
 }
 
 /// Schema marker, table-set fingerprint, and user version from a read-only
 /// handle. Mirrors the cutover tooling's `schemaInfo`, which the install
 /// preconditions compare against.
 fn schema_info(connection: &Connection) -> Result<SchemaRecord, rusqlite::Error> {
-    let mut statement = connection.prepare(
-        "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name",
-    )?;
+    let mut statement =
+        connection.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")?;
     let tables: Vec<String> = statement
         .query_map([], |row| row.get(0))?
         .collect::<Result<_, _>>()?;
-    let present: std::collections::BTreeSet<&str> =
-        tables.iter().map(String::as_str).collect();
+    let present: std::collections::BTreeSet<&str> = tables.iter().map(String::as_str).collect();
     let v1_count = V1_ONLY_TABLES
         .iter()
         .filter(|table| present.contains(**table))

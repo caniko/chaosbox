@@ -44,8 +44,8 @@ pub fn resolve_tool(root: &Path, name: &str) -> Result<PathBuf, String> {
         .get("sha256")
         .and_then(Value::as_str)
         .ok_or_else(|| format!("{name} has no digest in {}", pins.display()))?;
-    let actual = file_sha256(Path::new(path))
-        .map_err(|error| format!("cannot hash {path}: {error}"))?;
+    let actual =
+        file_sha256(Path::new(path)).map_err(|error| format!("cannot hash {path}: {error}"))?;
     if actual != expected {
         return Err(format!(
             "{name} at {path} digests as {actual} instead of the pinned {expected}: refusing to run"
@@ -60,8 +60,12 @@ pub fn resolve_tool(root: &Path, name: &str) -> Result<PathBuf, String> {
 ///
 /// Returns a message when neither names a root.
 pub fn tool_root(root: Option<PathBuf>) -> Result<PathBuf, String> {
-    root.or_else(|| std::env::var("CHAOSBOX_SESSION_CAMPAIGN").map(PathBuf::from).ok())
-        .ok_or_else(|| "no campaign root: pass --root or set CHAOSBOX_SESSION_CAMPAIGN".to_string())
+    root.or_else(|| {
+        std::env::var("CHAOSBOX_SESSION_CAMPAIGN")
+            .map(PathBuf::from)
+            .ok()
+    })
+    .ok_or_else(|| "no campaign root: pass --root or set CHAOSBOX_SESSION_CAMPAIGN".to_string())
 }
 
 /// Exec `node <tool> <args>`, forwarding the exit code unchanged.
