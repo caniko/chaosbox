@@ -53,7 +53,7 @@ pub fn resolve_tool(root: &Path, name: &str) -> Result<PathBuf, String> {
             pins.display()
         )
     })?;
-    let mut pinned_paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut pinned_paths: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
     for (entry_name, entry) in entries {
         let (Some(path), Some(expected)) = (
             entry.get("path").and_then(Value::as_str),
@@ -71,7 +71,7 @@ pub fn resolve_tool(root: &Path, name: &str) -> Result<PathBuf, String> {
                 "{entry_name} at {path} digests as {actual} instead of the pinned {expected}: refusing to run"
             ));
         }
-        pinned_paths.insert(path.to_string());
+        pinned_paths.insert(canonicalize_lexically(Path::new(path)));
     }
     let entry = tools
         .get(name)
@@ -82,23 +82,16 @@ pub fn resolve_tool(root: &Path, name: &str) -> Result<PathBuf, String> {
         .ok_or_else(|| format!("{name} has no path in {}", pins.display()))?;
     // Relative imports of the entrypoint must resolve to pinned files. Only
     // `./` and `../` imports can name campaign files; bare specifiers and
-    // `node:` builtins never touch the campaign.
+    // `node:` builtins never touch the campaign. Comparison is lexical
+    // (`./lib.mjs` == `lib.mjs`), so pretty-printing never perturbs the pin.
     let body = fs::read_to_string(Path::new(path))
         .map_err(|error| format!("cannot read {path}: {error}"))?;
     let tool_dir = Path::new(path)
         .parent()
         .ok_or_else(|| format!("{name} has no parent directory: refusing to run"))?;
     for import in relative_imports(&body) {
-        let resolved = tool_dir.join(&import);
-        let resolved_text = resolved.display().to_string();
-        // Normalize `./x` vs `x`: compare by resolved absolute path text
-        // against the pinned set, which stores absolute paths.
-        let absolute = if Path::new(&resolved_text).is_absolute() {
-            resolved_text.clone()
-        } else {
-            format!("{}/{}", tool_dir.display(), import)
-        };
-        if !pinned_paths.contains(&absolute) && !pinned_paths.contains(&resolved_text) {
+        let resolved = canonicalize_lexically(&tool_dir.join(&import));
+        if !pinned_paths.contains(&resolved) {
             return Err(format!(
                 "{name} imports {import} which is not pinned in {}: refusing to run",
                 pins.display()
@@ -106,6 +99,24 @@ pub fn resolve_tool(root: &Path, name: &str) -> Result<PathBuf, String> {
         }
     }
     Ok(PathBuf::from(path))
+}
+
+/// Lexical absolute form of a path: `.` and `..` resolved without touching
+/// the filesystem, so `./lib.mjs` and `lib.mjs` compare equal. Unlike
+/// `canonicalize`, it never fails on missing files — the closure check must
+/// refuse an unpinned import even when the file it names does not exist.
+fn canonicalize_lexically(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// Relative `./` and `../` import specifiers in a JS tool body.
