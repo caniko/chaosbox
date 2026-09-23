@@ -62,6 +62,25 @@ A `total` that does not match `verified`, or a non-zero `deferred` or
 `errors`, is reported and fails reconciliation: they mean the driver left
 work undone.
 
+### Beyond the canonical run
+
+After the canonical run, two more pins join the expectation — never by
+weakening reconciliation, only by letting each new receipt trace to the pin
+that sanctions it:
+
+- **Variants** (`variants_expected`): `journal-v3/identity-v3.json` pins
+  `mappingDigest` over the staged `variants-mapping.json`. The pass
+  recomputes that digest and reads the sanctioned session ids out of the
+  mapping. A variant receipt for a session the mapping does not sanction is
+  `unexpected_receipts`, exactly like a canonical one.
+- **Delta-new** (`delta_expected`): the pinned delta inventory sanctions
+  imported sessions the canonical run never saw. Zero until the delta
+  identity lands.
+
+All four set differences are computed against the **union** of the three
+pins. A receipt for a session none of them sanctions is still an error; the
+union only admits receipts that trace to a pin.
+
 ---
 
 ## 2. The receipt schema
@@ -85,7 +104,23 @@ that is the effective receipt verification reads.
 **Optional, validated when present:** `supersedes` (a
 `journal-*/<receipt>.json` address — a value of any other type is an error,
 never a receipt read as a base record), `drafts` (non-negative integer),
-`transformation` (string), `version` (positive integer).
+`transformation` (string), `version` (positive integer), `kind` (one of
+`"divergent-variant"`, `"supersession"`, `"delta-new"`),
+`sourceSessionID` (a session id), `idTransformation` (object with string
+`session` and `message`), `idAttempt` (non-negative integer),
+`messageIDMapDigest` (64 lowercase hex digits).
+
+Per-kind requirements, on top of the shared fields:
+
+| kind | rule |
+| --- | --- |
+| `divergent-variant` | requires `sourceSessionID`, `idTransformation`, `idAttempt`, `messageIDMapDigest` |
+| `supersession` | requires `supersedes` — a supersession that replaces nothing is meaningless |
+| `delta-new` | forbids `supersedes` and `sourceSessionID` — it attests to its own session |
+
+Receipt file names carry a generation: `<id>.json` is generation 1,
+`<id>.<N>.json` is generation N. The suffix must be `[1-9][0-9]*` — no zero,
+no leading zeros — so `<id>.0.json` is not a receipt name at all.
 
 Two failure kinds, deliberately distinct: `MissingField` means *not
 attested*, `InvalidField` means *attested wrongly*. `supersedes` is the case
@@ -101,13 +136,50 @@ Chain rules on top of the schema: a `supersedes` target must exist
 (`ForeignSupersession`); the chain must reach a single unreferenced head
 (`AmbiguousEffective`, `CyclicChain`, `DisconnectedChain`).
 
+Filename/link agreement (R5), checked at validation before any chain
+resolution: `journal-v2` receipts never carry `supersedes` — that journal is
+append-immutable. A plain `journal-v3/<id>.json` may target nothing (a head)
+or exactly `journal-v2/<id>.json`. `<id>.<N>.json` (N ≥ 2) must target
+`<id>.<N-1>.json`, where generation 1 is the plain file. A mislinked receipt
+reports `LinkAgreement` rather than the ambiguity its bad link would also
+produce. Consequence, recorded deliberately: cycles and disconnected chains
+cannot form inside `journal-v2`/`journal-v3` anymore, so those rules survive
+as defense-in-depth for any other `journal-*` directory.
+
+`supersedes` is a receipt **path**, not a digest: `journal-v2/<file>` or
+`journal-v3/<file>`. Both verifier implementations use addresses, the chain
+fixtures pin that shape, and the R5 rule above is only statable over paths.
+
 ### Destination and source identities
 
 The same `ses_*` id is the primary key in the destination, in every source
-snapshot, and in `recovered-rows.db`. There is no mapping table and no
-renaming: a session is either present under that id or absent, which is what
-makes `missing`, `source_errors`, and `absent_destination` meaningful as
-three separate outcomes.
+snapshot, and in `recovered-rows.db` — except for variants. A variant receipt
+attests to a derived session but carries `sourceSessionID` naming the session
+it derives from, and `--sources` recomputes `inputDigest`/`recoveryDigest`
+against that session, not the attested one. There is still no mapping table:
+a session is either present under the id the receipt names or absent, which
+is what makes `missing`, `source_errors`, and `absent_destination`
+meaningful as three separate outcomes.
+
+### Variant re-key proofs (`--sources` only)
+
+For a `divergent-variant` receipt the pass additionally re-derives, from
+receipt fields and database row order rather than from the driver's mapping:
+
+- the session id from `(source, sourceSessionID, idAttempt)` (`session-id`);
+- the two-sided re-key digest — SHA-256 over `original NUL derived newline`
+  for each message pair in `(seq, id)` order — against
+  `messageIDMapDigest` (`message-map`);
+- every message id at attempt 0 with native shape (`message-pair`);
+- `idTransformation` against the variant identity (`transformation`);
+- the receipt's message count against its pinned mapping entry
+  (`mapping-entry`).
+
+Failures land in `remap_mismatch` and fail `clean()`. The mapping pin itself
+(`mappingDigest` recomputed over the staged mapping, `mappingFile` required
+to name exactly that path) is verified once per pass, and variant receipts
+without `journal-v3/identity-v3.json` are a hard error rather than a
+skipped check.
 
 ---
 
@@ -174,6 +246,8 @@ the campaign as a whole does not reconcile.
 | `sessions_verified` | checked sessions whose digest **and** message count matched |
 | `complete` | inventory reconciled, driver finished, and every effective receipt was selected |
 | `source_coverage` | checked sessions whose source **and** recovery digests were recomputed |
+| `variants_expected` / `delta_expected` | sessions sanctioned by the variant mapping / delta inventory pins |
+| `driver_digests` | distinct `driverDigest` values found per journal — reported, never compared in-band; the gate compares them against the pinned driver |
 
 `clean()` additionally requires `source_coverage == sessions_checked` whenever
 `--sources` was requested, so a partially covered source pass cannot pass.
@@ -183,10 +257,17 @@ change cannot turn "no metadata" into "not checked".
 
 ### Failure lists
 
-`chain_errors`, `missing`, `digest_mismatch`, `message_count_mismatch`,
-`source_mismatch`, `recovery_mismatch`, `source_errors`, and
-`sources_uncovered` — all must be empty, along with `quick_check == "ok"` and
-`foreign_key_violations == 0`, for the pass to be clean.
+`chain_errors`, `missing`, `digest_mismatch`, `superseded_unverified`,
+`message_count_mismatch`, `source_mismatch`, `recovery_mismatch`,
+`remap_mismatch`, `source_errors`, and `sources_uncovered` — all must be
+empty, along with `quick_check == "ok"` and `foreign_key_violations == 0`,
+for the pass to be clean.
+
+`digest_mismatch` versus `superseded_unverified`: a digest disagreement on a
+session whose chain depth is 1 means its base attestation is broken. The
+same disagreement at depth above 1 means the session changed again since
+its head receipt was written and needs re-verification. Both fail the pass;
+the bucket tells the operator which failure they are looking at.
 
 `clean()` is about *what was checked*. `complete` is about *how much was
 selected*. `succeeded` requires `clean()` plus either `complete` or an
