@@ -51,13 +51,40 @@ pub struct IntelligenceCandidate {
     pub evidence: SessionEvidence,
     /// Bounded adjacent source text used to detect qualifications/negations.
     pub context: String,
+    /// Bounded adjacent records; context, not automatically corroborating votes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_bundle: Vec<ContextEvidence>,
+}
+
+/// An anchored excerpt and its execution metadata from the same snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextEvidence {
+    /// Native neighboring message id.
+    pub message: String,
+    /// JSON pointer to the text-bearing field.
+    pub pointer: String,
+    /// Original attribution.
+    pub speaker: String,
+    /// Verbatim prefix of the referenced text field.
+    pub text: String,
+    /// True when the bounded excerpt does not contain the complete field.
+    pub partial: bool,
+    /// Observed source tool name, when available.
+    pub tool: Option<String>,
+    /// Bounded command/input description; absence is not a successful command.
+    pub operation: Option<String>,
+    /// Structured status recorded by the source runtime.
+    pub status: Option<String>,
+    /// Structured exit code, not inferred from a printed success string.
+    pub exit_code: Option<i64>,
 }
 
 impl IntelligenceCandidate {
     /// Compute identity without depending on mutable ids or model judgments.
     #[must_use]
     pub fn identity(&self) -> String {
-        format!(
+        let base = format!(
             "intel-candidate:{}",
             crate::sha256_hex(&[
                 &self.scope,
@@ -72,6 +99,17 @@ impl IntelligenceCandidate {
                     .observed_at_ms
                     .map_or_else(|| "unknown".into(), |v| v.to_string()),
                 &self.context,
+            ])
+        );
+        if self.evidence_bundle.is_empty() {
+            return base;
+        }
+        format!(
+            "intel-candidate:{}",
+            crate::sha256_hex(&[
+                &base,
+                &serde_json::to_string(&self.evidence_bundle)
+                    .expect("context evidence contains only JSON-safe fields"),
             ])
         )
     }
@@ -101,6 +139,8 @@ pub enum IntelligenceStatus {
     Disputed,
     /// Explicitly replaced; excluded from default context retrieval.
     Superseded,
+    /// The active policy no longer admits this historical item.
+    Withheld,
 }
 
 /// A sparse, source-backed item suitable for bounded session retrieval.

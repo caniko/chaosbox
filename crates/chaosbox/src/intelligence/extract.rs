@@ -1,5 +1,5 @@
 use chaosbox_core::{
-    intelligence::{IntelligenceCandidate, SessionEvidence},
+    intelligence::{ContextEvidence, IntelligenceCandidate, SessionEvidence},
     sha256_hex,
 };
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,12 @@ pub struct Candidates {
     pub skipped: usize,
     /// Additional bounded candidates remain after this window.
     pub has_more: bool,
+    /// Producer identity for source revalidation, including empty windows.
+    pub source: String,
+    /// Native session identity.
+    pub session: String,
+    /// Operator-declared repository associations.
+    pub repositories: Vec<String>,
 }
 
 /// Extract copied lines from normalized `OpenCode` JSONL. No model, no file
@@ -65,7 +71,7 @@ pub fn extract_window(
     repos.dedup();
     let snapshot = sha256_hex(&[input]);
     let mut result = Candidates {
-        version: 1,
+        version: 2,
         scope: scope.into(),
         snapshot: snapshot.clone(),
         candidates: Vec::new(),
@@ -73,14 +79,13 @@ pub fn extract_window(
         excluded_derived: 0,
         skipped: 0,
         has_more: false,
+        source: source.into(),
+        session: session.into(),
+        repositories: repos.clone(),
     };
+    let records = parse_records(input)?;
     let mut message_ids = std::collections::BTreeSet::new();
-    for (index, line) in input.lines().enumerate() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let record: Value = serde_json::from_str(line)
-            .map_err(|_| format!("invalid JSONL record {}", index + 1))?;
+    for (index, record) in records.iter().enumerate() {
         let id = record
             .get("id")
             .and_then(Value::as_str)
@@ -104,7 +109,8 @@ pub fn extract_window(
         if matches!(kind, "compaction" | "synthetic" | "system") {
             result.excluded_derived += 1;
         }
-        for (pointer, speaker, text) in source_texts(&record, kind) {
+        let mut bundles = std::collections::BTreeMap::new();
+        for (pointer, speaker, text) in source_texts(record, kind) {
             let lines: Vec<_> = text.lines().collect();
             for (i, quote) in lines.iter().enumerate() {
                 if !eligible(quote) {
@@ -129,6 +135,10 @@ pub fn extract_window(
                     scope: scope.into(),
                     repositories: repos.clone(),
                     context,
+                    evidence_bundle: bundles
+                        .entry(pointer.clone())
+                        .or_insert_with(|| evidence_window(&records, index, &pointer))
+                        .clone(),
                     evidence: SessionEvidence {
                         source: source.into(),
                         snapshot: snapshot.clone(),
@@ -149,11 +159,119 @@ pub fn extract_window(
     Ok(result)
 }
 
+fn parse_records(input: &str) -> Result<Vec<Value>, String> {
+    input
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(index, line)| {
+            serde_json::from_str(line).map_err(|_| format!("invalid JSONL record {}", index + 1))
+        })
+        .collect()
+}
+
+fn clipped(text: &str, limit: usize) -> (String, bool) {
+    let mut end = text.len().min(limit);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (text[..end].into(), end < text.len())
+}
+
+fn evidence_window(records: &[Value], index: usize, primary_pointer: &str) -> Vec<ContextEvidence> {
+    let mut result = Vec::new();
+    for record in &records[index.saturating_sub(2)..(index + 3).min(records.len())] {
+        let Some(message) = record.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let kind = record.get("type").and_then(Value::as_str).unwrap_or("");
+        let mut texts = source_texts(record, kind);
+        if record.get("id") == records[index].get("id") {
+            texts.sort_by_key(|(pointer, _, _)| pointer != primary_pointer);
+        }
+        for (pointer, speaker, text) in texts.into_iter().take(2) {
+            let tool = pointer
+                .strip_prefix("/content/")
+                .and_then(|p| p.split('/').next())
+                .and_then(|i| i.parse::<usize>().ok())
+                .and_then(|i| record.get("content")?.get(i))
+                .filter(|part| part.get("type").and_then(Value::as_str) == Some("tool"));
+            let (text, mut partial) = clipped(text, 1600);
+            partial |= kind == "shell"
+                && record.pointer("/output/truncated").and_then(Value::as_bool) == Some(true);
+            let operation = tool
+                .and_then(|t| t.pointer("/state/input"))
+                .map(Value::to_string)
+                .or_else(|| {
+                    (kind == "shell")
+                        .then(|| {
+                            record
+                                .get("command")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        })
+                        .flatten()
+                })
+                .filter(|v| {
+                    if v.len() > 1600 {
+                        partial = true;
+                        false
+                    } else {
+                        true
+                    }
+                });
+            result.push(ContextEvidence {
+                message: message.into(),
+                pointer,
+                speaker: speaker.into(),
+                text,
+                partial,
+                tool: tool
+                    .and_then(|t| t.get("name"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| (kind == "shell").then(|| "shell".into())),
+                operation,
+                status: tool
+                    .and_then(|t| t.pointer("/state/status"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        (kind == "shell")
+                            .then(|| {
+                                record
+                                    .get("status")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_owned)
+                            })
+                            .flatten()
+                    }),
+                exit_code: tool
+                    .and_then(|t| {
+                        t.pointer("/state/metadata/exitCode")
+                            .or_else(|| t.pointer("/state/metadata/exit"))
+                    })
+                    .and_then(Value::as_i64)
+                    .or_else(|| {
+                        (kind == "shell")
+                            .then(|| record.get("exit").and_then(Value::as_i64))
+                            .flatten()
+                    }),
+            });
+        }
+    }
+    result
+}
+
 fn source_texts<'a>(record: &'a Value, kind: &str) -> Vec<(String, &'static str, &'a str)> {
     let mut texts = Vec::new();
     if kind == "user" {
         if let Some(text) = record.get("text").and_then(Value::as_str) {
             texts.push(("/text".into(), "user", text));
+        }
+    } else if kind == "shell" {
+        if let Some(text) = record.pointer("/output/output").and_then(Value::as_str) {
+            texts.push(("/output/output".into(), "tool", text));
         }
     } else if kind == "assistant" {
         if let Some(parts) = record.get("content").and_then(Value::as_array) {

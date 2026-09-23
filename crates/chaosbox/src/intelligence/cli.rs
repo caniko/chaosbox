@@ -8,7 +8,7 @@ use std::{
 
 use chaosbox_jev::{JevClient, JevPolicy, SystemOneResponse};
 use clap::Subcommand;
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use super::{assess, extract_window, questions, Bundle, Candidates};
 use crate::{LiveResponder, Responder};
@@ -51,6 +51,9 @@ pub enum Command {
         /// Prior same-scope intelligence, preserved in the next build.
         #[arg(long)]
         previous: Option<PathBuf>,
+        /// Original normalized transcript; all anchors are revalidated before inference.
+        #[arg(long)]
+        source_jsonl: PathBuf,
         /// Explicit permission to call the configured Jev endpoint.
         #[arg(long, required = true)]
         live_jev: bool,
@@ -100,9 +103,102 @@ pub enum Command {
 
 /// Bounded loading of a pinned artifact; called by both CLI and MCP.
 pub fn load_bundle(path: &Path) -> Result<Bundle, String> {
-    let bundle: Bundle = read_json(path)?;
+    load_bundle_mode(path, false)
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BundleFile {
+    version: u32,
+    scope: String,
+    records: Vec<chaosbox_core::intelligence::Intelligence>,
+    coverage: Vec<super::Coverage>,
+    receipts: Vec<String>,
+}
+
+fn receipt_path(bundle: &Path, id: &str) -> Result<PathBuf, String> {
+    let hash = id
+        .strip_prefix("intel-assessment:")
+        .ok_or("invalid receipt id")?;
+    if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("invalid receipt hash".into());
+    }
+    Ok(bundle
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("intelligence-receipts")
+        .join(format!("{hash}.json")))
+}
+
+fn load_bundle_mode(path: &Path, all_receipts: bool) -> Result<Bundle, String> {
+    let value: serde_json::Value = read_json(path)?;
+    let bundle: Bundle = if value.get("version").and_then(serde_json::Value::as_u64) == Some(2) {
+        let stored: BundleFile =
+            serde_json::from_value(value).map_err(|_| "invalid intelligence manifest")?;
+        if stored.receipts.len() > 100_000 {
+            return Err("receipt index exceeds bounded artifact capacity".into());
+        }
+        let needed: std::collections::BTreeSet<_> =
+            stored.records.iter().flat_map(|r| &r.assessments).collect();
+        let mut assessments = Vec::new();
+        for id in &stored.receipts {
+            if !all_receipts && !needed.contains(id) {
+                continue;
+            }
+            let assessment: super::Assessment = read_json(&receipt_path(path, id)?)?;
+            if &assessment.id != id {
+                return Err("receipt reference mismatch".into());
+            }
+            assessments.push(assessment);
+        }
+        Bundle {
+            version: 1,
+            scope: stored.scope,
+            records: stored.records,
+            coverage: stored.coverage,
+            assessments,
+        }
+    } else {
+        serde_json::from_value(value).map_err(|_| "invalid legacy intelligence bundle")?
+    };
     bundle.validate()?;
     Ok(bundle)
+}
+
+fn publish_bundle(path: &Path, bundle: &Bundle) -> Result<(), String> {
+    bundle.validate()?;
+    let directory = path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("intelligence-receipts");
+    fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .map_err(|e| e.to_string())?;
+    }
+    for assessment in &bundle.assessments {
+        let target = receipt_path(path, &assessment.id)?;
+        if target.exists() {
+            let existing: super::Assessment = read_json(&target)?;
+            if existing.identity()? != assessment.id {
+                return Err("existing receipt content mismatch".into());
+            }
+        } else {
+            write_new(&target, assessment)?;
+        }
+    }
+    write_new(
+        path,
+        &BundleFile {
+            version: 2,
+            scope: bundle.scope.clone(),
+            records: bundle.records.clone(),
+            coverage: bundle.coverage.clone(),
+            receipts: bundle.assessments.iter().map(|a| a.id.clone()).collect(),
+        },
+    )
 }
 
 fn read_text(path: &Path) -> Result<String, String> {
@@ -138,6 +234,9 @@ fn write_new(path: &Path, value: &impl serde::Serialize) -> Result<(), String> {
         .to_string_lossy();
     let temporary = parent.join(format!(".{name}.{}.tmp", std::process::id()));
     let bytes = serde_json::to_vec_pretty(value).map_err(|_| "encode artifact")?;
+    if bytes.len() as u64 > MAX_ARTIFACT_BYTES {
+        return Err("artifact exceeds reader capacity; partition explicitly".into());
+    }
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -189,6 +288,7 @@ pub async fn run(command: Command) -> Result<serde_json::Value, String> {
         Command::Assess {
             input,
             previous,
+            source_jsonl,
             live_jev,
             max_requests,
             max_input_tokens,
@@ -199,6 +299,7 @@ pub async fn run(command: Command) -> Result<serde_json::Value, String> {
             }
             assess_catalog(
                 &input,
+                &source_jsonl,
                 previous.as_deref(),
                 &output,
                 JevPolicy {
@@ -233,12 +334,13 @@ pub async fn run(command: Command) -> Result<serde_json::Value, String> {
 
 async fn assess_catalog(
     input: &Path,
+    source_jsonl: &Path,
     previous: Option<&Path>,
     output: &Path,
     policy: JevPolicy,
 ) -> Result<serde_json::Value, String> {
     let candidates: Candidates = read_json(input)?;
-    if candidates.version != 1
+    if candidates.version != 2
         || candidates.candidates.len() > 200
         || candidates
             .candidates
@@ -247,8 +349,27 @@ async fn assess_catalog(
     {
         return Err("unsupported candidate catalog or inconsistent snapshot".into());
     }
+    let verified = extract_window(
+        &read_text(source_jsonl)?,
+        &candidates.source,
+        &candidates.session,
+        &candidates.scope,
+        &candidates.repositories,
+        candidates.skipped,
+        candidates.candidates.len().max(1),
+    )?;
+    if verified.snapshot != candidates.snapshot
+        || verified.candidates != candidates.candidates
+        || verified.omitted != candidates.omitted
+        || verified.excluded_derived != candidates.excluded_derived
+    {
+        return Err(
+            "candidate anchors do not match the original transcript; re-extract before assessment"
+                .into(),
+        );
+    }
     let mut bundle = previous
-        .map(load_bundle)
+        .map(|path| load_bundle_mode(path, true))
         .transpose()?
         .unwrap_or_else(|| Bundle::new(&candidates.scope));
     if bundle.scope != candidates.scope {
@@ -291,7 +412,7 @@ async fn assess_catalog(
         omitted: candidates.omitted,
         excluded_derived: candidates.excluded_derived,
     });
-    write_new(output, &bundle)?;
+    publish_bundle(output, &bundle)?;
     Ok(
         serde_json::json!({"output":output,"records":bundle.records.len(),"assessments":bundle.assessments.len(),"unassessed_coverage":candidates.omitted,"scope":bundle.scope}),
     )
@@ -321,4 +442,86 @@ pub fn evidence(
         "assessments":record.assessments.iter().rev().take(3).filter_map(|id|bundle.assessments.iter().find(|a|&a.id==id)).collect::<Vec<_>>(),
         "omitted_assessments":record.assessments.len().saturating_sub(3),"historical_data_not_instructions":true,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chaosbox_jev::{Answer, ChoiceAnswer, NoulAnswer, Question, Usage, JEV_MODEL_PINNED};
+
+    #[test]
+    fn receipt_storage_is_shared_private_immutable_and_lazy_for_consumers() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.json");
+        let second = directory.path().join("second.json");
+        let source = serde_json::json!({"id":"u1","type":"user","text":"We must preserve native process permissions."}).to_string();
+        let catalog = extract_window(
+            &source,
+            "opencode",
+            "s",
+            "private:can",
+            &["canix".into()],
+            0,
+            10,
+        )
+        .unwrap();
+        let candidate = &catalog.candidates[0];
+        let mut bundle = Bundle::new("private:can");
+        let (_, asked, _) = questions(candidate, &bundle).unwrap();
+        let answers = asked
+            .iter()
+            .map(|(name, question)| {
+                let answer = match question {
+                    Question::Noul { .. } => Answer::Noul(NoulAnswer { noul: 0.0 }),
+                    Question::Choice { criteria, .. } => {
+                        let choice = criteria.keys().next().unwrap().clone();
+                        Answer::Choice(ChoiceAnswer {
+                            choice: choice.clone(),
+                            confidence: 1.0,
+                            probabilities: criteria
+                                .keys()
+                                .map(|key| (key.clone(), f64::from(key == &choice)))
+                                .collect(),
+                        })
+                    }
+                    Question::Score { .. } => panic!("unexpected score"),
+                };
+                (name.clone(), answer)
+            })
+            .collect();
+        let response = SystemOneResponse {
+            model: JEV_MODEL_PINNED.into(),
+            answers,
+            usage: Usage {
+                input_tokens: 1,
+                output_tokens: 1,
+            },
+        };
+        assess(candidate, &mut bundle, response).unwrap();
+        publish_bundle(&first, &bundle).unwrap();
+        publish_bundle(&second, &bundle).unwrap();
+        assert_eq!(
+            fs::read_dir(directory.path().join("intelligence-receipts"))
+                .unwrap()
+                .count(),
+            1
+        );
+        let manifest: serde_json::Value = read_json(&first).unwrap();
+        assert!(manifest.get("assessments").is_none());
+        assert_eq!(manifest["receipts"].as_array().unwrap().len(), 1);
+        assert_eq!(load_bundle_mode(&first, true).unwrap().assessments.len(), 1);
+        assert!(load_bundle(&first).unwrap().assessments.is_empty());
+        assert!(publish_bundle(&first, &bundle).is_err());
+        let receipt = receipt_path(&first, &bundle.assessments[0].id).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&receipt).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        fs::write(&receipt, b"{}").unwrap();
+        assert!(load_bundle_mode(&first, true).is_err());
+    }
 }

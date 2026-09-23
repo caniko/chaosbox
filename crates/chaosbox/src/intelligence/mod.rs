@@ -85,6 +85,19 @@ impl Bundle {
             if record.statement != record.evidence[0].quote {
                 return Err("intelligence wording must remain verbatim evidence".into());
             }
+            for evidence in &record.evidence {
+                let hash = chaosbox_core::sha256_hex(&[
+                    &serde_json::to_string(evidence).map_err(|_| "encode evidence")?
+                ]);
+                if !record
+                    .assessments
+                    .iter()
+                    .filter_map(|id| self.assessments.iter().find(|a| &a.id == id))
+                    .any(|a| a.evidence_digest == hash && a.repositories == record.repositories)
+                {
+                    return Err("evidence occurrence is not bound to an assessment".into());
+                }
+            }
             if record.contradicts.iter().any(|id| !ids.contains(id))
                 || record
                     .supersedes
@@ -131,22 +144,43 @@ impl Bundle {
             {
                 return Err("intelligence no longer matches its admission evidence".into());
             }
-            let expected = if self
-                .assessments
-                .iter()
-                .any(|a| matches!(&a.outcome, Outcome::Supersession(id) if id == &record.id))
-            {
-                IntelligenceStatus::Superseded
-            } else if record.contradicts.is_empty() {
-                IntelligenceStatus::Admitted
-            } else {
-                IntelligenceStatus::Disputed
-            };
-            if record.status != expected {
+            if record.status != self.status_from_receipts(record) {
                 return Err("intelligence status disagrees with receipts".into());
             }
         }
         Ok(())
+    }
+
+    fn status_from_receipts(&self, record: &Intelligence) -> IntelligenceStatus {
+        if self
+            .assessments
+            .iter()
+            .any(|a| matches!(&a.outcome,Outcome::Supersession(id) if id==&record.id))
+        {
+            return IntelligenceStatus::Superseded;
+        }
+        let latest = self.interpretation(record);
+        if latest.is_some_and(|a| matches!(a.outcome, Outcome::Rejected | Outcome::Abstained)) {
+            IntelligenceStatus::Withheld
+        } else if record.contradicts.is_empty() {
+            IntelligenceStatus::Admitted
+        } else {
+            IntelligenceStatus::Disputed
+        }
+    }
+
+    fn interpretation<'a>(&'a self, record: &Intelligence) -> Option<&'a Assessment> {
+        record
+            .assessments
+            .iter()
+            .rev()
+            .filter_map(|id| self.assessments.iter().find(|a| &a.id == id))
+            .find(|a| {
+                record.evidence.iter().any(|e| {
+                    serde_json::to_string(e)
+                        .is_ok_and(|s| chaosbox_core::sha256_hex(&[&s]) == a.evidence_digest)
+                })
+            })
     }
 
     /// Bounded deterministic retrieval; never invokes inference or broadens
@@ -158,7 +192,7 @@ impl Bundle {
         query: &str,
         limit: usize,
         max_chars: usize,
-    ) -> Result<Vec<&Intelligence>, String> {
+    ) -> Result<Vec<serde_json::Value>, String> {
         self.validate()?;
         if scope != self.scope {
             return Err("intelligence scope mismatch".into());
@@ -177,8 +211,10 @@ impl Bundle {
             .records
             .iter()
             .filter(|r| {
-                r.status != IntelligenceStatus::Superseded
-                    && r.repositories.iter().any(|p| p == repo)
+                !matches!(
+                    r.status,
+                    IntelligenceStatus::Superseded | IntelligenceStatus::Withheld
+                ) && r.repositories.iter().any(|p| p == repo)
             })
             .filter_map(|r| {
                 let overlap = words(&r.statement).intersection(&tokens).count();
@@ -189,7 +225,20 @@ impl Bundle {
         let mut result = Vec::new();
         let mut used = 0;
         for (_, record) in ranked {
-            let size = serde_json::to_string(record)
+            let mut citations = vec![location(&record.evidence[0])];
+            if record.evidence.len() > 1 {
+                citations.push(location(record.evidence.last().ok_or("missing evidence")?));
+            }
+            let projection = serde_json::json!({
+                "id":record.id,"statement":record.statement,"kind":record.kind,"status":record.status,
+                "interpretation_class":record.interpretation_class,"repositories":record.repositories,
+                "citations":citations,"evidence_count":record.evidence.len(),
+                "assessment_count":record.assessments.len(),"active_assessment":record.assessments.last(),
+                "assessment_policy":self.interpretation(record).map(|a|&a.rubric_version),
+                "needs_revalidation":self.interpretation(record).is_none_or(|a|a.rubric_version!=RUBRIC_VERSION),
+                "contradicts":record.contradicts,"supersedes":record.supersedes,
+            });
+            let size = serde_json::to_string(&projection)
                 .map_err(|_| "encode intelligence")?
                 .chars()
                 .count();
@@ -197,13 +246,18 @@ impl Bundle {
                 continue;
             }
             used += size;
-            result.push(record);
+            result.push(projection);
             if result.len() == limit {
                 break;
             }
         }
         Ok(result)
     }
+}
+
+fn location(e: &chaosbox_core::intelligence::SessionEvidence) -> serde_json::Value {
+    serde_json::json!({"source":e.source,"snapshot":e.snapshot,"session":e.session,
+        "message":e.message,"pointer":e.pointer,"line":e.line,"observed_at_ms":e.observed_at_ms})
 }
 
 fn words(text: &str) -> std::collections::BTreeSet<String> {

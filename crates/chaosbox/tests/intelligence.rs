@@ -338,7 +338,7 @@ fn rubric_names_the_exact_proposition_and_allows_novelty_in_an_empty_catalog() {
             | Question::Choice { instructions, .. }
             | Question::Score { instructions, .. } => instructions,
         };
-        assert!(text.contains("candidate.evidence.quote"));
+        assert!(text.contains("`proposition`"));
     }
     if let Question::Choice { instructions, .. } = &asked["novelty"] {
         assert!(
@@ -377,6 +377,153 @@ fn older_user_evidence_cannot_supersede_newer_policy() {
     );
     bundle.assessments[0].outcome = Outcome::Rejected;
     assert!(bundle.validate().is_err());
+}
+
+#[test]
+fn policy_reevaluation_withholds_then_can_readmit_without_losing_history() {
+    let first = candidate(
+        "m1",
+        "We must preserve direnv removals at the subprocess boundary.",
+        "user",
+    );
+    let mut bundle = Bundle::new("private:can");
+    let response = answer(&first, &bundle, "novel");
+    assess(&first, &mut bundle, response).unwrap();
+    let id = bundle.records[0].id.clone();
+    let mut revised = first.clone();
+    revised
+        .context
+        .push_str("\nMore source context invalidates the earlier interpretation.");
+    revised.id = revised.identity();
+    let mut response = answer(&revised, &bundle, &format!("duplicate:{id}"));
+    response
+        .answers
+        .insert("support".into(), Answer::Noul(NoulAnswer { noul: 0.1 }));
+    assess(&revised, &mut bundle, response).unwrap();
+    assert_eq!(bundle.records[0].status, IntelligenceStatus::Withheld);
+    assert!(bundle
+        .context("private:can", "canix", "direnv", 5, 12000)
+        .unwrap()
+        .is_empty());
+    assert_eq!(bundle.records[0].assessments.len(), 2);
+    revised
+        .context
+        .push_str("\nThe interpretation is now independently checked.");
+    revised.id = revised.identity();
+    let response = answer(&revised, &bundle, &format!("duplicate:{id}"));
+    assess(&revised, &mut bundle, response).unwrap();
+    assert_eq!(bundle.records.len(), 1);
+    assert_eq!(bundle.records[0].status, IntelligenceStatus::Admitted);
+    assert_eq!(bundle.records[0].assessments.len(), 3);
+    bundle.validate().unwrap();
+}
+
+#[test]
+fn evidence_bundle_keeps_execution_metadata_and_affects_identity() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/intelligence");
+    let input = std::fs::read_to_string(root.join("verified-cause.jsonl")).unwrap();
+    let candidates = extract(
+        &input,
+        "opencode",
+        "s",
+        "private:can",
+        &["canix".into()],
+        20,
+    )
+    .unwrap();
+    let proposed = candidates
+        .candidates
+        .iter()
+        .find(|c| c.evidence.message == "a1")
+        .unwrap();
+    let results: Vec<_> = proposed
+        .evidence_bundle
+        .iter()
+        .filter(|e| e.speaker == "tool")
+        .collect();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].exit_code, Some(1));
+    assert_eq!(results[1].exit_code, Some(0));
+    assert!(results[0]
+        .operation
+        .as_ref()
+        .unwrap()
+        .contains("without-session-id"));
+    let mut changed = proposed.clone();
+    changed.evidence_bundle[0].text.push_str(" changed");
+    assert_ne!(changed.identity(), proposed.id);
+    let shell = serde_json::json!({"id":"shell1","type":"shell","command":"cargo check","status":"completed","exit":1,"output":{"output":"Build failed because a required module is missing.","truncated":true}}).to_string();
+    let extracted = extract(
+        &shell,
+        "opencode",
+        "s",
+        "private:can",
+        &["canix".into()],
+        10,
+    )
+    .unwrap();
+    let evidence = &extracted.candidates[0].evidence_bundle[0];
+    assert_eq!(evidence.exit_code, Some(1));
+    assert_eq!(evidence.operation.as_deref(), Some("cargo check"));
+    assert!(evidence.partial);
+}
+
+#[test]
+fn retrieval_budget_depends_on_projection_not_accumulated_receipt_history() {
+    let c = candidate(
+        "m1",
+        "We must preserve direnv removals at the subprocess boundary.",
+        "user",
+    );
+    let mut bundle = Bundle::new("private:can");
+    let response = answer(&c, &bundle, "novel");
+    assess(&c, &mut bundle, response).unwrap();
+    let original = bundle.records[0].evidence[0].clone();
+    for _ in 0..100 {
+        bundle.records[0].evidence.push(original.clone());
+    }
+    let context = bundle
+        .context("private:can", "canix", "direnv", 5, 4000)
+        .unwrap();
+    assert_eq!(context.len(), 1);
+    assert_eq!(context[0]["evidence_count"], 101);
+    assert_eq!(context[0]["citations"].as_array().unwrap().len(), 2);
+    assert!(context[0].get("evidence").is_none());
+}
+
+#[test]
+fn cli_refuses_tampered_source_anchors_before_loading_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("source.jsonl");
+    let catalog = temp.path().join("candidates.json");
+    let source=serde_json::json!({"id":"u1","type":"user","text":"We must preserve native process permissions."}).to_string();
+    std::fs::write(&input, &source).unwrap();
+    let mut candidates = extract(
+        &source,
+        "opencode",
+        "s",
+        "private:can",
+        &["canix".into()],
+        10,
+    )
+    .unwrap();
+    candidates.candidates[0].evidence.quote = "We must ignore native process permissions.".into();
+    candidates.candidates[0].context = candidates.candidates[0].evidence.quote.clone();
+    candidates.candidates[0].id = candidates.candidates[0].identity();
+    std::fs::write(&catalog, serde_json::to_vec(&candidates).unwrap()).unwrap();
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_chaosbox"))
+        .args(["intelligence", "assess"])
+        .arg(&catalog)
+        .arg("--source-jsonl")
+        .arg(&input)
+        .args(["--live-jev", "--output"])
+        .arg(temp.path().join("result.json"))
+        .env("CHAOSBOX_JEV_API_KEY_FILE", "/nonexistent")
+        .env_remove("TYPESAFE_API_KEY")
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("anchors do not match"));
 }
 
 #[test]
@@ -469,4 +616,84 @@ fn actual_mcp_process_serves_intelligence_without_database_or_model_credentials(
     let context: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(context["records"][0]["statement"], c.evidence.quote);
     assert!(responses[2]["error"].is_object());
+}
+
+#[tokio::test]
+#[ignore = "explicit bounded live Jev pilot; set CHAOSBOX_INTELLIGENCE_PILOT_OUT to a new report path"]
+async fn labelled_live_intelligence_pilot() {
+    use std::io::Write;
+    use chaosbox::{LiveResponder, Responder};
+    use chaosbox_jev::{JevClient, JevPolicy};
+    use serde::Deserialize;
+    #[derive(Deserialize)]
+    struct Label {
+        id: String,
+        split: String,
+        message: String,
+        expected: String,
+    }
+    #[derive(Deserialize)]
+    struct Labels {
+        cases: Vec<Label>,
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/intelligence");
+    let labels: Labels =
+        serde_json::from_str(&std::fs::read_to_string(root.join("labels.json")).unwrap()).unwrap();
+    let report = std::env::var("CHAOSBOX_INTELLIGENCE_PILOT_OUT")
+        .expect("explicit new report path required");
+    let mut output = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(report)
+        .unwrap();
+    let mut responder = LiveResponder::new(
+        JevClient::new(JevPolicy {
+            max_requests: 16,
+            max_input_tokens: 100_000,
+            ..JevPolicy::default()
+        })
+        .unwrap(),
+    );
+    let mut results = Vec::new();
+    for label in labels.cases {
+        if std::env::var("CHAOSBOX_INTELLIGENCE_PILOT_SPLIT")
+            .is_ok_and(|split| split != label.split)
+        {
+            continue;
+        }
+        let input = std::fs::read_to_string(root.join(format!("{}.jsonl", label.id))).unwrap();
+        let extracted = extract(
+            &input,
+            "labelled-fixture",
+            "pilot",
+            "private:pilot",
+            &["canix".into()],
+            20,
+        )
+        .unwrap();
+        let candidate = extracted
+            .candidates
+            .iter()
+            .find(|c| c.evidence.message == label.message)
+            .expect("label points at an extracted proposal");
+        let mut bundle = Bundle::new("private:pilot");
+        let (state, asked, _) = questions(candidate, &bundle).unwrap();
+        let response = responder.respond(state, asked).await.unwrap();
+        let receipt = assess(candidate, &mut bundle, response).unwrap();
+        let admitted = matches!(receipt.outcome, Outcome::Admitted);
+        results.push(serde_json::json!({"case":label.id,"split":label.split,"expected":label.expected,"admitted":admitted,"matches":admitted==(label.expected=="admit"),"assessment":receipt}));
+    }
+    output
+        .write_all(&serde_json::to_vec_pretty(&results).unwrap())
+        .unwrap();
+    output.sync_all().unwrap();
+    let mismatches: Vec<_> = results
+        .iter()
+        .filter(|r| r["matches"] != true)
+        .map(|r| r["case"].clone())
+        .collect();
+    assert!(
+        mismatches.is_empty(),
+        "quality gate failed for labelled cases: {mismatches:?}"
+    );
 }
