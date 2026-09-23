@@ -16,6 +16,14 @@ use std::{
 
 use serde_json::Value;
 
+use crate::sessions::inventory::Inventory;
+
+/// Bytes a source snapshot name may use, so a receipt cannot steer
+/// [`Campaign::source`] outside the campaign's `work/` directory. Real
+/// names are `primary`, `stable`, `old-backup`, `local`, `quarantine`, and
+/// `canary`; a path separator or a `..` component is never one of them.
+const SOURCE_BYTES: [u8; 2] = *b"_-";
+
 /// A receipt file discovered in a campaign journal.
 #[derive(Clone, Debug)]
 pub struct Receipt {
@@ -36,7 +44,87 @@ impl Receipt {
         format!("{}/{}", self.journal, self.file)
     }
 
+    /// Confirm this receipt satisfies the receipt contract.
+    ///
+    /// Every receipt attests to the same core facts, whether it is the base
+    /// record of a session or a supersession that replaces an earlier one.
+    /// The only field that distinguishes the two is `supersedes`, so it has
+    /// to be unambiguous: a `supersedes` of the wrong type is an error
+    /// rather than a receipt quietly read as a base record with a fresh
+    /// set of attestation fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignError::MissingField`] when a required field is
+    /// absent, and [`CampaignError::InvalidField`] when one is present but
+    /// has the wrong type or shape.
+    pub fn validate(&self) -> Result<(), CampaignError> {
+        let key = self.key();
+        text(&self.body, "sessionID", &key)?;
+        let source = text(&self.body, "source", &key)?;
+        if !is_source_name(source) {
+            return Err(invalid_field(
+                &key,
+                "source",
+                "expected a bare database name, without path separators",
+            ));
+        }
+        for field in ["inputDigest", "recoveryDigest", "destinationDigest"] {
+            digest(&self.body, field, &key)?;
+        }
+        count(&self.body, "messages", &key)?;
+        if self.body.get("drafts").is_some() {
+            count(&self.body, "drafts", &key)?;
+        }
+        if let Some(value) = self.body.get("transformation") {
+            if value.as_str().is_none() {
+                return Err(invalid_field(&key, "transformation", "expected a string"));
+            }
+        }
+        if let Some(value) = self.body.get("version") {
+            match value.as_i64() {
+                Some(version) if version > 0 => {}
+                _ => {
+                    return Err(invalid_field(
+                        &key,
+                        "version",
+                        "expected a positive integer",
+                    ));
+                }
+            }
+        }
+        if let Some(value) = self.body.get("supersedes") {
+            let target = value
+                .as_str()
+                .ok_or_else(|| invalid_field(&key, "supersedes", "expected a journal address"))?;
+            if !is_journal_address(target) {
+                return Err(invalid_field(
+                    &key,
+                    "supersedes",
+                    "expected a `journal-*/<receipt>.json` address",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Session this receipt attests to.
+    ///
+    /// [`Receipt::validate`] runs before any receipt is handed out, so the
+    /// field is always present and always a string.
+    #[must_use]
+    pub fn session_id(&self) -> &str {
+        self.body
+            .get("sessionID")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    }
+
     /// Journal address this receipt replaces, if it is a supersession record.
+    ///
+    /// [`Receipt::validate`] runs before this is consulted, so a
+    /// `supersedes` of the wrong type has already been refused rather than
+    /// being read here as an absent field.
     #[must_use]
     pub fn supersedes(&self) -> Option<&str> {
         self.body.get("supersedes").and_then(Value::as_str)
@@ -176,6 +264,33 @@ pub enum CampaignError {
         /// Session the body claims.
         found: String,
     },
+    /// A required receipt field was not written at all.
+    #[error("receipt {key} has no {field}")]
+    MissingField {
+        /// Receipt that was incomplete.
+        key: String,
+        /// Field that was absent.
+        field: String,
+    },
+    /// A receipt field was written with the wrong type or shape.
+    #[error("receipt {key} field {field} is invalid: {problem}")]
+    InvalidField {
+        /// Receipt that was malformed.
+        key: String,
+        /// Field that was malformed.
+        field: String,
+        /// What the contract expected instead.
+        problem: String,
+    },
+    /// `progress.json` does not describe an inventory a pass can be
+    /// measured against.
+    #[error("progress.json field {field} is invalid: {problem}")]
+    InvalidProgress {
+        /// Field that was malformed.
+        field: String,
+        /// What the contract expected instead.
+        problem: String,
+    },
 }
 
 /// A campaign staging root opened read-only.
@@ -249,6 +364,19 @@ impl Campaign {
         Self::read_json(&self.root.join("progress.json"))
     }
 
+    /// Read the pinned session inventory, the expectation a pass measures
+    /// the journals and the destination against.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CampaignError::Read`] or [`CampaignError::Parse`] when
+    /// `progress.json` is unreadable or malformed, and
+    /// [`CampaignError::InvalidProgress`] when it does not describe an
+    /// inventory.
+    pub fn inventory(&self) -> Result<Inventory, CampaignError> {
+        Inventory::from_progress(&self.progress()?)
+    }
+
     /// Read every identity document the journals pin, oldest journal first.
     ///
     /// # Errors
@@ -285,12 +413,16 @@ impl Campaign {
                 let Some(session) = session_of_receipt(&file) else {
                     continue;
                 };
-                receipts.push(Receipt {
+                let path = self.root.join(&journal).join(&file);
+                let body = Self::read_json(&path)?;
+                let receipt = Receipt {
                     journal: journal.clone(),
                     file: file.clone(),
                     session,
-                    body: Self::read_json(&self.root.join(&journal).join(&file))?,
-                });
+                    body,
+                };
+                receipt.validate()?;
+                receipts.push(receipt);
             }
         }
         receipts.sort_by(|left, right| {
@@ -434,14 +566,13 @@ fn check_session_ids(
 ) -> Result<(), CampaignError> {
     for &index in members {
         let receipt = &receipts[index];
-        let claimed = receipt.body.get("sessionID").and_then(Value::as_str);
-        if claimed == Some(session) {
+        if receipt.session_id() == session {
             continue;
         }
         return Err(CampaignError::SessionMismatch {
             key: receipt.key(),
             expected: session.to_string(),
-            found: claimed.unwrap_or_default().to_string(),
+            found: receipt.session_id().to_string(),
         });
     }
     Ok(())
@@ -521,11 +652,104 @@ fn session_of_receipt(file: &str) -> Option<String> {
         }
         None => stem,
     };
-    let suffix = session.strip_prefix("ses_")?;
-    if suffix.is_empty() || !suffix.bytes().all(is_id_byte) {
+    if !is_session_id(session) {
         return None;
     }
     Some(session.to_string())
+}
+
+/// Whether `value` is shaped like an `OpenCode` session identifier, which is
+/// both what a receipt file name promises and what a receipt body must claim.
+#[must_use]
+pub fn is_session_id(value: &str) -> bool {
+    value
+        .strip_prefix("ses_")
+        .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(is_id_byte))
+}
+
+/// Whether `value` names one source snapshot rather than a path that would
+/// escape the campaign's `work/` directory.
+#[must_use]
+fn is_source_name(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || SOURCE_BYTES.contains(&byte))
+}
+
+/// Whether `value` is the `journal-*/<receipt>.json` address of another
+/// receipt. Exactly one separator, and no `..` component, so a supersession
+/// can only ever name a receipt inside the journals it already spans.
+#[must_use]
+fn is_journal_address(value: &str) -> bool {
+    let mut parts = value.split('/');
+    let (Some(journal), Some(file), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    journal.starts_with("journal-")
+        && !journal.contains("..")
+        && !file.contains("..")
+        && Path::new(file)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+}
+
+/// A receipt field that is absent, which is distinct from one written with
+/// the wrong shape: an operator has to be able to tell "not attested" from
+/// "attested wrongly".
+fn missing(key: &str, field: &str) -> CampaignError {
+    CampaignError::MissingField {
+        key: key.to_string(),
+        field: field.to_string(),
+    }
+}
+
+/// A receipt field written with the wrong type or shape.
+fn invalid_field(key: &str, field: &str, problem: &str) -> CampaignError {
+    CampaignError::InvalidField {
+        key: key.to_string(),
+        field: field.to_string(),
+        problem: problem.to_string(),
+    }
+}
+
+/// A required string field, checked for presence and type separately so the
+/// two failures read differently.
+fn text<'body>(body: &'body Value, field: &str, key: &str) -> Result<&'body str, CampaignError> {
+    let value = body.get(field).ok_or_else(|| missing(key, field))?;
+    value
+        .as_str()
+        .ok_or_else(|| invalid_field(key, field, "expected a string"))
+}
+
+/// A required digest field: 64 lowercase hex digits, exactly the shape
+/// `crypto.createHash("sha256").digest("hex")` produces.
+fn digest<'body>(body: &'body Value, field: &str, key: &str) -> Result<&'body str, CampaignError> {
+    let value = text(body, field, key)?;
+    let well_formed = value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if !well_formed {
+        return Err(invalid_field(
+            key,
+            field,
+            "expected 64 lowercase hex digits",
+        ));
+    }
+    Ok(value)
+}
+
+/// A required non-negative integer field.
+fn count(body: &Value, field: &str, key: &str) -> Result<i64, CampaignError> {
+    let value = body.get(field).ok_or_else(|| missing(key, field))?;
+    let integer = value
+        .as_i64()
+        .ok_or_else(|| invalid_field(key, field, "expected a non-negative integer"))?;
+    if integer < 0 {
+        return Err(invalid_field(key, field, "expected a non-negative integer"));
+    }
+    Ok(integer)
 }
 
 /// Bytes `OpenCode` allows inside a session identifier.

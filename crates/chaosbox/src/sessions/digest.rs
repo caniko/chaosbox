@@ -188,12 +188,21 @@ fn sorted_columns(statement: &Statement<'_>) -> BTreeMap<String, usize> {
 
 /// Whether a table exists, for the link tables the contract treats as
 /// optional.
+///
+/// Only "no such row" means the table is absent. Any other failure — a
+/// corrupt database, a closed connection — has to stay an error, because
+/// silently answering "no" would drop an entire table out of a digest and
+/// produce a wrong number that still verifies.
 fn table_exists(connection: &Connection, table: &str) -> Result<bool, DigestError> {
-    let found = connection
-        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")?
-        .query_row([table], |row| row.get::<_, i64>(0))
-        .is_ok();
-    Ok(found)
+    match connection.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        [table],
+        |row| row.get::<_, i64>(0),
+    ) {
+        Ok(_) => Ok(true),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+        Err(source) => Err(DigestError::Sqlite(source)),
+    }
 }
 
 /// One NUL-terminated canonical fragment into the running hash.
@@ -570,6 +579,33 @@ mod tests {
                     if table == "session_v2" && column == "payload"
             ),
             "unexpected error: {error}"
+        );
+    }
+
+    /// The optional link tables are optional; a database that cannot be read
+    /// at all is not. Swallowing every failure as "the table is not there"
+    /// would silently drop a whole table out of the digest and still produce
+    /// a well-formed 64-hex answer that verifies.
+    #[test]
+    fn only_a_missing_table_reads_as_absent() {
+        let connection = fixture();
+        assert!(
+            !table_exists(&connection, "session_definitely_absent").expect("absent"),
+            "no such table"
+        );
+        assert!(
+            table_exists(&connection, "session_pending").expect("present"),
+            "the fixture has session_pending"
+        );
+
+        let mut file = tempfile::NamedTempFile::new().expect("temp file");
+        std::io::Write::write_all(&mut file, b"this is not a database at all").expect("bytes");
+        let broken = Connection::open(file.path()).expect("connection opens lazily");
+
+        let error = table_exists(&broken, "session_pending").expect_err("must fail");
+        assert!(
+            matches!(error, DigestError::Sqlite(_)),
+            "expected a sqlite error, got: {error}"
         );
     }
 }
