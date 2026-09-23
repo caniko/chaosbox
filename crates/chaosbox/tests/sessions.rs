@@ -9,10 +9,9 @@
 //! hold, that every way those can fail is a hard failure rather than a
 //! silently wrong answer, and that the CLI's exit codes follow from that.
 
-//! `held` (the temp-dir guard) and `head` (the chain head receipt) differ by
-//! one letter but are distinct concepts used consistently across every
-//! fixture; renaming either would hurt readability for no correctness gain.
-#![allow(clippy::similar_names)]
+//! `held` (the temp-dir guard) is dropped at the end of every fixture;
+//! chain-head receipts are named `successor` throughout, so the two never
+//! share a scope under confusable names.
 
 use std::{
     fmt::Write as _,
@@ -25,7 +24,8 @@ use chaosbox::sessions::{
     cli::{self, Command},
     digest::{canonical_json_digest, recovered_hash, session_digest},
     remap::{
-        is_native_message_shape, is_native_session_shape, variant_message_id, variant_session_id,
+        is_native_message_shape, is_native_session_shape, mapping_variants_digest,
+        variant_message_id, variant_session_id,
     },
     verify::{verify, VerifyError, VerifyOptions},
 };
@@ -2221,16 +2221,16 @@ fn a_supersession_receipt_verifies_against_its_boundary_snapshot() {
         "ses_fixture01.json",
         &receipt(SESSION, "stale"),
     );
-    let mut head = superseding(
+    let mut successor = superseding(
         SESSION,
         &recorded_digest(&root),
         "journal-v2/ses_fixture01.json",
     );
-    head["kind"] = json!("supersession");
-    head["inputDigest"] = json!(input);
-    head["recoveryDigest"] = json!(recovery_digest);
-    head["provenance"] = json!({ "boundary": "v1", "boundaryRecordSha256": record_digest });
-    write_receipt(&root, "journal-v3", "ses_fixture01.json", &head);
+    successor["kind"] = json!("supersession");
+    successor["inputDigest"] = json!(input);
+    successor["recoveryDigest"] = json!(recovery_digest);
+    successor["provenance"] = json!({ "boundary": "v1", "boundaryRecordSha256": record_digest });
+    write_receipt(&root, "journal-v3", "ses_fixture01.json", &successor);
     declare(&root, &[SESSION]);
 
     let campaign = Campaign::open(Some(root.clone())).expect("campaign");
@@ -2264,12 +2264,12 @@ fn an_unresolvable_boundary_is_a_source_error() {
         "ses_fixture01.json",
         &receipt(SESSION, "stale"),
     );
-    let mut head = superseding(
+    let mut successor = superseding(
         SESSION,
         &recorded_digest(&root),
         "journal-v2/ses_fixture01.json",
     );
-    head["kind"] = json!("supersession");
+    successor["kind"] = json!("supersession");
     // Pin a digest for a record that was never written: the pass must fail
     // resolving the boundary, not skip the session silently.
     let record_body = json!({
@@ -2277,11 +2277,11 @@ fn an_unresolvable_boundary_is_a_source_error() {
         "snapshot": "/nonexistent.db",
         "snapshotSha256": "0000000000000000000000000000000000000000000000000000000000000000",
     });
-    head["provenance"] = json!({
+    successor["provenance"] = json!({
         "boundary": "v1",
         "boundaryRecordSha256": canonical_json_digest(&record_body),
     });
-    write_receipt(&root, "journal-v3", "ses_fixture01.json", &head);
+    write_receipt(&root, "journal-v3", "ses_fixture01.json", &successor);
     declare(&root, &[SESSION]);
 
     let campaign = Campaign::open(Some(root.clone())).expect("campaign");
@@ -2311,14 +2311,14 @@ fn a_supersession_without_a_boundary_digest_is_uncovered() {
         "ses_fixture01.json",
         &receipt(SESSION, "stale"),
     );
-    let mut head = superseding(
+    let mut successor = superseding(
         SESSION,
         &recorded_digest(&root),
         "journal-v2/ses_fixture01.json",
     );
-    head["kind"] = json!("supersession");
-    head["provenance"] = json!({ "boundary": "v1" });
-    write_receipt(&root, "journal-v3", "ses_fixture01.json", &head);
+    successor["kind"] = json!("supersession");
+    successor["provenance"] = json!({ "boundary": "v1" });
+    write_receipt(&root, "journal-v3", "ses_fixture01.json", &successor);
     declare(&root, &[SESSION]);
 
     let campaign = Campaign::open(Some(root.clone())).expect("campaign");
@@ -2400,19 +2400,19 @@ fn a_wrong_boundary_digest_is_a_source_error() {
         "ses_fixture01.json",
         &receipt(SESSION, "stale"),
     );
-    let mut head = superseding(
+    let mut successor = superseding(
         SESSION,
         &recorded_digest(&root),
         "journal-v2/ses_fixture01.json",
     );
-    head["kind"] = json!("supersession");
-    head["inputDigest"] = json!(input);
-    head["recoveryDigest"] = json!(recovery_digest);
-    head["provenance"] = json!({
+    successor["kind"] = json!("supersession");
+    successor["inputDigest"] = json!(input);
+    successor["recoveryDigest"] = json!(recovery_digest);
+    successor["provenance"] = json!({
         "boundary": "v1",
         "boundaryRecordSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     });
-    write_receipt(&root, "journal-v3", "ses_fixture01.json", &head);
+    write_receipt(&root, "journal-v3", "ses_fixture01.json", &successor);
     declare(&root, &[SESSION]);
 
     let campaign = Campaign::open(Some(root.clone())).expect("campaign");
@@ -2459,17 +2459,31 @@ fn canonical_json_digest_matches_the_js_driver() {
     ));
 }
 
-/// Write a minimal variant identity plus a delta inventory sanctioning `ids`,
-/// chained through `journal-v3/identity-delta.json`. Returns the delta file's
-/// sha for assertions. The variant identity content is unattested here — the
-/// chain check only binds bytes — so a stub file is enough for inventory
-/// tests; variant receipt proofs stay covered by their own suite.
+/// Write a minimal variant identity into the campaign plus a delta inventory
+/// sanctioning `ids`, chained through `journal-v3/identity-delta.json`.
+/// Returns the delta file's sha for assertions. The chain points at the
+/// campaign's actual `journal-v3/identity-v3.json` (not an arbitrary path),
+/// and the delta carries `status: final` with
+/// `derivedFrom.reconciliation.sha256` matching the variant identity, so the
+/// pin exercises the same gates the real cutover must pass.
 fn write_delta_pin(root: &Path, ids: &[&str]) -> String {
     use sha2::Digest as _;
     let parent = root.parent().expect("parent").to_path_buf();
 
-    let variant_path = parent.join("variant-identity.json");
-    fs::write(&variant_path, r#"{"version":3,"journal":"journal-v3"}"#).expect("variant identity");
+    let reconciliation = sha("reconciliation");
+    let mapping_text = r#"{"variants":[]}"#;
+    let mapping_digest = mapping_variants_digest(mapping_text).expect("empty mapping digests");
+    let mapping_path = parent.join("variants-mapping.json");
+    fs::write(&mapping_path, mapping_text).expect("mapping");
+    let variant_body = json!({
+        "version": 3,
+        "journal": "journal-v3",
+        "reconciliationDigest": reconciliation,
+        "mappingDigest": mapping_digest,
+        "mappingFile": mapping_path.to_string_lossy(),
+    });
+    write_receipt(root, "journal-v3", "identity-v3.json", &variant_body);
+    let variant_path = root.join("journal-v3/identity-v3.json");
     let variant_bytes = fs::read(&variant_path).expect("variant bytes");
     let mut hasher = Sha256::new();
     hasher.update(&variant_bytes);
@@ -2482,6 +2496,7 @@ fn write_delta_pin(root: &Path, ids: &[&str]) -> String {
     let delta_body = json!({
         "version": 1,
         "status": "final",
+        "derivedFrom": { "reconciliation": { "sha256": reconciliation } },
         "deltaNew": { "ids": ids },
     });
     fs::write(
@@ -2510,12 +2525,16 @@ fn write_delta_pin(root: &Path, ids: &[&str]) -> String {
 
 /// A delta-new receipt for `session` attesting to the destination's current
 /// digest, so inventory tests can focus on the pin rather than the hash.
+/// Carries a well-formed (but unattested) boundary pin: the always-on
+/// binding check only validates shape without `--sources`, so inventory
+/// tests stay focused on the pin rather than the boundary bytes.
 fn delta_new_receipt(root: &Path, session: &str) -> Value {
     let digest = digest_for(root, session);
     json!({
         "sessionID": session,
         "source": "primary",
         "kind": "delta-new",
+        "provenance": { "boundary": "v1", "boundaryRecordSha256": sha("record") },
         "destinationDigest": digest.clone(),
         "inputDigest": digest.clone(),
         "recoveryDigest": digest,
@@ -2614,5 +2633,306 @@ fn a_tampered_delta_inventory_is_a_hard_error() {
         matches!(error, VerifyError::Mapping { .. }),
         "unexpected error: {error}"
     );
+    drop(held);
+}
+
+// ---- delta + boundary hardening (cutover readiness) ----
+
+/// A delta inventory sanctioning the same id twice is a hard error: the union
+/// must never silently deduplicate an unattested list.
+#[test]
+fn a_duplicate_delta_id_is_a_hard_error() {
+    let (held, root) = fixture();
+    declare(&root, &[SESSION]);
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, &recorded_digest(&root)),
+    );
+    write_delta_pin(&root, &[OTHER, OTHER]);
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let error = verify(&campaign, &every_receipt()).expect_err("must fail");
+    assert!(
+        matches!(error, VerifyError::Mapping { .. }),
+        "unexpected error: {error}"
+    );
+    drop(held);
+}
+
+/// A preliminary delta inventory sanctions nothing: only a final measurement
+/// is stable enough to verify against.
+#[test]
+fn a_preliminary_delta_inventory_is_a_hard_error() {
+    let (held, root) = fixture();
+    declare(&root, &[SESSION]);
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, &recorded_digest(&root)),
+    );
+    write_delta_pin(&root, &[OTHER]);
+
+    let parent = root.parent().expect("parent").to_path_buf();
+    let path = parent.join("delta-inventory.json");
+    let mut body: Value =
+        serde_json::from_str(&fs::read_to_string(&path).expect("delta")).expect("delta parses");
+    body["status"] = json!("preliminary");
+    fs::write(
+        &path,
+        serde_json::to_string(&body).expect("delta serializes"),
+    )
+    .expect("delta");
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let error = verify(&campaign, &every_receipt()).expect_err("must fail");
+    assert!(
+        matches!(error, VerifyError::Mapping { .. }),
+        "unexpected error: {error}"
+    );
+    drop(held);
+}
+
+/// A delta chain pointing anywhere but the campaign's actual variant identity
+/// is a hard error, even when the named file hashes to its pin.
+#[test]
+fn a_delta_chain_pointing_elsewhere_is_a_hard_error() {
+    let (held, root) = fixture();
+    declare(&root, &[SESSION]);
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, &recorded_digest(&root)),
+    );
+    write_delta_pin(&root, &[OTHER]);
+
+    let parent = root.parent().expect("parent").to_path_buf();
+    let elsewhere = parent.join("elsewhere-identity.json");
+    let actual = root.join("journal-v3/identity-v3.json");
+    fs::copy(&actual, &elsewhere).expect("copy");
+    let digest = {
+        use sha2::Digest as _;
+        let bytes = fs::read(&elsewhere).expect("bytes");
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let mut out = String::with_capacity(64);
+        for byte in hasher.finalize() {
+            write!(out, "{byte:02x}").expect("hex");
+        }
+        out
+    };
+    let path = root.join("journal-v3/identity-delta.json");
+    let mut body: Value = serde_json::from_str(&fs::read_to_string(&path).expect("identity"))
+        .expect("identity parses");
+    let pin = json!({ "path": elsewhere.to_string_lossy(), "sha256": digest });
+    body["supersedesIdentityFile"] = pin.clone();
+    body["variantIdentity"] = pin;
+    fs::write(
+        &path,
+        serde_json::to_string(&body).expect("identity serializes"),
+    )
+    .expect("identity");
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let error = verify(&campaign, &every_receipt()).expect_err("must fail");
+    assert!(
+        matches!(error, VerifyError::Mapping { .. }),
+        "unexpected error: {error}"
+    );
+    drop(held);
+}
+
+/// A delta without its variant identity has no chain to resolve.
+#[test]
+fn a_delta_without_a_variant_identity_is_a_hard_error() {
+    let (held, root) = fixture();
+    declare(&root, &[SESSION]);
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, &recorded_digest(&root)),
+    );
+    write_delta_pin(&root, &[OTHER]);
+    fs::remove_file(root.join("journal-v3/identity-v3.json")).expect("remove variant");
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let error = verify(&campaign, &every_receipt()).expect_err("must fail");
+    assert!(
+        matches!(error, VerifyError::Mapping { .. }),
+        "unexpected error: {error}"
+    );
+    drop(held);
+}
+
+/// A supersession with a malformed boundary pin fails even on a
+/// destination-only pass: binding is mandatory with or without `--sources`.
+#[test]
+fn a_malformed_boundary_pin_fails_without_sources() {
+    let (held, root) = fixture();
+    build_sources(&root, true);
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, "stale"),
+    );
+    let mut successor = superseding(
+        SESSION,
+        &recorded_digest(&root),
+        "journal-v2/ses_fixture01.json",
+    );
+    successor["kind"] = json!("supersession");
+    successor["provenance"] =
+        json!({ "boundary": "elsewhere", "boundaryRecordSha256": sha("record") });
+    write_receipt(&root, "journal-v3", "ses_fixture01.json", &successor);
+    declare(&root, &[SESSION]);
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let report = verify(&campaign, &every_receipt()).expect("report still produced");
+
+    assert_eq!(report.source_errors.len(), 1);
+    assert!(!report.clean());
+    drop(held);
+}
+
+/// Two single-message boundary databases: raw holding stale content,
+/// converted holding the newer row the receipt attests to.
+fn write_raw_and_converted(parent: &Path) -> (PathBuf, PathBuf, String, String) {
+    use sha2::Digest as _;
+    let boundary_dir = parent.join("snapshots");
+    fs::create_dir_all(&boundary_dir).expect("snapshots");
+    let raw_db = boundary_dir.join("v1raw.db");
+    let converted_db = boundary_dir.join("v1converted.db");
+    for (path, message) in [(&raw_db, "msg_old"), (&converted_db, "msg_new")] {
+        let connection = Connection::open(path).expect("boundary");
+        connection
+            .execute_batch(
+                "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, time INTEGER);
+                 CREATE TABLE session_message (session_id TEXT, seq INTEGER, id TEXT);",
+            )
+            .expect("schema");
+        connection
+            .execute(
+                "INSERT INTO session_v2 VALUES ('ses_fixture01', 1790166653727)",
+                [],
+            )
+            .expect("session");
+        connection
+            .execute(
+                "INSERT INTO session_message VALUES ('ses_fixture01', 1, ?1)",
+                [message],
+            )
+            .expect("message");
+        drop(connection);
+    }
+    let file_digest = |path: &PathBuf| {
+        let bytes = fs::read(path).expect("bytes");
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        let mut out = String::with_capacity(64);
+        for byte in hasher.finalize() {
+            write!(out, "{byte:02x}").expect("hex");
+        }
+        out
+    };
+    let raw_digest = file_digest(&raw_db);
+    let converted_digest = file_digest(&converted_db);
+    (raw_db, converted_db, raw_digest, converted_digest)
+}
+
+/// Boundary record pinning both raw and converted snapshots, returning the
+/// canonical record digest the receipt must carry.
+fn write_converted_record(
+    parent: &Path,
+    raw_db: &Path,
+    raw_digest: &str,
+    converted_db: &Path,
+    converted_digest: &str,
+) -> String {
+    let record_dir = parent.join("boundaries");
+    fs::create_dir_all(&record_dir).expect("boundaries");
+    let record_body = json!({
+        "boundary": "v1",
+        "snapshot": raw_db.to_string_lossy(),
+        "snapshotSha256": raw_digest,
+        "convertedSnapshot": converted_db.to_string_lossy(),
+        "convertedSnapshotSha256": converted_digest,
+    });
+    let record_digest = canonical_json_digest(&record_body);
+    fs::write(
+        record_dir.join("v1.json"),
+        serde_json::to_string(&record_body).expect("record serializes"),
+    )
+    .expect("record");
+    record_digest
+}
+
+/// A boundary record naming a converted snapshot is verified on both hashes
+/// and read from the converted file: `inputDigest` attests to converted
+/// content, never to the raw bytes the holder gate cleared.
+#[test]
+fn a_converted_snapshot_is_verified_and_read() {
+    let (held, root) = fixture();
+    let parent = root.parent().expect("parent").to_path_buf();
+    build_sources(&root, true);
+
+    let (raw_db, converted_db, raw_digest, converted_digest) = write_raw_and_converted(&parent);
+    let record_digest = write_converted_record(
+        &parent,
+        &raw_db,
+        &raw_digest,
+        &converted_db,
+        &converted_digest,
+    );
+
+    let converted_connection =
+        Connection::open_with_flags(&converted_db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("converted");
+    let input = session_digest(&converted_connection, SESSION)
+        .expect("converted digest")
+        .digest;
+    drop(converted_connection);
+    let recovery_connection = Connection::open_with_flags(
+        parent.join("recovered-rows.db"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("recovery");
+    let recovery_digest = recovered_hash(&recovery_connection, SESSION).expect("recovery digest");
+    drop(recovery_connection);
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, "stale"),
+    );
+    let mut successor = superseding(
+        SESSION,
+        &recorded_digest(&root),
+        "journal-v2/ses_fixture01.json",
+    );
+    successor["kind"] = json!("supersession");
+    successor["inputDigest"] = json!(input);
+    successor["recoveryDigest"] = json!(recovery_digest);
+    successor["provenance"] = json!({ "boundary": "v1", "boundaryRecordSha256": record_digest });
+    write_receipt(&root, "journal-v3", "ses_fixture01.json", &successor);
+    declare(&root, &[SESSION]);
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let report = verify(
+        &campaign,
+        &VerifyOptions {
+            sources: true,
+            ..every_receipt()
+        },
+    )
+    .expect("verifies");
+
+    assert!(report.source_mismatch.is_empty(), "{report:?}");
+    assert!(report.source_errors.is_empty(), "{report:?}");
+    assert!(report.clean(), "{report:?}");
     drop(held);
 }

@@ -677,48 +677,80 @@ struct DeltaPins {
     ids: BTreeSet<String>,
 }
 
+/// One malformed delta-identity reason, attributed to its file.
+fn delta_malformed(what: &str) -> VerifyError {
+    VerifyError::Mapping {
+        reason: format!("journal-v3/identity-delta.json: {what}"),
+    }
+}
+
 impl DeltaPins {
     /// Load and verify the pin, or report that there is nothing to check.
     ///
     /// # Errors
     ///
     /// Returns [`VerifyError::Mapping`] when the identity is malformed, when
-    /// its chain to the variant identity does not resolve, when the delta
-    /// file does not hash to the pinned digest, or when it does not parse.
+    /// its chain to the variant identity does not resolve to the campaign's
+    /// actual `journal-v3/identity-v3.json`, when the delta file does not hash
+    /// to the pinned digest, when it does not parse, when it is not final,
+    /// when its reconciliation drifts from the variant identity, or when it
+    /// sanctions a duplicate or malformed session id. A delta without its
+    /// variant identity is also a hard error: the chain must resolve to the
+    /// file the campaign actually holds, never to an arbitrary named file.
     fn load(campaign: &Campaign) -> Result<Option<Self>, VerifyError> {
-        let identity = campaign.identities()?.into_iter().find(|identity| {
+        let identities = campaign.identities()?;
+        let identity = identities.iter().find(|identity| {
             identity.journal == "journal-v3" && identity.file == "identity-delta.json"
         });
         let Some(identity) = identity else {
             return Ok(None);
         };
-
-        let malformed = |what: &str| VerifyError::Mapping {
-            reason: format!("journal-v3/identity-delta.json: {what}"),
-        };
         if identity.body.get("version").and_then(Value::as_u64) != Some(3) {
-            return Err(malformed("version is not 3"));
+            return Err(delta_malformed("version is not 3"));
         }
         if identity.body.get("journal").and_then(Value::as_str) != Some("journal-v3") {
-            return Err(malformed("journal is not journal-v3"));
+            return Err(delta_malformed("journal is not journal-v3"));
         }
+        let expected_variant = campaign.root().join("journal-v3/identity-v3.json");
+        if !expected_variant.is_file() {
+            return Err(delta_malformed("delta without journal-v3/identity-v3.json"));
+        }
+        let variant_identity = identities
+            .iter()
+            .find(|identity| {
+                identity.journal == "journal-v3" && identity.file == "identity-v3.json"
+            })
+            .ok_or_else(|| delta_malformed("delta without journal-v3/identity-v3.json"))?;
+        let variant_reconciliation = variant_identity
+            .body
+            .get("reconciliationDigest")
+            .and_then(Value::as_str)
+            .ok_or_else(|| delta_malformed("variant identity has no reconciliationDigest"))?;
+        Self::verify_chain(&identity.body, &expected_variant)?;
+        let parsed = Self::read_pinned_delta(&identity.body, variant_reconciliation)?;
+        let ids = Self::sanctioned_ids(&parsed)?;
+        Ok(Some(Self { ids }))
+    }
 
-        // The identity chain mirrors the receipt chain: this file must name
-        // the variant identity it supersedes, with the digest that file still
-        // hashes to. Either `supersedesIdentityFile` or `variantIdentity`
-        // carries that pin; at least one must be present and every one present
-        // must resolve.
-        let mut chain_checked = false;
+    /// Chain links must resolve to the campaign's actual variant identity.
+    fn verify_chain(body: &Value, expected_variant: &Path) -> Result<(), VerifyError> {
+        let expected_canonical = canonical_path(expected_variant);
+        let mut checked = false;
         for field in ["supersedesIdentityFile", "variantIdentity"] {
-            let Some(entry) = identity.body.get(field) else {
+            let Some(entry) = body.get(field) else {
                 continue;
             };
             let (Some(path), Some(expected)) = (
                 entry.get("path").and_then(Value::as_str),
                 entry.get("sha256").and_then(Value::as_str),
             ) else {
-                return Err(malformed(&format!("{field} names no path/sha256")));
+                return Err(delta_malformed(&format!("{field} names no path/sha256")));
             };
+            if canonical_path(Path::new(path)) != expected_canonical {
+                return Err(delta_malformed(&format!(
+                    "{field} points at {path}, not journal-v3/identity-v3.json"
+                )));
+            }
             let actual = crate::sessions::tool::file_sha256(Path::new(path)).map_err(|_| {
                 VerifyError::Mapping {
                     reason: format!("cannot hash chained identity {path}"),
@@ -731,21 +763,25 @@ impl DeltaPins {
                     ),
                 });
             }
-            chain_checked = true;
+            checked = true;
         }
-        if !chain_checked {
-            return Err(malformed("no chain to the variant identity"));
+        if !checked {
+            return Err(delta_malformed("no chain to the variant identity"));
         }
+        Ok(())
+    }
 
-        let delta_entry = identity
-            .body
+    /// Hash-verified delta file, confirmed final and built against the same
+    /// reconciliation the variant identity carries.
+    fn read_pinned_delta(body: &Value, variant_reconciliation: &str) -> Result<Value, VerifyError> {
+        let entry = body
             .get("deltaInventory")
-            .ok_or_else(|| malformed("no deltaInventory"))?;
+            .ok_or_else(|| delta_malformed("no deltaInventory"))?;
         let (Some(path), Some(expected)) = (
-            delta_entry.get("path").and_then(Value::as_str),
-            delta_entry.get("sha256").and_then(Value::as_str),
+            entry.get("path").and_then(Value::as_str),
+            entry.get("sha256").and_then(Value::as_str),
         ) else {
-            return Err(malformed("deltaInventory names no path/sha256"));
+            return Err(delta_malformed("deltaInventory names no path/sha256"));
         };
         let actual = crate::sessions::tool::file_sha256(Path::new(path)).map_err(|_| {
             VerifyError::Mapping {
@@ -766,30 +802,71 @@ impl DeltaPins {
         let parsed: Value = serde_json::from_str(&text).map_err(|source| VerifyError::Mapping {
             reason: format!("pinned delta inventory does not parse: {source}"),
         })?;
+        if parsed.get("status").and_then(Value::as_str) != Some("final") {
+            return Err(delta_malformed("delta inventory status is not final"));
+        }
+        let delta_reconciliation = parsed
+            .get("derivedFrom")
+            .and_then(|derived| derived.get("reconciliation"))
+            .and_then(|reconciliation| reconciliation.get("sha256"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                delta_malformed("delta inventory names no derivedFrom.reconciliation.sha256")
+            })?;
+        if delta_reconciliation != variant_reconciliation {
+            return Err(VerifyError::Mapping {
+                reason: format!(
+                    "delta inventory built against reconciliation {delta_reconciliation} instead of the variant identity's {variant_reconciliation}"
+                ),
+            });
+        }
+        Ok(parsed)
+    }
+
+    /// Session ids the pinned file sanctions, rejecting duplicates.
+    fn sanctioned_ids(parsed: &Value) -> Result<BTreeSet<String>, VerifyError> {
         let ids = parsed
             .get("deltaNew")
             .and_then(|delta| delta.get("ids"))
             .and_then(Value::as_array)
-            .ok_or_else(|| malformed("delta inventory has no deltaNew.ids"))?;
+            .ok_or_else(|| delta_malformed("delta inventory has no deltaNew.ids"))?;
         let mut sanctioned = BTreeSet::new();
         for id in ids {
-            let id = id
-                .as_str()
-                .ok_or_else(|| malformed("delta inventory deltaNew.ids holds a non-string"))?;
+            let id = id.as_str().ok_or_else(|| {
+                delta_malformed("delta inventory deltaNew.ids holds a non-string")
+            })?;
             if !crate::sessions::campaign::is_session_id(id) {
-                return Err(malformed(&format!(
+                return Err(delta_malformed(&format!(
                     "delta inventory sanctions `{id}`, not a session id"
                 )));
             }
-            sanctioned.insert(id.to_string());
+            if !sanctioned.insert(id.to_string()) {
+                return Err(delta_malformed(&format!(
+                    "delta inventory sanctions `{id}` twice"
+                )));
+            }
         }
-        Ok(Some(Self { ids: sanctioned }))
+        Ok(sanctioned)
     }
 
     /// Session ids the pinned delta inventory sanctions, for inventory union.
     fn sanctioned(&self) -> BTreeSet<String> {
         self.ids.clone()
     }
+}
+
+/// Absolute form of a path for chain comparison: canonicalized when the file
+/// exists, otherwise the absolute path. Both sides go through the same
+/// function, so a symlinked campaign root compares equal on both sides while
+/// a path pointing elsewhere never does.
+fn canonical_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    std::env::current_dir().map_or_else(|_| path.to_path_buf(), |current| current.join(path))
 }
 
 /// Canonical digest of a boundary record file, matching the merge driver's
@@ -806,11 +883,19 @@ fn boundary_record_digest(path: &Path) -> Result<String, String> {
 /// Open the frozen snapshot a boundary record pins, verifying the file
 /// still hashes to the recorded digest.
 ///
+/// A record may carry a converted snapshot alongside the raw one: the raw
+/// file is the frozen bytes the holder gate cleared, while the converted
+/// file is the same bytes after the candidate backfilled `session_v2` rows
+/// into a copy (pinned separately because the copy diverges by design).
+/// `inputDigest` attests to converted content, so when the record names a
+/// converted snapshot the pass recomputes against it — after verifying both
+/// hashes — and otherwise against the raw file.
+///
 /// # Errors
 ///
 /// Returns a reason when the record is missing or malformed, when it names
-/// no snapshot, when the snapshot file does not hash to the recorded
-/// digest, or when it cannot be opened.
+/// no snapshot, when a named file does not hash to its recorded digest, or
+/// when the chosen file cannot be opened.
 fn open_boundary_snapshot(campaign: &Campaign, boundary: &str) -> Result<Snapshot, String> {
     let path = campaign.boundary_record(boundary);
     let text = std::fs::read_to_string(&path)
@@ -830,8 +915,32 @@ fn open_boundary_snapshot(campaign: &Campaign, boundary: &str) -> Result<Snapsho
             "{snapshot} digests as {actual} instead of the recorded {expected}"
         ));
     }
-    Snapshot::open(std::path::Path::new(snapshot))
-        .map_err(|error| format!("cannot open {snapshot}: {error}"))
+    let (converted, converted_expected) = (
+        record.get("convertedSnapshot").and_then(Value::as_str),
+        record
+            .get("convertedSnapshotSha256")
+            .and_then(Value::as_str),
+    );
+    match (converted, converted_expected) {
+        (Some(converted), Some(converted_expected)) => {
+            let converted_actual =
+                crate::sessions::tool::file_sha256(std::path::Path::new(converted))
+                    .map_err(|error| format!("cannot hash {converted}: {error}"))?;
+            if converted_actual != converted_expected {
+                return Err(format!(
+                    "{converted} digests as {converted_actual} instead of the recorded {converted_expected}"
+                ));
+            }
+            Snapshot::open(std::path::Path::new(converted))
+                .map_err(|error| format!("cannot open {converted}: {error}"))
+        }
+        (None, None) => Snapshot::open(std::path::Path::new(snapshot))
+            .map_err(|error| format!("cannot open {snapshot}: {error}")),
+        _ => Err(format!(
+            "{} names a converted snapshot without its digest, or vice versa",
+            path.display()
+        )),
+    }
 }
 
 /// Message ids of one session in `(seq, id)` order, the order both the
@@ -931,6 +1040,12 @@ pub fn verify(campaign: &Campaign, options: &VerifyOptions) -> Result<VerifyRepo
                 digests.push(driver.to_string());
             }
         }
+        // Boundary binding is mandatory on every pass, not only under
+        // `--sources`: a changed or delta-new receipt without a boundary pin
+        // attests to no frozen bytes, and one with a malformed pin attests to
+        // bytes no record can match. Content recomputation under `--sources`
+        // then only checks the pin's value, never its presence or shape.
+        check_provenance_binding(entry, &mut report);
         check_destination(entry, &destination, &mut report)?;
 
         if options.sources {
@@ -954,6 +1069,38 @@ pub fn verify(campaign: &Campaign, options: &VerifyOptions) -> Result<VerifyRepo
     report.snapshot.concurrent_write = version_after != report.snapshot.data_version_before;
     report.elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     Ok(report)
+}
+
+/// Boundary binding for changed and delta-new receipts, enforced on every
+/// pass with or without `--sources`.
+///
+/// A `supersession` or `delta-new` receipt attests to a frozen boundary
+/// snapshot, not to the work snapshots. Without `provenance.boundary` and
+/// `provenance.boundaryRecordSha256` it attests to no frozen bytes at all,
+/// so the session is `sources_uncovered`. A pin with an unknown boundary or
+/// a malformed digest can match no record, so it is a `source_error`.
+/// Well-formed pins are left for `--sources` to compare against the record
+/// bytes; this check only establishes presence and shape, never value.
+fn check_provenance_binding(entry: &Effective, report: &mut VerifyReport) {
+    let receipt = &entry.head;
+    if !matches!(receipt.kind(), Some("supersession" | "delta-new")) {
+        return;
+    }
+    let (Some(boundary), Some(record)) = (
+        receipt.provenance_boundary(),
+        receipt.provenance_record_digest(),
+    ) else {
+        if !report.sources_uncovered.contains(&entry.session) {
+            report.sources_uncovered.push(entry.session.clone());
+        }
+        return;
+    };
+    if !matches!(boundary, "v1" | "canary") || !crate::sessions::campaign::is_digest(record) {
+        report.source_errors.push(format!(
+            "{}: provenance names boundary {boundary} with a malformed record digest",
+            entry.session
+        ));
+    }
 }
 
 /// Recompute one session's destination digest and message count against its
@@ -1095,8 +1242,9 @@ fn check_sources(
     // receipt whose pin disagrees with the record is a source error.
     let snapshot = match (receipt.kind(), receipt.provenance_boundary()) {
         (Some("supersession" | "delta-new"), Some(boundary)) => {
+            // Presence was already established by the always-on binding check;
+            // a missing pin here means it was already reported as uncovered.
             let Some(expected_record) = receipt.provenance_record_digest() else {
-                report.sources_uncovered.push(entry.session.clone());
                 return Ok(());
             };
             let record_path = campaign.boundary_record(boundary);

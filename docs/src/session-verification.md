@@ -74,13 +74,19 @@ that sanctions it:
   mapping. A variant receipt for a session the mapping does not sanction is
   `unexpected_receipts`, exactly like a canonical one.
 - **Delta-new** (`delta_expected`): `journal-v3/identity-delta.json` chains
-  onto the variant identity (`supersedesIdentityFile`/`variantIdentity` with
-  the variant file's SHA-256) and pins `deltaInventory` (path plus SHA-256
-  over the delta file). The pass verifies both hashes, reads
-  `deltaNew.ids` out of the pinned file, and sanctions exactly those
-  sessions. A delta file that no longer hashes to its pin is a hard
-  `Mapping` error, never a quiet fallback to no delta. Zero until the delta
-  identity lands.
+  onto the campaign's actual `journal-v3/identity-v3.json` — every chain
+  field present must name that file (not an arbitrary path) with the SHA-256
+  it still hashes to, and at least one must be present — and pins
+  `deltaInventory` (path plus SHA-256 over the delta file). The pass verifies
+  all hashes, requires the delta file's `status` be `final` (preliminary
+  inventories move as the stores grow and sanction nothing), requires its
+  `derivedFrom.reconciliation.sha256` equal the variant identity's
+  `reconciliationDigest`, and reads `deltaNew.ids` out of the pinned file,
+  rejecting duplicates and non-session ids. A delta without its variant
+  identity, a chain pointing elsewhere, a tampered file, a preliminary
+  status, a drifting reconciliation, or a duplicated id is a hard `Mapping`
+  error, never a quiet fallback to no delta. Zero until the delta identity
+  lands.
 
 All four set differences are computed against the **union** of the three
 pins. A receipt for a session none of them sanctions is still an error; the
@@ -170,12 +176,38 @@ Changed and delta-new sessions attest to frozen boundary snapshots, not to
 the work snapshots. Their `provenance` names the boundary, and
 `provenance.boundaryRecordSha256` binds the receipt to the exact record
 bytes: SHA-256 over the canonical-JSON stringification of the parsed
-boundary record, matching the merge driver's `digest(boundary)`. A
-`supersession` or `delta-new` receipt without that pin is `sources_uncovered`;
-a receipt whose pin disagrees with the record on disk is a `source_error`;
-only a receipt whose pin matches proceeds to source-digest recomputation
-against the snapshot the record names (whose own `snapshotSha256` is still
-verified against the file).
+boundary record, matching the merge driver's `digest(boundary)`. Binding is
+mandatory on every pass, with or without `--sources`: a `supersession` or
+`delta-new` receipt without that pin is `sources_uncovered`, and one naming
+an unknown boundary or a malformed digest is a `source_error`. Only a
+receipt whose pin is present and well-formed proceeds; under `--sources` its
+value is then compared to the record on disk (mismatch is a `source_error`)
+and its source digests are recomputed against the snapshot the record names.
+That record may carry a converted snapshot alongside the raw one: the raw
+file is the frozen bytes the holder gate cleared, while the converted file
+is the same bytes after the candidate backfilled `session_v2` rows into a
+copy (pinned separately because the copy diverges by design). Both hashes
+are verified when a converted snapshot is present, and recomputation reads
+the converted file — `inputDigest` attests to converted content, never to
+the raw bytes.
+
+### Tool closure and adoption
+
+`install` and `rollback` resolve their scripts out of the campaign's
+`tools.json` and verify the digest immediately before use. The pin is a
+closure, not a single entrypoint: every file listed is re-hashed on every
+resolution, and the requested tool's relative `./`/`../` imports must
+resolve to pinned files. A tampered transitive import or an unpinned import
+refuses to run.
+
+`adopt` pins a store as a digest-addressed input without writing to it. It
+refuses held stores (before hashing and after opening; an unreadable `/proc`
+is a scan failure, not a clear scan), refuses stores with `-wal`/`-shm`/
+`-journal` sidecars (adoption never checkpoints, so a store with sidecars is
+not frozen), requires `v2` stores to carry both `session_v2` and
+`session_message`, and refuses when the file's size or mtime moves between
+the hash and the read view — the hash, counts, and health checks must
+describe the same bytes.
 
 ### Variant re-key proofs (`--sources` only)
 

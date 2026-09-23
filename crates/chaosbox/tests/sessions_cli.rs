@@ -708,3 +708,160 @@ fn adopt_refuses_a_store_without_session_tables() {
     );
     drop(held);
 }
+
+// ---- adoption + tool-closure hardening (cutover readiness) ----
+
+/// A store with a WAL sidecar is not frozen: adoption refuses it rather than
+/// hashing the main file alone and describing a torn view.
+#[test]
+fn adopt_refuses_a_store_with_a_wal_sidecar() {
+    let (held, root) = fixture();
+    let campaign = root.parent().expect("parent").to_path_buf();
+    let campaign_arg = campaign.to_string_lossy().into_owned();
+    let db_arg = root.join("destination.db").to_string_lossy().into_owned();
+    fs::write(root.join("destination.db-wal"), b"uncheckpointed").expect("sidecar");
+
+    let output = run(&[
+        "sessions",
+        "adopt",
+        "--root",
+        &campaign_arg,
+        "--name",
+        "staging",
+        "--db",
+        &db_arg,
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        !campaign.join("adoption/staging.json").exists(),
+        "a refused adoption writes no record"
+    );
+    fs::remove_file(root.join("destination.db-wal")).expect("cleanup");
+    drop(held);
+}
+
+/// A v2 database without `session_message` is incomplete: adoption refuses it
+/// rather than recording a store whose message count is unknowable.
+#[test]
+fn adopt_refuses_a_v2_store_without_messages() {
+    let (held, root) = fixture();
+    let campaign = root.parent().expect("parent").to_path_buf();
+    let campaign_arg = campaign.to_string_lossy().into_owned();
+    let partial = campaign.join("partial-v2.db");
+    let connection = Connection::open(&partial).expect("partial");
+    connection
+        .execute_batch("CREATE TABLE session_v2 (id TEXT PRIMARY KEY, time INTEGER);")
+        .expect("schema");
+    drop(connection);
+    let db_arg = partial.to_string_lossy().into_owned();
+
+    let output = run(&[
+        "sessions",
+        "adopt",
+        "--root",
+        &campaign_arg,
+        "--name",
+        "staging",
+        "--db",
+        &db_arg,
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        !campaign.join("adoption/staging.json").exists(),
+        "a refused adoption writes no record"
+    );
+    drop(held);
+}
+
+/// A pinned tool importing an unpinned relative file is refused: the pin is a
+/// closure, not a single entrypoint.
+#[test]
+fn install_refuses_an_unpinned_import() {
+    let campaign = tempfile::tempdir().expect("temp directory");
+    let tools = campaign.path().join("tools");
+    fs::create_dir_all(&tools).expect("tools");
+    let script = tools.join("install.mjs");
+    fs::write(
+        &script,
+        "import { x } from './unpinned.mjs';\nconsole.log(x);\n",
+    )
+    .expect("script");
+    fs::write(tools.join("unpinned.mjs"), "export const x = 1;\n").expect("dep");
+    let digest = sha256_file(&script);
+    fs::write(
+        campaign.path().join("tools.json"),
+        serde_json::to_string(&json!({
+            "tools": { "install.mjs": {
+                "path": script.to_string_lossy(),
+                "sha256": digest,
+            } },
+        }))
+        .expect("pins serialize"),
+    )
+    .expect("pins");
+    let campaign_arg = campaign.path().to_string_lossy().into_owned();
+
+    let output = run(&[
+        "sessions",
+        "install",
+        "--root",
+        &campaign_arg,
+        "--dir",
+        "/target",
+        "--source",
+        "/staged.db",
+        "--state",
+        "/state.json",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not pinned"), "unexpected stderr: {stderr}");
+}
+
+/// A tampered transitive import fails even when the entrypoint is untouched.
+#[test]
+fn install_refuses_a_tampered_transitive_import() {
+    let campaign = tempfile::tempdir().expect("temp directory");
+    let tools = campaign.path().join("tools");
+    fs::create_dir_all(&tools).expect("tools");
+    let script = tools.join("install.mjs");
+    fs::write(&script, "import { x } from './lib.mjs';\nconsole.log(x);\n").expect("script");
+    let dep = tools.join("lib.mjs");
+    fs::write(&dep, "export const x = 1;\n").expect("dep");
+    let script_digest = sha256_file(&script);
+    fs::write(
+        campaign.path().join("tools.json"),
+        serde_json::to_string(&json!({
+            "tools": {
+                "install.mjs": { "path": script.to_string_lossy(), "sha256": script_digest },
+                "lib.mjs": { "path": dep.to_string_lossy(), "sha256": "0".repeat(64) },
+            },
+        }))
+        .expect("pins serialize"),
+    )
+    .expect("pins");
+    let campaign_arg = campaign.path().to_string_lossy().into_owned();
+
+    let output = run(&[
+        "sessions",
+        "install",
+        "--root",
+        &campaign_arg,
+        "--dir",
+        "/target",
+        "--source",
+        "/staged.db",
+        "--state",
+        "/state.json",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("refusing to run"),
+        "unexpected stderr: {stderr}"
+    );
+}

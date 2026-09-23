@@ -157,7 +157,22 @@ pub fn adopt(options: &AdoptOptions) -> Result<serde_json::Value, AdoptError> {
         return Err(refuse(&options.db, "writers still hold the store"));
     }
 
-    let metadata = fs::metadata(&options.db).map_err(|source| AdoptError::Io {
+    // Explicit WAL handling: adoption never checkpoints (that would write to
+    // the source), so a store with sidecars is not frozen and is refused.
+    // The holder gate already excludes live writers, but a crashed writer can
+    // leave a `-wal` behind; hashing the main file alone would then describe
+    // a torn view.
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let sidecar = format!("{}{suffix}", options.db.display());
+        if fs::metadata(&sidecar).is_ok() {
+            return Err(refuse(
+                &options.db,
+                "sidecar present: store is not checkpointed",
+            ));
+        }
+    }
+
+    let metadata_before = fs::metadata(&options.db).map_err(|source| AdoptError::Io {
         context: format!("cannot stat {}", options.db.display()),
         source,
     })?;
@@ -188,12 +203,29 @@ pub fn adopt(options: &AdoptOptions) -> Result<serde_json::Value, AdoptError> {
     if schema.marker != "v1" && schema.marker != "v2" {
         return Err(refuse(&options.db, "schema marker is unrecognized"));
     }
+    // A v2 store must carry both v2 tables: the marker alone would certify an
+    // empty or partial database as a healthy store with no rows.
+    if schema.marker == "v2" && counts.messages.is_none() {
+        return Err(refuse(&options.db, "v2 store has no session_message table"));
+    }
     let holders = holders_of(&options.db).map_err(|source| AdoptError::Io {
         context: format!("cannot re-scan holders of {}", options.db.display()),
         source,
     })?;
     if !holders.is_empty() && !options.allow_held {
         return Err(refuse(&options.db, "writers still hold the store"));
+    }
+    // The hash, counts, and health checks must describe the same bytes: a
+    // writer that raced the adoption changes size or mtime between the two
+    // stats, and the record is refused rather than pinning a torn view.
+    let metadata = fs::metadata(&options.db).map_err(|source| AdoptError::Io {
+        context: format!("cannot re-stat {}", options.db.display()),
+        source,
+    })?;
+    if metadata.len() != metadata_before.len()
+        || metadata.modified().ok() != metadata_before.modified().ok()
+    {
+        return Err(refuse(&options.db, "store changed during adoption"));
     }
 
     let record = AdoptionRecord {
