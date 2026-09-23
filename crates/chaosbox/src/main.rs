@@ -23,6 +23,7 @@ use chaosbox_typedb::{
     store::{TypeDbConfig, TypeDbStore},
 };
 use clap::{Parser, Subcommand};
+mod transcribe;
 
 mod backend_cmd;
 mod mcp_server;
@@ -50,6 +51,13 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Transcribe audio/video using the bundled Canscribe engine.
+    #[command(disable_help_flag = true)]
+    Transcribe {
+        /// Arguments forwarded unchanged; use --help for engine options.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
     /// Extract, assess and retrieve selective session intelligence.
     Intelligence {
         #[command(subcommand)]
@@ -201,6 +209,13 @@ enum DbCmd {
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
+        Command::Transcribe { args } => match transcribe::run(&args) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("cannot start transcription engine: {error}; install python/canscribe or set CHAOSBOX_CANSCRIBE_BIN");
+                std::process::exit(1);
+            }
+        },
         Command::Intelligence { command } => {
             match chaosbox::intelligence::cli::run(command).await {
                 Ok(value) => println!("{value}"),
