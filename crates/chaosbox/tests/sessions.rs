@@ -9,6 +9,11 @@
 //! hold, that every way those can fail is a hard failure rather than a
 //! silently wrong answer, and that the CLI's exit codes follow from that.
 
+//! `held` (the temp-dir guard) and `head` (the chain head receipt) differ by
+//! one letter but are distinct concepts used consistently across every
+//! fixture; renaming either would hurt readability for no correctness gain.
+#![allow(clippy::similar_names)]
+
 use std::{
     fmt::Write as _,
     fs,
@@ -18,7 +23,7 @@ use std::{
 use chaosbox::sessions::{
     campaign::{Campaign, CampaignError, Receipt},
     cli::{self, Command},
-    digest::{recovered_hash, session_digest},
+    digest::{canonical_json_digest, recovered_hash, session_digest},
     remap::{
         is_native_message_shape, is_native_session_shape, variant_message_id, variant_session_id,
     },
@@ -2183,14 +2188,15 @@ fn a_supersession_receipt_verifies_against_its_boundary_snapshot() {
     // Boundary record at the conventional path.
     let record_dir = parent.join("boundaries");
     fs::create_dir_all(&record_dir).expect("boundaries");
+    let record_body = json!({
+        "boundary": "v1",
+        "snapshot": boundary_db.to_string_lossy(),
+        "snapshotSha256": boundary_digest,
+    });
+    let record_digest = canonical_json_digest(&record_body);
     fs::write(
         record_dir.join("v1.json"),
-        serde_json::to_string(&json!({
-            "boundary": "v1",
-            "snapshot": boundary_db.to_string_lossy(),
-            "snapshotSha256": boundary_digest,
-        }))
-        .expect("record serializes"),
+        serde_json::to_string(&record_body).expect("record serializes"),
     )
     .expect("record");
 
@@ -2223,7 +2229,7 @@ fn a_supersession_receipt_verifies_against_its_boundary_snapshot() {
     head["kind"] = json!("supersession");
     head["inputDigest"] = json!(input);
     head["recoveryDigest"] = json!(recovery_digest);
-    head["provenance"] = json!({ "boundary": "v1" });
+    head["provenance"] = json!({ "boundary": "v1", "boundaryRecordSha256": record_digest });
     write_receipt(&root, "journal-v3", "ses_fixture01.json", &head);
     declare(&root, &[SESSION]);
 
@@ -2264,7 +2270,17 @@ fn an_unresolvable_boundary_is_a_source_error() {
         "journal-v2/ses_fixture01.json",
     );
     head["kind"] = json!("supersession");
-    head["provenance"] = json!({ "boundary": "v1" });
+    // Pin a digest for a record that was never written: the pass must fail
+    // resolving the boundary, not skip the session silently.
+    let record_body = json!({
+        "boundary": "v1",
+        "snapshot": "/nonexistent.db",
+        "snapshotSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    });
+    head["provenance"] = json!({
+        "boundary": "v1",
+        "boundaryRecordSha256": canonical_json_digest(&record_body),
+    });
     write_receipt(&root, "journal-v3", "ses_fixture01.json", &head);
     declare(&root, &[SESSION]);
 
@@ -2280,5 +2296,323 @@ fn an_unresolvable_boundary_is_a_source_error() {
 
     assert_eq!(report.source_errors.len(), 1);
     assert!(!report.clean());
+    drop(held);
+}
+
+/// A supersession receipt without `boundaryRecordSha256` is uncovered, not
+/// silently skipped: the pass cannot bind it to any record bytes.
+#[test]
+fn a_supersession_without_a_boundary_digest_is_uncovered() {
+    let (held, root) = fixture();
+    build_sources(&root, true);
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, "stale"),
+    );
+    let mut head = superseding(
+        SESSION,
+        &recorded_digest(&root),
+        "journal-v2/ses_fixture01.json",
+    );
+    head["kind"] = json!("supersession");
+    head["provenance"] = json!({ "boundary": "v1" });
+    write_receipt(&root, "journal-v3", "ses_fixture01.json", &head);
+    declare(&root, &[SESSION]);
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let report = verify(
+        &campaign,
+        &VerifyOptions {
+            sources: true,
+            ..every_receipt()
+        },
+    )
+    .expect("report still produced");
+
+    assert_eq!(report.sources_uncovered, vec![SESSION.to_string()]);
+    assert!(!report.clean());
+    drop(held);
+}
+
+/// A supersession whose `boundaryRecordSha256` disagrees with the record on
+/// disk is a source error, even when the snapshot it names would otherwise
+/// resolve.
+#[test]
+fn a_wrong_boundary_digest_is_a_source_error() {
+    use sha2::Digest as _;
+    let (held, root) = fixture();
+    let parent = root.parent().expect("parent").to_path_buf();
+    build_sources(&root, true);
+
+    let boundary_dir = parent.join("snapshots");
+    fs::create_dir_all(&boundary_dir).expect("snapshots");
+    let boundary_db = boundary_dir.join("v1boundary.db");
+    let connection = Connection::open(&boundary_db).expect("boundary");
+    connection
+        .execute_batch(
+            "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, time INTEGER);
+             CREATE TABLE session_message (session_id TEXT, seq INTEGER, id TEXT);
+             INSERT INTO session_v2 VALUES ('ses_fixture01', 1790166653727);
+             INSERT INTO session_message VALUES ('ses_fixture01', 1, 'msg_new');",
+        )
+        .expect("boundary rows");
+    drop(connection);
+    let boundary_bytes = fs::read(&boundary_db).expect("boundary bytes");
+    let mut hasher = Sha256::new();
+    hasher.update(&boundary_bytes);
+    let mut boundary_digest = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        write!(boundary_digest, "{byte:02x}").expect("hex");
+    }
+
+    let record_dir = parent.join("boundaries");
+    fs::create_dir_all(&record_dir).expect("boundaries");
+    let record_body = json!({
+        "boundary": "v1",
+        "snapshot": boundary_db.to_string_lossy(),
+        "snapshotSha256": boundary_digest,
+    });
+    fs::write(
+        record_dir.join("v1.json"),
+        serde_json::to_string(&record_body).expect("record serializes"),
+    )
+    .expect("record");
+
+    let boundary_connection =
+        Connection::open_with_flags(&boundary_db, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .expect("boundary");
+    let input = session_digest(&boundary_connection, SESSION)
+        .expect("boundary digest")
+        .digest;
+    drop(boundary_connection);
+    let recovery_connection = Connection::open_with_flags(
+        parent.join("recovered-rows.db"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("recovery");
+    let recovery_digest = recovered_hash(&recovery_connection, SESSION).expect("recovery digest");
+    drop(recovery_connection);
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, "stale"),
+    );
+    let mut head = superseding(
+        SESSION,
+        &recorded_digest(&root),
+        "journal-v2/ses_fixture01.json",
+    );
+    head["kind"] = json!("supersession");
+    head["inputDigest"] = json!(input);
+    head["recoveryDigest"] = json!(recovery_digest);
+    head["provenance"] = json!({
+        "boundary": "v1",
+        "boundaryRecordSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    });
+    write_receipt(&root, "journal-v3", "ses_fixture01.json", &head);
+    declare(&root, &[SESSION]);
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let report = verify(
+        &campaign,
+        &VerifyOptions {
+            sources: true,
+            ..every_receipt()
+        },
+    )
+    .expect("report still produced");
+
+    assert_eq!(report.source_errors.len(), 1);
+    assert!(!report.clean());
+    drop(held);
+}
+
+/// `canonical_json_digest` matches the merge driver's `digest(boundary)`:
+/// key order and whitespace never perturb the pin.
+#[test]
+fn canonical_json_digest_matches_the_js_driver() {
+    // `digest({boundary:"v1",snapshot:"/snap/v1.db",snapshotSha256:"abc123"})`
+    // from `tools/history-transfer-support.mjs`.
+    let ordered = json!({
+        "boundary": "v1",
+        "snapshot": "/snap/v1.db",
+        "snapshotSha256": "abc123",
+    });
+    let shuffled = json!({
+        "snapshotSha256": "abc123",
+        "snapshot": "/snap/v1.db",
+        "boundary": "v1",
+    });
+    assert_eq!(
+        canonical_json_digest(&ordered),
+        "34e54fd13cca5df13736c6a74df2a57c5be0d1fdc6acc0c8a030cb3cfa3e1b71"
+    );
+    assert_eq!(
+        canonical_json_digest(&ordered),
+        canonical_json_digest(&shuffled)
+    );
+    assert!(chaosbox::sessions::campaign::is_digest(
+        &canonical_json_digest(&ordered)
+    ));
+}
+
+/// Write a minimal variant identity plus a delta inventory sanctioning `ids`,
+/// chained through `journal-v3/identity-delta.json`. Returns the delta file's
+/// sha for assertions. The variant identity content is unattested here — the
+/// chain check only binds bytes — so a stub file is enough for inventory
+/// tests; variant receipt proofs stay covered by their own suite.
+fn write_delta_pin(root: &Path, ids: &[&str]) -> String {
+    use sha2::Digest as _;
+    let parent = root.parent().expect("parent").to_path_buf();
+
+    let variant_path = parent.join("variant-identity.json");
+    fs::write(&variant_path, r#"{"version":3,"journal":"journal-v3"}"#).expect("variant identity");
+    let variant_bytes = fs::read(&variant_path).expect("variant bytes");
+    let mut hasher = Sha256::new();
+    hasher.update(&variant_bytes);
+    let mut variant_sha = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        write!(variant_sha, "{byte:02x}").expect("hex");
+    }
+
+    let delta_path = parent.join("delta-inventory.json");
+    let delta_body = json!({
+        "version": 1,
+        "status": "final",
+        "deltaNew": { "ids": ids },
+    });
+    fs::write(
+        &delta_path,
+        serde_json::to_string(&delta_body).expect("delta serializes"),
+    )
+    .expect("delta");
+    let delta_bytes = fs::read(&delta_path).expect("delta bytes");
+    let mut hasher = Sha256::new();
+    hasher.update(&delta_bytes);
+    let mut delta_sha = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        write!(delta_sha, "{byte:02x}").expect("hex");
+    }
+
+    let identity = json!({
+        "version": 3,
+        "journal": "journal-v3",
+        "supersedesIdentityFile": { "path": variant_path.to_string_lossy(), "sha256": variant_sha },
+        "variantIdentity": { "path": variant_path.to_string_lossy(), "sha256": variant_sha },
+        "deltaInventory": { "path": delta_path.to_string_lossy(), "sha256": delta_sha },
+    });
+    write_receipt(root, "journal-v3", "identity-delta.json", &identity);
+    delta_sha
+}
+
+/// A delta-new receipt for `session` attesting to the destination's current
+/// digest, so inventory tests can focus on the pin rather than the hash.
+fn delta_new_receipt(root: &Path, session: &str) -> Value {
+    let digest = digest_for(root, session);
+    json!({
+        "sessionID": session,
+        "source": "primary",
+        "kind": "delta-new",
+        "destinationDigest": digest.clone(),
+        "inputDigest": digest.clone(),
+        "recoveryDigest": digest,
+        "messages": 1,
+        "transformation": "interrupted-draft-v1",
+        "drafts": 0,
+    })
+}
+
+/// The pinned delta inventory joins the canonical inventory: a delta-new
+/// session the mapping sanctions reconciles instead of reading as unexpected.
+#[test]
+fn a_pinned_delta_inventory_sanctions_delta_new_receipts() {
+    let (held, root) = fixture();
+    add_session(&root, OTHER);
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, &recorded_digest(&root)),
+    );
+    write_receipt(
+        &root,
+        "journal-v3",
+        "ses_fixture02.json",
+        &delta_new_receipt(&root, OTHER),
+    );
+    declare(&root, &[SESSION]);
+    write_delta_pin(&root, &[OTHER]);
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let report = verify(&campaign, &every_receipt()).expect("verifies");
+
+    assert_eq!(report.inventory.delta_expected, 1);
+    assert!(
+        report.inventory.unexpected_receipts.is_empty(),
+        "{report:?}"
+    );
+    assert!(report.inventory.missing_receipts.is_empty(), "{report:?}");
+    assert!(report.clean(), "{report:?}");
+    drop(held);
+}
+
+/// A delta-new receipt without a pinned delta inventory stays unexpected:
+/// the union never invents sanction it was not given.
+#[test]
+fn a_delta_new_receipt_without_a_pin_is_unexpected() {
+    let (held, root) = fixture();
+    add_session(&root, OTHER);
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, &recorded_digest(&root)),
+    );
+    write_receipt(
+        &root,
+        "journal-v3",
+        "ses_fixture02.json",
+        &delta_new_receipt(&root, OTHER),
+    );
+    declare(&root, &[SESSION]);
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let report = verify(&campaign, &every_receipt()).expect("verifies");
+
+    assert_eq!(report.inventory.delta_expected, 0);
+    assert_eq!(
+        report.inventory.unexpected_receipts,
+        vec![OTHER.to_string()]
+    );
+    assert!(!report.clean());
+    drop(held);
+}
+
+/// A delta inventory whose bytes no longer hash to the pinned digest is a
+/// hard error, never a quiet fallback to no delta.
+#[test]
+fn a_tampered_delta_inventory_is_a_hard_error() {
+    let (held, root) = fixture();
+    declare(&root, &[SESSION]);
+    write_receipt(
+        &root,
+        "journal-v2",
+        "ses_fixture01.json",
+        &receipt(SESSION, &recorded_digest(&root)),
+    );
+    write_delta_pin(&root, &[OTHER]);
+
+    let parent = root.parent().expect("parent").to_path_buf();
+    fs::write(parent.join("delta-inventory.json"), r#"{"tampered":true}"#).expect("tamper");
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let error = verify(&campaign, &every_receipt()).expect_err("must fail");
+    assert!(
+        matches!(error, VerifyError::Mapping { .. }),
+        "unexpected error: {error}"
+    );
     drop(held);
 }

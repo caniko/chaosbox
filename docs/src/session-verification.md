@@ -73,8 +73,13 @@ that sanctions it:
   recomputes that digest and reads the sanctioned session ids out of the
   mapping. A variant receipt for a session the mapping does not sanction is
   `unexpected_receipts`, exactly like a canonical one.
-- **Delta-new** (`delta_expected`): the pinned delta inventory sanctions
-  imported sessions the canonical run never saw. Zero until the delta
+- **Delta-new** (`delta_expected`): `journal-v3/identity-delta.json` chains
+  onto the variant identity (`supersedesIdentityFile`/`variantIdentity` with
+  the variant file's SHA-256) and pins `deltaInventory` (path plus SHA-256
+  over the delta file). The pass verifies both hashes, reads
+  `deltaNew.ids` out of the pinned file, and sanctions exactly those
+  sessions. A delta file that no longer hashes to its pin is a hard
+  `Mapping` error, never a quiet fallback to no delta. Zero until the delta
   identity lands.
 
 All four set differences are computed against the **union** of the three
@@ -160,6 +165,17 @@ against that session, not the attested one. There is still no mapping table:
 a session is either present under the id the receipt names or absent, which
 is what makes `missing`, `source_errors`, and `absent_destination`
 meaningful as three separate outcomes.
+
+Changed and delta-new sessions attest to frozen boundary snapshots, not to
+the work snapshots. Their `provenance` names the boundary, and
+`provenance.boundaryRecordSha256` binds the receipt to the exact record
+bytes: SHA-256 over the canonical-JSON stringification of the parsed
+boundary record, matching the merge driver's `digest(boundary)`. A
+`supersession` or `delta-new` receipt without that pin is `sources_uncovered`;
+a receipt whose pin disagrees with the record on disk is a `source_error`;
+only a receipt whose pin matches proceeds to source-digest recomputation
+against the snapshot the record names (whose own `snapshotSha256` is still
+verified against the file).
 
 ### Variant re-key proofs (`--sources` only)
 

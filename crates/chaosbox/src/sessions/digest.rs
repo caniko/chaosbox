@@ -383,6 +383,87 @@ fn hex(bytes: &[u8]) -> String {
     out
 }
 
+/// Canonical JSON string matching `history-transfer-support.mjs` `canonical`
+/// plus `JSON.stringify`: object keys sorted recursively at every level,
+/// strings escaped exactly as `JSON.stringify` does.
+///
+/// Used for `boundaryRecordSha256`: the merge driver writes
+/// `digest(boundary)`, where `boundary` is the parsed boundary-record JSON.
+/// Verifying that digest binds a receipt to the exact record bytes (modulo
+/// key order and whitespace), independent of how the file was pretty-printed.
+#[must_use]
+pub fn canonical_json_string(value: &serde_json::Value) -> String {
+    let mut out = String::new();
+    encode_canonical(value, &mut out);
+    out
+}
+
+/// SHA-256 hex over [`canonical_json_string`], matching Node's
+/// `digest(value)`.
+#[must_use]
+pub fn canonical_json_digest(value: &serde_json::Value) -> String {
+    use sha2::Digest as _;
+    let mut hasher = Sha256::new();
+    hasher.update(canonical_json_string(value).as_bytes());
+    hex(&hasher.finalize())
+}
+
+/// One canonical JSON value into the buffer.
+fn encode_canonical(value: &serde_json::Value, out: &mut String) {
+    match value {
+        serde_json::Value::Null => out.push_str("null"),
+        serde_json::Value::Bool(true) => out.push_str("true"),
+        serde_json::Value::Bool(false) => out.push_str("false"),
+        serde_json::Value::Number(number) => {
+            if let Some(integer) = number.as_i64() {
+                encode_integer(integer, out);
+            } else if let Some(unsigned) = number.as_u64() {
+                encode_canonical_u64(unsigned, out);
+            } else if let Some(real) = number.as_f64() {
+                out.push_str(&encode_js_real(real));
+            } else {
+                out.push_str(&number.to_string());
+            }
+        }
+        serde_json::Value::String(text) => encode_text(text, out),
+        serde_json::Value::Array(items) => {
+            out.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                encode_canonical(item, out);
+            }
+            out.push(']');
+        }
+        serde_json::Value::Object(map) => {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            out.push('{');
+            for (index, key) in keys.iter().enumerate() {
+                if index > 0 {
+                    out.push(',');
+                }
+                encode_text(key, out);
+                out.push(':');
+                encode_canonical(&map[*key], out);
+            }
+            out.push('}');
+        }
+    }
+}
+
+/// Unsigned integers: exact while they fit in a JavaScript number, otherwise
+/// the rounded `f64` rendering `JSON.stringify` saw.
+#[allow(clippy::cast_precision_loss)]
+fn encode_canonical_u64(value: u64, out: &mut String) {
+    if value <= JS_MAX_SAFE_INTEGER as u64 {
+        out.push_str(&value.to_string());
+    } else {
+        out.push_str(&encode_js_real(value as f64));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

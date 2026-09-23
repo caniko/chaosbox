@@ -145,6 +145,18 @@ pub fn adopt(options: &AdoptOptions) -> Result<serde_json::Value, AdoptError> {
             .map_err(|_| AdoptError::MissingRoot)?,
     };
 
+    // Holders first: hashing a live database races the writer, so a store
+    // that is held — or whose holder scan cannot run — is refused before any
+    // byte is read. The scan is repeated after opening, so a writer that
+    // arrives between the hash and the read view is still caught.
+    let holders_before = holders_of(&options.db).map_err(|source| AdoptError::Io {
+        context: format!("cannot scan holders of {}", options.db.display()),
+        source,
+    })?;
+    if !holders_before.is_empty() && !options.allow_held {
+        return Err(refuse(&options.db, "writers still hold the store"));
+    }
+
     let metadata = fs::metadata(&options.db).map_err(|source| AdoptError::Io {
         context: format!("cannot stat {}", options.db.display()),
         source,
@@ -176,7 +188,10 @@ pub fn adopt(options: &AdoptOptions) -> Result<serde_json::Value, AdoptError> {
     if schema.marker != "v1" && schema.marker != "v2" {
         return Err(refuse(&options.db, "schema marker is unrecognized"));
     }
-    let holders = holders_of(&options.db);
+    let holders = holders_of(&options.db).map_err(|source| AdoptError::Io {
+        context: format!("cannot re-scan holders of {}", options.db.display()),
+        source,
+    })?;
     if !holders.is_empty() && !options.allow_held {
         return Err(refuse(&options.db, "writers still hold the store"));
     }
@@ -295,8 +310,9 @@ fn hex(nibble: u8) -> char {
 }
 
 /// Schema marker, table-set fingerprint, and user version from a read-only
-/// handle. Mirrors the cutover tooling's `schemaInfo`, which the install
-/// preconditions compare against.
+/// handle. Mirrors the cutover tooling's `schemaInfo`, with one hardening:
+/// `v2` requires the `session_v2` table to be present, so an empty or
+/// unrelated database is `unrecognized` rather than a v2 store with no rows.
 fn schema_info(connection: &Connection) -> Result<SchemaRecord, rusqlite::Error> {
     let mut statement =
         connection.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")?;
@@ -310,7 +326,7 @@ fn schema_info(connection: &Connection) -> Result<SchemaRecord, rusqlite::Error>
         .count();
     let marker = if v1_count == V1_ONLY_TABLES.len() {
         "v1"
-    } else if v1_count == 0 {
+    } else if v1_count == 0 && present.contains("session_v2") {
         "v2"
     } else {
         "unrecognized"
@@ -366,15 +382,16 @@ fn health(connection: &Connection) -> Result<HealthRecord, rusqlite::Error> {
 
 /// Every `(pid, fd)` still holding the database or one of its sidecars.
 /// The gate is a `/proc` scan, not an assumption that a stopped unit wrote
-/// nothing; an unreadable `/proc` reads as no holders rather than failing
-/// the adoption.
-fn holders_of(database: &Path) -> Vec<(u32, u64)> {
+/// nothing. An unreadable `/proc` is a scan failure, not a clear scan:
+/// adoption refuses rather than certifying a store it could not inspect.
+/// Per-process fd directories that cannot be read are skipped — the process
+/// exited or is not ours to read — but the top-level `/proc` itself must be
+/// listable, or nothing about holders is known.
+fn holders_of(database: &Path) -> std::io::Result<Vec<(u32, u64)>> {
     let target = database.to_string_lossy().into_owned();
     let sidecar = format!("{target}-");
     let mut found = Vec::new();
-    let Ok(processes) = fs::read_dir("/proc") else {
-        return found;
-    };
+    let processes = fs::read_dir("/proc")?;
     for process in processes.flatten() {
         let pid: u32 = match process.file_name().to_string_lossy().parse() {
             Ok(pid) => pid,
@@ -398,7 +415,7 @@ fn holders_of(database: &Path) -> Vec<(u32, u64)> {
             }
         }
     }
-    found
+    Ok(found)
 }
 
 /// Lowercase hex over a digest.

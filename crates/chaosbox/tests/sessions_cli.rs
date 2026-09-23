@@ -674,3 +674,37 @@ fn sha256_file(path: &Path) -> String {
     }
     format!("{:x}", hasher.finalize())
 }
+
+/// A database with no session tables is not a v2 store: adoption refuses it
+/// rather than certifying an empty schema as healthy.
+#[test]
+fn adopt_refuses_a_store_without_session_tables() {
+    let (held, root) = fixture();
+    let campaign = root.parent().expect("parent").to_path_buf();
+    let campaign_arg = campaign.to_string_lossy().into_owned();
+    let empty = campaign.join("empty.db");
+    let connection = Connection::open(&empty).expect("empty");
+    connection
+        .execute_batch("CREATE TABLE unrelated (id TEXT PRIMARY KEY);")
+        .expect("schema");
+    drop(connection);
+    let db_arg = empty.to_string_lossy().into_owned();
+
+    let output = run(&[
+        "sessions",
+        "adopt",
+        "--root",
+        &campaign_arg,
+        "--name",
+        "staging",
+        "--db",
+        &db_arg,
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        !campaign.join("adoption/staging.json").exists(),
+        "a refused adoption writes no record"
+    );
+    drop(held);
+}
