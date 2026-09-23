@@ -116,6 +116,22 @@ impl AnyReader {
         }
     }
 
+    /// Pinned build status for status responses.
+    fn status(&self) -> &str {
+        match self {
+            Self::Gel(r) => &r.status,
+            Self::Typedb(r) => &r.status,
+        }
+    }
+
+    /// Pinned snapshot ids (freshness fingerprint) for status responses.
+    fn snapshots(&self) -> &[String] {
+        match self {
+            Self::Gel(r) => &r.snapshots,
+            Self::Typedb(r) => &r.snapshots,
+        }
+    }
+
     async fn search(
         &self,
         query: &str,
@@ -371,11 +387,13 @@ async fn main() {
             repo,
             max_candidates,
         } => match Pipeline::<MemoryStore>::snapshot_extract(&repo, &path, max_candidates) {
-            Ok((snap, ext, cands)) => println!(
-                r#"{{"snapshot":"{}","entities":{},"candidates":{}}}"#,
+            Ok((snap, ext, cat)) => println!(
+                r#"{{"snapshot":"{}","entities":{},"candidates":{},"selected":{},"omitted":{}}}"#,
                 snap.id,
                 ext.entities.len(),
-                cands.len()
+                cat.candidates.len(),
+                cat.selected.values().sum::<u64>(),
+                serde_json::to_string(&cat.omitted).unwrap(),
             ),
             Err(e) => {
                 eprintln!("extract failed: {e}");
@@ -727,6 +745,8 @@ async fn run_query(q: QueryCmd) -> i32 {
                 serde_json::to_string(&serde_json::json!({
                     "repo": repo, "build_id": reader.build_id(),
                     "generation": reader.generation(),
+                    "status": reader.status(),
+                    "snapshots": reader.snapshots(),
                     "export_caps": {"nodes": EXPORT_NODE_CAP, "edges": EXPORT_EDGE_CAP},
                 }))
                 .unwrap()
@@ -753,13 +773,22 @@ async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
     max_retries: Option<u32>,
     expected_predecessor: Option<String>,
 ) -> i32 {
-    let (snap, ext, cands) = match Pipeline::<S>::snapshot_extract(repo, path, max_candidates) {
+    let (snap, ext, cat) = match Pipeline::<S>::snapshot_extract(repo, path, max_candidates) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("extract: {e}");
             return 1;
         }
     };
+    let cands = &cat.candidates;
+    // Truncation must be observable: report what the cap selected and
+    // omitted before any decision is made.
+    eprintln!(
+        "candidates: selected={} cap={} omitted={}",
+        cands.len(),
+        cat.cap,
+        serde_json::to_string(&cat.omitted).unwrap(),
+    );
     let entities: BTreeMap<_, _> = ext
         .entities
         .iter()
@@ -777,9 +806,9 @@ async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
     }
     // Mint deterministic run/set identity and register the candidate catalog
     // before any decision references it.
-    let catalog = chaosbox_core::catalog_digest(&cands);
+    let digest = chaosbox_core::catalog_digest(cands);
     let run_id = chaosbox_core::deterministic_id("run", &[repo, &snap.id]);
-    let set_id = chaosbox_core::deterministic_id("set", &[&run_id, &catalog, &mat.rubric_version]);
+    let set_id = chaosbox_core::deterministic_id("set", &[&run_id, &digest, &mat.rubric_version]);
     if let Err(e) = pipe
         .store
         .ensure_run(
@@ -787,7 +816,7 @@ async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
             repo,
             &snap.id,
             &set_id,
-            &catalog,
+            &digest,
             &mat.rubric_version,
         )
         .await
@@ -795,7 +824,7 @@ async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
         eprintln!("run identity: {e}");
         return 1;
     }
-    for cand in &cands {
+    for cand in cands {
         if let Err(e) = pipe.store.put_candidate(&set_id, cand).await {
             eprintln!("candidate: {e}");
             return 1;
@@ -822,6 +851,33 @@ async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
         if let Some(n) = max_retries {
             policy.max_retries = n;
         }
+        // Budget preflight: one uncached candidate costs one Jev request.
+        // Fail before spending anything when the budget cannot cover this
+        // run (defaults: 200 candidates vs 100 requests), instead of
+        // burning the budget and dying at publish on Failed decisions.
+        let pending = match chaosbox::uncached_decisions(
+            cands,
+            &entities,
+            chaosbox_jev::JEV_MODEL_PINNED,
+            &mat,
+            &pipe.store,
+        )
+        .await
+        {
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("budget preflight: {e}");
+                return 1;
+            }
+        };
+        let max_requests = usize::try_from(policy.max_requests).unwrap_or(usize::MAX);
+        if pending > max_requests {
+            eprintln!(
+                "live-jev budget: {pending} uncached candidates need one request each but max_requests={}; raise --max-requests or lower --max-candidates (already-cached decisions do not count)",
+                policy.max_requests
+            );
+            return 1;
+        }
         let client = match chaosbox_jev::JevClient::new(policy) {
             Ok(c) => c,
             Err(e) => {
@@ -831,7 +887,7 @@ async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
         };
         let mut responder = LiveResponder::new(client);
         match Pipeline::<S>::decide(
-            &cands,
+            cands,
             &entities,
             &mut responder,
             chaosbox_jev::JEV_MODEL_PINNED,
@@ -857,7 +913,7 @@ async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
         // Fixture decisions must never masquerade as Jev model output.
         responder.model = "fixture-test".into();
         match Pipeline::<S>::decide(
-            &cands,
+            cands,
             &entities,
             &mut responder,
             "fixture-test",
@@ -1257,6 +1313,8 @@ async fn mcp_call_tool(
             }
             "status" => Ok(serde_json::json!({
                 "repo": repo, "build_id": reader.build_id(), "generation": reader.generation(),
+                "status": reader.status(), "snapshots": reader.snapshots(),
+                "export_caps": {"nodes": EXPORT_NODE_CAP, "edges": EXPORT_EDGE_CAP},
             })),
             "diff" => {
                 let from = args["from_build"].as_str().unwrap_or_default();

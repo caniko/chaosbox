@@ -275,6 +275,13 @@ pub struct BuildRow {
     pub generation: i64,
     /// `staging` or `active`.
     pub status: String,
+    /// Snapshot ids pinned by this build (freshness fingerprint), sorted
+    /// for deterministic reporting. The `TypeDB` and in-memory backends fill
+    /// it; the superseded Gel runtime's `ACTIVE_BUILD` projection predates
+    /// this field, so Gel reads default to an empty list rather than an
+    /// unverified query change.
+    #[serde(default)]
+    pub snapshots: Vec<String>,
 }
 
 /// Relationship row with endpoint ids.
@@ -1273,10 +1280,15 @@ impl GelQueries for MemoryReader {
             .active
             .get(repo)
             .and_then(|id| self.builds.get(id))
-            .map(|b| BuildRow {
-                build_id: b.id.clone(),
-                generation: i64::try_from(b.generation).expect("generation fits in i64"),
-                status: "active".to_owned(),
+            .map(|b| {
+                let mut snapshots = b.snapshot_ids.clone();
+                snapshots.sort();
+                BuildRow {
+                    build_id: b.id.clone(),
+                    generation: i64::try_from(b.generation).expect("generation fits in i64"),
+                    status: "active".to_owned(),
+                    snapshots,
+                }
             }))
     }
 

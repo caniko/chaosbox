@@ -3,15 +3,20 @@
 //! a real server.
 //!
 //! Requires a reachable `TypeDB` server: address from `TYPEDB_ADDR`
-//! (default `127.0.0.1:1729`). Without one the tests report a skip and pass;
-//! a skip is NOT conformance evidence (see the execution ledger). The named
-//! CI gate runs these with a server present.
+//! (default `127.0.0.1:1729`), credentials from the CLI contract first
+//! (`CHAOSBOX_TYPEDB_USER`, `CHAOSBOX_TYPEDB_PASSWORD_FILE`), then
+//! `TYPEDB_USERNAME`/`TYPEDB_PASSWORD`, then the fresh-server default
+//! (`admin`/`password` — provisioned hosts rotate the admin password and
+//! hand the tests the application credential instead). Without a reachable
+//! server the tests report a skip and pass; a skip is NOT conformance
+//! evidence (see the execution ledger). The named CI gate runs these with a
+//! server present.
 
 use chaosbox_core::{
     Candidate, Claim, Decision, DecisionOutcome, Entity, EntityKind, Evidence, EvidenceClass,
     GraphBuild, Relation, RelationScope, RelationType, SnapshotFile, SourceSpan,
 };
-use chaosbox_gel::{Store, check_conformance};
+use chaosbox_gel::{GelQueries, Store, check_conformance};
 use chaosbox_typedb::reader::TypeDbReader;
 use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
 
@@ -19,11 +24,31 @@ fn addr() -> String {
     std::env::var("TYPEDB_ADDR").unwrap_or_else(|_| "127.0.0.1:1729".into())
 }
 
+/// Per-run database name for the publish tests: they exercise the
+/// fresh-database predecessor path (no active pointer yet), and a rerun must
+/// not inherit the previous run's pointer — the driver has no database
+/// delete, so each process gets a fresh database instead (leftovers
+/// accumulate; CI runs on an ephemeral server).
+fn test_db(base: &str) -> String {
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    format!("{base}_{}_{epoch}", std::process::id())
+}
+
 fn config(db: &str) -> TypeDbConfig {
+    let username = std::env::var("CHAOSBOX_TYPEDB_USER")
+        .or_else(|_| std::env::var("TYPEDB_USERNAME"))
+        .unwrap_or_else(|_| "admin".into());
+    let password = std::env::var("CHAOSBOX_TYPEDB_PASSWORD_FILE")
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .or_else(|| std::env::var("TYPEDB_PASSWORD").ok())
+        .unwrap_or_else(|| "password".into());
     TypeDbConfig {
         address: addr(),
-        username: "admin".into(),
-        password: "password".into(),
+        username,
+        password: password.trim().to_owned(),
         database: db.into(),
     }
 }
@@ -100,7 +125,8 @@ async fn migrate_is_idempotent() {
 
 #[tokio::test]
 async fn publish_readback_and_predecessor_guards() {
-    let Some(mut s) = connected_store("t_pub").await else {
+    let db = test_db("t_pub");
+    let Some(mut s) = connected_store(&db).await else {
         return;
     };
     let repo = "pubrepo";
@@ -152,7 +178,7 @@ async fn publish_readback_and_predecessor_guards() {
 
     // Live readback through a FRESH store (nothing staged): decisions,
     // evidence linkage and the pointer swing really landed.
-    let mut fresh = TypeDbStore::new(config("t_pub"));
+    let mut fresh = TypeDbStore::new(config(&db));
     fresh.migrate().await.unwrap();
     let found = fresh.find_decision("cand:1", "q1").await.unwrap().unwrap();
     assert_eq!(found.cache_key, "key-1");
@@ -182,7 +208,8 @@ async fn publish_readback_and_predecessor_guards() {
 
 #[tokio::test]
 async fn concurrent_publishers_from_same_generation_exactly_one_wins() {
-    let Some(mut s1) = connected_store("t_race").await else {
+    let db = test_db("t_race");
+    let Some(mut s1) = connected_store(&db).await else {
         return;
     };
     let repo = "racerepo";
@@ -197,7 +224,7 @@ async fn concurrent_publishers_from_same_generation_exactly_one_wins() {
     s1.publish(gen1.clone(), Some(gen1.id.clone()))
         .await
         .unwrap();
-    let mut retry = TypeDbStore::new(config("t_race"));
+    let mut retry = TypeDbStore::new(config(&db));
     retry.migrate().await.unwrap();
     retry.publish(gen1.clone(), None).await.unwrap();
 
@@ -211,9 +238,9 @@ async fn concurrent_publishers_from_same_generation_exactly_one_wins() {
     b2.predecessor = Some(gen1.id.clone());
     b2.add_node(a.clone()).unwrap();
     assert_ne!(b1.id, b2.id, "rival builds must differ");
-    let mut w1 = TypeDbStore::new(config("t_race"));
+    let mut w1 = TypeDbStore::new(config(&db));
     w1.migrate().await.unwrap();
-    let mut w2 = TypeDbStore::new(config("t_race"));
+    let mut w2 = TypeDbStore::new(config(&db));
     w2.migrate().await.unwrap();
     let (r1, r2) = tokio::join!(
         w1.publish(b1.clone(), Some(gen1.id.clone())),
@@ -226,7 +253,7 @@ async fn concurrent_publishers_from_same_generation_exactly_one_wins() {
 
     // The loser retrying with its stale predecessor fails without moving
     // the pointer; last good build stays active.
-    let mut late = TypeDbStore::new(config("t_race"));
+    let mut late = TypeDbStore::new(config(&db));
     late.migrate().await.unwrap();
     let stale = if r1.is_ok() { b2 } else { b1 };
     let err = late
@@ -240,9 +267,13 @@ async fn concurrent_publishers_from_same_generation_exactly_one_wins() {
     );
 }
 
+// Long end-to-end fixture test; splitting it apart is the owning
+// session's refactor. Allowed to keep CI unblocked.
+#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn reader_passes_reference_conformance_against_live_backend() {
-    let Some(mut s) = connected_store("t_conf").await else {
+    let db = test_db("t_conf");
+    let Some(mut s) = connected_store(&db).await else {
         return;
     };
     // Seed the reference fixture through the write path: two builds of repo
@@ -322,7 +353,47 @@ async fn reader_passes_reference_conformance_against_live_backend() {
     s.publish(b1.clone(), None).await.unwrap();
     s.publish(b2.clone(), Some(b1.id.clone())).await.unwrap();
 
-    let mut reader = TypeDbReader::new(config("t_conf"));
+    // Snapshot fingerprint isolation: a second repo in the same database
+    // must never leak into another repo's pinned snapshot list (the typedb
+    // `active_build` read once ranged over every build in the database).
+    s.ensure_snapshot_files(
+        "s9",
+        "other",
+        &[SnapshotFile {
+            snapshot: "s9".into(),
+            path: "z.rs".into(),
+            sha256: "zz".into(),
+            bytes: 3,
+        }],
+    )
+    .await
+    .unwrap();
+    let zoe = Entity::new(
+        EntityKind::Symbol,
+        "other",
+        "s9",
+        "z.rs",
+        "Zeta",
+        "Zeta",
+        span("z.rs"),
+    );
+    let mut ob = GraphBuild::new("other", vec!["s9".into()], 1);
+    ob.add_node(zoe).unwrap();
+    s.publish(ob, None).await.unwrap();
+
+    let mut reader = TypeDbReader::new(config(&db));
     reader.connect().await.unwrap();
+    let conf_row = reader.active_build("conf").await.unwrap().unwrap();
+    assert_eq!(
+        conf_row.snapshots,
+        ["s2".to_owned()],
+        "conf pins only its own active build's snapshots"
+    );
+    let other_row = reader.active_build("other").await.unwrap().unwrap();
+    assert_eq!(
+        other_row.snapshots,
+        ["s9".to_owned()],
+        "other pins only its own active build's snapshots"
+    );
     check_conformance(&reader, &a1.id, &b1e.id, &r1.id, &a2.id, &(b1.id, b2.id)).await;
 }

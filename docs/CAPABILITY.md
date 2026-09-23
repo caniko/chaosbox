@@ -1,5 +1,9 @@
 # Capability matrix (v0.7.0)
 
+This is the existing repository-pipeline capability reference. The proposed
+session/repository intelligence direction and session migration scope described
+in the new book chapters are not yet implemented.
+
 ## Implemented in native Rust
 
 - Session-intelligence staging: bounded JSONL proposals with native provenance,
@@ -9,9 +13,16 @@
   migration/compaction scripts; see `SESSION_INTELLIGENCE.md`.
 
 - Snapshot (content-addressed, repo-scoped), deterministic extraction for
-  Rust/Python/JS-TS/Markdown/text (files, modules, symbols, definitions,
-  imports, containment, explicit refs, headings, links, code mentions, spans)
-- Bounded candidate catalog (structural, lexical-import, co-occurrence; capped, never cartesian)
+  Rust/Python/JS-TS/Nix/Markdown/text (files, modules, symbols, definitions,
+  imports, containment, explicit refs, headings, links, code mentions, spans).
+  Nix: bindings/functions as definitions, relative `.nix` imports resolved to
+  the target file when it is in the snapshot (stubs stay visible when not),
+  interpolation/`inherit` references to in-file bindings (regex-based,
+  parse-only; no Nix evaluation)
+- Bounded candidate catalog (structural, lexical-import, co-occurrence; capped,
+  never cartesian) with truthful truncation accounting: per-reason
+  selected/omitted counts in `CandidateCatalog`, surfaced by `extract` and
+  `run` output (cap never silently drops candidates)
 - Typed Jev `POST /v1/systemone` client: Noul/Choice/Score, pinned `jev-1.13.0`,
   requested+returned model identities, 64k/32k enforcement (error, never silent
   truncate), TLS endpoint, deadlines, concurrency/spend/request budgets, 429/529
@@ -61,7 +72,16 @@
   rejected, no Jev creds, no prose evidence)
 - Live Jev path: `LiveResponder` adapter + `run --live-jev` (real inference,
   real spend; default stays fixture); HTTP-level mock-service tests cover
-  retries, auth-no-retry, and validation over the wire
+  retries, auth-no-retry, and validation over the wire; budget preflight
+  (`uncached_decisions`) counts cache misses/recorded failures per candidate
+  and fails before spending when they exceed `max_requests` (default mismatch:
+  200 candidates vs 100 requests now fails fast instead of burning budget and
+  dying at publish)
+- TypeDB write-through decisions: `put_decision`/`put_evidence` persist each
+  paid decision (and its evidence) in a short transaction as produced, so a
+  dead worker or a budget failure later in the run loses no completed
+  inference; publish-time flush stays idempotent and readers pin builds, so
+  unwritten-then-written rows stay invisible until the pointer swings
 - TypeDB backend (`chaosbox-typedb`, authoritative): TypeQL schema mirroring
   the domain with typed relations/roles (`relationship`, memberships,
   occurrences, claim evidence), stable ids as `@key`s, deterministic relation
@@ -76,6 +96,11 @@
 - `db check`/`db migrate` contract v2 JSON for the TypeDB path (same exit
   mapping: 0 ready, 2 pending, 1 error); backend switch via
   `CHAOSBOX_DB_BACKEND`, credentials via `CHAOSBOX_TYPEDB_PASSWORD_FILE`
+- Status freshness/provenance: `query status` (CLI + MCP) reports the pinned
+  build's `status` and `snapshots` (sorted snapshot-id fingerprint, so
+  consumers can detect a build that no longer matches its sources) alongside
+  repo/build/generation/export caps; the in-memory and TypeDB backends fill
+  it, the superseded Gel projection defaults to an empty list
 - Pilot safety: snapshot capture stays inside the repository boundary
   (outside symlinks, dangling links, nested checkouts, and link cycles
   excluded); batches with failed decisions refuse to publish so the last
@@ -89,10 +114,15 @@
 
 ## Intentionally removed (vs Graphify)
 
-- Python execution, NetworkX, LLM-harness extraction/labeling/repair/enrichment,
+- From the code-evidence pipeline: Python execution, NetworkX, LLM-harness extraction/labeling/repair/enrichment,
   embeddings, `ext::ai`, rerankers, neural OCR/transcription, generative
   summaries/labels/dedup/query-repair, arbitrary query escape hatches,
   single giant graph JSON storage, endpoint-to-endpoint multi-links
+
+The proposed session extension keeps that evidence boundary: generated
+continuation checkpoints are derived artifacts, not source labels, evidence or
+independent corroboration. Jev assesses bounded candidates under an explicit
+admission policy; it does not turn fluent summaries into facts.
 
 ## Not yet implemented (explicit)
 
@@ -105,8 +135,12 @@
   credentials/readiness flow (plan validates against the `gel` backend)
 - simit named gates + ordered publication (await parallel simit session)
 - Live Jev quality runs (adapter + `--live-jev` ready; needs operator key file)
-- Broader language coverage (grammar parsing beyond the 5-path vertical slice),
+- Broader language coverage (grammar parsing beyond the current path set),
   communities/hyperedges materialization, signed release tags
+- Stored build statistics in `status` (node/edge counts, extraction coverage,
+  catalog/rubric/model provenance recorded at publish; needs schema work —
+  tracked in the chaosbox issue tracker), bounded NL `query ask`, workspace
+  aggregate build, stats/communities read surface
 - Single threshold source: `Materialization` carries every cutoff
   (Noul/Score/confidence); its identity covers all of them, so threshold
   changes reuse valid raw decisions instead of re-asking Jev

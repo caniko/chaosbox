@@ -3,6 +3,10 @@
 //! Supported (explicit, no complete-call-resolution claims):
 //! - Rust / Python / JavaScript+TypeScript: files, modules, symbols,
 //!   definitions, imports, containment, explicit textual references.
+//! - Nix: bindings/functions as definitions, relative `.nix` imports
+//!   (resolved to the target file when it is part of the snapshot),
+//!   interpolation/inherit references to in-file bindings (regex-based,
+//!   parse-only; no attribute-set or module-system evaluation).
 //! - Markdown: headings, links, code mentions, source spans.
 //! - Plain text: file/symbol records, lexical mentions.
 //!   Unsupported images/audio/video and office docs are reported, never
@@ -10,7 +14,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
+    path::{Component, Path},
 };
 
 use chaosbox_core::{
@@ -174,8 +178,8 @@ impl Snapshot {
 }
 
 fn is_supported(path: &str) -> bool {
-    const EXTS: [&str; 11] = [
-        "rs", "py", "js", "ts", "jsx", "tsx", "mjs", "cjs", "md", "markdown", "txt",
+    const EXTS: [&str; 12] = [
+        "rs", "py", "js", "ts", "jsx", "tsx", "mjs", "cjs", "nix", "md", "markdown", "txt",
     ];
     match path.rsplit('.').next() {
         // Case-insensitive like the extractor below; a lone ".md" still
@@ -292,6 +296,16 @@ pub fn extract_file(repo: &str, snapshot: &str, path: &str, text: &str) -> Extra
         );
         refs.push((file_id, sym.id.clone(), "contains".into()));
         entities.push(sym);
+    } else if ext_lower == "nix" {
+        extract_nix(
+            repo,
+            snapshot,
+            path,
+            text,
+            &file_id,
+            &mut entities,
+            &mut refs,
+        );
     } else {
         extract_code(
             repo,
@@ -401,6 +415,144 @@ fn extract_code(
     }
 }
 
+/// Nix expressions: bindings and functions become definitions, relative
+/// `.nix` paths become imports, and interpolation/`inherit` occurrences
+/// become references to bindings defined in the same file.
+///
+/// Regex-based and parse-only (no Nix evaluation, no attribute-set or
+/// module-system semantics — no completeness claims), ported from
+/// graphify's `extractors/nix.py` into the chaosbox entity model:
+/// one definition per name (first site wins; a name may rebind in later
+/// scopes and the qualified name would collide), bounded reference dedup
+/// per (file, binding). Cross-file import resolution happens afterwards
+/// in [`extract_snapshot`].
+fn extract_nix(
+    repo: &str,
+    snapshot: &str,
+    path: &str,
+    text: &str,
+    file_id: &str,
+    entities: &mut Vec<Entity>,
+    refs: &mut Vec<(String, String, String)>,
+) {
+    // Bindings: `name = ...` at any indent (statement/attribute position).
+    // Line-bound (`[ \t]`, not `\s`) so a match can never swallow the next
+    // line. Keywords are excluded for graphify parity (`let x = ..` never
+    // matches anyway: the token after the ident is not `=`).
+    let binding_re = Regex::new(r"(?m)^[ \t]*([A-Za-z_][A-Za-z0-9_'-]*)[ \t]*=").unwrap();
+    // Relative import paths: `./x.nix`, `../lib/y.nix`. Graphify's
+    // look-around boundaries are enforced by hand below: the `regex` crate
+    // has no look-around.
+    let import_re = Regex::new(r"((?:\.\.?/)[A-Za-z0-9_./'-]+\.nix)").unwrap();
+    // Interpolation: `${name}`.
+    let interpolation_re = Regex::new(r"\$\{\s*([A-Za-z_][A-Za-z0-9_'-]*)").unwrap();
+    // Inherit lists: `inherit a b;` / `inherit (from) a b;`.
+    let inherit_re = Regex::new(r"(?m)\binherit(?:From)?\s+([^;\n}]+)").unwrap();
+    let ident_re = Regex::new(r"[A-Za-z_][A-Za-z0-9_'-]*").unwrap();
+
+    // Module record for code files (parity with `extract_code`).
+    let stem = Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(path);
+    let mod_ent = Entity::new(
+        EntityKind::Module,
+        repo,
+        snapshot,
+        path,
+        stem,
+        &format!("{path}::{stem}"),
+        span_of(text, path, 0, 0),
+    );
+    refs.push((file_id.to_owned(), mod_ent.id.clone(), "contains".into()));
+
+    // Bindings and functions -> definitions. First site wins: the same
+    // name may bind in several scopes and the qualified name collides.
+    let mut defined: BTreeMap<String, String> = BTreeMap::new();
+    for cap in binding_re.captures_iter(text) {
+        let name = cap.get(1).unwrap();
+        if matches!(
+            name.as_str(),
+            "let" | "in" | "with" | "inherit" | "assert" | "rec"
+        ) {
+            continue;
+        }
+        if defined.contains_key(name.as_str()) {
+            continue;
+        }
+        let whole = cap.get(0).unwrap();
+        let qn = format!("{path}::{}", name.as_str());
+        let e = Entity::new(
+            EntityKind::Definition,
+            repo,
+            snapshot,
+            path,
+            name.as_str(),
+            &qn,
+            span_of(text, path, whole.start(), whole.end()),
+        );
+        refs.push((file_id.to_owned(), e.id.clone(), "defines".into()));
+        refs.push((mod_ent.id.clone(), e.id.clone(), "defines".into()));
+        defined.insert(name.as_str().to_owned(), e.id.clone());
+        entities.push(e);
+    }
+    entities.push(mod_ent);
+
+    // Relative imports (stubs; resolved to the real target file when the
+    // target is part of the snapshot — see `resolve_nix_imports`). The
+    // preceding/following character checks replicate graphify's
+    // `(?<![A-Za-z0-9_.])` / `(?![A-Za-z0-9_])` boundaries; a rejected
+    // boundary rescans from just past the rejected start, so it never hides
+    // a later valid match (what Python's finditer + look-around does).
+    let mut search = 0usize;
+    while let Some(m) = import_re.find(&text[search..]) {
+        let start = search + m.start();
+        let end = search + m.end();
+        let prev_ok = text[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'));
+        let next_ok = text[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
+        if !(prev_ok && next_ok) {
+            search = start + 1;
+            continue;
+        }
+        search = end;
+        let target = m.as_str();
+        let e = Entity::new(
+            EntityKind::Import,
+            repo,
+            snapshot,
+            path,
+            target,
+            &format!("{path}::import::{target}"),
+            span_of(text, path, start, end),
+        );
+        refs.push((file_id.to_owned(), e.id.clone(), "imports".into()));
+        entities.push(e);
+    }
+
+    // Interpolation + inherit references: one bounded reference per
+    // (file, binding), only for bindings this file defines.
+    let mut referenced: BTreeSet<&str> = BTreeSet::new();
+    for cap in interpolation_re.captures_iter(text) {
+        referenced.insert(cap.get(1).unwrap().as_str());
+    }
+    for cap in inherit_re.captures_iter(text) {
+        for m in ident_re.find_iter(cap.get(1).unwrap().as_str()) {
+            referenced.insert(m.as_str());
+        }
+    }
+    for name in referenced {
+        if let Some(did) = defined.get(name) {
+            refs.push((file_id.to_owned(), did.clone(), "references".into()));
+        }
+    }
+}
+
 fn extract_markdown(
     repo: &str,
     snapshot: &str,
@@ -470,51 +622,170 @@ pub fn extract_snapshot(snapshot: &Snapshot) -> Extraction {
         entities.extend(one.entities);
         refs.extend(one.explicit_refs);
     }
+    resolve_nix_imports(snapshot, &mut entities, &mut refs);
     Extraction {
         entities,
         explicit_refs: refs,
     }
 }
 
+/// Lexically resolve `target` (a `./`/`../` relative path) against the
+/// directory of `from_file`. `None` when the path is absolute or escapes
+/// the repository root (an import must never point outside the snapshot).
+fn resolve_relative_path(from_file: &str, target: &str) -> Option<String> {
+    let mut stack: Vec<String> = Path::new(from_file)
+        .parent()?
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    for c in Path::new(target).components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                stack.pop()?;
+            }
+            Component::Normal(s) => stack.push(s.to_string_lossy().into_owned()),
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    if stack.is_empty() {
+        None
+    } else {
+        Some(stack.join("/"))
+    }
+}
+
+/// Resolve relative `.nix` imports against the snapshot's file set: an
+/// in-repo target replaces its import stub with an edge to the target's
+/// real `File` entity (graphify nix parity: imports land on the file node,
+/// never a duplicate stub). A missing or external target keeps the stub so
+/// the import stays visible instead of silently vanishing.
+fn resolve_nix_imports(
+    snapshot: &Snapshot,
+    entities: &mut Vec<Entity>,
+    refs: &mut Vec<(String, String, String)>,
+) {
+    let (stubs, resolved) = {
+        let file_ids: BTreeMap<&str, &str> = entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::File)
+            .map(|e| (e.file.as_str(), e.id.as_str()))
+            .collect();
+        let mut stubs: BTreeSet<String> = BTreeSet::new();
+        let mut resolved: Vec<(String, String, String)> = Vec::new();
+        for e in entities.iter() {
+            if e.kind != EntityKind::Import
+                || !Path::new(&e.file)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("nix"))
+            {
+                continue;
+            }
+            if !(e.name.starts_with("./") || e.name.starts_with("../")) {
+                continue;
+            }
+            let Some(target) = resolve_relative_path(&e.file, &e.name) else {
+                continue;
+            };
+            // Self-import stays a visible stub; `push` would drop the
+            // self edge anyway.
+            if target == e.file || !snapshot.contents.contains_key(&target) {
+                continue;
+            }
+            let (Some(from_id), Some(target_text)) = (
+                file_ids.get(e.file.as_str()),
+                snapshot.contents.get(&target),
+            ) else {
+                continue;
+            };
+            // Identical construction to `extract_file`'s file entity
+            // (byte-0 span), so the id matches the target's own node.
+            let target_file = Entity::new(
+                EntityKind::File,
+                &snapshot.repo,
+                &snapshot.id,
+                &target,
+                &target,
+                &target,
+                span_of(target_text, &target, 0, 0),
+            );
+            resolved.push(((*from_id).to_owned(), target_file.id, "imports".into()));
+            stubs.insert(e.id.clone());
+        }
+        (stubs, resolved)
+    };
+    if stubs.is_empty() {
+        return;
+    }
+    refs.retain(|(f, t, _)| !stubs.contains(f) && !stubs.contains(t));
+    entities.retain(|e| !stubs.contains(&e.id));
+    refs.extend(resolved);
+}
+
+/// Bounded candidate construction outcome: the selected candidates plus
+/// truthful per-reason accounting of what the cap omitted (truncation is
+/// never silent).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CandidateCatalog {
+    /// Selected candidates in deterministic construction order.
+    pub candidates: Vec<Candidate>,
+    /// Selected counts by candidate reason.
+    pub selected: BTreeMap<String, u64>,
+    /// Omitted counts by reason: unique candidates that reached an
+    /// already-full cap (duplicates and self-pairs are not omissions).
+    pub omitted: BTreeMap<String, u64>,
+    /// The candidate cap that produced this catalog.
+    pub cap: usize,
+}
+
 /// Bounded candidate construction: no cartesian product.
 ///
 /// Sources: same-file co-occurrence, qualified-name match, explicit imports,
 /// lexical mentions, structural (file->module->definition) neighborhoods.
-/// Cap total candidates to keep Jev budgets bounded.
+/// Cap total candidates to keep Jev budgets bounded; per-reason
+/// selected/omitted counts make the truncation observable (see
+/// [`CandidateCatalog`]).
 // Over the default line budget; splitting the bounded pipeline stages
 // apart is the owning session's refactor. Allowed to keep CI unblocked.
 #[allow(clippy::too_many_lines)]
 #[must_use]
-pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Vec<Candidate> {
+pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> CandidateCatalog {
     // Nested helper first: items exist from scope start (clarity lint).
     // Eight parameters are a smell the owning session should refactor
     // (e.g. a builder struct); allowed to keep this integration unblocked.
     #[allow(clippy::too_many_arguments)]
     fn push(
-        out: &mut Vec<Candidate>,
+        cat: &mut CandidateCatalog,
         seen: &mut BTreeSet<(String, String, String)>,
-        max_candidates: usize,
         rel: RelationType,
         from: &str,
         to: &str,
         reason: &str,
         excerpt: &str,
     ) {
-        if out.len() >= max_candidates || from == to {
+        if from == to {
             return;
         }
         let key = (rel_name(&rel), from.to_owned(), to.to_owned());
-        if seen.insert(key) {
-            let id = deterministic_id("cand", &[&rel_name(&rel), from, to, reason]);
-            out.push(Candidate {
-                id,
-                rel_type: rel,
-                from_entity: from.to_owned(),
-                to_entity: to.to_owned(),
-                reason: reason.to_owned(),
-                state_excerpt: excerpt.chars().take(500).collect(),
-            });
+        // Duplicates are neither selected nor omitted: only a unique
+        // candidate that meets a full cap counts as an omission.
+        if !seen.insert(key) {
+            return;
         }
+        if cat.candidates.len() >= cat.cap {
+            *cat.omitted.entry(reason.to_owned()).or_insert(0) += 1;
+            return;
+        }
+        let id = deterministic_id("cand", &[&rel_name(&rel), from, to, reason]);
+        cat.candidates.push(Candidate {
+            id,
+            rel_type: rel,
+            from_entity: from.to_owned(),
+            to_entity: to.to_owned(),
+            reason: reason.to_owned(),
+            state_excerpt: excerpt.chars().take(500).collect(),
+        });
+        *cat.selected.entry(reason.to_owned()).or_insert(0) += 1;
     }
     let by_id: BTreeMap<&str, &Entity> = extraction
         .entities
@@ -532,7 +803,12 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Vec<C
             .or_default()
             .push(e.id.clone());
     }
-    let mut out: Vec<Candidate> = Vec::new();
+    let mut cat = CandidateCatalog {
+        candidates: Vec::new(),
+        selected: BTreeMap::new(),
+        omitted: BTreeMap::new(),
+        cap: max_candidates,
+    };
     let mut seen: BTreeSet<(String, String, String)> = BTreeSet::new();
     // 1. structural edges from extraction refs
     for (from, to, kind) in &extraction.explicit_refs {
@@ -547,16 +823,7 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Vec<C
             .get(to.as_str())
             .map(|e| e.qualified_name.clone())
             .unwrap_or_default();
-        push(
-            &mut out,
-            &mut seen,
-            max_candidates,
-            rel,
-            from,
-            to,
-            "structural",
-            &excerpt,
-        );
+        push(&mut cat, &mut seen, rel, from, to, "structural", &excerpt);
     }
     // 2. import -> definition resolution by last-segment lexical match (bounded)
     let imports: Vec<&Entity> = extraction
@@ -578,9 +845,8 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Vec<C
         for d in defs.iter().take(200) {
             if d.name == last && imp.file != d.file {
                 push(
-                    &mut out,
+                    &mut cat,
                     &mut seen,
-                    max_candidates,
                     RelationType::References,
                     &imp.id,
                     &d.id,
@@ -588,7 +854,7 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Vec<C
                     &d.qualified_name,
                 );
             }
-            if out.len() >= max_candidates {
+            if cat.candidates.len() >= cat.cap {
                 break;
             }
         }
@@ -603,9 +869,8 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Vec<C
     for defs_in_file in by_file.values() {
         for pair in defs_in_file.windows(2).take(25) {
             push(
-                &mut out,
+                &mut cat,
                 &mut seen,
-                max_candidates,
                 RelationType::References,
                 &pair[0].id,
                 &pair[1].id,
@@ -614,7 +879,7 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Vec<C
             );
         }
     }
-    out
+    cat
 }
 
 fn rel_name(r: &RelationType) -> String {
@@ -678,9 +943,15 @@ mod tests {
         ] {
             assert!(kinds.contains(k), "missing {k} in {kinds:?}");
         }
-        let cands = build_candidates(&ext, 100);
-        assert!(!cands.is_empty());
-        assert!(cands.len() <= 100, "candidates bounded");
+        let cat = build_candidates(&ext, 100);
+        assert!(!cat.candidates.is_empty());
+        assert!(cat.candidates.len() <= 100, "candidates bounded");
+        assert_eq!(cat.cap, 100);
+        assert_eq!(
+            cat.selected.values().sum::<u64>(),
+            u64::try_from(cat.candidates.len()).expect("candidate count fits in u64"),
+        );
+        assert!(cat.omitted.is_empty(), "under the cap nothing omitted");
     }
 
     #[test]
@@ -688,9 +959,135 @@ mod tests {
         let (_t, root) = tmp_repo(&[("a.rs", "fn a() {}\nfn b() {}\nfn c() {}\n")]);
         let snap = Snapshot::capture("r", &root).unwrap();
         let ext = extract_snapshot(&snap);
-        let cands = build_candidates(&ext, 10);
+        let cat = build_candidates(&ext, 10);
         // 3 defs would be 9 pairs cartesian; bounded co-occurrence gives <= 2 + structural
-        assert!(cands.len() <= 10);
+        assert!(cat.candidates.len() <= 10);
+    }
+
+    #[test]
+    fn candidate_cap_reports_omissions() {
+        let (_t, root) = tmp_repo(&[("a.rs", "fn one() {}\nfn two() {}\nfn three() {}\n")]);
+        let snap = Snapshot::capture("r", &root).unwrap();
+        let ext = extract_snapshot(&snap);
+        // Well under the cap: everything selected, nothing omitted.
+        let full = build_candidates(&ext, 100);
+        assert!(full.omitted.is_empty());
+        // Under the cap: truncation is observable, not silent.
+        let cat = build_candidates(&ext, 2);
+        assert_eq!(cat.candidates.len(), 2, "cap enforced");
+        assert_eq!(cat.cap, 2);
+        let selected = cat.selected.values().sum::<u64>();
+        let omitted = cat.omitted.values().sum::<u64>();
+        assert_eq!(selected, 2, "selected matches the cap");
+        assert!(
+            omitted >= 1,
+            "omitted candidates must be accounted: {cat:?}"
+        );
+        assert!(selected + omitted < 100, "accounting stays local");
+        // Deterministic: same input, same catalog.
+        let again = build_candidates(&ext, 2);
+        assert_eq!(cat.candidates, again.candidates);
+        assert_eq!(cat.omitted, again.omitted);
+    }
+
+    #[test]
+    fn nix_bindings_imports_and_references_extracted() {
+        let (_t, root) = tmp_repo(&[
+            (
+                "main.nix",
+                "{ ... }:\n\
+                 let\n\
+                 \x20 name = \"world\";\n\
+                 in {\n\
+                 \x20 imports = [ ./parts/extra.nix ];\n\
+                 \x20 greeting = \"hello ${name}\";\n\
+                 \x20 inherit (builtins) toString;\n\
+                 }\n",
+            ),
+            (
+                "parts/extra.nix",
+                "{ config, ... }:\n{\n  enable = true;\n}\n",
+            ),
+        ]);
+        let snap = Snapshot::capture("r", &root).unwrap();
+        assert_eq!(snap.files.len(), 2, "both .nix files snapshotted");
+        let ext = extract_snapshot(&snap);
+
+        let file_id = |path: &str| {
+            ext.entities
+                .iter()
+                .find(|e| e.kind == EntityKind::File && e.file == path)
+                .map_or_else(|| panic!("file entity for {path}"), |e| e.id.clone())
+        };
+        let main_id = file_id("main.nix");
+        let parts_id = file_id("parts/extra.nix");
+
+        // Bindings become definitions (keyword-free, first site wins).
+        let defs: BTreeSet<&str> = ext
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Definition && e.file == "main.nix")
+            .map(|e| e.name.as_str())
+            .collect();
+        for name in ["name", "imports", "greeting"] {
+            assert!(defs.contains(name), "missing binding {name} in {defs:?}");
+        }
+
+        // Resolved in-repo import: the stub is gone, the edge lands on
+        // the real target file node.
+        assert_eq!(
+            ext.entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::Import)
+                .count(),
+            0,
+            "resolved import stub must be replaced by the file edge"
+        );
+        assert!(
+            ext.explicit_refs
+                .contains(&(main_id.clone(), parts_id, "imports".to_owned())),
+            "file -> file import edge required"
+        );
+
+        // `${name}` interpolation references the in-file binding.
+        let name_def = ext
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Definition && e.name == "name")
+            .map(|e| e.id.clone())
+            .unwrap();
+        assert!(
+            ext.explicit_refs
+                .contains(&(main_id, name_def, "references".to_owned())),
+            "interpolation reference required"
+        );
+    }
+
+    #[test]
+    fn nix_unresolved_import_keeps_stub() {
+        let (_t, root) = tmp_repo(&[(
+            "main.nix",
+            "{ ... }:\n{\n  imports = [ ./missing.nix ];\n}\n",
+        )]);
+        let snap = Snapshot::capture("r", &root).unwrap();
+        let ext = extract_snapshot(&snap);
+        let stubs: Vec<&Entity> = ext
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Import)
+            .collect();
+        assert_eq!(stubs.len(), 1, "unresolved import stays visible");
+        assert_eq!(stubs[0].name, "./missing.nix");
+        let main_id = ext
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::File && e.file == "main.nix")
+            .map_or_else(|| panic!("file entity for main.nix"), |e| e.id.clone());
+        assert!(
+            ext.explicit_refs
+                .contains(&(main_id, stubs[0].id.clone(), "imports".to_owned())),
+            "stub keeps its import edge"
+        );
     }
 
     #[cfg(unix)]

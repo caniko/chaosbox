@@ -221,10 +221,25 @@ impl GelQueries for TypeDbReader {
         let Some(row) = rows.into_iter().next() else {
             return Ok(None);
         };
+        let build_id = col_string(&row, "b")?;
+        // Second read for the freshness fingerprint: one row per snapshot of
+        // the PINNED build (never every build in the database). Sorted for
+        // the same deterministic reporting order as the in-memory backend.
+        let qs = format!(
+            "match $g isa graph-build, has build-id {}, has snapshot-id $s; select $s;",
+            str_lit(&build_id)
+        );
+        let snap_rows = read_rows(self.driver()?, &self.config.database, &qs, &["s"]).await?;
+        let mut snapshots = Vec::with_capacity(snap_rows.len());
+        for r in &snap_rows {
+            snapshots.push(col_string(r, "s")?);
+        }
+        snapshots.sort();
         Ok(Some(BuildRow {
-            build_id: col_string(&row, "b")?,
+            build_id,
             generation: col_int(&row, "gen")?,
             status: col_string(&row, "st")?,
+            snapshots,
         }))
     }
 

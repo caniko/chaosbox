@@ -12,7 +12,7 @@ use chaosbox_core::{
     Decision, DecisionOutcome, Entity, Evidence, EvidenceClass, GraphBuild, Relation,
     RelationScope,
 };
-use chaosbox_extract::{build_candidates, extract_snapshot, Extraction, Snapshot};
+use chaosbox_extract::{build_candidates, extract_snapshot, CandidateCatalog, Extraction, Snapshot};
 use chaosbox_gel::MemoryStore;
 use chaosbox_jev::{
     cache_key, Answer, ChoiceAnswer, JevClient, NoulAnswer, Question, ScoreAnswer,
@@ -314,6 +314,55 @@ pub struct Pipeline<S = MemoryStore> {
     pub generation: u64,
 }
 
+/// Count candidates whose cached decision cannot be reused: a key miss, a
+/// changed cache key, or a recorded `Failed` outcome (retries always
+/// re-ask). Each such candidate costs exactly one live Jev request, so
+/// operators can check `uncached <= max_requests` **before** any spend —
+/// the budget preflight in `run --live-jev`.
+///
+/// The cache test mirrors [`Pipeline::decide`] verbatim (same catalog
+/// digest, question set, model and rubric inputs); if decide's reuse rule
+/// changes, this function must change with it.
+pub async fn uncached_decisions<S: chaosbox_gel::Store>(
+    candidates: &[Candidate],
+    entities: &BTreeMap<String, Entity>,
+    model_requested: &str,
+    mat: &Materialization,
+    store: &S,
+) -> Result<usize, PipelineError> {
+    mat.validate()?;
+    let catalog = catalog_digest(candidates);
+    let mut uncached = 0usize;
+    for cand in candidates {
+        let from = entities
+            .get(&cand.from_entity)
+            .ok_or_else(|| PipelineError::Validation("missing from".into()))?;
+        let to = entities
+            .get(&cand.to_entity)
+            .ok_or_else(|| PipelineError::Validation("missing to".into()))?;
+        let questions = questions_for(cand, from, to);
+        let qid = format!("rel_{}", cand.id);
+        let key = cache_key(
+            &from.snapshot,
+            &catalog,
+            &questions,
+            model_requested,
+            &mat.rubric_version,
+        );
+        match store
+            .find_decision(&cand.id, &qid)
+            .await
+            .map_err(|e| PipelineError::Store(e.to_string()))?
+        {
+            Some(stored)
+                if stored.cache_key == key
+                    && !matches!(stored.outcome, DecisionOutcome::Failed(_)) => {}
+            _ => uncached += 1,
+        }
+    }
+    Ok(uncached)
+}
+
 impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
     /// A pipeline with an empty store at generation zero.
     #[must_use]
@@ -324,17 +373,17 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
         }
     }
 
-    /// Snapshot -> extract -> candidates.
+    /// Snapshot -> extract -> candidates (with truncation accounting).
     pub fn snapshot_extract(
         repo: &str,
         root: &Path,
         max_candidates: usize,
-    ) -> Result<(Snapshot, Extraction, Vec<Candidate>), PipelineError> {
+    ) -> Result<(Snapshot, Extraction, CandidateCatalog), PipelineError> {
         let snap =
             Snapshot::capture(repo, root).map_err(|e| PipelineError::Extract(e.to_string()))?;
         let ext = extract_snapshot(&snap);
-        let cands = build_candidates(&ext, max_candidates);
-        Ok((snap, ext, cands))
+        let catalog = build_candidates(&ext, max_candidates);
+        Ok((snap, ext, catalog))
     }
 
     /// Bounded decisions over candidates. Each candidate decided independently
@@ -342,7 +391,9 @@ impl<S: chaosbox_gel::Store + Default> Pipeline<S> {
     /// Preliminary outcome cutoffs come from `mat` so decision and
     /// publication share one threshold source; the materialization identity
     /// covers every threshold, keeping raw decisions reusable.
-    /// Every decision and its evidence is persisted to `store` as produced,
+    /// Every decision and its evidence is persisted to `store` as produced
+    /// (the `TypeDB` store writes decisions through to the server, so a dead
+    /// worker or a later budget failure loses nothing already paid for),
     /// so a dead worker loses nothing already decided. Claims are assembled
     /// later in [`Pipeline::build_and_publish`], where relation ids exist.
     // Long decision pipeline; splitting stages apart is the owning
@@ -1070,6 +1121,13 @@ pub struct GelReader<R = chaosbox_gel::GelHandle> {
     pub build_id: String,
     /// Pinned generation (predecessor/generation checks on the read side).
     pub generation: i64,
+    /// Pinned build status (`active`; the pointer can only pin active builds).
+    pub status: String,
+    /// Snapshot ids pinned by the build: the freshness fingerprint status
+    /// reports so consumers can detect a build that no longer matches its
+    /// sources. Empty when the backend does not project it (the superseded
+    /// Gel runtime predates the field; `TypeDB` and memory report it).
+    pub snapshots: Vec<String>,
 }
 
 impl GelReader<chaosbox_gel::GelHandle> {
@@ -1096,6 +1154,8 @@ impl<R: chaosbox_gel::GelQueries> GelReader<R> {
             handle,
             build_id: build.build_id,
             generation: build.generation,
+            status: build.status,
+            snapshots: build.snapshots,
         })
     }
 

@@ -748,11 +748,23 @@ impl Store for TypeDbStore {
         if let Some(p) = d.probability {
             double_lit(p).map_err(|e| GelError::Invariant(e.to_string()))?;
         }
-        self.staging.put_decision(d).await
+        self.staging.put_decision(d.clone()).await?;
+        // Write-through: the decision is paid inference — persist it in a
+        // short transaction as produced, so a dead worker or a budget
+        // failure later in the run never loses completed work (resume
+        // reuses it through `find_decision`). Staged rows still flush
+        // idempotently at publish; readers pin builds, so a decision
+        // written before publication stays invisible to them.
+        self.ensure_connected().await?;
+        self.flush_decision(&d).await
     }
 
     async fn put_evidence(&mut self, e: Evidence) -> Result<(), GelError> {
-        self.staging.put_evidence(e).await
+        self.staging.put_evidence(e.clone()).await?;
+        // Write-through alongside its decision (deterministic evidence id:
+        // re-assembly and the publish-time flush stay idempotent).
+        self.ensure_connected().await?;
+        self.flush_evidence(&e).await
     }
 
     async fn put_claim(&mut self, c: Claim) -> Result<(), GelError> {
