@@ -1,0 +1,14 @@
+[book]
+title = "Chaosbox"
+authors = ["Chaosbox contributors"]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+site-url = "/chaosbox/"
+default-theme = "coal"
+preferred-dark-theme = "coal"
+git-repository-url = "https://github.com/caniko/chaosbox"
