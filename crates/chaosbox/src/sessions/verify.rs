@@ -17,7 +17,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Instant,
 };
 
@@ -26,7 +26,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::sessions::{
-    campaign::{Campaign, CampaignError, Effective},
+    campaign::{Campaign, CampaignError, Effective, Receipt},
     digest::{recovered_hash, session_digest, DigestError},
     inventory::Inventory,
     remap::{
@@ -613,7 +613,7 @@ impl VariantPins {
             .get("mappingFile")
             .and_then(Value::as_str)
             .ok_or_else(|| malformed("no mappingFile"))?;
-        if PathBuf::from(named) != staged {
+        if Path::new(named) != staged.as_path() {
             return Err(malformed(&format!(
                 "mappingFile names {named} instead of the staged mapping {}",
                 staged.display()
@@ -739,47 +739,7 @@ pub fn verify(campaign: &Campaign, options: &VerifyOptions) -> Result<VerifyRepo
                 digests.push(driver.to_string());
             }
         }
-        let expected = receipt.destination_digest().unwrap_or_default().to_string();
-
-        let actual = session_digest(destination.connection(), &entry.session);
-
-        match actual {
-            Ok(actual) => {
-                let actual_messages = i64::try_from(actual.messages).unwrap_or(i64::MAX);
-                let digest_matches = actual.digest == expected;
-                if !digest_matches {
-                    let mismatch = DigestMismatch {
-                        session: entry.session.clone(),
-                        expected,
-                        actual: actual.digest,
-                    };
-                    if entry.depth > 1 {
-                        report.superseded_unverified.push(mismatch);
-                    } else {
-                        report.digest_mismatch.push(mismatch);
-                    }
-                }
-                let count_matches = receipt.messages() == Some(actual_messages);
-                if !count_matches {
-                    report.message_count_mismatch.push(CountMismatch {
-                        session: entry.session.clone(),
-                        expected: receipt.messages().unwrap_or_default(),
-                        actual: actual_messages,
-                    });
-                }
-                if digest_matches && count_matches {
-                    report.sessions_verified += 1;
-                }
-            }
-            Err(DigestError::MissingSession(_)) => report.missing.push(entry.session.clone()),
-            Err(source) => {
-                return Err(VerifyError::Digest {
-                    kind: "destination".to_string(),
-                    session: entry.session.clone(),
-                    source,
-                });
-            }
-        }
+        check_destination(entry, &destination, &mut report)?;
 
         if options.sources {
             check_sources(
@@ -802,6 +762,63 @@ pub fn verify(campaign: &Campaign, options: &VerifyOptions) -> Result<VerifyRepo
     report.snapshot.concurrent_write = version_after != report.snapshot.data_version_before;
     report.elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     Ok(report)
+}
+
+/// Recompute one session's destination digest and message count against its
+/// effective receipt. A digest mismatch on a session with chain depth above
+/// one needs re-verification rather than being a broken base attestation,
+/// so the two land in different buckets.
+///
+/// # Errors
+///
+/// Returns [`VerifyError::Digest`] when the digest cannot be recomputed.
+fn check_destination(
+    entry: &Effective,
+    destination: &Snapshot,
+    report: &mut VerifyReport,
+) -> Result<(), VerifyError> {
+    let receipt = &entry.head;
+    let expected = receipt.destination_digest().unwrap_or_default().to_string();
+    let actual = session_digest(destination.connection(), &entry.session);
+
+    match actual {
+        Ok(actual) => {
+            let actual_messages = i64::try_from(actual.messages).unwrap_or(i64::MAX);
+            let digest_matches = actual.digest == expected;
+            if !digest_matches {
+                let mismatch = DigestMismatch {
+                    session: entry.session.clone(),
+                    expected,
+                    actual: actual.digest,
+                };
+                if entry.depth > 1 {
+                    report.superseded_unverified.push(mismatch);
+                } else {
+                    report.digest_mismatch.push(mismatch);
+                }
+            }
+            let count_matches = receipt.messages() == Some(actual_messages);
+            if !count_matches {
+                report.message_count_mismatch.push(CountMismatch {
+                    session: entry.session.clone(),
+                    expected: receipt.messages().unwrap_or_default(),
+                    actual: actual_messages,
+                });
+            }
+            if digest_matches && count_matches {
+                report.sessions_verified += 1;
+            }
+        }
+        Err(DigestError::MissingSession(_)) => report.missing.push(entry.session.clone()),
+        Err(source) => {
+            return Err(VerifyError::Digest {
+                kind: "destination".to_string(),
+                session: entry.session.clone(),
+                source,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Resolve which receipts this pass covers, honouring explicit `--session`
@@ -998,13 +1015,47 @@ fn check_variant_remap(
         );
     }
 
+    check_message_pairs(
+        &entry.session,
+        receipt,
+        expected_map,
+        source,
+        source_session,
+        destination,
+        report,
+    )
+}
+
+/// Recompute the two-sided re-key proof and every message id at attempt 0
+/// from source and destination row order.
+///
+/// # Errors
+///
+/// Returns [`VerifyError::Read`] when either id list cannot be read.
+#[allow(clippy::too_many_arguments)]
+fn check_message_pairs(
+    session: &str,
+    receipt: &Receipt,
+    expected_map: &str,
+    source: &Snapshot,
+    source_session: &str,
+    destination: &Snapshot,
+    report: &mut VerifyReport,
+) -> Result<(), VerifyError> {
+    let mut fail = |check: &str, detail: String| {
+        report.remap_mismatch.push(RemapMismatch {
+            session: session.to_string(),
+            check: check.to_string(),
+            detail,
+        });
+    };
     let original = message_ids(source.connection(), source_session).map_err(|error| {
         VerifyError::Read {
             path: source.path.clone(),
             source: error,
         }
     })?;
-    let derived = message_ids(destination.connection(), &entry.session).map_err(|error| {
+    let derived = message_ids(destination.connection(), session).map_err(|error| {
         VerifyError::Read {
             path: destination.path.clone(),
             source: error,
@@ -1035,7 +1086,7 @@ fn check_variant_remap(
         );
     }
     for (original_id, derived_id) in original.iter().zip(derived.iter()) {
-        if variant_message_id(&entry.session, original_id, 0) != *derived_id {
+        if variant_message_id(session, original_id, 0) != *derived_id {
             fail(
                 "message-pair",
                 format!("{original_id} does not re-derive at attempt 0"),
