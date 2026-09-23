@@ -90,7 +90,9 @@ pub fn extract_window(
         if !message_ids.insert(id.to_owned()) {
             return Err("duplicate message id: reconcile source variants before extraction".into());
         }
-        if matches!(kind, "compaction" | "synthetic" | "system") {
+        if matches!(kind, "compaction" | "synthetic" | "system")
+            || record.pointer("/metadata/chaosboxMigrationDraft").is_some()
+        {
             result.excluded_derived += 1;
         }
         let mut bundles = std::collections::BTreeMap::new();
@@ -288,6 +290,9 @@ fn evidence_window(
 
 fn source_texts<'a>(record: &'a Value, kind: &str) -> Vec<(String, &'static str, &'a str)> {
     let mut texts = Vec::new();
+    if record.pointer("/metadata/chaosboxMigrationDraft").is_some() {
+        return texts;
+    }
     if kind == "user" {
         if let Some(text) = record.get("text").and_then(Value::as_str) {
             texts.push(("/text".into(), "user", text));

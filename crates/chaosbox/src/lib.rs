@@ -20,13 +20,15 @@ use chaosbox_jev::{
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub mod history;
 pub mod intelligence;
-pub mod sessions;
 mod lifecycle;
 mod materialization;
 mod pipeline;
 mod reader;
 mod responder;
+pub mod sessions;
 mod view;
 
 pub use lifecycle::LifecycleReport;
