@@ -347,6 +347,17 @@ impl Receipt {
     pub fn kind(&self) -> Option<&str> {
         self.body.get("kind").and_then(Value::as_str)
     }
+
+    /// Freeze boundary whose snapshot the receipt's source digests were
+    /// computed against, for sessions whose content moved after the
+    /// canonical boundary. Canonical receipts leave it absent.
+    #[must_use]
+    pub fn provenance_boundary(&self) -> Option<&str> {
+        self.body
+            .get("provenance")
+            .and_then(|provenance| provenance.get("boundary"))
+            .and_then(Value::as_str)
+    }
 }
 
 /// The single receipt a session currently resolves to, and how deep its
@@ -546,25 +557,41 @@ impl Campaign {
     }
 
     /// Absolute path of one source snapshot, given its `source` name.
+    ///
+    /// The canary snapshot lives under `snapshots/`, every other source
+    /// under `work/`: this mirrors the driver's own resolution, so the
+    /// verifier recomputes `inputDigest` against the file the receipt was
+    /// written from.
     #[must_use]
     pub fn source(&self, source: &str) -> PathBuf {
-        self.root
-            .parent()
-            .unwrap_or(&self.root)
-            .join("work")
-            .join(format!("{source}.db"))
+        let parent = self.root.parent().unwrap_or(&self.root);
+        if source == "canary" {
+            parent.join("snapshots").join("canary.db")
+        } else {
+            parent.join("work").join(format!("{source}.db"))
+        }
     }
 
     /// Absolute path the variant mapping is staged at for the applied run.
-    /// The variant identity records where the mapping was actually read from;
-    /// the pass requires that record to name exactly this path, so a digest
-    /// recomputed here is recomputed over the file the identity pins.
     #[must_use]
     pub fn variant_mapping(&self) -> PathBuf {
         self.root
             .parent()
             .unwrap_or(&self.root)
             .join("variants-mapping.json")
+    }
+
+    /// Absolute path of a freeze boundary record, by the boundary name a
+    /// receipt's provenance carries. Changed and delta-new sessions attest
+    /// to boundary snapshots rather than to the frozen work snapshots, and
+    /// the record pins which snapshot file that was.
+    #[must_use]
+    pub fn boundary_record(&self, boundary: &str) -> PathBuf {
+        self.root
+            .parent()
+            .unwrap_or(&self.root)
+            .join("boundaries")
+            .join(format!("{boundary}.json"))
     }
 
     /// Read `progress.json`, the run counters the driver writes.

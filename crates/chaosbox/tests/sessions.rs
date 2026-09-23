@@ -2128,3 +2128,148 @@ fn variant_ids_rederive_from_provenance() {
         );
     }
 }
+
+/// The canary snapshot lives under `snapshots/`, every other source under
+/// `work/`: the verifier must recompute `inputDigest` against the file the
+/// receipt was written from, and the driver resolves sources the same way.
+#[test]
+fn source_snapshots_resolve_to_the_files_receipts_were_written_from() {
+    let (held, root) = fixture();
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+
+    assert_eq!(
+        campaign.source("canary"),
+        root.parent()
+            .expect("parent")
+            .join("snapshots/canary.db")
+    );
+    assert_eq!(
+        campaign.source("primary"),
+        root.parent().expect("parent").join("work/primary.db")
+    );
+    drop(held);
+}
+
+/// A supersession receipt's source digests are recomputed against the frozen
+/// boundary snapshot its provenance pins, not against the work snapshot the
+/// base receipt was written from.
+#[test]
+fn a_supersession_receipt_verifies_against_its_boundary_snapshot() {
+    use sha2::Digest as _;
+    let (held, root) = fixture();
+    let parent = root.parent().expect("parent").to_path_buf();
+    build_sources(&root, true);
+
+    // Boundary snapshot holding the session's newer content.
+    let boundary_dir = parent.join("snapshots");
+    fs::create_dir_all(&boundary_dir).expect("snapshots");
+    let boundary_db = boundary_dir.join("v1boundary.db");
+    let connection = Connection::open(&boundary_db).expect("boundary");
+    connection
+        .execute_batch(
+            "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, time INTEGER);
+             CREATE TABLE session_message (session_id TEXT, seq INTEGER, id TEXT);
+             INSERT INTO session_v2 VALUES ('ses_fixture01', 1790166653727);
+             INSERT INTO session_message VALUES ('ses_fixture01', 1, 'msg_new');",
+        )
+        .expect("boundary rows");
+    drop(connection);
+    let boundary_bytes = fs::read(&boundary_db).expect("boundary bytes");
+    let mut hasher = Sha256::new();
+    hasher.update(&boundary_bytes);
+    let mut boundary_digest = String::with_capacity(64);
+    for byte in hasher.finalize() {
+        write!(boundary_digest, "{byte:02x}").expect("hex");
+    }
+
+    // Boundary record at the conventional path.
+    let record_dir = parent.join("boundaries");
+    fs::create_dir_all(&record_dir).expect("boundaries");
+    fs::write(
+        record_dir.join("v1.json"),
+        serde_json::to_string(&json!({
+            "boundary": "v1",
+            "snapshot": boundary_db.to_string_lossy(),
+            "snapshotSha256": boundary_digest,
+        }))
+        .expect("record serializes"),
+    )
+    .expect("record");
+
+    // Base receipt plus a supersession head attesting to the boundary.
+    let boundary_connection = Connection::open_with_flags(
+        &boundary_db,
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("boundary");
+    let input = session_digest(&boundary_connection, SESSION)
+        .expect("boundary digest")
+        .digest;
+    drop(boundary_connection);
+    let recovery_connection = Connection::open_with_flags(
+        parent.join("recovered-rows.db"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("recovery");
+    let recovery_digest =
+        recovered_hash(&recovery_connection, SESSION).expect("recovery digest");
+    drop(recovery_connection);
+    write_receipt(&root, "journal-v2", "ses_fixture01.json", &receipt(SESSION, "stale"));
+    let mut head = superseding(SESSION, &recorded_digest(&root), "journal-v2/ses_fixture01.json");
+    head["kind"] = json!("supersession");
+    head["inputDigest"] = json!(input);
+    head["recoveryDigest"] = json!(recovery_digest);
+    head["provenance"] = json!({ "boundary": "v1" });
+    write_receipt(&root, "journal-v3", "ses_fixture01.json", &head);
+    declare(&root, &[SESSION]);
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let report = verify(
+        &campaign,
+        &VerifyOptions {
+            sources: true,
+            ..every_receipt()
+        },
+    )
+    .expect("verifies");
+
+    assert!(report.source_mismatch.is_empty(), "{report:?}");
+    assert!(report.source_errors.is_empty(), "{report:?}");
+    assert_eq!(
+        report.source_coverage, report.sessions_checked,
+        "boundary sources count as covered: {report:?}"
+    );
+    assert!(report.clean(), "{report:?}");
+    drop(held);
+}
+
+/// A boundary that cannot be resolved is reported, never skipped silently.
+#[test]
+fn an_unresolvable_boundary_is_a_source_error() {
+    let (held, root) = fixture();
+    build_sources(&root, true);
+    write_receipt(&root, "journal-v2", "ses_fixture01.json", &receipt(SESSION, "stale"));
+    let mut head = superseding(
+        SESSION,
+        &recorded_digest(&root),
+        "journal-v2/ses_fixture01.json",
+    );
+    head["kind"] = json!("supersession");
+    head["provenance"] = json!({ "boundary": "v1" });
+    write_receipt(&root, "journal-v3", "ses_fixture01.json", &head);
+    declare(&root, &[SESSION]);
+
+    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let report = verify(
+        &campaign,
+        &VerifyOptions {
+            sources: true,
+            ..every_receipt()
+        },
+    )
+    .expect("report still produced");
+
+    assert_eq!(report.source_errors.len(), 1);
+    assert!(!report.clean());
+    drop(held);
+}

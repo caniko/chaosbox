@@ -347,3 +347,319 @@ fn status_prints_a_report_and_exits_zero() {
     );
     drop(held);
 }
+
+/// `adopt` pins a store into the campaign and exits `0`, printing the
+/// record it wrote.
+#[test]
+fn adopt_registers_a_store_and_exits_zero() {
+    let (held, root) = fixture();
+    let campaign = root.parent().expect("parent").to_path_buf();
+    let campaign_arg = campaign.to_string_lossy().into_owned();
+    let db_arg = root.join("destination.db").to_string_lossy().into_owned();
+
+    let output = run(&[
+        "sessions", "adopt", "--root", &campaign_arg, "--name", "staging", "--db", &db_arg,
+    ]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let record = report(&output);
+    assert_eq!(record["name"], "staging");
+    assert_eq!(record["dbPath"], db_arg);
+    assert_eq!(record["schema"]["marker"], "v2");
+    assert_eq!(record["counts"]["sessions"], 1);
+    assert_eq!(report(&output)["counts"]["messages"], 1);
+    assert_eq!(record["health"]["quickCheck"], "ok");
+    assert_eq!(record["holders"]["clear"], true);
+    assert_eq!(record["held"], false);
+    assert_eq!(record["boundaryRecord"], serde_json::Value::Null);
+    let stored: Value = serde_json::from_str(
+        &fs::read_to_string(campaign.join("adoption/staging.json")).expect("record on disk"),
+    )
+    .expect("record parses");
+    assert_eq!(stored, record, "stdout and the record file agree");
+    drop(held);
+}
+
+/// A store with writers attached is refused without `--allow-held`, and
+/// admitted with `held: true` when the flag is passed.
+#[test]
+fn adopt_refuses_a_held_store_without_the_flag() {
+    let (held, root) = fixture();
+    let campaign = root.parent().expect("parent").to_path_buf();
+    let campaign_arg = campaign.to_string_lossy().into_owned();
+    let db_path = root.join("destination.db");
+    let db_arg = db_path.to_string_lossy().into_owned();
+    // This connection holds the database file open for the whole test.
+    let _writer = Connection::open(&db_path).expect("holder");
+
+    let refused = run(&[
+        "sessions", "adopt", "--root", &campaign_arg, "--name", "staging", "--db", &db_arg,
+    ]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        !campaign.join("adoption/staging.json").exists(),
+        "a refused adoption writes no record"
+    );
+
+    let admitted = run(&[
+        "sessions",
+        "adopt",
+        "--root",
+        &campaign_arg,
+        "--name",
+        "staging",
+        "--db",
+        &db_arg,
+        "--allow-held",
+    ]);
+    assert_eq!(
+        admitted.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&admitted.stderr)
+    );
+    let record = report(&admitted);
+    assert_eq!(record["held"], true);
+    assert_eq!(record["holders"]["clear"], false);
+    drop(held);
+}
+
+/// A relative `--db` cannot be pinned, so it is refused rather than
+/// recorded against whatever directory the operator happened to run from.
+#[test]
+fn adopt_rejects_a_relative_db_path() {
+    let (held, _root) = fixture();
+    let campaign = tempfile::tempdir().expect("temp directory");
+    let campaign_arg = campaign.path().to_string_lossy().into_owned();
+
+    let output = run(&[
+        "sessions",
+        "adopt",
+        "--root",
+        &campaign_arg,
+        "--name",
+        "staging",
+        "--db",
+        "relative/opencode.db",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("absolute"), "unexpected stderr: {stderr}");
+    drop(held);
+}
+
+/// A name outside the stable key set is a usage error, not a refusal.
+#[test]
+fn an_unknown_adopt_name_is_rejected_by_the_parser() {
+    let output = run(&[
+        "sessions",
+        "adopt",
+        "--root",
+        "/nowhere",
+        "--name",
+        "archive",
+        "--db",
+        "/nowhere/opencode.db",
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+}
+
+/// `install --dry-run` prints the pinned installer and its arguments and
+/// executes nothing: the marker the script would write stays absent.
+#[test]
+fn install_dry_run_prints_the_plan_without_executing() {
+    let campaign = tempfile::tempdir().expect("temp directory");
+    let tools = campaign.path().join("tools");
+    fs::create_dir_all(&tools).expect("tools");
+    let marker = campaign.path().join("executed.marker");
+    let script = tools.join("install.mjs");
+    fs::write(
+        &script,
+        format!(
+            "import {{ writeFileSync }} from 'node:fs';\nwriteFileSync({:?}, 'ran');\n",
+            marker.to_string_lossy().into_owned()
+        ),
+    )
+    .expect("script");
+    let digest = sha256_file(&script);
+    fs::write(
+        campaign.path().join("tools.json"),
+        serde_json::to_string(&json!({
+            "tools": { "install.mjs": {
+                "path": script.to_string_lossy(),
+                "sha256": digest,
+            } },
+        }))
+        .expect("pins serialize"),
+    )
+    .expect("pins");
+    let campaign_arg = campaign.path().to_string_lossy().into_owned();
+
+    let output = run(&[
+        "sessions",
+        "install",
+        "--root",
+        &campaign_arg,
+        "--dir",
+        "/target",
+        "--source",
+        "/staged.db",
+        "--state",
+        "/state.json",
+        "--expect-sessions",
+        "7913",
+        "--dry-run",
+    ]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let plan = report(&output);
+    assert_eq!(
+        plan["installer"],
+        script.to_string_lossy().into_owned()
+    );
+    assert!(
+        !marker.exists(),
+        "dry-run must not execute the installer"
+    );
+}
+
+/// A tool whose bytes do not match the pin is refused before anything runs.
+#[test]
+fn install_refuses_a_mismatched_tool_digest() {
+    let campaign = tempfile::tempdir().expect("temp directory");
+    let tools = campaign.path().join("tools");
+    fs::create_dir_all(&tools).expect("tools");
+    let script = tools.join("install.mjs");
+    fs::write(&script, "console.log('tampered');\n").expect("script");
+    fs::write(
+        campaign.path().join("tools.json"),
+        serde_json::to_string(&json!({
+            "tools": { "install.mjs": {
+                "path": script.to_string_lossy(),
+                "sha256": "0".repeat(64),
+            } },
+        }))
+        .expect("pins serialize"),
+    )
+    .expect("pins");
+    let campaign_arg = campaign.path().to_string_lossy().into_owned();
+
+    let output = run(&[
+        "sessions",
+        "install",
+        "--root",
+        &campaign_arg,
+        "--dir",
+        "/target",
+        "--source",
+        "/staged.db",
+        "--state",
+        "/state.json",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("refusing to run"), "unexpected stderr: {stderr}");
+}
+
+/// `rollback` forwards to the pinned script and its exit code: the script
+/// here echoes its arguments and succeeds.
+#[test]
+fn rollback_forwards_to_the_pinned_script() {
+    let campaign = tempfile::tempdir().expect("temp directory");
+    let tools = campaign.path().join("tools");
+    fs::create_dir_all(&tools).expect("tools");
+    let script = tools.join("rollback.mjs");
+    fs::write(
+        &script,
+        "console.log(JSON.stringify({ argv: process.argv.slice(2), ok: true }));\n",
+    )
+    .expect("script");
+    let digest = sha256_file(&script);
+    fs::write(
+        campaign.path().join("tools.json"),
+        serde_json::to_string(&json!({
+            "tools": { "rollback.mjs": {
+                "path": script.to_string_lossy(),
+                "sha256": digest,
+            } },
+        }))
+        .expect("pins serialize"),
+    )
+    .expect("pins");
+    let campaign_arg = campaign.path().to_string_lossy().into_owned();
+
+    let output = run(&[
+        "sessions",
+        "rollback",
+        "--root",
+        &campaign_arg,
+        "--state",
+        "/state.json",
+        "--record",
+        "/record.json",
+        "--config-live",
+        "/live.json",
+        "--config-baseline",
+        "/baseline.json",
+        "--config-restore",
+        "true",
+    ]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let echoed = report(&output);
+    assert_eq!(echoed["ok"], true);
+    let argv = echoed["argv"].as_array().expect("argv echoed");
+    assert!(argv.contains(&json!("--config-restore")));
+    assert!(argv.contains(&json!("true")));
+}
+
+/// A missing `--config-*` argument is a usage error, checked before any
+/// freeze could stop a writer.
+#[test]
+fn rollback_without_its_config_arguments_is_a_usage_error() {
+    let output = run(&[
+        "sessions",
+        "rollback",
+        "--root",
+        "/nowhere",
+        "--state",
+        "/state.json",
+        "--record",
+        "/record.json",
+    ]);
+    assert_eq!(output.status.code(), Some(2));
+}
+
+/// SHA-256 over a file, the shape a tool pin carries.
+fn sha256_file(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = fs::File::open(path).expect("script readable");
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = file.read(&mut buffer).expect("script reads");
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    format!("{:x}", hasher.finalize())
+}

@@ -11,7 +11,9 @@ use clap::Subcommand;
 use serde_json::{json, Value};
 
 use crate::sessions::{
+    adopt::{AdoptOptions, adopt},
     campaign::Campaign,
+    tool::{exec_node, resolve_tool, tool_root},
     verify::{verify, VerifyOptions},
 };
 
@@ -42,6 +44,105 @@ pub enum Command {
         #[arg(long, default_value_t = false)]
         allow_partial: bool,
     },
+    /// Register a store as a campaign source.
+    Adopt {
+        /// Campaign root holding `adoption/`; defaults to
+        /// `$CHAOSBOX_SESSION_CAMPAIGN`.
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Stable key the store is adopted under.
+        #[arg(long, value_parser = ["v1", "canary", "staging", "target"])]
+        name: String,
+        /// Absolute path to the store.
+        #[arg(long)]
+        db: PathBuf,
+        /// Admit a store that still has open file descriptors, recorded as
+        /// `held: true` and excluded from count derivation.
+        #[arg(long, default_value_t = false)]
+        allow_held: bool,
+    },
+    /// Publish the staged destination to its install target.
+    Install {
+        /// Installer arguments, forwarded to the pinned script unchanged.
+        #[command(flatten)]
+        args: InstallArgs,
+    },
+    /// Reverse an install: store, package, and config together.
+    Rollback {
+        /// Rollback arguments, forwarded to the pinned script unchanged.
+        #[command(flatten)]
+        args: RollbackArgs,
+    },
+}
+
+/// Arguments forwarded to the pinned installer unchanged. The wrapper
+/// resolves the installer, verifies its digest, and forwards the exit code.
+///
+/// `--dry-run` never reaches the script: the installer has no dry-run mode,
+/// so the wrapper prints what it would execute and stops.
+#[derive(Debug, clap::Args)]
+pub struct InstallArgs {
+    /// Campaign root holding `tools.json`; defaults to
+    /// `$CHAOSBOX_SESSION_CAMPAIGN`.
+    #[arg(long)]
+    pub root: Option<PathBuf>,
+    /// Directory holding the store being replaced.
+    #[arg(long)]
+    pub dir: PathBuf,
+    /// Staged database to publish.
+    #[arg(long)]
+    pub source: PathBuf,
+    /// Installer state file (restart authority).
+    #[arg(long)]
+    pub state: PathBuf,
+    /// Expected session count; a resume supplying a different value is
+    /// refused rather than silently adopted.
+    #[arg(long)]
+    pub expect_sessions: Option<i64>,
+    /// Expected message count.
+    #[arg(long)]
+    pub expect_messages: Option<i64>,
+    /// Expected `user_version`.
+    #[arg(long)]
+    pub expect_user_version: Option<i64>,
+    /// Resume a state left mid-flight by a failure or a crash.
+    #[arg(long, default_value_t = false)]
+    pub resume: bool,
+    /// Stop early after a phase, marking the state interrupted.
+    #[arg(long)]
+    pub stop_after: Option<String>,
+    /// Print the installer and arguments without executing anything.
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
+}
+
+/// Arguments forwarded to the pinned rollback script unchanged, including
+/// `--dry-run`, which the script implements itself by walking every phase
+/// without touching anything.
+#[derive(Debug, clap::Args)]
+pub struct RollbackArgs {
+    /// Campaign root holding `tools.json`; defaults to
+    /// `$CHAOSBOX_SESSION_CAMPAIGN`.
+    #[arg(long)]
+    pub root: Option<PathBuf>,
+    /// Installer state file of the install being reversed.
+    #[arg(long)]
+    pub state: PathBuf,
+    /// Rollback record to write.
+    #[arg(long)]
+    pub record: PathBuf,
+    /// Live-generation record the probe refreshes.
+    #[arg(long)]
+    pub config_live: PathBuf,
+    /// Pre-cutover generation record the restore is asserted against.
+    #[arg(long)]
+    pub config_baseline: PathBuf,
+    /// Single Home Manager command moving package and config back together.
+    #[arg(long)]
+    pub config_restore: String,
+    /// Walk every phase, recording what would happen, touching nothing.
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
 }
 
 /// Run one subcommand and return the process exit code.
@@ -75,7 +176,100 @@ pub fn run(command: Command) -> Result<i32, String> {
             println!("{}", json!(report));
             Ok(i32::from(!report.succeeded(allow_partial)))
         }
+        Command::Adopt {
+            root,
+            name,
+            db,
+            allow_held,
+        } => {
+            let record = adopt(&AdoptOptions {
+                root,
+                name,
+                db,
+                allow_held,
+            })
+            .map_err(|error| error.to_string())?;
+            println!("{record}");
+            Ok(0)
+        }
+        Command::Install { args } => run_install(args),
+        Command::Rollback { args } => run_rollback(args),
     }
+}
+
+/// Publish through the pinned installer, forwarding its exit code.
+///
+/// # Errors
+///
+/// Returns a message when the campaign root or the installer cannot be
+/// resolved, or when the interpreter cannot be started.
+fn run_install(args: InstallArgs) -> Result<i32, String> {
+    let root = tool_root(args.root)?;
+    let installer = resolve_tool(&root, "install.mjs")?;
+    let mut forwarded = vec![
+        "--dir".to_string(),
+        args.dir.display().to_string(),
+        "--source".to_string(),
+        args.source.display().to_string(),
+        "--state".to_string(),
+        args.state.display().to_string(),
+    ];
+    for (flag, value) in [
+        ("--expect-sessions", args.expect_sessions),
+        ("--expect-messages", args.expect_messages),
+        ("--expect-user-version", args.expect_user_version),
+    ] {
+        if let Some(value) = value {
+            forwarded.push(flag.to_string());
+            forwarded.push(value.to_string());
+        }
+    }
+    if args.resume {
+        forwarded.push("--resume".to_string());
+    }
+    if let Some(phase) = args.stop_after {
+        forwarded.push("--stop-after".to_string());
+        forwarded.push(phase);
+    }
+    if args.dry_run {
+        println!(
+            "{}",
+            json!({
+                "installer": installer.display().to_string(),
+                "args": forwarded,
+                "state": args.state.display().to_string(),
+            })
+        );
+        return Ok(0);
+    }
+    exec_node(&installer, &forwarded)
+}
+
+/// Reverse through the pinned rollback script, forwarding its exit code.
+///
+/// # Errors
+///
+/// Returns a message when the campaign root or the script cannot be
+/// resolved, or when the interpreter cannot be started.
+fn run_rollback(args: RollbackArgs) -> Result<i32, String> {
+    let root = tool_root(args.root)?;
+    let rollback = resolve_tool(&root, "rollback.mjs")?;
+    let mut forwarded = vec![
+        "--state".to_string(),
+        args.state.display().to_string(),
+        "--record".to_string(),
+        args.record.display().to_string(),
+        "--config-live".to_string(),
+        args.config_live.display().to_string(),
+        "--config-baseline".to_string(),
+        args.config_baseline.display().to_string(),
+        "--config-restore".to_string(),
+        args.config_restore,
+    ];
+    if args.dry_run {
+        forwarded.push("--dry-run".to_string());
+    }
+    exec_node(&rollback, &forwarded)
 }
 
 /// Build the read-only status report for a campaign.

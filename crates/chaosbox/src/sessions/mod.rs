@@ -6,9 +6,11 @@
 //! schema, and what a passing check is allowed to claim — is written down in
 //! `docs/src/session-verification.md`.
 
+pub mod adopt;
 pub mod campaign;
 pub mod cli;
 pub mod digest;
 pub mod inventory;
 pub mod remap;
+pub mod tool;
 pub mod verify;

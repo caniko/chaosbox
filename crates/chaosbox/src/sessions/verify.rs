@@ -606,20 +606,30 @@ impl VariantPins {
             .get("mappingDigest")
             .and_then(Value::as_str)
             .ok_or_else(|| malformed("no mappingDigest"))?;
-        let staged = campaign.variant_mapping();
         let named = identity
             .body
             .get("mappingFile")
             .and_then(Value::as_str)
             .ok_or_else(|| malformed("no mappingFile"))?;
-        if Path::new(named) != staged.as_path() {
-            return Err(malformed(&format!(
-                "mappingFile names {named} instead of the staged mapping {}",
-                staged.display()
-            )));
+        // The digest is load-bearing, not the path: the rehearsal records
+        // the authoring directory while the applied run records the staged
+        // copy, and both are the same mapping exactly when the digests
+        // agree. The path must still be absolute and free of parent
+        // components, so a receipt cannot aim the recomputation elsewhere.
+        // Placement (the applied run must stage the mapping beside the
+        // driver) is the G3 procedure's check, not the verifier's.
+        let named_path = Path::new(named);
+        if !named_path.is_absolute()
+            || named_path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            }) {
+            return Err(malformed(&format!("mappingFile names {named}, not an absolute clean path")));
         }
-        let text = std::fs::read_to_string(&staged).map_err(|source| VerifyError::Mapping {
-            reason: format!("cannot read {}: {source}", staged.display()),
+        let text = std::fs::read_to_string(named_path).map_err(|source| VerifyError::Mapping {
+            reason: format!("cannot read {named}: {source}"),
         })?;
         let recomputed = mapping_variants_digest(&text).map_err(|source| VerifyError::Mapping {
             reason: format!("staged mapping does not parse: {source}"),
@@ -647,6 +657,37 @@ impl VariantPins {
     fn sanctioned(&self) -> BTreeSet<String> {
         self.entries.keys().cloned().collect()
     }
+}
+
+/// Open the frozen snapshot a boundary record pins, verifying the file
+/// still hashes to the recorded digest.
+///
+/// # Errors
+///
+/// Returns a reason when the record is missing or malformed, when it names
+/// no snapshot, when the snapshot file does not hash to the recorded
+/// digest, or when it cannot be opened.
+fn open_boundary_snapshot(campaign: &Campaign, boundary: &str) -> Result<Snapshot, String> {
+    let path = campaign.boundary_record(boundary);
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let record: Value = serde_json::from_str(&text)
+        .map_err(|error| format!("cannot parse {}: {error}", path.display()))?;
+    let (Some(snapshot), Some(expected)) = (
+        record.get("snapshot").and_then(Value::as_str),
+        record.get("snapshotSha256").and_then(Value::as_str),
+    ) else {
+        return Err(format!("{} names no snapshot", path.display()));
+    };
+    let actual = crate::sessions::tool::file_sha256(std::path::Path::new(snapshot))
+        .map_err(|error| format!("cannot hash {snapshot}: {error}"))?;
+    if actual != expected {
+        return Err(format!(
+            "{snapshot} digests as {actual} instead of the recorded {expected}"
+        ));
+    }
+    Snapshot::open(std::path::Path::new(snapshot))
+        .map_err(|error| format!("cannot open {snapshot}: {error}"))
 }
 
 /// Message ids of one session in `(seq, id)` order, the order both the
@@ -896,7 +937,31 @@ fn check_sources(
     // Variant receipts attest to a derived session, but their source
     // digests were computed against the session they derive from.
     let source_session = receipt.source_session_id().unwrap_or(&entry.session);
-    let snapshot = &sources[source];
+    // Changed and delta-new sessions attest to boundary snapshots, not to
+    // the frozen work snapshots: resolve the snapshot through the boundary
+    // record the receipt's provenance pins, caching one open snapshot per
+    // boundary. A boundary that cannot be resolved is reported, never
+    // skipped silently.
+    let snapshot = match (receipt.kind(), receipt.provenance_boundary()) {
+        (Some("supersession" | "delta-new"), Some(boundary)) => {
+            let key = format!("boundary:{boundary}");
+            if !sources.contains_key(&key) {
+                match open_boundary_snapshot(campaign, boundary) {
+                    Ok(snapshot) => {
+                        sources.insert(key.clone(), snapshot);
+                    }
+                    Err(reason) => {
+                        report
+                            .source_errors
+                            .push(format!("{}: {reason}", entry.session));
+                        return Ok(());
+                    }
+                }
+            }
+            &sources[&key]
+        }
+        _ => &sources[source],
+    };
     match session_digest(snapshot.connection(), source_session) {
         Ok(actual) => {
             if Some(actual.digest.as_str()) != Some(input) {
