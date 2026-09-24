@@ -865,3 +865,57 @@ fn install_refuses_a_tampered_transitive_import() {
         "unexpected stderr: {stderr}"
     );
 }
+
+/// The closure walk follows relative imports transitively: a file two hops
+/// from the entrypoint must be pinned too, or the tool refuses to start.
+/// Checking only the entrypoint's direct imports would execute an unattested
+/// helper through a pinned middleman.
+#[test]
+fn install_refuses_an_unpinned_import_two_hops_out() {
+    let campaign = tempfile::tempdir().expect("temp directory");
+    let tools = campaign.path().join("tools");
+    fs::create_dir_all(&tools).expect("tools");
+    let script = tools.join("install.mjs");
+    fs::write(&script, "import { x } from './lib.mjs';\nconsole.log(x);\n").expect("script");
+    let dep = tools.join("lib.mjs");
+    fs::write(
+        &dep,
+        "import { y } from './helper.mjs';\nexport const x = y;\n",
+    )
+    .expect("dep");
+    fs::write(tools.join("helper.mjs"), "export const y = 1;\n").expect("helper");
+    let script_digest = sha256_file(&script);
+    let dep_digest = sha256_file(&dep);
+    fs::write(
+        campaign.path().join("tools.json"),
+        serde_json::to_string(&json!({
+            "tools": {
+                "install.mjs": { "path": script.to_string_lossy(), "sha256": script_digest },
+                "lib.mjs": { "path": dep.to_string_lossy(), "sha256": dep_digest },
+            },
+        }))
+        .expect("pins serialize"),
+    )
+    .expect("pins");
+    let campaign_arg = campaign.path().to_string_lossy().into_owned();
+
+    let output = run(&[
+        "sessions",
+        "install",
+        "--root",
+        &campaign_arg,
+        "--dir",
+        "/target",
+        "--source",
+        "/staged.db",
+        "--state",
+        "/state.json",
+    ]);
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not pinned") && stderr.contains("helper.mjs"),
+        "unexpected stderr: {stderr}"
+    );
+}

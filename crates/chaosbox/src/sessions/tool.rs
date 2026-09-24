@@ -23,15 +23,18 @@ use sha2::{Digest, Sha256};
 ///
 /// The pin is a closure, not a single file: every entry in `tools.json`
 /// is re-hashed on every resolution, so a tampered transitive import fails
-/// even when the entrypoint itself is untouched. The requested tool's own
-/// relative imports must also resolve to pinned files — an import of an
-/// unpinned path is refused rather than executed from an unattested file.
+/// even when the entrypoint itself is untouched. The walk then starts at the
+/// requested tool and follows every relative import it declares — and every
+/// relative import *those* files declare — refusing the first hop that lands
+/// outside the pinned set. Checking only the entrypoint's direct imports
+/// would let an unpinned file three hops down execute unattested.
 ///
 /// # Errors
 ///
 /// Returns a message when the pin record is missing or unreadable, when the
 /// tool is not pinned, when any pinned file does not hash to its pin, when
-/// the tool imports an unpinned relative file, or when a file cannot be read.
+/// any file reachable through relative imports is not pinned, or when a file
+/// cannot be read.
 pub fn resolve_tool(root: &Path, name: &str) -> Result<PathBuf, String> {
     let pins = root.join("tools.json");
     let text = fs::read_to_string(&pins)
@@ -80,22 +83,45 @@ pub fn resolve_tool(root: &Path, name: &str) -> Result<PathBuf, String> {
         .get("path")
         .and_then(Value::as_str)
         .ok_or_else(|| format!("{name} has no path in {}", pins.display()))?;
-    // Relative imports of the entrypoint must resolve to pinned files. Only
-    // `./` and `../` imports can name campaign files; bare specifiers and
-    // `node:` builtins never touch the campaign. Comparison is lexical
-    // (`./lib.mjs` == `lib.mjs`), so pretty-printing never perturbs the pin.
-    let body = fs::read_to_string(Path::new(path))
-        .map_err(|error| format!("cannot read {path}: {error}"))?;
-    let tool_dir = Path::new(path)
-        .parent()
-        .ok_or_else(|| format!("{name} has no parent directory: refusing to run"))?;
-    for import in relative_imports(&body) {
-        let resolved = canonicalize_lexically(&tool_dir.join(&import));
-        if !pinned_paths.contains(&resolved) {
-            return Err(format!(
-                "{name} imports {import} which is not pinned in {}: refusing to run",
-                pins.display()
-            ));
+    // Transitive closure walk: start at the entrypoint, follow every relative
+    // import, and require each hop to be a pinned file whose own imports are
+    // then walked in turn. Only `./` and `../` imports can name campaign
+    // files; bare specifiers and `node:` builtins never touch the campaign.
+    // Comparison is lexical (`./lib.mjs` == `lib.mjs`), so pretty-printing
+    // never perturbs the pin. Every file in the walk was hashed above, so a
+    // cycle is the only way to revisit one.
+    let entry_path = canonicalize_lexically(Path::new(path));
+    let mut queue = vec![entry_path.clone()];
+    let mut walked: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    while let Some(file) = queue.pop() {
+        if !walked.insert(file.clone()) {
+            continue;
+        }
+        let body = fs::read_to_string(&file)
+            .map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+        let dir = file
+            .parent()
+            .ok_or_else(|| {
+                format!(
+                    "{} has no parent directory: refusing to run",
+                    file.display()
+                )
+            })?
+            .to_path_buf();
+        for import in relative_imports(&body) {
+            let resolved = canonicalize_lexically(&dir.join(&import));
+            if !pinned_paths.contains(&resolved) {
+                let from = if file == entry_path {
+                    name.to_string()
+                } else {
+                    file.display().to_string()
+                };
+                return Err(format!(
+                    "{from} imports {import} which is not pinned in {}: refusing to run",
+                    pins.display()
+                ));
+            }
+            queue.push(resolved);
         }
     }
     Ok(PathBuf::from(path))
