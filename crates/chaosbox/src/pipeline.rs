@@ -19,17 +19,19 @@ pub struct Pipeline<S = MemoryStore> {
 /// the budget preflight in `run --live-jev`.
 ///
 /// The cache test mirrors [`Pipeline::decide`] verbatim (same catalog
-/// digest, question set, model and rubric inputs); if decide's reuse rule
-/// changes, this function must change with it.
+/// digest, question set, model, rubric, and effective-policy inputs); if
+/// decide's reuse rule changes, this function must change with it.
 pub async fn uncached_decisions<S: chaosbox_store::Store>(
     candidates: &[Candidate],
     entities: &BTreeMap<String, Entity>,
     model_requested: &str,
     mat: &Materialization,
+    policy: &chaosbox_core::EffectivePolicy,
     store: &S,
 ) -> Result<usize, PipelineError> {
     mat.validate()?;
     let catalog = catalog_digest(candidates);
+    let policy_digest = policy.digest();
     let mut uncached = 0usize;
     for cand in candidates {
         let from = entities
@@ -46,6 +48,7 @@ pub async fn uncached_decisions<S: chaosbox_store::Store>(
             &questions,
             model_requested,
             &mat.rubric_version,
+            &policy_digest,
         );
         match store
             .find_decision(&cand.id, &qid)
@@ -72,13 +75,16 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
     }
 
     /// Snapshot -> extract -> candidates (with truncation accounting).
+    /// Scope comes from the effective policy so the snapshot identity and
+    /// the decision cache identity can never diverge on what was indexed.
     pub fn snapshot_extract(
         repo: &str,
         root: &Path,
         max_candidates: usize,
+        policy: &chaosbox_core::EffectivePolicy,
     ) -> Result<(Snapshot, Extraction, CandidateCatalog), PipelineError> {
-        let snap =
-            Snapshot::capture(repo, root).map_err(|e| PipelineError::Extract(e.to_string()))?;
+        let snap = Snapshot::capture_scoped(repo, root, &policy.scope)
+            .map_err(|e| PipelineError::Extract(e.to_string()))?;
         let ext = extract_snapshot(&snap);
         let catalog = build_candidates(&ext, max_candidates);
         Ok((snap, ext, catalog))
@@ -103,12 +109,15 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
         responder: &mut impl Responder,
         model_requested: &str,
         mat: &Materialization,
+        policy: &chaosbox_core::EffectivePolicy,
         store: &mut S,
     ) -> Result<Vec<(Candidate, Decision, Evidence)>, PipelineError> {
         mat.validate()?;
-        // Conservative cache identity: the whole-catalog digest feeds every
-        // key, so any catalog change re-asks all decisions (documented).
+        // Conservative cache identity: the whole-catalog digest plus the
+        // effective policy digest feed every key, so any catalog or consent
+        // change re-asks all decisions (documented).
         let catalog = catalog_digest(candidates);
+        let policy_digest = policy.digest();
         let mut out = Vec::new();
         for cand in candidates {
             let from = entities
@@ -125,6 +134,7 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
                 &questions,
                 model_requested,
                 &mat.rubric_version,
+                &policy_digest,
             );
             // Cache reuse: same key and never a recorded failure (retries
             // always re-ask). Evidence rebuilds byte-identically.
@@ -175,6 +185,7 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
                     &questions,
                     model_requested,
                     &mat.rubric_version,
+                    &policy_digest,
                 );
                 let decision = Decision {
                     id: deterministic_id("dec", &[&cand.id, "failed", model_requested]),
@@ -330,6 +341,7 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
                         &questions,
                         model_requested,
                         &mat.rubric_version,
+                        &policy_digest,
                     ),
                 };
                 // Evidence text copied from source spans / deterministic template.

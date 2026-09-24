@@ -95,7 +95,7 @@ fn assemble_evidence(
 /// here and is simply asked again by the next decisions run.
 ///
 /// The cache test mirrors [`Pipeline::decide`] verbatim (same catalog
-/// digest, question set, model and rubric inputs); if decide's reuse rule
+/// digest, question set, model, rubric, and effective-policy inputs); if decide's reuse rule
 /// changes, this function must change with it. The exit-4 `coverage:` gate
 /// in `main.rs` rests on exactly this test holding.
 pub async fn decide_cached<S: chaosbox_store::Store>(
@@ -103,10 +103,12 @@ pub async fn decide_cached<S: chaosbox_store::Store>(
     entities: &BTreeMap<String, Entity>,
     model_requested: &str,
     mat: &Materialization,
+    policy: &chaosbox_core::EffectivePolicy,
     store: &mut S,
 ) -> Result<Vec<(Candidate, Decision, Evidence)>, PipelineError> {
     mat.validate()?;
     let catalog = catalog_digest(candidates);
+    let policy_digest = policy.digest();
     let mut out = Vec::new();
     for cand in candidates {
         let from = entities
@@ -123,6 +125,7 @@ pub async fn decide_cached<S: chaosbox_store::Store>(
             &questions,
             model_requested,
             &mat.rubric_version,
+            &policy_digest,
         );
         let Some(stored) = store
             .find_decision(&cand.id, &qid)
@@ -160,9 +163,10 @@ pub async fn decide_cached<S: chaosbox_store::Store>(
 /// Whether a cache-only (`--no-decisions`) refresh may swing the active
 /// pointer.
 ///
-/// Cache identity is bound to the repository snapshot and the whole catalog,
-/// so an ordinary source edit leaves a capture-only run with nothing to reuse:
-/// publishing that under-covered graph would replace a relation-bearing build
+/// Cache identity is bound to the repository snapshot, the whole catalog,
+/// and the effective policy (scope, privacy, inference), so an ordinary
+/// source edit — or a scope/consent change — leaves a capture-only run with
+/// nothing to reuse: publishing that under-covered graph would replace a
 /// with a node-only one and silently drop the relations consumers are querying
 /// today. Therefore:
 ///

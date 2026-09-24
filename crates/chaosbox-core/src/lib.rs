@@ -420,6 +420,95 @@ pub enum ValidationError {
     #[error("duplicate build member: {0}")]
     /// A node or edge id inserted twice into one build.
     DuplicateMember(String),
+    #[error("policy: {0}")]
+    /// An effective ingestion/inference policy that is unknown or refuses
+    /// the requested operation. Fail-closed: unknown tokens never default
+    /// to an allowance.
+    Policy(String),
+}
+
+/// Effective ingestion + inference policy for one run (issue #8).
+///
+/// The single choke point for "what may this run read, and where may its
+/// excerpts go": the source scope (Graphify `sourcePaths` parity, empty =
+/// whole tree), the privacy class (`local` = private fleet only,
+/// `private` = no external inference ever), and the explicit external
+/// inference grant (`none` = no provider, `typesafe-jev` = Typesafe Jev
+/// for this repository alone). Granting a provider never relaxes a
+/// privacy classification.
+///
+/// The digest feeds every decision cache key, so a policy change
+/// invalidates cached decisions instead of reusing an inference that was
+/// authorized under different consent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectivePolicy {
+    /// Sorted, deduped repository-relative source directories.
+    pub scope: Vec<String>,
+    /// Privacy class: `local` or `private`.
+    pub privacy: String,
+    /// External inference grant: `none` or `typesafe-jev`.
+    pub inference: String,
+}
+
+impl EffectivePolicy {
+    /// Build a policy, normalizing the scope (sorted, deduped) and
+    /// validating the privacy/inference tokens fail-closed.
+    pub fn new(scope: &[String], privacy: &str, inference: &str) -> Result<Self, ValidationError> {
+        if privacy != "local" && privacy != "private" {
+            return Err(ValidationError::Policy(format!(
+                "unknown privacy class {privacy:?}; expected `local` or `private`"
+            )));
+        }
+        if inference != "none" && inference != "typesafe-jev" {
+            return Err(ValidationError::Policy(format!(
+                "unknown inference grant {inference:?}; expected `none` or `typesafe-jev`"
+            )));
+        }
+        let mut scope_vec: Vec<String> = scope.to_vec();
+        scope_vec.sort();
+        scope_vec.dedup();
+        Ok(Self {
+            scope: scope_vec,
+            privacy: privacy.to_owned(),
+            inference: inference.to_owned(),
+        })
+    }
+
+    /// Content identity of the policy: scope + privacy + inference.
+    /// Changing any of them changes every decision cache key.
+    #[must_use]
+    pub fn digest(&self) -> String {
+        sha256_hex(&[&self.scope.join(","), &self.privacy, &self.inference])
+    }
+
+    /// Whether live Jev inference may run under this policy: the `local`
+    /// class authorizes the private fleet only, so an external provider
+    /// additionally needs its explicit per-repository grant; `private`
+    /// never allows external inference.
+    #[must_use]
+    pub fn allows_live_jev(&self) -> bool {
+        self.privacy == "local" && self.inference == "typesafe-jev"
+    }
+
+    /// Fail-closed gate for `run --live-jev`: candidate excerpts contain
+    /// source text, so without both the `local` class and the explicit
+    /// `typesafe-jev` grant the run must refuse before spending anything.
+    /// Fixture (`--fixture-decisions`) and inference-free
+    /// (`--no-decisions`) runs are unaffected: they never egress source.
+    pub fn require_live_jev(&self) -> Result<(), ValidationError> {
+        if self.allows_live_jev() {
+            return Ok(());
+        }
+        if self.privacy == "private" {
+            return Err(ValidationError::Policy(
+                "privacy class `private` never allows external inference; use snapshot (`--no-decisions`) runs only"
+                    .into(),
+            ));
+        }
+        Err(ValidationError::Policy(
+            "live-jev needs both privacy `local` and an explicit `inference = \"typesafe-jev\"` grant; without them only fixture (`--fixture-decisions`) or snapshot (`--no-decisions`) runs are allowed".into(),
+        ))
+    }
 }
 
 /// Finite + range checks for model-returned floats.
@@ -910,5 +999,33 @@ mod tests {
             1,
             "negative evidence must not disappear"
         );
+    }
+
+    #[test]
+    fn effective_policy_is_fail_closed_and_identity_covering() {
+        let allow = EffectivePolicy::new(&[], "local", "typesafe-jev").unwrap();
+        assert!(allow.allows_live_jev());
+        assert!(allow.require_live_jev().is_ok());
+        // `local` alone never authorizes an external provider.
+        let local_only = EffectivePolicy::new(&[], "local", "none").unwrap();
+        assert!(!local_only.allows_live_jev());
+        assert!(local_only.require_live_jev().is_err());
+        // `private` never allows external inference, even with a grant.
+        let private = EffectivePolicy::new(&[], "private", "typesafe-jev").unwrap();
+        assert!(!private.allows_live_jev());
+        assert!(private.require_live_jev().is_err());
+        // Unknown tokens fail closed, never default to an allowance.
+        assert!(EffectivePolicy::new(&[], "public", "none").is_err());
+        assert!(EffectivePolicy::new(&[], "local", "openai").is_err());
+        // Every policy dimension feeds the digest: changing any of them
+        // must invalidate cached decisions.
+        let base = EffectivePolicy::new(&["cli".into()], "local", "typesafe-jev").unwrap();
+        let other_scope = EffectivePolicy::new(&["lib".into()], "local", "typesafe-jev").unwrap();
+        let other_privacy =
+            EffectivePolicy::new(&["cli".into()], "private", "typesafe-jev").unwrap();
+        let other_inference = EffectivePolicy::new(&["cli".into()], "local", "none").unwrap();
+        assert_ne!(base.digest(), other_scope.digest());
+        assert_ne!(base.digest(), other_privacy.digest());
+        assert_ne!(base.digest(), other_inference.digest());
     }
 }

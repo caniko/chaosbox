@@ -323,3 +323,75 @@ fn symlinks_never_followed() {
     files.sort_unstable();
     assert_eq!(files, ["a.rs", "outside/secret.rs", "sub/b.rs"]);
 }
+
+#[test]
+fn scoped_capture_restricts_to_subtree() {
+    let (_t, root) = tmp_repo(&[("cli/a.rs", "fn a() {}\n"), ("lib/b.rs", "fn b() {}\n")]);
+    let whole = Snapshot::capture("r", &root).unwrap();
+    assert!(whole.scope.is_empty());
+    assert_eq!(whole.files.len(), 2);
+    let scoped = Snapshot::capture_scoped("r", &root, &["cli".to_owned()]).unwrap();
+    assert_eq!(scoped.scope, vec!["cli".to_owned()]);
+    let paths: Vec<_> = scoped.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        ["cli/a.rs"],
+        "scope must not pull siblings: {paths:?}"
+    );
+    assert_ne!(
+        scoped.id, whole.id,
+        "scope is part of the snapshot identity"
+    );
+}
+
+#[test]
+fn scope_is_part_of_identity_even_for_empty_dirs() {
+    let (_t, root) = tmp_repo(&[("a.rs", "fn a() {}\n")]);
+    std::fs::create_dir_all(root.join("empty")).unwrap();
+    let whole = Snapshot::capture("r", &root).unwrap();
+    let scoped = Snapshot::capture_scoped("r", &root, &["empty".to_owned()]).unwrap();
+    assert!(scoped.files.is_empty());
+    assert_ne!(
+        scoped.id, whole.id,
+        "same file set under a different scope must still differ"
+    );
+}
+
+#[test]
+fn invalid_scope_rejected() {
+    let (_t, root) = tmp_repo(&[("a.rs", "fn a() {}\n")]);
+    for bad in [
+        "/abs".to_owned(),
+        "../escape".to_owned(),
+        "a/../b".to_owned(),
+        String::new(),
+    ] {
+        assert!(
+            Snapshot::capture_scoped("r", &root, std::slice::from_ref(&bad)).is_err(),
+            "scope {bad:?} must fail loudly"
+        );
+    }
+    assert!(
+        Snapshot::capture_scoped("r", &root, &["missing".to_owned()]).is_err(),
+        "missing scope dir must fail, never publish an empty graph"
+    );
+    assert!(
+        Snapshot::capture_scoped("r", &root, &["a.rs".to_owned()]).is_err(),
+        "scope must be a directory, not a file"
+    );
+}
+
+#[test]
+fn overlapping_scopes_dedup() {
+    let (_t, root) = tmp_repo(&[("a/x.rs", "fn x() {}\n"), ("a/b/y.rs", "fn y() {}\n")]);
+    let snap = Snapshot::capture_scoped(
+        "r",
+        &root,
+        &["a".to_owned(), "a/b".to_owned(), "a".to_owned()],
+    )
+    .unwrap();
+    assert_eq!(snap.scope, vec!["a".to_owned(), "a/b".to_owned()]);
+    let mut paths: Vec<_> = snap.files.iter().map(|f| f.path.as_str()).collect();
+    paths.sort_unstable();
+    assert_eq!(paths, ["a/b/y.rs", "a/x.rs"]);
+}

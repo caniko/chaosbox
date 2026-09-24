@@ -14,6 +14,7 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
     path: &Path,
     repo: &str,
     max_candidates: usize,
+    effective_policy: &chaosbox_core::EffectivePolicy,
     live_jev: bool,
     fixture_decisions: bool,
     no_decisions: bool,
@@ -23,21 +24,33 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
     expected_predecessor: Option<String>,
     spend: &RunSpend,
 ) -> i32 {
-    let (snap, ext, cat) = match Pipeline::<S>::snapshot_extract(repo, path, max_candidates) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("extract: {e}");
-            return 1;
-        }
-    };
+    let (snap, ext, cat) =
+        match Pipeline::<S>::snapshot_extract(repo, path, max_candidates, effective_policy) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("extract: {e}");
+                return 1;
+            }
+        };
     let cands = &cat.candidates;
     // Truncation must be observable: report what the cap selected and
-    // omitted before any decision is made.
+    // omitted before any decision is made. Scope is part of the snapshot
+    // identity, so it is reported here too: the same file set under a
+    // different scope is a different snapshot (visible in `query status`
+    // as a fingerprint change).
     eprintln!(
         "candidates: selected={} cap={} omitted={}",
         cands.len(),
         cat.cap,
         serde_json::to_string(&cat.omitted).unwrap(),
+    );
+    eprintln!(
+        "scope: {}",
+        if snap.scope.is_empty() {
+            "(whole tree)".to_owned()
+        } else {
+            snap.scope.join(",")
+        }
     );
     let entities: BTreeMap<_, _> = ext
         .entities
@@ -90,6 +103,7 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
             &entities,
             chaosbox_jev::JEV_MODEL_PINNED,
             &mat,
+            effective_policy,
             &mut pipe.store,
         )
         .await
@@ -100,8 +114,9 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
                 return 1;
             }
         };
-        // Cache identity carries the repository snapshot and the whole
-        // catalog, so an ordinary source edit leaves nothing reusable.
+        // Cache identity carries the repository snapshot, the whole
+        // catalog, and the effective policy, so an ordinary source edit (or
+        // a scope/consent change) leaves nothing reusable.
         // Publishing that graph would swing the active pointer onto a build
         // with fewer relations than the one consumers are querying today;
         // keep it instead and report the pending work. Exit 4 means "kept
@@ -133,6 +148,14 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         }
         reused
     } else if live_jev {
+        // Fail-closed consent gate first: candidate excerpts contain source
+        // text, so live inference needs both the `local` privacy class and
+        // the explicit `typesafe-jev` grant. Fixture and snapshot runs never
+        // egress source and are unaffected.
+        if let Err(e) = effective_policy.require_live_jev() {
+            eprintln!("live-jev refused: {e}");
+            return 1;
+        }
         // Fail fast without credentials: otherwise every decision degrades
         // to Failed and the run exits 0 with an empty graph.
         if chaosbox_jev::JevClient::api_key().is_none() {
@@ -158,6 +181,7 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
             &entities,
             chaosbox_jev::JEV_MODEL_PINNED,
             &mat,
+            effective_policy,
             &pipe.store,
         )
         .await
@@ -195,6 +219,7 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
             &mut responder,
             chaosbox_jev::JEV_MODEL_PINNED,
             &mat,
+            effective_policy,
             &mut pipe.store,
         )
         .await;
@@ -227,6 +252,7 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
             &mut responder,
             "fixture-test",
             &mat,
+            effective_policy,
             &mut pipe.store,
         )
         .await

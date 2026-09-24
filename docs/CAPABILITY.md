@@ -101,6 +101,17 @@ described in the new book chapters are not yet implemented.
   excluded); batches with failed decisions refuse to publish so the last
   good build stays active (outcome counts on stderr); MCP requires an
   explicit repo and bounds search limits, path hops, and traversal visits
+- Source scopes + effective policy identity (issue #8): explicit
+  `--source-paths` restricts capture to subtrees (Graphify `sourcePaths`
+  parity; validated fail-closed, stored on the snapshot, part of the
+  snapshot id so `query status` fingerprints scope changes); `EffectivePolicy`
+  (`scope` + `privacy` + `inference`) gates `run --live-jev` (needs `local` +
+  `typesafe-jev`; `private` never allows external inference; fixture and
+  `--no-decisions` runs never egress source) and its digest feeds every
+  decision cache key, so consent changes invalidate rather than reuse;
+  provider key precedence (`CHAOSBOX_JEV_API_KEY_FILE` then `TYPESAFE_API_KEY`,
+  single choke point, ambient provider vars never consulted); MCP stays
+  read-only with no credential loading (tested)
 - Gel backend removed (2026-09-23): `chaosbox-gel` crate, `dbschema/`,
   EdgeQL assets, and Gel CI jobs deleted; shared abstractions relocated to
   `chaosbox-store` (`Store`/`GraphQueries` traits, `MemoryStore`, conformance

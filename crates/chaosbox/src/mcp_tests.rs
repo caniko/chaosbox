@@ -103,3 +103,31 @@ async fn calls_require_initialization_shape() {
     .await;
     assert_eq!(resp["error"]["code"], -32602, "{resp}");
 }
+
+#[test]
+fn mcp_tool_set_loads_no_provider_credentials() {
+    // Issue #8: the read-only MCP server never loads Jev credentials. The
+    // tool definitions are static and credential-free, and this crate's
+    // MCP path never calls `JevClient::api_key`: grep the source rather
+    // than trusting the shape alone, so a future mutation tool cannot slip
+    // past the closed set unnoticed.
+    let defs = mcp_tool_defs();
+    assert_eq!(defs.len(), 9);
+    let names: Vec<_> = defs
+        .iter()
+        .map(|d| d["name"].as_str().unwrap_or_default())
+        .collect();
+    for forbidden in [
+        "migrate", "ingest", "annotate", "evaluate", "decide", "run", "db",
+    ] {
+        assert!(
+            !names.contains(&forbidden),
+            "MCP must stay read-only: {names:?}"
+        );
+    }
+    let src = include_str!("mcp_server.rs");
+    assert!(
+        !src.contains("api_key"),
+        "mcp_server.rs must never load provider credentials"
+    );
+}

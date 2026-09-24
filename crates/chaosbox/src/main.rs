@@ -61,6 +61,14 @@ enum Command {
         path: PathBuf,
         #[arg(long, default_value = "demo")]
         repo: String,
+        /// Explicit source scope, repository-relative (Graphify `sourcePaths`
+        /// parity, repeatable). Empty means the whole tree. Non-empty
+        /// restricts capture to those subtrees so a workspace root cannot
+        /// silently pull sibling checkouts; scope is part of the snapshot
+        /// id and therefore visible in `query status` as a fingerprint
+        /// change.
+        #[arg(long = "source-paths")]
+        source_paths: Vec<String>,
     },
     /// Extract deterministic facts + candidates.
     Extract {
@@ -69,6 +77,9 @@ enum Command {
         repo: String,
         #[arg(long, default_value_t = 200)]
         max_candidates: usize,
+        /// Explicit source scope (see `snapshot --source-paths`).
+        #[arg(long = "source-paths")]
+        source_paths: Vec<String>,
     },
     /// Run the full pipeline (live Jev decisions by default; fixture
     /// decisions only with --fixture-decisions, for disposable/test graphs;
@@ -80,6 +91,21 @@ enum Command {
         repo: String,
         #[arg(long, default_value_t = 200)]
         max_candidates: usize,
+        /// Explicit source scope (see `snapshot --source-paths`).
+        #[arg(long = "source-paths")]
+        source_paths: Vec<String>,
+        /// Privacy class for this run: `local` (private fleet only) or
+        /// `private` (no external inference ever). Unknown values fail
+        /// closed. Part of the decision cache identity.
+        #[arg(long, default_value = "local")]
+        privacy: String,
+        /// External inference grant for this run: `none` (no provider) or
+        /// `typesafe-jev` (Typesafe Jev for this repository alone).
+        /// Granting a provider never relaxes a privacy classification.
+        /// Part of the decision cache identity; `run --live-jev` additionally
+        /// requires `local` + `typesafe-jev` together.
+        #[arg(long, default_value = "none")]
+        inference: String,
         /// Use the live Jev API (needs `CHAOSBOX_JEV_API_KEY_FILE`) instead of
         /// the deterministic fixture. Real inference, real spend.
         #[arg(long, default_value_t = false, conflicts_with = "no_decisions")]
@@ -227,8 +253,17 @@ async fn main() {
                 std::process::exit(1);
             }
         },
-        Command::Snapshot { path, repo } => match Snapshot::capture(&repo, &path) {
-            Ok(s) => println!(r#"{{"snapshot":"{}","files":{}}}"#, s.id, s.files.len()),
+        Command::Snapshot {
+            path,
+            repo,
+            source_paths,
+        } => match Snapshot::capture_scoped(&repo, &path, &source_paths) {
+            Ok(s) => println!(
+                r#"{{"snapshot":"{}","files":{},"scope":{}}}"#,
+                s.id,
+                s.files.len(),
+                serde_json::to_string(&s.scope).unwrap(),
+            ),
             Err(e) => {
                 eprintln!("snapshot failed: {e}");
                 std::process::exit(1);
@@ -238,24 +273,38 @@ async fn main() {
             path,
             repo,
             max_candidates,
-        } => match Pipeline::<MemoryStore>::snapshot_extract(&repo, &path, max_candidates) {
-            Ok((snap, ext, cat)) => println!(
-                r#"{{"snapshot":"{}","entities":{},"candidates":{},"selected":{},"omitted":{}}}"#,
-                snap.id,
-                ext.entities.len(),
-                cat.candidates.len(),
-                cat.selected.values().sum::<u64>(),
-                serde_json::to_string(&cat.omitted).unwrap(),
-            ),
-            Err(e) => {
-                eprintln!("extract failed: {e}");
-                std::process::exit(1);
+            source_paths,
+        } => {
+            let policy = match chaosbox_core::EffectivePolicy::new(&source_paths, "local", "none") {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("extract failed: {e}");
+                    std::process::exit(1);
+                }
+            };
+            match Pipeline::<MemoryStore>::snapshot_extract(&repo, &path, max_candidates, &policy) {
+                Ok((snap, ext, cat)) => println!(
+                    r#"{{"snapshot":"{}","entities":{},"candidates":{},"selected":{},"omitted":{},"scope":{}}}"#,
+                    snap.id,
+                    ext.entities.len(),
+                    cat.candidates.len(),
+                    cat.selected.values().sum::<u64>(),
+                    serde_json::to_string(&cat.omitted).unwrap(),
+                    serde_json::to_string(&snap.scope).unwrap(),
+                ),
+                Err(e) => {
+                    eprintln!("extract failed: {e}");
+                    std::process::exit(1);
+                }
             }
-        },
+        }
         Command::Run {
             path,
             repo,
             max_candidates,
+            source_paths,
+            privacy,
+            inference,
             live_jev,
             fixture_decisions,
             no_decisions,
@@ -263,6 +312,14 @@ async fn main() {
             max_input_tokens,
             max_retries,
         } => {
+            let policy =
+                match chaosbox_core::EffectivePolicy::new(&source_paths, &privacy, &inference) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("run failed: {e}");
+                        std::process::exit(1);
+                    }
+                };
             // Live spend of this run. Every exit prints it exactly once (via
             // `usage`), so a batching caller can debit what this repository
             // dispatched even when the run dies before it publishes.
@@ -285,6 +342,7 @@ async fn main() {
                         &path,
                         &repo,
                         max_candidates,
+                        &policy,
                         live_jev,
                         fixture_decisions,
                         no_decisions,
@@ -331,6 +389,7 @@ async fn main() {
                         &path,
                         &repo,
                         max_candidates,
+                        &policy,
                         live_jev,
                         fixture_decisions,
                         no_decisions,

@@ -13,6 +13,10 @@ fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo-repo")
 }
 
+fn test_policy() -> chaosbox_core::EffectivePolicy {
+    chaosbox_core::EffectivePolicy::new(&[], "local", "typesafe-jev").unwrap()
+}
+
 #[tokio::test]
 // Long end-to-end fixture test; splitting it apart is the owning
 // session's refactor. Allowed to keep CI unblocked.
@@ -20,10 +24,12 @@ fn fixture_root() -> PathBuf {
 async fn vertical_slice_publish_query_incremental() {
     let root = fixture_root();
     assert!(root.exists(), "fixture repo missing at {root:?}");
+    let policy = test_policy();
 
     // 1-2. snapshot + deterministic extraction/candidates (with truncation
     // accounting: selected/omitted by reason are part of the contract).
-    let (snap, ext, cat) = Pipeline::<MemoryStore>::snapshot_extract("demo", &root, 200).unwrap();
+    let (snap, ext, cat) =
+        Pipeline::<MemoryStore>::snapshot_extract("demo", &root, 200, &policy).unwrap();
     assert!(
         ext.entities.len() > 10,
         "expected entities, got {}",
@@ -79,6 +85,7 @@ async fn vertical_slice_publish_query_incremental() {
         &mut responder,
         chaosbox_jev::JEV_MODEL_PINNED,
         &mat,
+        &policy,
         &mut pipe.store,
     )
     .await
@@ -121,7 +128,7 @@ async fn vertical_slice_publish_query_incremental() {
     std::fs::remove_file(tmp_root.join("greeter.py")).unwrap();
     std::fs::write(tmp_root.join("notes.txt"), "changed notes about hello\n").unwrap();
     let (snap2, ext2, cat2) =
-        Pipeline::<MemoryStore>::snapshot_extract("demo", tmp_root, 200).unwrap();
+        Pipeline::<MemoryStore>::snapshot_extract("demo", tmp_root, 200, &policy).unwrap();
     let cands2 = &cat2.candidates;
     assert_ne!(snap.id, snap2.id, "changed sources => new snapshot");
     pipe.store
@@ -140,6 +147,7 @@ async fn vertical_slice_publish_query_incremental() {
         &mut responder2,
         chaosbox_jev::JEV_MODEL_PINNED,
         &mat,
+        &policy,
         &mut pipe.store,
     )
     .await

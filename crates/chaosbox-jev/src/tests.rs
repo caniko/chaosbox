@@ -91,9 +91,13 @@ fn cache_key_changes_with_inputs() {
             criteria: None,
         },
     )]);
-    let k1 = cache_key("s", "c", &q, JEV_MODEL_PINNED, "r1");
-    let k2 = cache_key("s", "c", &q, JEV_MODEL_PINNED, "r2");
+    let k1 = cache_key("s", "c", &q, JEV_MODEL_PINNED, "r1", "p1");
+    let k2 = cache_key("s", "c", &q, JEV_MODEL_PINNED, "r2", "p1");
     assert_ne!(k1, k2);
+    // Effective policy is part of the identity: the same sources under
+    // different consent must not reuse each other's inference.
+    let k3 = cache_key("s", "c", &q, JEV_MODEL_PINNED, "r1", "p2");
+    assert_ne!(k1, k3);
 }
 
 #[test]
@@ -121,4 +125,42 @@ fn no_ambient_provider_fallback() {
     ] {
         assert!(!format!("{:?}", JevClient::api_key()).contains(v));
     }
+}
+
+#[test]
+fn api_key_file_wins_then_env() {
+    // Single choke point (issue #8): file first, env second, ambient
+    // provider vars never consulted. Env is process-global: save and
+    // restore so parallel tests never observe our values. No other test
+    // writes these two names, so save/restore is sufficient (edition 2021:
+    // `set_var` is safe here; the 2024 `unsafe` migration does not apply).
+    let old_file = std::env::var("CHAOSBOX_JEV_API_KEY_FILE").ok();
+    let old_env = std::env::var("TYPESAFE_API_KEY").ok();
+    let restore = |old_file: &Option<String>, old_env: &Option<String>| {
+        match old_file {
+            Some(v) => std::env::set_var("CHAOSBOX_JEV_API_KEY_FILE", v),
+            None => std::env::remove_var("CHAOSBOX_JEV_API_KEY_FILE"),
+        }
+        match old_env {
+            Some(v) => std::env::set_var("TYPESAFE_API_KEY", v),
+            None => std::env::remove_var("TYPESAFE_API_KEY"),
+        }
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("key");
+    std::fs::write(&file, "file-key\n").unwrap();
+    std::env::set_var("CHAOSBOX_JEV_API_KEY_FILE", &file);
+    std::env::set_var("TYPESAFE_API_KEY", "env-key");
+    assert_eq!(JevClient::api_key().as_deref(), Some("file-key"));
+    // Empty file falls through to env rather than authenticating empty.
+    std::fs::write(&file, "  \n").unwrap();
+    assert_eq!(JevClient::api_key().as_deref(), Some("env-key"));
+    // Missing file falls through to env the same way.
+    std::env::set_var("CHAOSBOX_JEV_API_KEY_FILE", dir.path().join("absent"));
+    assert_eq!(JevClient::api_key().as_deref(), Some("env-key"));
+    // Neither source means no key (fail fast at `run --live-jev`).
+    std::env::remove_var("CHAOSBOX_JEV_API_KEY_FILE");
+    std::env::remove_var("TYPESAFE_API_KEY");
+    assert_eq!(JevClient::api_key(), None);
+    restore(&old_file, &old_env);
 }

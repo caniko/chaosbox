@@ -12,10 +12,16 @@ fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo-repo")
 }
 
+fn test_policy() -> chaosbox_core::EffectivePolicy {
+    chaosbox_core::EffectivePolicy::new(&[], "local", "typesafe-jev").unwrap()
+}
+
 #[tokio::test]
 async fn preflight_counts_uncached_then_cached_then_failed() {
     let root = fixture_root();
-    let (snap, ext, cat) = Pipeline::<MemoryStore>::snapshot_extract("demo", &root, 200).unwrap();
+    let policy = test_policy();
+    let (snap, ext, cat) =
+        Pipeline::<MemoryStore>::snapshot_extract("demo", &root, 200, &policy).unwrap();
     let cands = &cat.candidates;
     assert!(!cands.is_empty(), "fixture must yield candidates");
     let entities: BTreeMap<_, _> = ext
@@ -36,6 +42,7 @@ async fn preflight_counts_uncached_then_cached_then_failed() {
         &entities,
         chaosbox_jev::JEV_MODEL_PINNED,
         &mat,
+        &policy,
         &store,
     )
     .await
@@ -50,6 +57,7 @@ async fn preflight_counts_uncached_then_cached_then_failed() {
         &mut responder,
         chaosbox_jev::JEV_MODEL_PINNED,
         &mat,
+        &policy,
         &mut store,
     )
     .await
@@ -60,6 +68,7 @@ async fn preflight_counts_uncached_then_cached_then_failed() {
         &entities,
         chaosbox_jev::JEV_MODEL_PINNED,
         &mat,
+        &policy,
         &store,
     )
     .await
@@ -81,6 +90,7 @@ async fn preflight_counts_uncached_then_cached_then_failed() {
         &entities,
         chaosbox_jev::JEV_MODEL_PINNED,
         &mat,
+        &policy,
         &retry_store,
     )
     .await

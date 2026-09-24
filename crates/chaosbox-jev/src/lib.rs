@@ -264,7 +264,10 @@ pub fn check_context_limits(
     Ok(())
 }
 
-/// Cache identity: all decision inputs. Thresholds excluded (materialization).
+/// Cache identity: all decision inputs, including the effective
+/// ingestion/inference policy digest. Thresholds excluded (materialization).
+/// A policy change (scope, privacy, inference) invalidates cached decisions
+/// instead of reusing an inference authorized under different consent.
 #[must_use]
 pub fn cache_key(
     source_digest: &str,
@@ -272,11 +275,19 @@ pub fn cache_key(
     ordered_questions: &BTreeMap<String, Question>,
     model: &str,
     rubric_version: &str,
+    policy_digest: &str,
 ) -> String {
     let q = serde_json::to_string(ordered_questions).unwrap_or_default();
     format!(
         "jev:{}",
-        sha256_hex(&[source_digest, catalog_digest, &q, model, rubric_version])
+        sha256_hex(&[
+            source_digest,
+            catalog_digest,
+            &q,
+            model,
+            rubric_version,
+            policy_digest
+        ])
     )
 }
 
@@ -308,6 +319,13 @@ impl JevClient {
 
     /// Read API key: explicit file first, then explicit env for operators.
     /// Never auto-discovered from ambient OpenAI/Anthropic/Gemini/Ollama vars.
+    ///
+    /// Precedence (single choke point, issue #8): `CHAOSBOX_JEV_API_KEY_FILE`
+    /// (Nix-managed secret file) wins when it yields a non-empty secret;
+    /// otherwise `TYPESAFE_API_KEY` (ambient env) is used. An empty or
+    /// unreadable file falls through to the env var rather than failing,
+    /// but a missing key overall fails fast at `run --live-jev` before any
+    /// spend. Secret values never appear in diagnostics.
     #[must_use]
     pub fn api_key() -> Option<String> {
         if let Ok(f) = std::env::var("CHAOSBOX_JEV_API_KEY_FILE") {

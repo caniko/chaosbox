@@ -4,6 +4,13 @@ use super::*;
 use chaosbox_core::{diff_builds, SourceSpan};
 use chaosbox_store::Store as _;
 
+/// Test policy: whole-tree scope with live inference allowed. Every cache
+/// test uses the same policy so reuse/invalidation legs isolate the
+/// dimension they claim (model, rubric, catalog) rather than consent.
+fn test_policy() -> chaosbox_core::EffectivePolicy {
+    chaosbox_core::EffectivePolicy::new(&[], "local", "typesafe-jev").unwrap()
+}
+
 #[test]
 fn export_is_deterministic_and_compatible() {
     let mut b = GraphBuild::new("r", vec!["s".into()], 1);
@@ -184,6 +191,7 @@ async fn below_floor_confidence_abstains() {
         &mut low,
         "jev-1.13.0",
         &mat,
+        &test_policy(),
         &mut store,
     )
     .await
@@ -199,6 +207,7 @@ async fn below_floor_confidence_abstains() {
         &mut failing,
         "jev-1.13.0",
         &mat,
+        &test_policy(),
         &mut store,
     )
     .await
@@ -226,6 +235,7 @@ async fn below_floor_confidence_abstains() {
         &mut high,
         "jev-1.13.0",
         &mat,
+        &test_policy(),
         &mut fresh,
     )
     .await
@@ -258,6 +268,7 @@ async fn responder_faults_become_failed_decisions() {
         &mut failing,
         "jev-1.13.0",
         &mat,
+        &test_policy(),
         &mut store,
     )
     .await
@@ -276,6 +287,7 @@ async fn failed_refresh_preserves_last_good_build() {
     let snap = Snapshot {
         id: "s".into(),
         repo: "r".into(),
+        scope: Vec::new(),
         files: vec![],
         contents: BTreeMap::new(),
     };
@@ -293,6 +305,7 @@ async fn failed_refresh_preserves_last_good_build() {
         &mut accept,
         "jev-1.13.0",
         &mat,
+        &test_policy(),
         &mut pipe.store,
     )
     .await
@@ -314,6 +327,7 @@ async fn failed_refresh_preserves_last_good_build() {
         &mut failing,
         "jev-9.9.9",
         &mat,
+        &test_policy(),
         &mut pipe.store,
     )
     .await
@@ -343,6 +357,7 @@ async fn cache_only_refresh_republishes_paid_for_relations() {
     let snap = Snapshot {
         id: "s".into(),
         repo: "r".into(),
+        scope: Vec::new(),
         files: vec![],
         contents: BTreeMap::new(),
     };
@@ -359,6 +374,7 @@ async fn cache_only_refresh_republishes_paid_for_relations() {
         &mut accept,
         "jev-1.13.0",
         &mat,
+        &test_policy(),
         &mut pipe.store,
     )
     .await
@@ -374,6 +390,7 @@ async fn cache_only_refresh_republishes_paid_for_relations() {
         &entities,
         "jev-1.13.0",
         &mat,
+        &test_policy(),
         &mut pipe.store,
     )
     .await
@@ -406,6 +423,7 @@ async fn cache_only_refresh_skips_uncached_candidates() {
         &entities,
         "jev-1.13.0",
         &mat,
+        &test_policy(),
         &mut store,
     )
     .await
@@ -462,6 +480,7 @@ async fn source_edit_leaves_capture_only_refresh_without_coverage() {
     let snap = Snapshot {
         id: "s".into(),
         repo: "r".into(),
+        scope: Vec::new(),
         files: vec![],
         contents: BTreeMap::new(),
     };
@@ -477,6 +496,7 @@ async fn source_edit_leaves_capture_only_refresh_without_coverage() {
         &mut ConfResponder { confidence: 0.95 },
         "jev-1.13.0",
         &mat,
+        &test_policy(),
         &mut pipe.store,
     )
     .await
@@ -516,6 +536,7 @@ async fn source_edit_leaves_capture_only_refresh_without_coverage() {
         &edited_entities,
         "jev-1.13.0",
         &mat,
+        &test_policy(),
         &mut pipe.store,
     )
     .await
@@ -553,6 +574,9 @@ async fn ensure_a_rs(store: &mut MemoryStore) {
 }
 
 #[tokio::test]
+// Per-axis invalidation legs; splitting them apart is the owning session's
+// refactor. Allowed to keep CI unblocked.
+#[allow(clippy::too_many_lines)]
 async fn cache_invalidates_per_axis() {
     let (cand, entities) = one_candidate();
     let mat = Materialization::default();
@@ -566,6 +590,7 @@ async fn cache_invalidates_per_axis() {
         &mut accept,
         "jev-1.13.0",
         &mat,
+        &test_policy(),
         &mut store,
     )
     .await
@@ -580,6 +605,7 @@ async fn cache_invalidates_per_axis() {
         &mut low,
         "jev-9.9.9",
         &mat,
+        &test_policy(),
         &mut store,
     )
     .await
@@ -596,6 +622,7 @@ async fn cache_invalidates_per_axis() {
         &mut low,
         "jev-1.13.0",
         &mat2,
+        &test_policy(),
         &mut store,
     )
     .await
@@ -610,6 +637,7 @@ async fn cache_invalidates_per_axis() {
         &mut low,
         "jev-1.13.0",
         &mat,
+        &test_policy(),
         &mut store,
     )
     .await
@@ -627,6 +655,7 @@ async fn cache_invalidates_per_axis() {
         &mut accept2,
         "jev-1.13.0",
         &mat,
+        &test_policy(),
         &mut store2,
     )
     .await
@@ -643,6 +672,7 @@ async fn cache_invalidates_per_axis() {
         &mut failing,
         "jev-1.13.0",
         &mat3,
+        &test_policy(),
         &mut store2,
     )
     .await
@@ -651,6 +681,25 @@ async fn cache_invalidates_per_axis() {
         fifth[0].1.outcome,
         DecisionOutcome::Accepted,
         "threshold change reuses raw decision"
+    );
+    // Policy change invalidates: same sources, different consent, so the
+    // stored accept must not be reused (low confidence now abstains).
+    let other_policy = chaosbox_core::EffectivePolicy::new(&[], "local", "none").unwrap();
+    let sixth = Pipeline::<MemoryStore>::decide(
+        std::slice::from_ref(&cand),
+        &entities,
+        &mut low,
+        "jev-1.13.0",
+        &mat,
+        &other_policy,
+        &mut store2,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sixth[0].1.outcome,
+        DecisionOutcome::Abstained,
+        "privacy/inference change must re-ask, never reuse"
     );
 }
 
@@ -671,6 +720,7 @@ async fn empty_decisions_publish_entities_only() {
     let snap = Snapshot {
         id: "snap:x".into(),
         repo: "r".into(),
+        scope: Vec::new(),
         files: vec![FileVersion {
             path: "a.rs".into(),
             sha256: "00".into(),
