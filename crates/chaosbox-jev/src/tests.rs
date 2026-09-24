@@ -101,6 +101,120 @@ fn cache_key_changes_with_inputs() {
 }
 
 #[test]
+fn reuse_key_is_snapshot_and_catalog_independent() {
+    // Issue #12 Slice 1: the reuse key must survive what the repo-wide
+    // cache key deliberately does not — a new snapshot id and a changed
+    // catalog — while still covering the relation's own evidence and
+    // consent. Entity/candidate ids never enter: they rewrite on every
+    // snapshot by design.
+    let q = BTreeMap::from([(
+        "rel".into(),
+        Question::Noul {
+            instructions: "y?".into(),
+            criteria: None,
+        },
+    )]);
+    let base = reuse_key(
+        "r",
+        "calls",
+        "structural",
+        "a.rs",
+        "a",
+        "b.rs",
+        "b",
+        "a calls b",
+        &q,
+        JEV_MODEL_PINNED,
+        "rubric-v1",
+        "policy-1",
+    );
+    assert!(base.starts_with("jev-reuse:"));
+    // Same relation, different snapshot/catalog context: stable. (Snapshot
+    // and catalog digests are not parameters at all, so there is nothing
+    // to vary — the assertion is that the function signature excludes
+    // them by construction.)
+    let same = reuse_key(
+        "r",
+        "calls",
+        "structural",
+        "a.rs",
+        "a",
+        "b.rs",
+        "b",
+        "a calls b",
+        &q,
+        JEV_MODEL_PINNED,
+        "rubric-v1",
+        "policy-1",
+    );
+    assert_eq!(base, same);
+    // The relation's own evidence changed: must re-ask.
+    let changed_excerpt = reuse_key(
+        "r",
+        "calls",
+        "structural",
+        "a.rs",
+        "a",
+        "b.rs",
+        "b",
+        "a calls c",
+        &q,
+        JEV_MODEL_PINNED,
+        "rubric-v1",
+        "policy-1",
+    );
+    assert_ne!(base, changed_excerpt);
+    // Consent changed: must re-ask, never reuse across policy.
+    let changed_policy = reuse_key(
+        "r",
+        "calls",
+        "structural",
+        "a.rs",
+        "a",
+        "b.rs",
+        "b",
+        "a calls b",
+        &q,
+        JEV_MODEL_PINNED,
+        "rubric-v1",
+        "policy-2",
+    );
+    assert_ne!(base, changed_policy);
+    // Model/rubric changed: must re-ask.
+    let changed_model = reuse_key(
+        "r",
+        "calls",
+        "structural",
+        "a.rs",
+        "a",
+        "b.rs",
+        "b",
+        "a calls b",
+        &q,
+        "jev-9.9.9",
+        "rubric-v1",
+        "policy-1",
+    );
+    assert_ne!(base, changed_model);
+    // A different relation triple is a different key.
+    let other_rel = reuse_key(
+        "r",
+        "calls",
+        "structural",
+        "a.rs",
+        "a",
+        "c.rs",
+        "c",
+        "a calls b",
+        &q,
+        JEV_MODEL_PINNED,
+        "rubric-v1",
+        "policy-1",
+    );
+    assert_ne!(base, other_rel);
+}
+
+#[test]
 fn answer_wire_shape_round_trips() {
     // The "type" discriminant appears exactly once; variant structs must
     // not carry their own copy (serde consumes the tag before decoding).
@@ -125,42 +239,4 @@ fn no_ambient_provider_fallback() {
     ] {
         assert!(!format!("{:?}", JevClient::api_key()).contains(v));
     }
-}
-
-#[test]
-fn api_key_file_wins_then_env() {
-    // Single choke point (issue #8): file first, env second, ambient
-    // provider vars never consulted. Env is process-global: save and
-    // restore so parallel tests never observe our values. No other test
-    // writes these two names, so save/restore is sufficient (edition 2021:
-    // `set_var` is safe here; the 2024 `unsafe` migration does not apply).
-    let old_file = std::env::var("CHAOSBOX_JEV_API_KEY_FILE").ok();
-    let old_env = std::env::var("TYPESAFE_API_KEY").ok();
-    let restore = |old_file: &Option<String>, old_env: &Option<String>| {
-        match old_file {
-            Some(v) => std::env::set_var("CHAOSBOX_JEV_API_KEY_FILE", v),
-            None => std::env::remove_var("CHAOSBOX_JEV_API_KEY_FILE"),
-        }
-        match old_env {
-            Some(v) => std::env::set_var("TYPESAFE_API_KEY", v),
-            None => std::env::remove_var("TYPESAFE_API_KEY"),
-        }
-    };
-    let dir = tempfile::tempdir().unwrap();
-    let file = dir.path().join("key");
-    std::fs::write(&file, "file-key\n").unwrap();
-    std::env::set_var("CHAOSBOX_JEV_API_KEY_FILE", &file);
-    std::env::set_var("TYPESAFE_API_KEY", "env-key");
-    assert_eq!(JevClient::api_key().as_deref(), Some("file-key"));
-    // Empty file falls through to env rather than authenticating empty.
-    std::fs::write(&file, "  \n").unwrap();
-    assert_eq!(JevClient::api_key().as_deref(), Some("env-key"));
-    // Missing file falls through to env the same way.
-    std::env::set_var("CHAOSBOX_JEV_API_KEY_FILE", dir.path().join("absent"));
-    assert_eq!(JevClient::api_key().as_deref(), Some("env-key"));
-    // Neither source means no key (fail fast at `run --live-jev`).
-    std::env::remove_var("CHAOSBOX_JEV_API_KEY_FILE");
-    std::env::remove_var("TYPESAFE_API_KEY");
-    assert_eq!(JevClient::api_key(), None);
-    restore(&old_file, &old_env);
 }

@@ -148,6 +148,40 @@ fn use_test_key(name: &str) {
     std::env::set_var("TYPESAFE_API_KEY", format!("test-key-{name}"));
 }
 
+#[test]
+fn api_key_file_wins_then_env() {
+    // Single choke point (issue #8): file first, env second, ambient
+    // provider vars never consulted. Holds the shared env lock like every
+    // other credential test: the key environment is process-global.
+    let _guard = env_lock().lock().unwrap();
+    let old_file = std::env::var("CHAOSBOX_JEV_API_KEY_FILE").ok();
+    let old_env = std::env::var("TYPESAFE_API_KEY").ok();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("key");
+    std::fs::write(&file, "file-key\n").unwrap();
+    std::env::set_var("CHAOSBOX_JEV_API_KEY_FILE", &file);
+    std::env::set_var("TYPESAFE_API_KEY", "env-key");
+    assert_eq!(JevClient::api_key().as_deref(), Some("file-key"));
+    // Empty file falls through to env rather than authenticating empty.
+    std::fs::write(&file, "  \n").unwrap();
+    assert_eq!(JevClient::api_key().as_deref(), Some("env-key"));
+    // Missing file falls through to env the same way.
+    std::env::set_var("CHAOSBOX_JEV_API_KEY_FILE", dir.path().join("absent"));
+    assert_eq!(JevClient::api_key().as_deref(), Some("env-key"));
+    // Neither source means no key (fail fast at `run --live-jev`).
+    std::env::remove_var("CHAOSBOX_JEV_API_KEY_FILE");
+    std::env::remove_var("TYPESAFE_API_KEY");
+    assert_eq!(JevClient::api_key(), None);
+    match old_file {
+        Some(v) => std::env::set_var("CHAOSBOX_JEV_API_KEY_FILE", v),
+        None => std::env::remove_var("CHAOSBOX_JEV_API_KEY_FILE"),
+    }
+    match old_env {
+        Some(v) => std::env::set_var("TYPESAFE_API_KEY", v),
+        None => std::env::remove_var("TYPESAFE_API_KEY"),
+    }
+}
+
 #[tokio::test]
 async fn retry_after_honored_then_success_over_http() {
     let _guard = env_lock().lock().unwrap();

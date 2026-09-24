@@ -291,6 +291,62 @@ pub fn cache_key(
     )
 }
 
+/// Relation-local reuse identity (issue #12 design, Slice 1: pure function,
+/// no behavior change yet).
+///
+/// The current [`cache_key`] is repository-wide: `source_digest` is the
+/// snapshot id (which rewrites every entity id on any edit) and `catalog`
+/// digests the whole candidate set, so one edited file invalidates every
+/// cached decision. This key instead covers only what the decision actually
+/// reasoned over: the relation triple in snapshot-independent terms (repo,
+/// files, qualified names — never entity or candidate ids), the bounded
+/// source excerpt, the exact question set, model, rubric, and policy
+/// digest. Unchanged relations keep the same key across snapshots; any
+/// change to the relation's own evidence (excerpt, questions) or consent
+/// (policy) changes the key.
+///
+/// Deliberately excludes: snapshot ids, entity ids, candidate ids, and the
+/// whole-catalog digest. Callers must still resolve the `Decision`
+/// rebinding problem before switching lookups to this key (stored
+/// `candidate_id`/`id` point at the old snapshot's ids; evidence must be
+/// reassembled against the current entities, not reused byte-for-byte).
+/// The store secondary index and pipeline fallback are Slice 2.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn reuse_key(
+    repo: &str,
+    rel_type: &str,
+    reason: &str,
+    from_file: &str,
+    from_qualified: &str,
+    to_file: &str,
+    to_qualified: &str,
+    excerpt: &str,
+    ordered_questions: &BTreeMap<String, Question>,
+    model: &str,
+    rubric_version: &str,
+    policy_digest: &str,
+) -> String {
+    let q = serde_json::to_string(ordered_questions).unwrap_or_default();
+    format!(
+        "jev-reuse:{}",
+        sha256_hex(&[
+            repo,
+            rel_type,
+            reason,
+            from_file,
+            from_qualified,
+            to_file,
+            to_qualified,
+            excerpt,
+            &q,
+            model,
+            rubric_version,
+            policy_digest
+        ])
+    )
+}
+
 /// Typed client. No OpenAI/Anthropic/Gemini/Ollama fallback anywhere.
 pub struct JevClient {
     http: reqwest::Client,
