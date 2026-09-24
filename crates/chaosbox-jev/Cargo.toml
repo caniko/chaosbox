@@ -9,7 +9,7 @@ homepage.workspace = true
 documentation.workspace = true
 description = "Typed Jev HTTP client and response validation for Chaosbox"
 readme = "../../README.md"
-include = ["/crates/chaosbox-jev/src/**/*.rs", "/../../README.md"]
+include = ["src/**/*.rs"]
 
 [dependencies]
 serde = { workspace = true }

@@ -9,10 +9,7 @@ homepage.workspace = true
 documentation.workspace = true
 description = "Shared persistence abstractions (Store/GraphQueries traits, row types, in-memory backends) for Chaosbox"
 readme = "../../README.md"
-include = [
-  "/crates/chaosbox-store/src/**/*.rs",
-  "/../../README.md",
-]
+include = ["src/**/*.rs"]
 
 [dependencies]
 chaosbox-core = { workspace = true }

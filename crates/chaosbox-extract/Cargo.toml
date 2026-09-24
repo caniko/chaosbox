@@ -9,7 +9,7 @@ homepage.workspace = true
 documentation.workspace = true
 description = "Deterministic source parsing and candidate generation for Chaosbox"
 readme = "../../README.md"
-include = ["/crates/chaosbox-extract/src/**/*.rs", "/../../README.md"]
+include = ["src/**/*.rs"]
 
 [dependencies]
 chaosbox-core = { workspace = true }

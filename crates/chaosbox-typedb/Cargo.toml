@@ -7,6 +7,9 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 documentation.workspace = true
+description = "TypeDB-backed publication and read-only graph access for Chaosbox"
+readme = "../../README.md"
+include = ["schema.tql", "src/**/*.rs", "tests/**/*.rs"]
 
 [dependencies]
 chaosbox-core = { workspace = true }
