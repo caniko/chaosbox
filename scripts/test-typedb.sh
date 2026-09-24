@@ -9,8 +9,19 @@
 set -euo pipefail
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/chaosbox-test-typedb.XXXXXX")"
+# Shut the disposable server down and wait for it before removing its
+# data: rm racing a still-flushing RocksDB fails the cleanup and would flip
+# a green run to a non-zero exit after the verdict was already printed.
 cleanup() {
-  if [ -n "${SERVER_PID:-}" ]; then kill "$SERVER_PID" 2>/dev/null || true; fi
+  if [ -n "${SERVER_PID:-}" ]; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    for _ in $(seq 1 30); do
+      kill -0 "$SERVER_PID" 2>/dev/null || break
+      sleep 1
+    done
+    kill -9 "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
   rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -60,15 +71,45 @@ sed -E \
   -e "s|^(        enabled:) true\$|\1 false|" \
   -e "s|^(    data-directory:).*|\1 \"$WORK/data\"|" \
   -e "s|^(    directory:).*|\1 \"$WORK/logs\"|" \
-  -e "s|^(    metrics:) true\$|\1 false|" \
-  -e "s|^(    errors:) true\$|\1 false|" \
+  -e "s|^(        metrics:) true\$|\1 false|" \
+  -e "s|^(        errors:) true\$|\1 false|" \
   "$SOURCE_CONFIG" >"$WORK/config.yml"
-# The rewrite must have landed: a template drift that left the default
-# port would make this script bind (and migrate!) the live instance's
-# server instead of its own, which is exactly the ownership bug this
-# whole gate refuses to paper over.
-if ! grep -q "^    listen-address: 127.0.0.1:$PORT\$" "$WORK/config.yml"; then
-  echo "failed to point the disposable server at 127.0.0.1:$PORT; template drift in $SOURCE_CONFIG?" >&2
+# Every isolation-critical setting must have landed in the generated
+# config. A template drift that left any default would hand this script a
+# server bound to the wrong address, writing to the wrong directory, or
+# phoning home — checking only the gRPC address once let the 3.13.0
+# diagnostics reporting slip through enabled, so every setting is checked
+# here and the first miss fails the gate. (The rewrite above would bind,
+# and migrate, the live developer instance's server instead of our own,
+# which is exactly the ownership bug this whole gate refuses to paper over.)
+require_config() {
+  if ! grep -Eq "$1" "$WORK/config.yml"; then
+    echo "isolation failure: $2 (template drift in $SOURCE_CONFIG?)" >&2
+    exit 1
+  fi
+}
+require_config "^    listen-address: 127\\.0\\.0\\.1:$PORT\$" \
+  "disposable server not pointed at 127.0.0.1:$PORT"
+require_config "^        listen-address: 127\\.0\\.0\\.1:$((PORT + 1))\$" \
+  "disposable HTTP listener not pointed at 127.0.0.1:$((PORT + 1))"
+require_config "^    data-directory: \"$WORK/data\"\$" \
+  "disposable data directory not pointed at $WORK/data"
+require_config "^    directory: \"$WORK/logs\"\$" \
+  "disposable log directory not pointed at $WORK/logs"
+require_config "^[[:space:]]*metrics:[[:space:]]*false( |\$)" \
+  "diagnostics metrics reporting not disabled"
+require_config "^[[:space:]]*errors:[[:space:]]*false( |\$)" \
+  "diagnostics error reporting not disabled"
+if grep -Eq '^[[:space:]]*enabled:[[:space:]]*true( |$)' "$WORK/config.yml"; then
+  echo "isolation failure: some subsystem left enabled (template drift in $SOURCE_CONFIG?)" >&2
+  exit 1
+fi
+if grep -Eq '^[[:space:]]*(metrics|errors):[[:space:]]*true( |$)' "$WORK/config.yml"; then
+  echo "isolation failure: diagnostics reporting left enabled (template drift in $SOURCE_CONFIG?)" >&2
+  exit 1
+fi
+if grep -q '0\.0\.0\.0' "$WORK/config.yml"; then
+  echo "isolation failure: wildcard bind address survived the rewrite (template drift in $SOURCE_CONFIG?)" >&2
   exit 1
 fi
 printf 'password' >"$WORK/pw"
@@ -77,7 +118,12 @@ SERVER_PID=$!
 
 echo "== readiness (bounded) =="
 ready=""
+deadline=$((SECONDS + 300))
 for _ in $(seq 1 60); do
+  if ((SECONDS > deadline)); then
+    echo "typedb-server on 127.0.0.1:$PORT exceeded the 300s readiness deadline" >&2
+    exit 1
+  fi
   # Prove the child is still alive: a disposable server that died on bind
   # or during startup must fail this gate, not let a probe succeed against
   # somebody else's instance on the same address.
@@ -86,11 +132,21 @@ for _ in $(seq 1 60); do
     wait "$SERVER_PID" || true
     exit 1
   fi
-  if typedb-console --address "127.0.0.1:$PORT" --tls-disabled \
+  # Each probe carries its own timeout: attempt counts only bound the loop
+  # if a single hanging console process cannot stall it.
+  if timeout 10 typedb-console --address "127.0.0.1:$PORT" --tls-disabled \
     --username admin --password password \
     --command "server version" >/dev/null 2>&1; then
-    ready=1
-    break
+    # Recheck liveness after a successful probe: the child could have died
+    # between the pre-probe check and the console's answer, in which case
+    # the answer may have come from somewhere else.
+    if kill -0 "$SERVER_PID" 2>/dev/null; then
+      ready=1
+      break
+    fi
+    echo "typedb-server died around a successful readiness probe; refusing to accept it" >&2
+    wait "$SERVER_PID" || true
+    exit 1
   fi
   sleep 2
 done
@@ -135,5 +191,11 @@ echo "== consumer queries =="
 chaosbox query status --repo test
 chaosbox query search main --repo test | head -c 400
 echo
+
+# Explicit shutdown before the verdict: the EXIT trap only covers abnormal
+# exits from here on, and waiting for the server here (rather than in the
+# trap after the verdict) keeps a slow shutdown from flipping a green run.
+cleanup
+SERVER_PID=""
 
 echo "TYPEDB INTEGRATION OK"
