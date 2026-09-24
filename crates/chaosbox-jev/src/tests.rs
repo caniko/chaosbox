@@ -102,116 +102,94 @@ fn cache_key_changes_with_inputs() {
 
 #[test]
 fn reuse_key_is_snapshot_and_catalog_independent() {
-    // Issue #12 Slice 1: the reuse key must survive what the repo-wide
-    // cache key deliberately does not — a new snapshot id and a changed
-    // catalog — while still covering the relation's own evidence and
-    // consent. Entity/candidate ids never enter: they rewrite on every
-    // snapshot by design.
-    let q = BTreeMap::from([(
-        "rel".into(),
-        Question::Noul {
-            instructions: "y?".into(),
-            criteria: None,
-        },
-    )]);
-    let base = reuse_key(
-        "r",
-        "calls",
-        "structural",
-        "a.rs",
-        "a",
-        "b.rs",
-        "b",
-        "a calls b",
-        &q,
-        JEV_MODEL_PINNED,
-        "rubric-v1",
-        "policy-1",
+    // Issue #12: the reuse key must survive what the repo-wide cache key
+    // deliberately does not — a new snapshot id and a changed catalog —
+    // while still covering the relation's own evidence and consent.
+    // Snapshot/entity/candidate ids, question map keys, and catalog
+    // digests never enter: they rewrite on every snapshot by design.
+    let question = || Question::Noul {
+        instructions: "y?".into(),
+        criteria: None,
+    };
+    let endpoint = |file: &str, qualified: &str, hash: &str| ReuseEndpoint {
+        file: file.into(),
+        qualified: qualified.into(),
+        kind: "definition".into(),
+        file_hash: hash.into(),
+    };
+    let input_with = |qid: &str, excerpt: &str, policy: &str, model: &str| {
+        let ordered = BTreeMap::from([(qid.into(), question())]);
+        ReuseInput {
+            version: REUSE_VERSION.into(),
+            repo: "r".into(),
+            rel_type: "calls".into(),
+            reason: "structural".into(),
+            from: endpoint("a.rs", "a", "hash-a"),
+            to: endpoint("b.rs", "b", "hash-b"),
+            excerpt: excerpt.into(),
+            canonical_questions: canonical_questions(&ordered),
+            model: model.into(),
+            rubric_version: "rubric-v1".into(),
+            policy_digest: policy.into(),
+        }
+    };
+    let base = input_with("rel_cand:1", "a calls b", "policy-1", JEV_MODEL_PINNED);
+    let key = reuse_key(&base);
+    assert!(key.starts_with("jev-reuse:"));
+    // Transport-only question keys differ across snapshots: same semantics
+    // must hash identically.
+    let renamed_key = input_with("rel_cand:2", "a calls b", "policy-1", JEV_MODEL_PINNED);
+    assert_eq!(key, reuse_key(&renamed_key));
+    // Canonical values are order-independent: map iteration order never
+    // affects the key.
+    let multi_a = BTreeMap::from([
+        ("rel_1".to_string(), question()),
+        (
+            "rel_2".to_string(),
+            Question::Noul {
+                instructions: "z?".into(),
+                criteria: None,
+            },
+        ),
+    ]);
+    let mut multi_b = multi_a.clone();
+    let moved = multi_b.remove("rel_1").unwrap();
+    multi_b.insert("rel_transport_differs".to_string(), moved);
+    assert_eq!(canonical_questions(&multi_a), canonical_questions(&multi_b));
+    // The relation's own excerpt changed: must re-ask.
+    assert_ne!(
+        key,
+        reuse_key(&input_with("rel_cand:1", "a calls c", "policy-1", JEV_MODEL_PINNED))
     );
-    assert!(base.starts_with("jev-reuse:"));
-    // Same relation, different snapshot/catalog context: stable. (Snapshot
-    // and catalog digests are not parameters at all, so there is nothing
-    // to vary — the assertion is that the function signature excludes
-    // them by construction.)
-    let same = reuse_key(
-        "r",
-        "calls",
-        "structural",
-        "a.rs",
-        "a",
-        "b.rs",
-        "b",
-        "a calls b",
-        &q,
-        JEV_MODEL_PINNED,
-        "rubric-v1",
-        "policy-1",
-    );
-    assert_eq!(base, same);
-    // The relation's own evidence changed: must re-ask.
-    let changed_excerpt = reuse_key(
-        "r",
-        "calls",
-        "structural",
-        "a.rs",
-        "a",
-        "b.rs",
-        "b",
-        "a calls c",
-        &q,
-        JEV_MODEL_PINNED,
-        "rubric-v1",
-        "policy-1",
-    );
-    assert_ne!(base, changed_excerpt);
+    // Either endpoint file's bytes changed: must re-ask even when names,
+    // excerpt, and questions are unchanged.
+    let mut edited_file = base.clone();
+    edited_file.to.file_hash = "hash-b-edited".into();
+    assert_ne!(key, reuse_key(&edited_file));
     // Consent changed: must re-ask, never reuse across policy.
-    let changed_policy = reuse_key(
-        "r",
-        "calls",
-        "structural",
-        "a.rs",
-        "a",
-        "b.rs",
-        "b",
-        "a calls b",
-        &q,
-        JEV_MODEL_PINNED,
-        "rubric-v1",
-        "policy-2",
+    assert_ne!(
+        key,
+        reuse_key(&input_with("rel_cand:1", "a calls b", "policy-2", JEV_MODEL_PINNED))
     );
-    assert_ne!(base, changed_policy);
     // Model/rubric changed: must re-ask.
-    let changed_model = reuse_key(
-        "r",
-        "calls",
-        "structural",
-        "a.rs",
-        "a",
-        "b.rs",
-        "b",
-        "a calls b",
-        &q,
-        "jev-9.9.9",
-        "rubric-v1",
-        "policy-1",
+    assert_ne!(
+        key,
+        reuse_key(&input_with("rel_cand:1", "a calls b", "policy-1", "jev-9.9.9"))
     );
-    assert_ne!(base, changed_model);
+    let mut edited_rubric = base.clone();
+    edited_rubric.rubric_version = "rubric-v2".into();
+    assert_ne!(key, reuse_key(&edited_rubric));
     // A different relation triple is a different key.
-    let other_rel = reuse_key(
-        "r",
-        "calls",
-        "structural",
-        "a.rs",
-        "a",
-        "c.rs",
-        "c",
-        "a calls b",
-        &q,
-        JEV_MODEL_PINNED,
-        "rubric-v1",
-        "policy-1",
-    );
-    assert_ne!(base, other_rel);
+    let mut other_rel = base.clone();
+    other_rel.to = endpoint("c.rs", "c", "hash-c");
+    assert_ne!(key, reuse_key(&other_rel));
+    // Question semantics changed: must re-ask even under identical keys.
+    let mut edited_q = base.clone();
+    edited_q.canonical_questions = vec![Question::Noul {
+        instructions: "different?".into(),
+        criteria: None,
+    }];
+    assert_ne!(key, reuse_key(&edited_q));
 }
 
 #[test]

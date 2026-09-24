@@ -841,3 +841,169 @@ async fn path_traversal_budget_is_explicit() {
         "unexpected error: {err}"
     );
 }
+
+/// Find the `a.rs::foo -> a.rs::bar` co-occurrence candidate and its
+/// endpoints by qualified name (snapshot-independent lookup).
+fn find_foo_bar(
+    candidates: &[Candidate],
+    entities: &BTreeMap<String, Entity>,
+) -> (Candidate, Entity, Entity) {
+    let by_qualified: BTreeMap<&str, &Entity> = entities
+        .values()
+        .map(|e| (e.qualified_name.as_str(), e))
+        .collect();
+    let from = (*by_qualified.get("a.rs::foo").expect("a.rs::foo")).clone();
+    let to = (*by_qualified.get("a.rs::bar").expect("a.rs::bar")).clone();
+    let cand = candidates
+        .iter()
+        .find(|c| c.from_entity == from.id && c.to_entity == to.id)
+        .expect("foo->bar candidate")
+        .clone();
+    (cand, from, to)
+}
+
+fn write_two_file_repo(root: &std::path::Path, a_rs: &str, unrelated: &str) {
+    std::fs::write(root.join("a.rs"), a_rs).unwrap();
+    std::fs::write(root.join("unrelated.txt"), unrelated).unwrap();
+}
+
+/// Issue #12 identity gate, part 1: an edit to an unrelated file rewrites
+/// snapshot/entity/candidate ids but must NOT invalidate the reuse key of
+/// an untouched relation.
+#[test]
+fn reuse_identity_survives_unrelated_edit() {
+    let policy = test_policy();
+    let mat = Materialization::default();
+    let policy_digest = policy.digest();
+    let before_dir = tempfile::tempdir().unwrap();
+    let after_dir = tempfile::tempdir().unwrap();
+    let a_rs = "fn foo() {}\nfn bar() {}\n";
+    write_two_file_repo(before_dir.path(), a_rs, "hello\n");
+    write_two_file_repo(after_dir.path(), a_rs, "hello, edited\n");
+    let before_snap = Snapshot::capture("r", before_dir.path()).unwrap();
+    let after_snap = Snapshot::capture("r", after_dir.path()).unwrap();
+    assert_ne!(
+        before_snap.id, after_snap.id,
+        "unrelated edit mints a new snapshot"
+    );
+    let before_ext = extract_snapshot(&before_snap);
+    let after_ext = extract_snapshot(&after_snap);
+    let before_cat = build_candidates(&before_ext, 200);
+    let after_cat = build_candidates(&after_ext, 200);
+    let before_entities: BTreeMap<String, Entity> = before_ext
+        .entities
+        .iter()
+        .map(|e| (e.id.clone(), e.clone()))
+        .collect();
+    let after_entities: BTreeMap<String, Entity> = after_ext
+        .entities
+        .iter()
+        .map(|e| (e.id.clone(), e.clone()))
+        .collect();
+    let (before_cand, before_from, before_to) =
+        find_foo_bar(&before_cat.candidates, &before_entities);
+    let (after_cand, after_from, after_to) = find_foo_bar(&after_cat.candidates, &after_entities);
+    assert_ne!(
+        before_cand.id, after_cand.id,
+        "snapshot-scoped candidate ids rewrite on any edit"
+    );
+    let before_hashes = file_hashes_for(&before_snap);
+    let after_hashes = file_hashes_for(&after_snap);
+    let before_questions = questions_for(&before_cand, &before_from, &before_to);
+    let after_questions = questions_for(&after_cand, &after_from, &after_to);
+    let before_ctx = ReuseContext {
+        repo: "r",
+        file_hashes: &before_hashes,
+        model: chaosbox_jev::JEV_MODEL_PINNED,
+        rubric_version: &mat.rubric_version,
+        policy_digest: &policy_digest,
+    };
+    let after_ctx = ReuseContext {
+        repo: "r",
+        file_hashes: &after_hashes,
+        model: chaosbox_jev::JEV_MODEL_PINNED,
+        rubric_version: &mat.rubric_version,
+        policy_digest: &policy_digest,
+    };
+    let before_input =
+        reuse_input_for(&before_cand, &before_from, &before_to, &before_questions, &before_ctx)
+            .unwrap();
+    let after_input =
+        reuse_input_for(&after_cand, &after_from, &after_to, &after_questions, &after_ctx).unwrap();
+    assert_eq!(
+        chaosbox_jev::reuse_key(&before_input),
+        chaosbox_jev::reuse_key(&after_input),
+        "untouched relation keeps its reuse key across an unrelated edit"
+    );
+}
+
+/// Issue #12 identity gate, part 2: editing an endpoint file without
+/// renaming its entities must invalidate the reuse key (file bytes are
+/// part of the identity, names alone are not enough).
+#[test]
+fn reuse_identity_invalidates_on_endpoint_edit() {
+    let policy = test_policy();
+    let mat = Materialization::default();
+    let policy_digest = policy.digest();
+    let before_dir = tempfile::tempdir().unwrap();
+    let after_dir = tempfile::tempdir().unwrap();
+    write_two_file_repo(before_dir.path(), "fn foo() {}\nfn bar() {}\n", "hello\n");
+    write_two_file_repo(
+        after_dir.path(),
+        "fn foo() {\n  // body changed, names kept\n}\nfn bar() {}\n",
+        "hello\n",
+    );
+    let before_snap = Snapshot::capture("r", before_dir.path()).unwrap();
+    let after_snap = Snapshot::capture("r", after_dir.path()).unwrap();
+    assert_ne!(before_snap.id, after_snap.id);
+    let before_ext = extract_snapshot(&before_snap);
+    let after_ext = extract_snapshot(&after_snap);
+    let before_cat = build_candidates(&before_ext, 200);
+    let after_cat = build_candidates(&after_ext, 200);
+    let before_entities: BTreeMap<String, Entity> = before_ext
+        .entities
+        .iter()
+        .map(|e| (e.id.clone(), e.clone()))
+        .collect();
+    let after_entities: BTreeMap<String, Entity> = after_ext
+        .entities
+        .iter()
+        .map(|e| (e.id.clone(), e.clone()))
+        .collect();
+    let (before_cand, before_from, before_to) =
+        find_foo_bar(&before_cat.candidates, &before_entities);
+    let (after_cand, after_from, after_to) = find_foo_bar(&after_cat.candidates, &after_entities);
+    let before_hashes = file_hashes_for(&before_snap);
+    let after_hashes = file_hashes_for(&after_snap);
+    assert_ne!(
+        before_hashes.get("a.rs"),
+        after_hashes.get("a.rs"),
+        "endpoint file bytes changed"
+    );
+    let before_questions = questions_for(&before_cand, &before_from, &before_to);
+    let after_questions = questions_for(&after_cand, &after_from, &after_to);
+    let before_ctx = ReuseContext {
+        repo: "r",
+        file_hashes: &before_hashes,
+        model: chaosbox_jev::JEV_MODEL_PINNED,
+        rubric_version: &mat.rubric_version,
+        policy_digest: &policy_digest,
+    };
+    let after_ctx = ReuseContext {
+        repo: "r",
+        file_hashes: &after_hashes,
+        model: chaosbox_jev::JEV_MODEL_PINNED,
+        rubric_version: &mat.rubric_version,
+        policy_digest: &policy_digest,
+    };
+    let before_input =
+        reuse_input_for(&before_cand, &before_from, &before_to, &before_questions, &before_ctx)
+            .unwrap();
+    let after_input =
+        reuse_input_for(&after_cand, &after_from, &after_to, &after_questions, &after_ctx).unwrap();
+    assert_ne!(
+        chaosbox_jev::reuse_key(&before_input),
+        chaosbox_jev::reuse_key(&after_input),
+        "endpoint body change must re-ask even with identical names"
+    );
+}

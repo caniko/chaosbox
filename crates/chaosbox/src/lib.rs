@@ -32,7 +32,9 @@ pub mod sessions;
 mod view;
 
 pub use lifecycle::LifecycleReport;
-pub use materialization::{Materialization, questions_for};
+pub use materialization::{
+    Materialization, ReuseContext, file_hashes_for, questions_for, reuse_input_for,
+};
 pub use pipeline::{Pipeline, chain_publication, summarize_outcomes, uncached_decisions};
 pub use reader::{
     EXPORT_EDGE_CAP, EXPORT_NODE_CAP, GraphReader, all_relation_types, validate_rel_filter,

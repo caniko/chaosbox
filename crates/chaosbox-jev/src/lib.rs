@@ -58,7 +58,7 @@ pub enum JevError {
 }
 
 /// One typed question. `type` selects the variant.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Question {
     /// Yes/no question; answer is a Noul probability.
@@ -86,7 +86,7 @@ pub enum Question {
 }
 
 /// Optional yes/no criteria text for a Noul question.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoulCriteria {
     /// Description of the `true` outcome.
     #[serde(default, rename = "true", skip_serializing_if = "Option::is_none")]
@@ -291,60 +291,96 @@ pub fn cache_key(
     )
 }
 
-/// Relation-local reuse identity (issue #12 design, Slice 1: pure function,
-/// no behavior change yet).
+/// Versioned relation-local reuse identity (issue #12).
 ///
-/// The current [`cache_key`] is repository-wide: `source_digest` is the
-/// snapshot id (which rewrites every entity id on any edit) and `catalog`
-/// digests the whole candidate set, so one edited file invalidates every
-/// cached decision. This key instead covers only what the decision actually
-/// reasoned over: the relation triple in snapshot-independent terms (repo,
-/// files, qualified names — never entity or candidate ids), the bounded
-/// source excerpt, the exact question set, model, rubric, and policy
-/// digest. Unchanged relations keep the same key across snapshots; any
-/// change to the relation's own evidence (excerpt, questions) or consent
-/// (policy) changes the key.
+/// The repo-wide [`cache_key`] covers the snapshot id (which rewrites every
+/// entity id on any edit) and the whole-catalog digest, so one edited file
+/// invalidates every cached decision. This key instead covers only what one
+/// decision actually reasoned over, in snapshot-independent terms:
 ///
-/// Deliberately excludes: snapshot ids, entity ids, candidate ids, and the
-/// whole-catalog digest. Callers must still resolve the `Decision`
-/// rebinding problem before switching lookups to this key (stored
+/// * repository, relation type (canonical `snake_case`), and reason;
+/// * both endpoints as file + qualified name + kind + **file content hash**;
+/// * the bounded excerpt;
+/// * the canonical question semantics (question *values* sorted by their
+///   JSON encoding — transport-only map keys such as `rel_<candidate-id>`
+///   never enter);
+/// * the actual inference state is covered through the excerpt plus the
+///   canonical questions (the wire `state` also carries the transport-only
+///   `candidate` id, which is excluded here by construction);
+/// * model, rubric, and effective-policy digest.
+///
+/// Unchanged relations keep the same key across snapshots; any change to the
+/// relation's own evidence (endpoint file bytes, excerpt, questions) or
+/// consent (policy) changes the key.
+///
+/// Deliberately excludes: snapshot ids, entity ids, candidate ids, question
+/// map keys, and the whole-catalog digest. Callers must still resolve the
+/// `Decision` rebinding problem before switching lookups to this key (stored
 /// `candidate_id`/`id` point at the old snapshot's ids; evidence must be
 /// reassembled against the current entities, not reused byte-for-byte).
 /// The store secondary index and pipeline fallback are Slice 2.
+pub const REUSE_VERSION: &str = "reuse-v1";
+
+/// One endpoint of a reusable decision input, in snapshot-independent
+/// terms plus the content hash that authorizes reuse.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReuseEndpoint {
+    /// Repository-relative file path.
+    pub file: String,
+    /// Qualified name copied from source (never an id).
+    pub qualified: String,
+    /// Canonical entity kind name (`snake_case`, never `Debug`).
+    pub kind: String,
+    /// SHA-256 hex of the endpoint file's text at decision time.
+    pub file_hash: String,
+}
+
+/// Versioned decision input for relation-local reuse.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReuseInput {
+    /// Schema version; always [`REUSE_VERSION`] for writers.
+    pub version: String,
+    /// Owning repository name.
+    pub repo: String,
+    /// Canonical relation type name (`snake_case`).
+    pub rel_type: String,
+    /// Why the candidate was proposed.
+    pub reason: String,
+    /// Source endpoint (content-pinned).
+    pub from: ReuseEndpoint,
+    /// Target endpoint (content-pinned).
+    pub to: ReuseEndpoint,
+    /// Bounded source excerpt grounding the proposal.
+    pub excerpt: String,
+    /// Canonical question semantics: question values only, sorted by JSON
+    /// encoding so transport-only map keys never affect the key.
+    pub canonical_questions: Vec<Question>,
+    /// Model identity requested.
+    pub model: String,
+    /// Rubric version gating question semantics.
+    pub rubric_version: String,
+    /// Effective-policy digest (scope, privacy, inference).
+    pub policy_digest: String,
+}
+
+/// Canonical question semantics: the map *values* sorted by their JSON
+/// encoding. Transport-only keys (`rel_<candidate-id>`) are dropped, so two
+/// snapshots that ask the same semantic question under different candidate
+/// ids hash identically; any instruction/criteria change still flips the key.
 #[must_use]
-#[allow(clippy::too_many_arguments)]
-pub fn reuse_key(
-    repo: &str,
-    rel_type: &str,
-    reason: &str,
-    from_file: &str,
-    from_qualified: &str,
-    to_file: &str,
-    to_qualified: &str,
-    excerpt: &str,
-    ordered_questions: &BTreeMap<String, Question>,
-    model: &str,
-    rubric_version: &str,
-    policy_digest: &str,
-) -> String {
-    let q = serde_json::to_string(ordered_questions).unwrap_or_default();
-    format!(
-        "jev-reuse:{}",
-        sha256_hex(&[
-            repo,
-            rel_type,
-            reason,
-            from_file,
-            from_qualified,
-            to_file,
-            to_qualified,
-            excerpt,
-            &q,
-            model,
-            rubric_version,
-            policy_digest
-        ])
-    )
+pub fn canonical_questions(ordered_questions: &BTreeMap<String, Question>) -> Vec<Question> {
+    let mut values: Vec<Question> = ordered_questions.values().cloned().collect();
+    values.sort_by_key(|q| serde_json::to_string(q).unwrap_or_default());
+    values
+}
+
+/// Hash a versioned [`ReuseInput`] unambiguously (single JSON document).
+/// Construct the input as a struct literal with `version: REUSE_VERSION`
+/// so no positional constructor can smuggle a transport id back in.
+#[must_use]
+pub fn reuse_key(input: &ReuseInput) -> String {
+    let doc = serde_json::to_string(input).unwrap_or_default();
+    format!("jev-reuse:{}", sha256_hex(&[&doc]))
 }
 
 /// Typed client. No OpenAI/Anthropic/Gemini/Ollama fallback anywhere.

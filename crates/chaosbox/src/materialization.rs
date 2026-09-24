@@ -1,7 +1,8 @@
 //! Materialization identity (rubric and acceptance thresholds) plus the Jev questions a candidate becomes.
 
 use super::{
-    Serialize, Deserialize, deterministic_id, PipelineError, Candidate, Entity, BTreeMap, Question,
+    Serialize, Deserialize, deterministic_id, PipelineError, Candidate, Entity, Snapshot, BTreeMap,
+    Question,
 };
 
 /// Rubric + acceptance policy. Thresholds are materialization identity:
@@ -119,4 +120,78 @@ pub fn questions_for(
             ]),
         },
     )])
+}
+
+/// Content hashes for reuse identity, keyed by repository-relative path.
+/// Sourced from the snapshot's pinned file versions so reuse is authorized
+/// by the bytes the decision reasoned over, not by names alone.
+#[must_use]
+pub fn file_hashes_for(snapshot: &Snapshot) -> BTreeMap<String, String> {
+    snapshot
+        .files
+        .iter()
+        .map(|f| (f.path.clone(), f.sha256.clone()))
+        .collect()
+}
+
+/// Shared context for building relation-local reuse inputs: everything
+/// about the run that is the same for every candidate, so per-candidate
+/// calls stay narrow.
+pub struct ReuseContext<'a> {
+    /// Owning repository name.
+    pub repo: &'a str,
+    /// Pinned file content hashes by repository-relative path.
+    pub file_hashes: &'a BTreeMap<String, String>,
+    /// Model identity requested.
+    pub model: &'a str,
+    /// Rubric version gating question semantics.
+    pub rubric_version: &'a str,
+    /// Effective-policy digest (scope, privacy, inference).
+    pub policy_digest: &'a str,
+}
+
+/// Build the versioned relation-local reuse input for one candidate
+/// (issue #12).
+///
+/// Snapshot/entity/candidate ids and question map keys never enter: only
+/// the repo, canonical relation/reason, content-pinned endpoints
+/// (file + qualified name + kind + file hash), excerpt, canonical question
+/// semantics, model, rubric, and policy digest. A missing file hash fails
+/// closed — reuse must never be authorized by an unknown byte identity.
+pub fn reuse_input_for(
+    candidate: &Candidate,
+    from: &Entity,
+    to: &Entity,
+    questions: &BTreeMap<String, Question>,
+    ctx: &ReuseContext<'_>,
+) -> Result<chaosbox_jev::ReuseInput, PipelineError> {
+    let from_hash = ctx.file_hashes.get(&from.file).ok_or_else(|| {
+        PipelineError::Validation(format!("missing file hash for {}", from.file))
+    })?;
+    let to_hash = ctx.file_hashes.get(&to.file).ok_or_else(|| {
+        PipelineError::Validation(format!("missing file hash for {}", to.file))
+    })?;
+    Ok(chaosbox_jev::ReuseInput {
+        version: chaosbox_jev::REUSE_VERSION.to_owned(),
+        repo: ctx.repo.to_owned(),
+        rel_type: chaosbox_core::relation_type_name(&candidate.rel_type),
+        reason: candidate.reason.clone(),
+        from: chaosbox_jev::ReuseEndpoint {
+            file: from.file.clone(),
+            qualified: from.qualified_name.clone(),
+            kind: chaosbox_core::entity_kind_name(&from.kind),
+            file_hash: from_hash.clone(),
+        },
+        to: chaosbox_jev::ReuseEndpoint {
+            file: to.file.clone(),
+            qualified: to.qualified_name.clone(),
+            kind: chaosbox_core::entity_kind_name(&to.kind),
+            file_hash: to_hash.clone(),
+        },
+        excerpt: candidate.state_excerpt.clone(),
+        canonical_questions: chaosbox_jev::canonical_questions(questions),
+        model: ctx.model.to_owned(),
+        rubric_version: ctx.rubric_version.to_owned(),
+        policy_digest: ctx.policy_digest.to_owned(),
+    })
 }
