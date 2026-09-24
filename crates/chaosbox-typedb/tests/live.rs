@@ -2,21 +2,24 @@
 //! supersedure, predecessor guards, and concurrent-publication races against
 //! a real server.
 //!
-//! Requires a reachable `TypeDB` server: address from `TYPEDB_ADDR`
-//! (default `127.0.0.1:1729`), credentials from the CLI contract first
-//! (`CHAOSBOX_TYPEDB_USER`, `CHAOSBOX_TYPEDB_PASSWORD_FILE`), then
-//! `TYPEDB_USERNAME`/`TYPEDB_PASSWORD`, then the fresh-server default
-//! (`admin`/`password` — provisioned hosts rotate the admin password and
-//! hand the tests the application credential instead).
+//! Server address comes from `CHAOSBOX_TYPEDB_ADDR` (legacy alias
+//! `TYPEDB_ADDR`, default `127.0.0.1:1729`); username from
+//! `CHAOSBOX_TYPEDB_USER`/`TYPEDB_USERNAME` (default `admin`); password from
+//! `CHAOSBOX_TYPEDB_PASSWORD_FILE` or `TYPEDB_PASSWORD` — and never from a
+//! default, because the driver reports an absent server and rejected
+//! credentials as the same connection error: only the operator knows which
+//! was intended, so a usable secret must be configured explicitly.
 //!
-//! Only two cases become a skip, and neither can be mistaken for a pass:
-//! no server is listening at all, or a server is reachable but the operator
-//! never supplied credentials (in which case authentication is the only
-//! thing that could have run). Every other outcome — supplied credentials
-//! the server rejects, a failed migration, a failed conformance check — is
+//! Eligibility is classified before the server is touched, so nothing that
+//! fails later can be reclassified as a skip afterwards. Exactly two cases
+//! skip, and neither can be mistaken for a pass: nothing is listening at the
+//! address, or a server is reachable but no password was ever configured
+//! (authentication is the only thing that could have run). Every other
+//! outcome — configured credentials the server rejects, a configured secret
+//! that cannot be read, a failed migration, a failed conformance check — is
 //! a failure, because turning it green would pass off a masked error as
 //! evidence. Under `CHAOSBOX_REQUIRE_TYPEDB` (set by
-//! `scripts/test-typedb.sh`) nothing skips at all: a missing server, bad
+//! `scripts/test-typedb.sh`) nothing skips at all: a missing server, absent
 //! credentials, a failed migration or a conformance failure all fail. A skip
 //! is NOT conformance evidence (see the execution ledger); the named gate
 //! runs these with a server present.
@@ -65,25 +68,78 @@ fn server_reachable(addr: &str) -> bool {
     })
 }
 
-/// Credential detection, split from the environment so it is testable
-/// without mutating process environment (which races across a parallel
-/// test run).
-fn credentials_configured_from(
-    password_file: Option<&std::ffi::OsString>,
-    password: Option<&std::ffi::OsString>,
-) -> bool {
-    password_file.is_some_and(|p| std::path::Path::new(p).exists()) || password.is_some()
+/// The operator's password configuration, in three honest states.
+///
+/// The distinction is the gate: never having been given a credential is an
+/// environment gap that may skip (nothing beyond authentication could run),
+/// while a credential that was named but yields no usable secret is a broken
+/// gate and must fail. Collapsing the latter into "unconfigured" is exactly
+/// how a typo'd secret path turns into a passing skip — and how a fallback
+/// default password could end up authenticating somewhere it should not.
+enum Credentials {
+    /// No password source was ever configured.
+    Unconfigured,
+    /// A usable secret. Never printed, never logged.
+    Ready(String),
+    /// A password source was configured but produced no usable secret. The
+    /// reason names the source and the problem, never the secret itself.
+    Broken(String),
 }
 
-/// Whether the operator told the tests how to authenticate.
+impl Credentials {
+    /// Human-readable state for diagnostics; omits the secret.
+    fn describe(&self) -> String {
+        match self {
+            Credentials::Unconfigured => "no password source configured".into(),
+            Credentials::Ready(_) => "credentials configured".into(),
+            Credentials::Broken(reason) => reason.clone(),
+        }
+    }
+}
+
+/// Credential resolution, split from the environment so it is testable
+/// without mutating process environment (which races across a parallel
+/// test run).
+fn credentials_from(
+    password_file: Option<&std::ffi::OsString>,
+    password: Option<&std::ffi::OsString>,
+) -> Credentials {
+    if let Some(path) = password_file {
+        let path = std::path::Path::new(path);
+        return match std::fs::read_to_string(path) {
+            Ok(raw) if !raw.trim().is_empty() => Credentials::Ready(raw.trim().to_owned()),
+            Ok(_) => Credentials::Broken(format!(
+                "password file {} is configured but empty",
+                path.display()
+            )),
+            Err(e) => Credentials::Broken(format!(
+                "password file {} is configured but unreadable: {e}",
+                path.display()
+            )),
+        };
+    }
+    match password {
+        Some(p) => {
+            let trimmed = p.to_string_lossy().trim().to_owned();
+            if trimmed.is_empty() {
+                Credentials::Broken("TYPEDB_PASSWORD is configured but empty".into())
+            } else {
+                Credentials::Ready(trimmed)
+            }
+        }
+        None => Credentials::Unconfigured,
+    }
+}
+
+/// Credential configuration as the tests see it.
 ///
 /// Supplied-but-rejected credentials are a failure: that is a broken gate
 /// trying to go green. Never having been given any is an environment gap,
 /// and without a session nothing beyond authentication can even run — so it
 /// skips and says plainly that live conformance was not proven. The
 /// `CHAOSBOX_REQUIRE_TYPEDB` gate admits no skip either way.
-fn credentials_configured() -> bool {
-    credentials_configured_from(
+fn credentials_from_env() -> Credentials {
+    credentials_from(
         std::env::var_os("CHAOSBOX_TYPEDB_PASSWORD_FILE").as_ref(),
         std::env::var_os("TYPEDB_PASSWORD").as_ref(),
     )
@@ -105,50 +161,77 @@ fn config(db: &str) -> TypeDbConfig {
     let username = std::env::var("CHAOSBOX_TYPEDB_USER")
         .or_else(|_| std::env::var("TYPEDB_USERNAME"))
         .unwrap_or_else(|_| "admin".into());
-    let password = std::env::var("CHAOSBOX_TYPEDB_PASSWORD_FILE")
-        .ok()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .or_else(|| std::env::var("TYPEDB_PASSWORD").ok())
-        .unwrap_or_else(|| "password".into());
+    // No default password: falling back to a well-known secret would mask
+    // the difference between "no credentials" and "bad credentials" — the
+    // very ambiguity this gate exists to close. `connected_store` classifies
+    // every other state before a test can construct a store, so reaching
+    // here without a ready credential is a bug in the gate itself.
+    let password = match credentials_from_env() {
+        Credentials::Ready(password) => password,
+        other => panic!(
+            "store configured without usable credentials: {}",
+            other.describe()
+        ),
+    };
     TypeDbConfig {
         address: addr(),
         username,
-        password: password.trim().to_owned(),
+        password,
         database: db.into(),
     }
 }
 
 async fn connected_store(db: &str) -> Option<TypeDbStore> {
-    let mut s = TypeDbStore::new(config(db));
-    match s.migrate().await {
-        Ok(()) => Some(s),
-        Err(e) => {
-            let required = required_from(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref().ok());
+    let required = required_from(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref().ok());
+
+    // Classify eligibility BEFORE touching the server. Deciding after a
+    // failed migration (as the previous version did) let that failure become
+    // a passing skip whenever credentials happened to be unconfigured —
+    // including a genuine schema/migration bug on a server whose default
+    // credentials worked. Reachability and credential configuration are
+    // measured independently here because the driver conflates "no server"
+    // with "rejected credentials", so it cannot classify its own errors.
+    if !server_reachable(&addr()) {
+        assert!(
+            !required,
+            "CHAOSBOX_REQUIRE_TYPEDB is set: nothing is listening at {}",
+            addr()
+        );
+        println!("SKIP (no server at {})", addr());
+        return None;
+    }
+    match credentials_from_env() {
+        Credentials::Ready(_) => {}
+        Credentials::Unconfigured => {
             assert!(
                 !required,
-                "CHAOSBOX_REQUIRE_TYPEDB is set: live TypeDB migration failed at {}, \
-                 a skip is not conformance evidence: {e}",
+                "CHAOSBOX_REQUIRE_TYPEDB is set: a server is reachable at {} but no \
+                 credentials were configured",
                 addr()
             );
-            if !server_reachable(&addr()) {
-                println!("SKIP (no server at {}): {e}", addr());
-                return None;
-            }
-            if !credentials_configured() {
-                println!(
-                    "SKIP (server at {} reachable, but no credentials configured): live \
-                     conformance NOT proven, this is not a pass: {e}",
-                    addr()
-                );
-                return None;
-            }
-            panic!(
-                "credentials were supplied but the server at {} rejected them, or the \
-                 migration itself failed; refusing to report that as a passing skip: {e}",
+            println!(
+                "SKIP (server at {} reachable, but no credentials configured): live \
+                 conformance NOT proven, this is not a pass",
                 addr()
             );
+            return None;
         }
+        Credentials::Broken(reason) => panic!(
+            "credentials were configured for the server at {} but are unusable ({reason}); \
+             a broken credential is a failure, never an environment gap",
+            addr()
+        ),
     }
+
+    let mut s = TypeDbStore::new(config(db));
+    s.migrate().await.unwrap_or_else(|e| {
+        panic!(
+            "live TypeDB migration failed at {} with a reachable server and configured \
+             credentials; refusing to report that as a passing skip: {e}",
+            addr()
+        )
+    });
+    Some(s)
 }
 
 fn span(file: &str) -> SourceSpan {
@@ -225,27 +308,51 @@ fn only_a_missing_server_may_skip() {
 #[test]
 fn supplied_credentials_are_distinguished_from_no_credentials() {
     let existing_path = std::env::temp_dir().join("chaosbox-live-probe");
-    std::fs::write(&existing_path, "probe").expect("write probe file");
+    std::fs::write(&existing_path, "s3cret").expect("write probe file");
+    let empty_path = std::env::temp_dir().join("chaosbox-live-probe-empty");
+    std::fs::write(&empty_path, "").expect("write empty probe file");
     let existing = std::ffi::OsString::from(existing_path.clone());
+    let empty = std::ffi::OsString::from(empty_path.clone());
     let missing = std::ffi::OsString::from("/definitely/not/a/chaosbox/password");
     let inline = std::ffi::OsString::from("s3cret");
+    let blank = std::ffi::OsString::new();
+
     assert!(
-        credentials_configured_from(Some(&existing), None),
-        "a real password file means credentials were supplied"
-    );
-    assert!(
-        credentials_configured_from(None, Some(&inline)),
-        "an inline password means credentials were supplied"
-    );
-    assert!(
-        !credentials_configured_from(None, None),
+        matches!(credentials_from(None, None), Credentials::Unconfigured),
         "nothing supplied must read as an environment gap, not a broken credential"
     );
     assert!(
-        !credentials_configured_from(Some(&missing), None),
-        "a password file that does not exist was never actually supplied"
+        matches!(
+            credentials_from(Some(&existing), None),
+            Credentials::Ready(_)
+        ),
+        "a readable password file means credentials were supplied"
+    );
+    assert!(
+        matches!(credentials_from(None, Some(&inline)), Credentials::Ready(_)),
+        "an inline password means credentials were supplied"
+    );
+    // A configured source that yields no usable secret is supplied-but-
+    // broken, not absent: it must fail loudly instead of reading as
+    // "never supplied" (which would turn a typo'd secret path into a
+    // passing skip) or falling through to a default password.
+    assert!(
+        matches!(
+            credentials_from(Some(&missing), None),
+            Credentials::Broken(_)
+        ),
+        "a password file that does not exist was configured but unusable, not absent"
+    );
+    assert!(
+        matches!(credentials_from(Some(&empty), None), Credentials::Broken(_)),
+        "an empty password file is a broken credential, not an absent one"
+    );
+    assert!(
+        matches!(credentials_from(None, Some(&blank)), Credentials::Broken(_)),
+        "an empty inline password is broken configuration, not an absent password"
     );
     let _ = std::fs::remove_file(&existing_path);
+    let _ = std::fs::remove_file(&empty_path);
 }
 
 #[test]

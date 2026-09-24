@@ -21,6 +21,15 @@ if ! command -v typedb-server >/dev/null 2>&1 || ! command -v typedb-console >/d
 fi
 
 PORT="${TYPEDB_PORT:-1729}"
+
+# Refuse a busy port. Readiness succeeding against an already-running
+# server while this script's disposable instance failed to bind would
+# silently migrate and test a database this script does not own.
+if timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/$PORT" 2>/dev/null; then
+  echo "refusing to run: 127.0.0.1:$PORT is already in use; set TYPEDB_PORT to a free port" >&2
+  exit 1
+fi
+
 echo "== typedb-server: $(typedb-server --version 2>&1 | head -n 1) =="
 echo "== typedb-console: $(typedb-console --version 2>&1 | head -n 1) =="
 
@@ -28,21 +37,67 @@ echo "== mock Jev HTTP service gate (no credentials, loopback only) =="
 cargo test -p chaosbox-jev http_tests --offline
 
 echo "== disposable server =="
+# The Nix-packaged server ships no bundled config.yml (the systemd unit
+# passes --config) and a partial config is rejected outright, so start
+# from the example the package itself ships and rewrite it into this run's
+# scratch space: the live developer instance's data and ports stay
+# untouched, and HTTP/monitoring/reporting are turned off so nothing else
+# can collide or phone home from a test run.
+# Resolve through profile symlinks (/run/current-system/sw/bin) to reach
+# the package's own share/ directory where the template lives.
+BIN_DIR="$(dirname "$(readlink -f "$(command -v typedb-server)")")"
+SOURCE_CONFIG="$BIN_DIR/../share/typedb/config.yml.example"
+if [ ! -f "$SOURCE_CONFIG" ] && [ -f "$BIN_DIR/config.yml" ]; then
+  SOURCE_CONFIG="$BIN_DIR/config.yml"
+fi
+if [ ! -f "$SOURCE_CONFIG" ]; then
+  echo "no typedb config template beside $BIN_DIR (expected share/typedb/config.yml.example or config.yml)" >&2
+  exit 1
+fi
+sed -E \
+  -e "s|^(    listen-address:).*|\1 127.0.0.1:$PORT|" \
+  -e "s|^(        listen-address:).*|\1 127.0.0.1:$((PORT + 1))|" \
+  -e "s|^(        enabled:) true\$|\1 false|" \
+  -e "s|^(    data-directory:).*|\1 \"$WORK/data\"|" \
+  -e "s|^(    directory:).*|\1 \"$WORK/logs\"|" \
+  -e "s|^(    metrics:) true\$|\1 false|" \
+  -e "s|^(    errors:) true\$|\1 false|" \
+  "$SOURCE_CONFIG" >"$WORK/config.yml"
+# The rewrite must have landed: a template drift that left the default
+# port would make this script bind (and migrate!) the live instance's
+# server instead of its own, which is exactly the ownership bug this
+# whole gate refuses to paper over.
+if ! grep -q "^    listen-address: 127.0.0.1:$PORT\$" "$WORK/config.yml"; then
+  echo "failed to point the disposable server at 127.0.0.1:$PORT; template drift in $SOURCE_CONFIG?" >&2
+  exit 1
+fi
 printf 'password' >"$WORK/pw"
-typedb-server --storage.data-directory "$WORK/data" \
-  --server.listen-address "127.0.0.1:$PORT" \
-  --logging.directory "$WORK/logs" &
+typedb-server --config "$WORK/config.yml" &
 SERVER_PID=$!
 
 echo "== readiness (bounded) =="
+ready=""
 for _ in $(seq 1 60); do
+  # Prove the child is still alive: a disposable server that died on bind
+  # or during startup must fail this gate, not let a probe succeed against
+  # somebody else's instance on the same address.
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    echo "typedb-server exited during startup; logs in $WORK/logs" >&2
+    wait "$SERVER_PID" || true
+    exit 1
+  fi
   if typedb-console --address "127.0.0.1:$PORT" --tls-disabled \
     --username admin --password password \
     --command "server version" >/dev/null 2>&1; then
+    ready=1
     break
   fi
   sleep 2
 done
+if [ -z "$ready" ]; then
+  echo "typedb-server on 127.0.0.1:$PORT never became ready within the bounded wait" >&2
+  exit 1
+fi
 typedb-console --address "127.0.0.1:$PORT" --tls-disabled \
   --username admin --password password \
   --command "server version" | head -n 3
