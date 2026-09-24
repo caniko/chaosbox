@@ -348,8 +348,10 @@ pub struct Decision {
     /// Probability (Noul or winning option), if applicable.
     pub probability: Option<f64>,
     /// Cache identity under which this decision is valid (source,
-    /// preprocessing, catalog, questions, model, rubric). Reuse compares
-    /// this key; threshold-only changes keep it stable.
+    /// preprocessing, catalog, questions, model, rubric, policy, plus the
+    /// materialization thresholds). Reuse compares the relation-local key;
+    /// this audit key replaces the stored row when thresholds change so
+    /// returned and persisted materializations agree.
     pub cache_key: String,
     /// Relation-local reuse key (`jev-reuse:...`) authorizing cross-snapshot
     /// reuse (issue #12). Empty for legacy rows written before reuse.

@@ -94,13 +94,17 @@ impl Store for TypeDbStore {
         &self,
         reuse_key: &str,
     ) -> Result<Option<InferenceRecord>, StoreError> {
-        if let Some(rec) = self.staging.find_inference(reuse_key).await? {
-            return Ok(Some(rec));
+        // Authoritative first: the server is the first-write-wins winner
+        // across workers and restarts. Staging may hold a losing raw from a
+        // lost race (staged before the flush discovered the winner); reads
+        // must return the winner so concurrent racers converge and resume
+        // reuses paid work instead of diverging.
+        if self.driver.is_some() {
+            if let Some(rec) = self.read_inference_row(reuse_key).await? {
+                return Ok(Some(rec));
+            }
         }
-        if self.driver.is_none() {
-            return Ok(None);
-        }
-        self.read_inference_row(reuse_key).await
+        self.staging.find_inference(reuse_key).await
     }
 
     async fn put_evidence(&mut self, e: Evidence) -> Result<(), StoreError> {
@@ -120,18 +124,16 @@ impl Store for TypeDbStore {
         candidate_id: &str,
         question_id: &str,
     ) -> Result<Option<Decision>, StoreError> {
-        if let Some(d) = self
-            .staging
-            .find_decision(candidate_id, question_id)
-            .await?
-        {
-            return Ok(Some(d));
+        // Authoritative first, same as inferences: staging may hold a losing
+        // decision from a lost race; the server winner is what resume and
+        // concurrent readers must agree on.
+        if self.driver.is_some() {
+            let key = decision_key(candidate_id, question_id);
+            if let Some((_, _, d)) = self.read_decision_row(&key).await? {
+                return Ok(Some(d));
+            }
         }
-        if self.driver.is_none() {
-            return Ok(None);
-        }
-        let key = decision_key(candidate_id, question_id);
-        Ok(self.read_decision_row(&key).await?.map(|(_, _, d)| d))
+        self.staging.find_decision(candidate_id, question_id).await
     }
 
     async fn publish(

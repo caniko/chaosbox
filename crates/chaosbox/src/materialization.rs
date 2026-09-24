@@ -75,6 +75,28 @@ impl Materialization {
         }
         Ok(())
     }
+
+    /// Threshold identity for threshold-derived materializations (issue #12).
+    ///
+    /// Every threshold plus the rubric version feeds `Decision` identity
+    /// (`id` and `cache_key`, hence `Evidence` identity via the decision
+    /// id). A threshold change therefore replaces the stored decision and
+    /// its evidence instead of leaving a stale row that disagrees with the
+    /// returned outcome. Raw inferences stay immutable under their
+    /// relation-local reuse key; only the materialization is versioned here.
+    #[must_use]
+    pub fn digest(&self) -> String {
+        deterministic_id(
+            "mat",
+            &[
+                &self.rubric_version,
+                &self.accept_noul.to_string(),
+                &self.accept_confidence.to_string(),
+                &self.accept_score.to_string(),
+                &self.abstain_confidence.to_string(),
+            ],
+        )
+    }
 }
 
 /// How a candidate becomes Jev questions. Descriptions (not ids) go into

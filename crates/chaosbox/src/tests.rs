@@ -1101,8 +1101,11 @@ fn reuse_identity_invalidates_on_endpoint_edit() {
 /// Issue #12 Slice 2A: threshold changes rematerialize the same raw answer
 /// without re-asking — abstained becomes accepted when the floor drops, and
 /// accepted becomes abstained when it rises. The responder that would fail
-/// on any spend proves no inference ran.
+/// on any spend proves no inference ran. Stored readback must match the
+/// returned outcome (no stale rows), preflight must agree (zero uncached),
+/// and publication must follow the rematerialized outcome.
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn reuse_rematerializes_threshold_change_without_respend() {
     let (cand, entities) = one_candidate();
     let snap = test_snapshot();
@@ -1147,6 +1150,38 @@ async fn reuse_rematerializes_threshold_change_without_respend() {
         DecisionOutcome::Accepted,
         "same raw rematerialized under a lower floor"
     );
+    // Stored readback must match the returned rematerialization — no stale
+    // Abstained row, no stale non-supporting evidence identity.
+    let qid = format!("rel_{}", cand.id);
+    let kept = store
+        .find_decision(&cand.id, &qid)
+        .await
+        .unwrap()
+        .expect("rematerialized decision must persist");
+    assert_eq!(kept.id, second[0].1.id, "stored id matches returned");
+    assert_eq!(
+        kept.outcome,
+        DecisionOutcome::Accepted,
+        "stored outcome matches rematerialized"
+    );
+    assert_eq!(kept.cache_key, second[0].1.cache_key);
+    assert_eq!(kept.reuse_key, second[0].1.reuse_key);
+    assert_eq!(kept.raw_answer, second[0].1.raw_answer);
+    assert!(second[0].2.supports);
+    assert_eq!(second[0].2.class, second[0].1.evidence_class);
+    // Preflight agrees: validated reuse costs nothing.
+    let pending = crate::uncached_decisions(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        "jev-1.13.0",
+        &lowered,
+        &test_policy(),
+        &store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(pending, 0, "rematerialized reuse must be fully cached");
     // Raise the floor above a previously accepted confidence: accepted
     // becomes abstained, again with no spend.
     let mut store2 = MemoryStore::new();
@@ -1192,6 +1227,241 @@ async fn reuse_rematerializes_threshold_change_without_respend() {
         remat[0].1.outcome,
         DecisionOutcome::Abstained,
         "same raw rematerialized under a higher floor"
+    );
+    // Stored readback follows the higher floor too, and publication drops
+    // the relation (Abstained never materializes) instead of publishing a
+    // stale Accepted edge.
+    let qid2 = format!("rel_{}", cand.id);
+    let kept_strict = store2
+        .find_decision(&cand.id, &qid2)
+        .await
+        .unwrap()
+        .expect("rematerialized decision must persist");
+    assert_eq!(kept_strict.id, remat[0].1.id);
+    assert_eq!(kept_strict.outcome, DecisionOutcome::Abstained);
+    assert!(!remat[0].2.supports);
+    let pending2 = crate::uncached_decisions(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        "jev-1.13.0",
+        &strict,
+        &test_policy(),
+        &store2,
+    )
+    .await
+    .unwrap();
+    assert_eq!(pending2, 0, "abstained rematerialization stays cached");
+    let ext = Extraction {
+        entities: entities.values().cloned().collect(),
+        explicit_refs: vec![],
+    };
+    let mut pipe2 = Pipeline::<MemoryStore>::new();
+    pipe2.store = store2;
+    let build = pipe2
+        .build_and_publish("r", &snap, &ext, &remat, &strict, None)
+        .await
+        .unwrap();
+    assert!(
+        build.edges.is_empty(),
+        "abstained rematerialization must not publish relations"
+    );
+}
+
+/// Shared resolver: a recorded `Failed` with the same reuse key blocks reuse
+/// even though a valid inference exists — retries always re-ask, then
+/// supersede the failure.
+#[tokio::test]
+async fn failed_retry_blocks_reuse_until_respend() {
+    let (cand, entities) = one_candidate();
+    let snap = test_snapshot();
+    let mat = Materialization::default();
+    let mut store = MemoryStore::new();
+    ensure_a_rs(&mut store).await;
+    let mut accept = ConfResponder { confidence: 0.95 };
+    let paid = Pipeline::<MemoryStore>::decide(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        &mut accept,
+        "jev-1.13.0",
+        &mat,
+        &test_policy(),
+        &mut store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(paid[0].1.outcome, DecisionOutcome::Accepted);
+    let rkey = paid[0].1.reuse_key.clone();
+    let qid = format!("rel_{}", cand.id);
+    // Inject a failure for the same inputs with a different audit key so it
+    // replaces the Accepted row (same inputs failed on retry).
+    let mut failed = paid[0].1.clone();
+    failed.outcome = DecisionOutcome::Failed("injected fault".into());
+    failed.raw_answer = None;
+    failed.cache_key = format!("{}:failed-test", paid[0].1.cache_key);
+    assert_eq!(failed.reuse_key, rkey);
+    store.put_decision(failed).await.unwrap();
+    // Preflight and execution agree: uncached, and decide spends.
+    let pending = crate::uncached_decisions(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        "jev-1.13.0",
+        &mat,
+        &test_policy(),
+        &store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(pending, 1, "Failed with same reuse key must re-ask");
+    let mut retry = ConfResponder { confidence: 0.95 };
+    let second = Pipeline::<MemoryStore>::decide(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        &mut retry,
+        "jev-1.13.0",
+        &mat,
+        &test_policy(),
+        &mut store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(second[0].1.outcome, DecisionOutcome::Accepted);
+    let stored = store
+        .find_decision(&cand.id, &qid)
+        .await
+        .unwrap()
+        .expect("retry must supersede the failure");
+    assert_eq!(stored.outcome, DecisionOutcome::Accepted);
+}
+
+/// Shared resolver: corrupt inferences fail closed — wrong requested model,
+/// empty returned model, and invalid raws are `Err`, never silent reuse and
+/// never spend-every-run misses against first-write-wins poison.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn corrupt_inferences_fail_closed() {
+    use chaosbox_core::{InferenceRecord, RawAnswer};
+    let (cand, entities) = one_candidate();
+    let snap = test_snapshot();
+    let mat = Materialization::default();
+    // Pay once to learn the reuse key for these inputs.
+    let mut probe = MemoryStore::new();
+    ensure_a_rs(&mut probe).await;
+    let mut accept = ConfResponder { confidence: 0.95 };
+    let paid = Pipeline::<MemoryStore>::decide(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        &mut accept,
+        "jev-1.13.0",
+        &mat,
+        &test_policy(),
+        &mut probe,
+    )
+    .await
+    .unwrap();
+    let rkey = paid[0].1.reuse_key.clone();
+    let valid_raw = paid[0].1.raw_answer.clone().expect("paid has raw");
+    let mk_store = |rec: InferenceRecord| async move {
+        let mut s = MemoryStore::new();
+        ensure_a_rs(&mut s).await;
+        s.put_inference(rec).await.unwrap();
+        s
+    };
+    // Wrong requested model.
+    let wrong_model = InferenceRecord {
+        reuse_key: rkey.clone(),
+        raw: valid_raw.clone(),
+        model_requested: "wrong-model".into(),
+        model_returned: "jev-1.13.0".into(),
+    };
+    let s = mk_store(wrong_model).await;
+    assert!(
+        crate::uncached_decisions(
+            std::slice::from_ref(&cand),
+            &entities,
+            &snap,
+            "jev-1.13.0",
+            &mat,
+            &test_policy(),
+            &s,
+        )
+        .await
+        .is_err(),
+        "model mismatch must fail closed"
+    );
+    // Empty returned model.
+    let empty_returned = InferenceRecord {
+        reuse_key: rkey.clone(),
+        raw: valid_raw.clone(),
+        model_requested: "jev-1.13.0".into(),
+        model_returned: String::new(),
+    };
+    let s = mk_store(empty_returned).await;
+    assert!(
+        crate::uncached_decisions(
+            std::slice::from_ref(&cand),
+            &entities,
+            &snap,
+            "jev-1.13.0",
+            &mat,
+            &test_policy(),
+            &s,
+        )
+        .await
+        .is_err(),
+        "empty returned model must fail closed"
+    );
+    // Invalid raw: distribution does not sum to one.
+    let bad_raw = RawAnswer::Choice {
+        choice: "accept".into(),
+        probabilities: std::collections::BTreeMap::from([
+            ("accept".into(), 0.1),
+            ("reject".into(), 0.1),
+            ("none".into(), 0.1),
+        ]),
+        confidence: 0.95,
+    };
+    let bad = InferenceRecord {
+        reuse_key: rkey.clone(),
+        raw: bad_raw,
+        model_requested: "jev-1.13.0".into(),
+        model_returned: "jev-1.13.0".into(),
+    };
+    let mut s = mk_store(bad).await;
+    assert!(
+        crate::uncached_decisions(
+            std::slice::from_ref(&cand),
+            &entities,
+            &snap,
+            "jev-1.13.0",
+            &mat,
+            &test_policy(),
+            &s,
+        )
+        .await
+        .is_err(),
+        "invalid raw must fail closed"
+    );
+    // Decide fails closed too (never spends on corruption).
+    let mut failing = FailResponder;
+    assert!(
+        Pipeline::<MemoryStore>::decide(
+            std::slice::from_ref(&cand),
+            &entities,
+            &snap,
+            &mut failing,
+            "jev-1.13.0",
+            &mat,
+            &test_policy(),
+            &mut s,
+        )
+        .await
+        .is_err(),
+        "decide must fail closed on corrupt inference"
     );
 }
 

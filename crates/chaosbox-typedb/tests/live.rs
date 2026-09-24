@@ -717,3 +717,125 @@ async fn inference_reuse_key_roundtrips_across_restart() {
     assert_eq!(found_dec.reuse_key, first.reuse_key);
     assert_eq!(found_dec.raw_answer, Some(first.raw));
 }
+
+#[tokio::test]
+async fn threshold_change_replaces_decision_and_survives_restart() {
+    use std::collections::BTreeMap;
+    use chaosbox_store::Store as _;
+    let db = test_db("t_thresh");
+    let Some(mut s) = connected_store(&db).await else {
+        return;
+    };
+    let rkey = "jev-reuse:live-threshold-1".to_owned();
+    let raw = RawAnswer::Choice {
+        choice: "accept".into(),
+        probabilities: BTreeMap::from([
+            ("accept".into(), 0.9),
+            ("reject".into(), 0.05),
+            ("none".into(), 0.05),
+        ]),
+        confidence: 0.95,
+    };
+    s.put_inference(InferenceRecord {
+        reuse_key: rkey.clone(),
+        raw: raw.clone(),
+        model_requested: "jev-1.13.0".into(),
+        model_returned: "jev-1.13.0".into(),
+    })
+    .await
+    .unwrap();
+    // Old thresholds: abstained. New thresholds (different audit key):
+    // accepted from the same raw. Replacement must win over same-key keep.
+    let mut old = decision("cand:1", "q1", "key-old:mat-old");
+    old.reuse_key = rkey.clone();
+    old.raw_answer = Some(raw.clone());
+    old.outcome = DecisionOutcome::Abstained;
+    old.confidence = Some(0.95);
+    s.put_decision(old).await.unwrap();
+    let mut new = decision("cand:1", "q1", "key-new:mat-new");
+    new.id = "dec:cand:1:q1:new".into();
+    new.reuse_key = rkey.clone();
+    new.raw_answer = Some(raw.clone());
+    new.outcome = DecisionOutcome::Accepted;
+    s.put_decision(new.clone()).await.unwrap();
+    let found = s
+        .find_decision("cand:1", "q1")
+        .await
+        .unwrap()
+        .expect("replacement must persist");
+    assert_eq!(found.outcome, DecisionOutcome::Accepted);
+    assert_eq!(found.cache_key, "key-new:mat-new");
+    // Fresh process reads the winner, not the stale abstained row.
+    let mut fresh = TypeDbStore::new(config(&db));
+    fresh.migrate().await.unwrap();
+    let restarted = fresh
+        .find_decision("cand:1", "q1")
+        .await
+        .unwrap()
+        .expect("replacement must survive restart");
+    assert_eq!(restarted.outcome, DecisionOutcome::Accepted);
+    assert_eq!(restarted.raw_answer, Some(raw));
+    let restarted_inf = fresh
+        .find_inference(&rkey)
+        .await
+        .unwrap()
+        .expect("inference must survive restart");
+    assert_eq!(restarted_inf.raw, restarted.raw_answer.unwrap());
+}
+
+#[tokio::test]
+async fn concurrent_inferences_first_write_wins_across_stores() {
+    use std::collections::BTreeMap;
+    use chaosbox_store::Store as _;
+    let db = test_db("t_race");
+    let Some(mut a) = connected_store(&db).await else {
+        return;
+    };
+    let Some(mut b) = connected_store(&db).await else {
+        return;
+    };
+    let rkey = "jev-reuse:live-race-1".to_owned();
+    let raw_a = RawAnswer::Choice {
+        choice: "accept".into(),
+        probabilities: BTreeMap::from([
+            ("accept".into(), 0.9),
+            ("reject".into(), 0.05),
+            ("none".into(), 0.05),
+        ]),
+        confidence: 0.95,
+    };
+    let raw_b = RawAnswer::Choice {
+        choice: "reject".into(),
+        probabilities: BTreeMap::from([
+            ("accept".into(), 0.05),
+            ("reject".into(), 0.9),
+            ("none".into(), 0.05),
+        ]),
+        confidence: 0.9,
+    };
+    a.put_inference(InferenceRecord {
+        reuse_key: rkey.clone(),
+        raw: raw_a.clone(),
+        model_requested: "jev-1.13.0".into(),
+        model_returned: "jev-1.13.0".into(),
+    })
+    .await
+    .unwrap();
+    b.put_inference(InferenceRecord {
+        reuse_key: rkey.clone(),
+        raw: raw_b,
+        model_requested: "jev-1.13.0".into(),
+        model_returned: "jev-1.13.0".into(),
+    })
+    .await
+    .unwrap();
+    // Both stores agree on the winner (server-first reads).
+    let winner_a = a.find_inference(&rkey).await.unwrap().unwrap();
+    let winner_b = b.find_inference(&rkey).await.unwrap().unwrap();
+    assert_eq!(winner_a.raw, winner_b.raw, "racers must converge");
+    assert_eq!(winner_a.raw, raw_a, "first write wins");
+    let mut fresh = TypeDbStore::new(config(&db));
+    fresh.migrate().await.unwrap();
+    let restarted = fresh.find_inference(&rkey).await.unwrap().unwrap();
+    assert_eq!(restarted.raw, raw_a);
+}

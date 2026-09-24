@@ -28,6 +28,7 @@ mod materialization;
 mod pipeline;
 mod reader;
 mod responder;
+pub(crate) mod reuse;
 pub mod sessions;
 mod view;
 
@@ -97,9 +98,9 @@ fn assemble_evidence(
 /// operator did not authorize: an uncached candidate contributes nothing
 /// here and is simply asked again by the next decisions run.
 ///
-/// The cache test mirrors [`Pipeline::decide`] verbatim (same reuse inputs);
-/// if decide's reuse rule changes, this function must change with it. The
-/// exit-4 `coverage:` gate in `main.rs` rests on exactly this test holding.
+/// Shares [`crate::reuse::resolve_reuse`] verbatim with
+/// [`Pipeline::decide`] and [`crate::uncached_decisions`]. The exit-4
+/// `coverage:` gate in `main.rs` rests on exactly this test holding.
 pub async fn decide_cached<S: chaosbox_store::Store>(
     candidates: &[Candidate],
     entities: &BTreeMap<String, Entity>,
@@ -128,41 +129,43 @@ pub async fn decide_cached<S: chaosbox_store::Store>(
         let to = entities
             .get(&cand.to_entity)
             .ok_or_else(|| PipelineError::Validation("missing to".into()))?;
-        let questions = questions_for(cand, from, to);
-        let qid = format!("rel_{}", cand.id);
-        let old_key = cache_key(
-            &from.snapshot,
+        let attempt = crate::reuse::resolve_reuse(
+            cand,
+            from,
+            to,
+            &snapshot.id,
+            &ctx,
+            mat,
             &catalog,
-            &questions,
-            model_requested,
-            &mat.rubric_version,
-            &policy_digest,
-        );
-        let input = reuse_input_for(cand, from, to, &questions, &ctx, &snapshot.id)?;
-        let rkey = chaosbox_jev::reuse_key(&input);
-        let Some(inf) = store
-            .find_inference(&rkey)
-            .await
-            .map_err(|e| PipelineError::Store(e.to_string()))?
-        else {
+            &*store,
+        )
+        .await?;
+        let Some(hit) = attempt.hit else {
             continue;
         };
-        let (outcome, class, conf, prob) = materialize_raw(&inf.raw, mat, &cand.reason)?;
         let decision = Decision {
-            id: deterministic_id("dec", &[&cand.id, &qid, model_requested]),
+            id: deterministic_id(
+                "dec",
+                &[
+                    &cand.id,
+                    &attempt.qid,
+                    model_requested,
+                    &attempt.mat_digest,
+                ],
+            ),
             candidate_id: cand.id.clone(),
-            question_id: qid,
-            outcome: outcome.clone(),
-            evidence_class: class,
+            question_id: attempt.qid.clone(),
+            outcome: hit.outcome.clone(),
+            evidence_class: hit.evidence_class,
             model_requested: model_requested.to_owned(),
-            model_returned: inf.model_returned.clone(),
-            confidence: conf,
-            probability: prob,
-            cache_key: old_key,
-            reuse_key: rkey,
-            raw_answer: Some(inf.raw.clone()),
+            model_returned: hit.inference.model_returned.clone(),
+            confidence: hit.confidence,
+            probability: hit.probability,
+            cache_key: attempt.audit_cache_key.clone(),
+            reuse_key: attempt.reuse_key.clone(),
+            raw_answer: Some(hit.inference.raw.clone()),
         };
-        let supports = outcome == DecisionOutcome::Accepted;
+        let supports = hit.outcome == DecisionOutcome::Accepted;
         let text = format!(
             "[{}] {} -> {} ({:?})",
             cand.reason, from.qualified_name, to.qualified_name, cand.rel_type

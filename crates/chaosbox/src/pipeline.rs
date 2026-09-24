@@ -12,19 +12,19 @@ pub struct Pipeline<S = MemoryStore> {
     pub generation: u64,
 }
 
-/// Count candidates whose reusable inference is missing: no stored
-/// inference under the relation-local reuse key. Each such candidate costs
-/// exactly one live Jev request, so operators can check
+/// Count candidates whose reusable inference is missing or invalid: no
+/// validated hit under the relation-local reuse key. Each such candidate
+/// costs exactly one live Jev request, so operators can check
 /// `uncached <= max_requests` **before** any spend — the budget preflight
 /// in `run --live-jev`.
 ///
-/// The cache test mirrors [`Pipeline::decide`] verbatim (same reuse inputs:
-/// repo, content-pinned endpoints, excerpt, canonical questions, model,
-/// rubric, and effective-policy digest); if decide's reuse rule changes,
-/// this function must change with it. Failed attempts are never stored as
-/// reusable inferences, so they always count as uncached (retries re-ask).
-/// Legacy decisions without raw data are misses by construction (nothing
-/// stored under their key): they re-ask once to populate the inference.
+/// Shares [`crate::reuse::resolve_reuse`] verbatim with [`Pipeline::decide`]
+/// and [`crate::decide_cached`]: same reuse inputs, same raw validation,
+/// same model provenance, same Failed-retry rule. Failed attempts are never
+/// stored as reusable inferences, so they always count as uncached
+/// (retries re-ask). Legacy decisions without raw data are misses by
+/// construction (nothing stored under their key): they re-ask once to
+/// populate the inference.
 pub async fn uncached_decisions<S: chaosbox_store::Store>(
     candidates: &[Candidate],
     entities: &BTreeMap<String, Entity>,
@@ -35,6 +35,7 @@ pub async fn uncached_decisions<S: chaosbox_store::Store>(
     store: &S,
 ) -> Result<usize, PipelineError> {
     mat.validate()?;
+    let catalog = catalog_digest(candidates);
     let policy_digest = policy.digest();
     let file_hashes = file_hashes_for(snapshot);
     let ctx = ReuseContext {
@@ -52,17 +53,19 @@ pub async fn uncached_decisions<S: chaosbox_store::Store>(
         let to = entities
             .get(&cand.to_entity)
             .ok_or_else(|| PipelineError::Validation("missing to".into()))?;
-        let questions = questions_for(cand, from, to);
-        let input =
-            reuse_input_for(cand, from, to, &questions, &ctx, &snapshot.id)?;
-        let rkey = chaosbox_jev::reuse_key(&input);
-        match store
-            .find_inference(&rkey)
-            .await
-            .map_err(|e| PipelineError::Store(e.to_string()))?
-        {
-            Some(_) => {}
-            None => uncached += 1,
+        let attempt = crate::reuse::resolve_reuse(
+            cand,
+            from,
+            to,
+            &snapshot.id,
+            &ctx,
+            mat,
+            &catalog,
+            store,
+        )
+        .await?;
+        if attempt.hit.is_none() {
+            uncached += 1;
         }
     }
     Ok(uncached)
@@ -105,11 +108,15 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
     /// so a dead worker loses nothing already decided. Claims are assembled
     /// later in [`Pipeline::build_and_publish`], where relation ids exist.
     ///
-    /// Reuse (issue #12): the relation-local reuse key authorizes
-    /// cross-snapshot reuse. A stored inference rematerializes under current
-    /// thresholds without spending; misses call the responder once and store
-    /// both the reusable inference and the snapshot-bound decision.
+    /// Reuse (issue #12): the shared [`crate::reuse::resolve_reuse`]
+    /// authorizes cross-snapshot reuse. A validated stored inference
+    /// rematerializes under current thresholds without spending; misses call
+    /// the responder once, persist the reusable inference authoritatively,
+    /// then materialize the stored winner (concurrent racers converge).
     /// Failed attempts never store an inference (retries always re-ask).
+    /// Threshold changes replace stored decisions/evidence via the
+    /// materialization digest in their identity — returned and persisted
+    /// rows agree.
     // Long decision pipeline; splitting stages apart is the owning
     // session's refactor. Allowed to keep CI unblocked.
     #[allow(clippy::too_many_lines)]
@@ -125,9 +132,6 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
         store: &mut S,
     ) -> Result<Vec<(Candidate, Decision, Evidence)>, PipelineError> {
         mat.validate()?;
-        // Old repo-wide key kept as audit on every Decision; reuse itself
-        // uses the relation-local key below (catalog changes no longer
-        // invalidate unrelated relations).
         let catalog = catalog_digest(candidates);
         let policy_digest = policy.digest();
         let file_hashes = file_hashes_for(snapshot);
@@ -146,42 +150,41 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
             let to = entities
                 .get(&cand.to_entity)
                 .ok_or_else(|| PipelineError::Validation("missing to".into()))?;
-            let questions = questions_for(cand, from, to);
-            let qid = format!("rel_{}", cand.id);
-            let old_key = cache_key(
-                &from.snapshot,
+            let attempt = crate::reuse::resolve_reuse(
+                cand,
+                from,
+                to,
+                &snapshot.id,
+                &ctx,
+                mat,
                 &catalog,
-                &questions,
-                model_requested,
-                &mat.rubric_version,
-                &policy_digest,
-            );
-            let input = reuse_input_for(cand, from, to, &questions, &ctx, &snapshot.id)?;
-            let rkey = chaosbox_jev::reuse_key(&input);
-            // Cross-snapshot reuse: rematerialize the stored raw answer
+                &*store,
+            )
+            .await?;
+            let rkey = attempt.reuse_key.clone();
+            let qid = attempt.qid.clone();
+            let audit_key = attempt.audit_cache_key.clone();
+            let mat_digest = attempt.mat_digest.clone();
+            // Cross-snapshot reuse: rematerialize the validated stored raw
             // under current thresholds; evidence rebinds to current ids.
-            if let Some(inf) = store
-                .find_inference(&rkey)
-                .await
-                .map_err(|e| PipelineError::Store(e.to_string()))?
-            {
-                let (outcome, class, conf, prob) =
-                    materialize_raw(&inf.raw, mat, &cand.reason)?;
+            // Identity carries the materialization digest, so a threshold
+            // change replaces the stored row instead of leaving it stale.
+            if let Some(hit) = attempt.hit {
                 let decision = Decision {
-                    id: deterministic_id("dec", &[&cand.id, &qid, model_requested]),
+                    id: deterministic_id("dec", &[&cand.id, &qid, model_requested, &mat_digest]),
                     candidate_id: cand.id.clone(),
                     question_id: qid.clone(),
-                    outcome: outcome.clone(),
-                    evidence_class: class,
+                    outcome: hit.outcome.clone(),
+                    evidence_class: hit.evidence_class,
                     model_requested: model_requested.to_owned(),
-                    model_returned: inf.model_returned.clone(),
-                    confidence: conf,
-                    probability: prob,
-                    cache_key: old_key,
+                    model_returned: hit.inference.model_returned.clone(),
+                    confidence: hit.confidence,
+                    probability: hit.probability,
+                    cache_key: audit_key,
                     reuse_key: rkey,
-                    raw_answer: Some(inf.raw.clone()),
+                    raw_answer: Some(hit.inference.raw.clone()),
                 };
-                let supports = outcome == DecisionOutcome::Accepted;
+                let supports = hit.outcome == DecisionOutcome::Accepted;
                 let text = format!(
                     "[{}] {} -> {} ({:?})",
                     cand.reason, from.qualified_name, to.qualified_name, cand.rel_type
@@ -206,6 +209,7 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
                 out.push((cand.clone(), decision, ev));
                 continue;
             }
+            let questions = attempt.questions.clone();
             let state = serde_json::json!({
                 "candidate": cand.id,
                 "rel_type": format!("{:?}", cand.rel_type),
@@ -220,16 +224,19 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
             // No inference is stored: failures always re-ask.
             let Ok(r) = responder.respond(state, questions.clone()).await else {
                 let decision = Decision {
-                    id: deterministic_id("dec", &[&cand.id, "failed", model_requested]),
+                    id: deterministic_id(
+                        "dec",
+                        &[&cand.id, "failed", model_requested, &mat_digest],
+                    ),
                     candidate_id: cand.id.clone(),
-                    question_id: format!("rel_{}", cand.id),
+                    question_id: qid.clone(),
                     outcome: DecisionOutcome::Failed("responder fault".into()),
                     evidence_class: EvidenceClass::Ambiguous,
                     model_requested: model_requested.to_owned(),
                     model_returned: String::new(),
                     confidence: None,
                     probability: None,
-                    cache_key: old_key,
+                    cache_key: audit_key,
                     reuse_key: rkey,
                     raw_answer: None,
                 };
@@ -266,40 +273,49 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
                     "expected exactly one answer for one question".into(),
                 ));
             }
-            let valid: BTreeMap<String, BTreeSet<String>> = BTreeMap::from([(
-                format!("rel_{}", cand.id),
-                BTreeSet::from(["accept".into(), "reject".into(), "none".into()]),
-            )]);
+            let valid = crate::reuse::valid_options_for(&qid);
             chaosbox_jev::validate_response(&resp, &questions, &valid)
                 .map_err(|e| PipelineError::Validation(e.to_string()))?;
-            let (qid, ans) = resp.answers.iter().next().expect("checked above");
+            let (answered_qid, ans) = resp.answers.iter().next().expect("checked above");
             let raw = chaosbox_jev::raw_from_answer(ans);
             // Store the reusable inference first: paid work survives a crash
-            // before the snapshot-bound decision lands.
-            let inf = InferenceRecord {
+            // before the snapshot-bound decision lands. Then re-read the
+            // authoritative winner (first-write-wins under races) and
+            // materialize that — concurrent racers converge instead of
+            // diverging on loser raws.
+            let submitted = InferenceRecord {
                 reuse_key: rkey.clone(),
                 raw: raw.clone(),
                 model_requested: model_requested.to_owned(),
                 model_returned: resp.model.clone(),
             };
             store
-                .put_inference(inf)
+                .put_inference(submitted)
                 .await
                 .map_err(|e| PipelineError::Store(e.to_string()))?;
-            let (outcome, class, conf, prob) = materialize_raw(&raw, mat, &cand.reason)?;
+            let winner = store
+                .find_inference(&rkey)
+                .await
+                .map_err(|e| PipelineError::Store(e.to_string()))?
+                .ok_or_else(|| PipelineError::Store("inference missing after put".into()))?;
+            let (outcome, class, conf, prob) =
+                materialize_raw(&winner.raw, mat, &cand.reason)?;
             let decision = Decision {
-                id: deterministic_id("dec", &[&cand.id, qid, model_requested]),
+                id: deterministic_id(
+                    "dec",
+                    &[&cand.id, answered_qid, model_requested, &mat_digest],
+                ),
                 candidate_id: cand.id.clone(),
-                question_id: qid.clone(),
+                question_id: answered_qid.clone(),
                 outcome: outcome.clone(),
                 evidence_class: class,
                 model_requested: model_requested.to_owned(),
-                model_returned: resp.model.clone(),
+                model_returned: winner.model_returned.clone(),
                 confidence: conf,
                 probability: prob,
-                cache_key: old_key,
+                cache_key: audit_key,
                 reuse_key: rkey,
-                raw_answer: Some(raw),
+                raw_answer: Some(winner.raw.clone()),
             };
             // Evidence text copied from source spans / deterministic template.
             let text = format!(
