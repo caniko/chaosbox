@@ -110,6 +110,10 @@
             pname = "chaosbox";
             version = "0.1.0";
             strictDeps = true;
+            # `cargo test` execs pinned session tools through a node
+            # interpreter; the build sandbox has no ambient node. Deployments
+            # pin CHAOSBOX_NODE instead of relying on PATH.
+            nativeBuildInputs = [ pkgs.nodejs ];
             cargoExtraArgs = "--locked -p chaosbox";
             meta = {
               description = "Chaosbox deterministic code-graph pipeline";
@@ -255,6 +259,9 @@
             pname = "chaosbox";
             version = "0.1.0";
             strictDeps = true;
+            # Same node dependency as the package build: the unit check runs
+            # `cargo test`, which execs pinned session tools.
+            nativeBuildInputs = [ pkgs.nodejs ];
             cargoExtraArgs = "--locked --workspace";
           };
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;

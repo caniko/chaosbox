@@ -10,7 +10,7 @@
 //! are never consulted.
 
 use std::{
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -195,18 +195,45 @@ pub fn tool_root(root: Option<PathBuf>) -> Result<PathBuf, String> {
     .ok_or_else(|| "no campaign root: pass --root or set CHAOSBOX_SESSION_CAMPAIGN".to_string())
 }
 
-/// Exec `node <tool> <args>`, forwarding the exit code unchanged.
+/// The interpreter `exec_node` runs: `CHAOSBOX_NODE` when set, `node` from
+/// `PATH` otherwise.
+///
+/// Packaged deployments pin `CHAOSBOX_NODE` to a store path — `chaosbox-canix`
+/// exports it — so a pinned tool never depends on ambient `PATH` state that a
+/// nix sandbox or a service manager does not provide.
+fn node_interpreter() -> PathBuf {
+    env::var_os("CHAOSBOX_NODE").map_or_else(|| PathBuf::from("node"), PathBuf::from)
+}
+
+/// Exec `<node> <tool> <args>`, forwarding the exit code unchanged.
 ///
 /// # Errors
 ///
-/// Returns a message when the interpreter cannot be started; a tool that
-/// runs and fails reports through its own exit code.
+/// Returns a message naming the interpreter that could not be started: a
+/// missing interpreter names itself instead of the tool, because the tool may
+/// be present and correctly pinned while `CHAOSBOX_NODE` or `PATH` is not.
+/// A tool that runs and fails reports through its own exit code.
 pub fn exec_node(tool: &Path, args: &[String]) -> Result<i32, String> {
-    let status = Command::new("node")
+    let interpreter = node_interpreter();
+    let status = Command::new(&interpreter)
         .arg(tool)
         .args(args)
         .status()
-        .map_err(|error| format!("cannot start {}: {error}", tool.display()))?;
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                format!(
+                    "cannot start node interpreter {}: {error} (set CHAOSBOX_NODE \
+                     to a node binary or put node on PATH)",
+                    interpreter.display()
+                )
+            } else {
+                format!(
+                    "cannot start {} with {}: {error}",
+                    tool.display(),
+                    interpreter.display()
+                )
+            }
+        })?;
     Ok(status.code().unwrap_or(1))
 }
 
