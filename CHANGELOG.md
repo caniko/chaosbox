@@ -11,6 +11,13 @@
 
 ### Added
 
+- Release tooling: six per-crate CI workflows and six signed-tag
+  `publish-crate-*` workflows (simit-generated, drift-checked by
+  `simit init ci --check`), with the maintainer public key in
+  `keys/maintainers.gpg`. Publication stays manual and must follow the
+  dependency tiers `core → extract/jev/store → typedb → chaosbox`; the
+  workflows validate the tag against the Cargo version and dry-run before
+  publishing.
 - Sessions adoption and pinned install/rollback commands. Campaign sources
   resolve canary snapshots under `snapshots/` and boundary snapshots through
   the receipt's provenance record, with unresolvable boundaries reported as
