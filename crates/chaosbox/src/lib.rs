@@ -9,8 +9,8 @@ use std::{
 
 use chaosbox_core::{
     catalog_digest, check_confidence, check_probability, deterministic_id, Candidate, Claim,
-    Decision, DecisionOutcome, Entity, Evidence, EvidenceClass, GraphBuild, Relation,
-    RelationScope,
+    Decision, DecisionOutcome, Entity, Evidence, EvidenceClass, GraphBuild, InferenceRecord,
+    RawAnswer, Relation, RelationScope,
 };
 use chaosbox_extract::{build_candidates, extract_snapshot, CandidateCatalog, Extraction, Snapshot};
 use chaosbox_store::MemoryStore;
@@ -33,7 +33,8 @@ mod view;
 
 pub use lifecycle::LifecycleReport;
 pub use materialization::{
-    Materialization, ReuseContext, file_hashes_for, questions_for, reuse_input_for,
+    Materialization, ReuseContext, file_hashes_for, materialize_raw, questions_for,
+    reuse_input_for,
 };
 pub use pipeline::{Pipeline, chain_publication, summarize_outcomes, uncached_decisions};
 pub use reader::{
@@ -96,13 +97,13 @@ fn assemble_evidence(
 /// operator did not authorize: an uncached candidate contributes nothing
 /// here and is simply asked again by the next decisions run.
 ///
-/// The cache test mirrors [`Pipeline::decide`] verbatim (same catalog
-/// digest, question set, model, rubric, and effective-policy inputs); if decide's reuse rule
-/// changes, this function must change with it. The exit-4 `coverage:` gate
-/// in `main.rs` rests on exactly this test holding.
+/// The cache test mirrors [`Pipeline::decide`] verbatim (same reuse inputs);
+/// if decide's reuse rule changes, this function must change with it. The
+/// exit-4 `coverage:` gate in `main.rs` rests on exactly this test holding.
 pub async fn decide_cached<S: chaosbox_store::Store>(
     candidates: &[Candidate],
     entities: &BTreeMap<String, Entity>,
+    snapshot: &Snapshot,
     model_requested: &str,
     mat: &Materialization,
     policy: &chaosbox_core::EffectivePolicy,
@@ -111,6 +112,14 @@ pub async fn decide_cached<S: chaosbox_store::Store>(
     mat.validate()?;
     let catalog = catalog_digest(candidates);
     let policy_digest = policy.digest();
+    let file_hashes = file_hashes_for(snapshot);
+    let ctx = ReuseContext {
+        repo: &snapshot.repo,
+        file_hashes: &file_hashes,
+        model: model_requested,
+        rubric_version: &mat.rubric_version,
+        policy_digest: &policy_digest,
+    };
     let mut out = Vec::new();
     for cand in candidates {
         let from = entities
@@ -121,7 +130,7 @@ pub async fn decide_cached<S: chaosbox_store::Store>(
             .ok_or_else(|| PipelineError::Validation("missing to".into()))?;
         let questions = questions_for(cand, from, to);
         let qid = format!("rel_{}", cand.id);
-        let key = cache_key(
+        let old_key = cache_key(
             &from.snapshot,
             &catalog,
             &questions,
@@ -129,27 +138,41 @@ pub async fn decide_cached<S: chaosbox_store::Store>(
             &mat.rubric_version,
             &policy_digest,
         );
-        let Some(stored) = store
-            .find_decision(&cand.id, &qid)
+        let input = reuse_input_for(cand, from, to, &questions, &ctx, &snapshot.id)?;
+        let rkey = chaosbox_jev::reuse_key(&input);
+        let Some(inf) = store
+            .find_inference(&rkey)
             .await
             .map_err(|e| PipelineError::Store(e.to_string()))?
         else {
             continue;
         };
-        if stored.cache_key != key || matches!(stored.outcome, DecisionOutcome::Failed(_)) {
-            continue;
-        }
-        let supports = stored.outcome == DecisionOutcome::Accepted;
+        let (outcome, class, conf, prob) = materialize_raw(&inf.raw, mat, &cand.reason)?;
+        let decision = Decision {
+            id: deterministic_id("dec", &[&cand.id, &qid, model_requested]),
+            candidate_id: cand.id.clone(),
+            question_id: qid,
+            outcome: outcome.clone(),
+            evidence_class: class,
+            model_requested: model_requested.to_owned(),
+            model_returned: inf.model_returned.clone(),
+            confidence: conf,
+            probability: prob,
+            cache_key: old_key,
+            reuse_key: rkey,
+            raw_answer: Some(inf.raw.clone()),
+        };
+        let supports = outcome == DecisionOutcome::Accepted;
         let text = format!(
             "[{}] {} -> {} ({:?})",
             cand.reason, from.qualified_name, to.qualified_name, cand.rel_type
         );
         let ev = assemble_evidence(
-            &stored,
+            &decision,
             supports,
             text,
             Some(from.span.clone()),
-            &from.snapshot,
+            &snapshot.id,
             &from.file,
             "support",
         );
@@ -157,7 +180,11 @@ pub async fn decide_cached<S: chaosbox_store::Store>(
             .put_evidence(ev.clone())
             .await
             .map_err(|e| PipelineError::Store(e.to_string()))?;
-        out.push((cand.clone(), stored, ev));
+        store
+            .put_decision(decision.clone())
+            .await
+            .map_err(|e| PipelineError::Store(e.to_string()))?;
+        out.push((cand.clone(), decision, ev));
     }
     Ok(out)
 }

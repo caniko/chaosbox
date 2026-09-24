@@ -101,6 +101,7 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         let reused = match chaosbox::decide_cached(
             cands,
             &entities,
+            &snap,
             chaosbox_jev::JEV_MODEL_PINNED,
             &mat,
             effective_policy,
@@ -179,6 +180,7 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         let pending = match chaosbox::uncached_decisions(
             cands,
             &entities,
+            &snap,
             chaosbox_jev::JEV_MODEL_PINNED,
             &mat,
             effective_policy,
@@ -216,6 +218,7 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         let decided = Pipeline::<S>::decide(
             cands,
             &entities,
+            &snap,
             &mut responder,
             chaosbox_jev::JEV_MODEL_PINNED,
             &mat,
@@ -249,6 +252,7 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         match Pipeline::<S>::decide(
             cands,
             &entities,
+            &snap,
             &mut responder,
             "fixture-test",
             &mat,

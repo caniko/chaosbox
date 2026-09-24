@@ -166,6 +166,24 @@ fn one_candidate() -> (Candidate, BTreeMap<String, Entity>) {
     (cand, entities)
 }
 
+/// Minimal snapshot matching `one_candidate` entities: repo `r`, id `s`,
+/// file `a.rs` pinned at hash `abc` (see `ensure_a_rs`). Reuse binding
+/// validation requires the snapshot the hashes came from.
+fn test_snapshot() -> Snapshot {
+    use chaosbox_extract::FileVersion;
+    Snapshot {
+        id: "s".into(),
+        repo: "r".into(),
+        scope: Vec::new(),
+        files: vec![FileVersion {
+            path: "a.rs".into(),
+            sha256: "abc".into(),
+            bytes: 3,
+        }],
+        contents: BTreeMap::from([("a.rs".into(), "a b".into())]),
+    }
+}
+
 #[tokio::test]
 async fn below_floor_confidence_abstains() {
     let (cand, entities) = one_candidate();
@@ -188,6 +206,7 @@ async fn below_floor_confidence_abstains() {
     let decided = Pipeline::<MemoryStore>::decide(
         std::slice::from_ref(&cand),
         &entities,
+        &test_snapshot(),
         &mut low,
         "jev-1.13.0",
         &mat,
@@ -204,6 +223,7 @@ async fn below_floor_confidence_abstains() {
     let reused = Pipeline::<MemoryStore>::decide(
         std::slice::from_ref(&cand),
         &entities,
+        &test_snapshot(),
         &mut failing,
         "jev-1.13.0",
         &mat,
@@ -232,6 +252,7 @@ async fn below_floor_confidence_abstains() {
     let decided = Pipeline::<MemoryStore>::decide(
         &[cand],
         &entities,
+        &test_snapshot(),
         &mut high,
         "jev-1.13.0",
         &mat,
@@ -265,6 +286,7 @@ async fn responder_faults_become_failed_decisions() {
     let decided = Pipeline::<MemoryStore>::decide(
         &[cand],
         &entities,
+        &test_snapshot(),
         &mut failing,
         "jev-1.13.0",
         &mat,
@@ -302,6 +324,7 @@ async fn failed_refresh_preserves_last_good_build() {
     let good = Pipeline::<MemoryStore>::decide(
         std::slice::from_ref(&cand),
         &entities,
+        &test_snapshot(),
         &mut accept,
         "jev-1.13.0",
         &mat,
@@ -324,6 +347,7 @@ async fn failed_refresh_preserves_last_good_build() {
     let bad = Pipeline::<MemoryStore>::decide(
         &[cand],
         &entities,
+        &test_snapshot(),
         &mut failing,
         "jev-9.9.9",
         &mat,
@@ -371,6 +395,7 @@ async fn cache_only_refresh_republishes_paid_for_relations() {
     let paid = Pipeline::<MemoryStore>::decide(
         std::slice::from_ref(&cand),
         &entities,
+        &test_snapshot(),
         &mut accept,
         "jev-1.13.0",
         &mat,
@@ -388,6 +413,7 @@ async fn cache_only_refresh_republishes_paid_for_relations() {
     let reused = decide_cached(
         std::slice::from_ref(&cand),
         &entities,
+        &test_snapshot(),
         "jev-1.13.0",
         &mat,
         &test_policy(),
@@ -421,6 +447,7 @@ async fn cache_only_refresh_skips_uncached_candidates() {
     let reused = decide_cached(
         std::slice::from_ref(&cand),
         &entities,
+        &test_snapshot(),
         "jev-1.13.0",
         &mat,
         &test_policy(),
@@ -493,6 +520,7 @@ async fn source_edit_leaves_capture_only_refresh_without_coverage() {
     let paid = Pipeline::<MemoryStore>::decide(
         std::slice::from_ref(&cand),
         &entities,
+        &test_snapshot(),
         &mut ConfResponder { confidence: 0.95 },
         "jev-1.13.0",
         &mat,
@@ -531,9 +559,26 @@ async fn source_edit_leaves_capture_only_refresh_without_coverage() {
         state_excerpt: "a calls b".into(),
     };
     let edited_entities = BTreeMap::from([(from.id.clone(), from), (to.id.clone(), to)]);
+    // Edited endpoint file: different bytes, so the relation-local reuse key
+    // misses even though names and excerpt are unchanged.
+    let edited_snapshot = {
+        use chaosbox_extract::FileVersion;
+        Snapshot {
+            id: "s2".into(),
+            repo: "r".into(),
+            scope: Vec::new(),
+            files: vec![FileVersion {
+                path: "a.rs".into(),
+                sha256: "def".into(),
+                bytes: 4,
+            }],
+            contents: BTreeMap::from([("a.rs".into(), "a b edited".into())]),
+        }
+    };
     let reused = decide_cached(
         std::slice::from_ref(&edited),
         &edited_entities,
+        &edited_snapshot,
         "jev-1.13.0",
         &mat,
         &test_policy(),
@@ -587,6 +632,7 @@ async fn cache_invalidates_per_axis() {
     let first = Pipeline::<MemoryStore>::decide(
         std::slice::from_ref(&cand),
         &entities,
+        &test_snapshot(),
         &mut accept,
         "jev-1.13.0",
         &mat,
@@ -602,6 +648,7 @@ async fn cache_invalidates_per_axis() {
     let second = Pipeline::<MemoryStore>::decide(
         std::slice::from_ref(&cand),
         &entities,
+        &test_snapshot(),
         &mut low,
         "jev-9.9.9",
         &mat,
@@ -619,6 +666,7 @@ async fn cache_invalidates_per_axis() {
     let third = Pipeline::<MemoryStore>::decide(
         std::slice::from_ref(&cand),
         &entities,
+        &test_snapshot(),
         &mut low,
         "jev-1.13.0",
         &mat2,
@@ -628,12 +676,16 @@ async fn cache_invalidates_per_axis() {
     .await
     .unwrap();
     assert_eq!(third[0].1.outcome, DecisionOutcome::Abstained);
-    // Catalog change (extra candidate) invalidates the whole run.
+    // Catalog change (extra candidate) no longer invalidates the whole run
+    // (issue #12): unrelated relations keep their reuse key; only the new
+    // candidate spends.
     let mut extra = cand.clone();
     extra.id = "cand:2".into();
+    extra.reason = "co-occurrence".into();
     let fourth = Pipeline::<MemoryStore>::decide(
         &[cand.clone(), extra],
         &entities,
+        &test_snapshot(),
         &mut low,
         "jev-1.13.0",
         &mat,
@@ -642,7 +694,16 @@ async fn cache_invalidates_per_axis() {
     )
     .await
     .unwrap();
-    assert_eq!(fourth[0].1.outcome, DecisionOutcome::Abstained);
+    assert_eq!(
+        fourth[0].1.outcome,
+        DecisionOutcome::Accepted,
+        "catalog addition must not invalidate unrelated reuse"
+    );
+    assert_eq!(
+        fourth[1].1.outcome,
+        DecisionOutcome::Abstained,
+        "the new candidate still asks once"
+    );
     // Threshold-only change keeps the key: the stored decision is reused
     // (materialization applies current thresholds later, not here).
     // Fresh store so earlier legs haven't replaced the row.
@@ -652,6 +713,7 @@ async fn cache_invalidates_per_axis() {
     let base = Pipeline::<MemoryStore>::decide(
         std::slice::from_ref(&cand),
         &entities,
+        &test_snapshot(),
         &mut accept2,
         "jev-1.13.0",
         &mat,
@@ -669,6 +731,7 @@ async fn cache_invalidates_per_axis() {
     let fifth = Pipeline::<MemoryStore>::decide(
         std::slice::from_ref(&cand),
         &entities,
+        &test_snapshot(),
         &mut failing,
         "jev-1.13.0",
         &mat3,
@@ -688,6 +751,7 @@ async fn cache_invalidates_per_axis() {
     let sixth = Pipeline::<MemoryStore>::decide(
         std::slice::from_ref(&cand),
         &entities,
+        &test_snapshot(),
         &mut low,
         "jev-1.13.0",
         &mat,
@@ -925,11 +989,24 @@ fn reuse_identity_survives_unrelated_edit() {
         rubric_version: &mat.rubric_version,
         policy_digest: &policy_digest,
     };
-    let before_input =
-        reuse_input_for(&before_cand, &before_from, &before_to, &before_questions, &before_ctx)
-            .unwrap();
-    let after_input =
-        reuse_input_for(&after_cand, &after_from, &after_to, &after_questions, &after_ctx).unwrap();
+    let before_input = reuse_input_for(
+        &before_cand,
+        &before_from,
+        &before_to,
+        &before_questions,
+        &before_ctx,
+        &before_snap.id,
+    )
+    .unwrap();
+    let after_input = reuse_input_for(
+        &after_cand,
+        &after_from,
+        &after_to,
+        &after_questions,
+        &after_ctx,
+        &after_snap.id,
+    )
+    .unwrap();
     assert_eq!(
         chaosbox_jev::reuse_key(&before_input),
         chaosbox_jev::reuse_key(&after_input),
@@ -996,14 +1073,245 @@ fn reuse_identity_invalidates_on_endpoint_edit() {
         rubric_version: &mat.rubric_version,
         policy_digest: &policy_digest,
     };
-    let before_input =
-        reuse_input_for(&before_cand, &before_from, &before_to, &before_questions, &before_ctx)
-            .unwrap();
-    let after_input =
-        reuse_input_for(&after_cand, &after_from, &after_to, &after_questions, &after_ctx).unwrap();
+    let before_input = reuse_input_for(
+        &before_cand,
+        &before_from,
+        &before_to,
+        &before_questions,
+        &before_ctx,
+        &before_snap.id,
+    )
+    .unwrap();
+    let after_input = reuse_input_for(
+        &after_cand,
+        &after_from,
+        &after_to,
+        &after_questions,
+        &after_ctx,
+        &after_snap.id,
+    )
+    .unwrap();
     assert_ne!(
         chaosbox_jev::reuse_key(&before_input),
         chaosbox_jev::reuse_key(&after_input),
         "endpoint body change must re-ask even with identical names"
     );
+}
+
+/// Issue #12 Slice 2A: threshold changes rematerialize the same raw answer
+/// without re-asking — abstained becomes accepted when the floor drops, and
+/// accepted becomes abstained when it rises. The responder that would fail
+/// on any spend proves no inference ran.
+#[tokio::test]
+async fn reuse_rematerializes_threshold_change_without_respend() {
+    let (cand, entities) = one_candidate();
+    let snap = test_snapshot();
+    let mut store = MemoryStore::new();
+    ensure_a_rs(&mut store).await;
+    // Low confidence (0.1) abstains under the default floor (0.4).
+    let mut low = ConfResponder { confidence: 0.1 };
+    let first = Pipeline::<MemoryStore>::decide(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        &mut low,
+        "jev-1.13.0",
+        &Materialization::default(),
+        &test_policy(),
+        &mut store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first[0].1.outcome, DecisionOutcome::Abstained);
+    assert!(first[0].1.raw_answer.is_some(), "raw must persist");
+    // Lower the floor below 0.1: the same raw now accepts, with no spend.
+    let lowered = Materialization {
+        abstain_confidence: 0.05,
+        ..Default::default()
+    };
+    let mut failing = FailResponder;
+    let second = Pipeline::<MemoryStore>::decide(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        &mut failing,
+        "jev-1.13.0",
+        &lowered,
+        &test_policy(),
+        &mut store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        second[0].1.outcome,
+        DecisionOutcome::Accepted,
+        "same raw rematerialized under a lower floor"
+    );
+    // Raise the floor above a previously accepted confidence: accepted
+    // becomes abstained, again with no spend.
+    let mut store2 = MemoryStore::new();
+    ensure_a_rs(&mut store2).await;
+    let permissive = Materialization {
+        accept_confidence: 0.99,
+        abstain_confidence: 0.4,
+        ..Default::default()
+    };
+    let mut high = ConfResponder { confidence: 0.95 };
+    let base = Pipeline::<MemoryStore>::decide(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        &mut high,
+        "jev-1.13.0",
+        &permissive,
+        &test_policy(),
+        &mut store2,
+    )
+    .await
+    .unwrap();
+    assert_eq!(base[0].1.outcome, DecisionOutcome::Accepted);
+    let strict = Materialization {
+        accept_confidence: 0.99,
+        abstain_confidence: 0.96,
+        ..Default::default()
+    };
+    let mut failing2 = FailResponder;
+    let remat = Pipeline::<MemoryStore>::decide(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        &mut failing2,
+        "jev-1.13.0",
+        &strict,
+        &test_policy(),
+        &mut store2,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        remat[0].1.outcome,
+        DecisionOutcome::Abstained,
+        "same raw rematerialized under a higher floor"
+    );
+}
+
+/// Issue #12 Slice 2B: cross-snapshot reuse — an unrelated-file edit keeps
+/// eligible reuse (zero spend on the untouched relation), an endpoint edit
+/// misses, and a removed candidate never reappears.
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn cross_snapshot_reuse_survives_unrelated_edit() {
+    let policy = test_policy();
+    let mat = Materialization::default();
+    let before_dir = tempfile::tempdir().unwrap();
+    let after_dir = tempfile::tempdir().unwrap();
+    let a_rs = "fn foo() {}\nfn bar() {}\n";
+    write_two_file_repo(before_dir.path(), a_rs, "hello\n");
+    write_two_file_repo(after_dir.path(), a_rs, "hello, edited\n");
+    let before_snap = Snapshot::capture("r", before_dir.path()).unwrap();
+    let after_snap = Snapshot::capture("r", after_dir.path()).unwrap();
+    let before_ext = extract_snapshot(&before_snap);
+    let after_ext = extract_snapshot(&after_snap);
+    let before_cat = build_candidates(&before_ext, 200);
+    let after_cat = build_candidates(&after_ext, 200);
+    let before_entities: BTreeMap<String, Entity> = before_ext
+        .entities
+        .iter()
+        .map(|e| (e.id.clone(), e.clone()))
+        .collect();
+    let after_entities: BTreeMap<String, Entity> = after_ext
+        .entities
+        .iter()
+        .map(|e| (e.id.clone(), e.clone()))
+        .collect();
+    let (before_cand, _, _) = find_foo_bar(&before_cat.candidates, &before_entities);
+    let (after_cand, _, _) = find_foo_bar(&after_cat.candidates, &after_entities);
+    let mut store = MemoryStore::new();
+    store
+        .ensure_snapshot_files(&before_snap.id, "r", &before_snap.snapshot_files())
+        .await
+        .unwrap();
+    store
+        .ensure_snapshot_files(&after_snap.id, "r", &after_snap.snapshot_files())
+        .await
+        .unwrap();
+    // Pay once on the before snapshot.
+    let mut accept = ConfResponder { confidence: 0.95 };
+    let paid = Pipeline::<MemoryStore>::decide(
+        std::slice::from_ref(&before_cand),
+        &before_entities,
+        &before_snap,
+        &mut accept,
+        "jev-1.13.0",
+        &mat,
+        &policy,
+        &mut store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(paid[0].1.outcome, DecisionOutcome::Accepted);
+    // Identical rerun spends nothing.
+    let pending = uncached_decisions(
+        std::slice::from_ref(&before_cand),
+        &before_entities,
+        &before_snap,
+        "jev-1.13.0",
+        &mat,
+        &policy,
+        &store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(pending, 0, "identical rerun must be fully cached");
+    // Unrelated edit: same relation, new ids, still zero spend.
+    let pending_after = uncached_decisions(
+        std::slice::from_ref(&after_cand),
+        &after_entities,
+        &after_snap,
+        "jev-1.13.0",
+        &mat,
+        &policy,
+        &store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        pending_after, 0,
+        "untouched relation survives an unrelated edit"
+    );
+    let mut failing = FailResponder;
+    let reused = Pipeline::<MemoryStore>::decide(
+        std::slice::from_ref(&after_cand),
+        &after_entities,
+        &after_snap,
+        &mut failing,
+        "jev-1.13.0",
+        &mat,
+        &policy,
+        &mut store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(reused[0].1.outcome, DecisionOutcome::Accepted);
+    assert_ne!(
+        reused[0].1.id, paid[0].1.id,
+        "rebound to current snapshot ids, not byte-reused"
+    );
+    assert_eq!(
+        reused[0].1.candidate_id, after_cand.id,
+        "current binding, not the old snapshot's"
+    );
+    // Removed candidates never reappear through the cache.
+    let cached = decide_cached(
+        &[],
+        &after_entities,
+        &after_snap,
+        "jev-1.13.0",
+        &mat,
+        &policy,
+        &mut store,
+    )
+    .await
+    .unwrap();
+    assert!(cached.is_empty(), "no candidates means no reuse");
 }

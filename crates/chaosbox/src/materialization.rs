@@ -1,8 +1,8 @@
 //! Materialization identity (rubric and acceptance thresholds) plus the Jev questions a candidate becomes.
 
 use super::{
-    Serialize, Deserialize, deterministic_id, PipelineError, Candidate, Entity, Snapshot, BTreeMap,
-    Question,
+    Serialize, Deserialize, deterministic_id, PipelineError, Candidate, DecisionOutcome, Entity,
+    EvidenceClass, RawAnswer, Snapshot, BTreeMap, Question, check_confidence, check_probability,
 };
 
 /// Rubric + acceptance policy. Thresholds are materialization identity:
@@ -158,13 +158,35 @@ pub struct ReuseContext<'a> {
 /// (file + qualified name + kind + file hash), excerpt, canonical question
 /// semantics, model, rubric, and policy digest. A missing file hash fails
 /// closed — reuse must never be authorized by an unknown byte identity.
+///
+/// Binding checks (Slice 2B): both endpoints must belong to `ctx.repo` and
+/// to the snapshot the file hashes came from; otherwise reuse could mix
+/// rows across repositories or snapshots.
 pub fn reuse_input_for(
     candidate: &Candidate,
     from: &Entity,
     to: &Entity,
     questions: &BTreeMap<String, Question>,
     ctx: &ReuseContext<'_>,
+    snapshot_id: &str,
 ) -> Result<chaosbox_jev::ReuseInput, PipelineError> {
+    if from.repo != ctx.repo || to.repo != ctx.repo {
+        return Err(PipelineError::Validation(format!(
+            "endpoint repo mismatch: expected {0}, got {1}/{2}",
+            ctx.repo, from.repo, to.repo
+        )));
+    }
+    if from.snapshot != snapshot_id || to.snapshot != snapshot_id {
+        return Err(PipelineError::Validation(format!(
+            "endpoint snapshot mismatch: expected {snapshot_id}, got {}/{}",
+            from.snapshot, to.snapshot
+        )));
+    }
+    if candidate.from_entity != from.id || candidate.to_entity != to.id {
+        return Err(PipelineError::Validation(
+            "candidate does not reference the given endpoints".into(),
+        ));
+    }
     let from_hash = ctx.file_hashes.get(&from.file).ok_or_else(|| {
         PipelineError::Validation(format!("missing file hash for {}", from.file))
     })?;
@@ -194,4 +216,126 @@ pub fn reuse_input_for(
         rubric_version: ctx.rubric_version.to_owned(),
         policy_digest: ctx.policy_digest.to_owned(),
     })
+}
+
+/// Single choke point turning a validated raw answer into a thresholded
+/// outcome (issue #12, Slice 2A).
+///
+/// Fresh inference and cross-snapshot reuse both go through here, so a
+/// threshold change rematerializes the same raw answer instead of re-asking.
+/// Abstain-first precedence matches the previous `decide` behavior:
+/// below-floor confidence abstains regardless of the selected option or
+/// score. `structural` reasons upgrade `Inferred` to `Extracted`; model
+/// confidence alone never upgrades.
+pub fn materialize_raw(
+    raw: &RawAnswer,
+    mat: &Materialization,
+    reason: &str,
+) -> Result<
+    (
+        DecisionOutcome,
+        EvidenceClass,
+        Option<f64>,
+        Option<f64>,
+    ),
+    PipelineError,
+> {
+    let (outcome, class, conf, prob) = match raw {
+        RawAnswer::Noul { noul } => {
+            check_probability(*noul).map_err(|e| PipelineError::Validation(e.to_string()))?;
+            if *noul >= mat.accept_noul {
+                (
+                    DecisionOutcome::Accepted,
+                    EvidenceClass::Inferred,
+                    None,
+                    Some(*noul),
+                )
+            } else {
+                (
+                    DecisionOutcome::Negative,
+                    EvidenceClass::Ambiguous,
+                    None,
+                    Some(*noul),
+                )
+            }
+        }
+        RawAnswer::Choice {
+            choice,
+            probabilities,
+            confidence,
+        } => {
+            check_confidence(*confidence).map_err(|e| PipelineError::Validation(e.to_string()))?;
+            for p in probabilities.values() {
+                check_probability(*p).map_err(|e| PipelineError::Validation(e.to_string()))?;
+            }
+            if *confidence < mat.abstain_confidence {
+                (
+                    DecisionOutcome::Abstained,
+                    EvidenceClass::Ambiguous,
+                    Some(*confidence),
+                    None,
+                )
+            } else {
+                match choice.as_str() {
+                    "accept" => (
+                        DecisionOutcome::Accepted,
+                        EvidenceClass::Inferred,
+                        Some(*confidence),
+                        probabilities.get("accept").copied(),
+                    ),
+                    "reject" => (
+                        DecisionOutcome::Rejected,
+                        EvidenceClass::Ambiguous,
+                        Some(*confidence),
+                        probabilities.get("reject").copied(),
+                    ),
+                    _ => (
+                        DecisionOutcome::Negative,
+                        EvidenceClass::Ambiguous,
+                        Some(*confidence),
+                        probabilities.get("none").copied(),
+                    ),
+                }
+            }
+        }
+        RawAnswer::Score {
+            score,
+            probabilities: _,
+            confidence,
+            results: _,
+        } => {
+            check_confidence(*confidence).map_err(|e| PipelineError::Validation(e.to_string()))?;
+            if !score.is_finite() {
+                return Err(PipelineError::Validation("non-finite score".into()));
+            }
+            if *confidence < mat.abstain_confidence {
+                (
+                    DecisionOutcome::Abstained,
+                    EvidenceClass::Ambiguous,
+                    Some(*confidence),
+                    None,
+                )
+            } else if *score >= mat.accept_score {
+                (
+                    DecisionOutcome::Accepted,
+                    EvidenceClass::Inferred,
+                    Some(*confidence),
+                    None,
+                )
+            } else {
+                (
+                    DecisionOutcome::Negative,
+                    EvidenceClass::Ambiguous,
+                    Some(*confidence),
+                    None,
+                )
+            }
+        }
+    };
+    let class = if class == EvidenceClass::Inferred && reason == "structural" {
+        EvidenceClass::Extracted
+    } else {
+        class
+    };
+    Ok((outcome, class, conf, prob))
 }

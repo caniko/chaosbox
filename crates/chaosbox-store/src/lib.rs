@@ -139,6 +139,8 @@ mod tests {
             confidence: None,
             probability: None,
             cache_key: "test-cache-key".into(),
+            reuse_key: String::new(),
+            raw_answer: None,
         };
         s.put_decision(mk("d1", DecisionOutcome::Failed("down".into())))
             .await

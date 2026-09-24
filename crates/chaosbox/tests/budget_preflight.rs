@@ -5,7 +5,6 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use chaosbox::{uncached_decisions, FixtureResponder, Materialization, Pipeline};
-use chaosbox_core::DecisionOutcome;
 use chaosbox_store::{MemoryStore, Store as _};
 
 fn fixture_root() -> PathBuf {
@@ -40,6 +39,7 @@ async fn preflight_counts_uncached_then_cached_then_failed() {
     let pending = uncached_decisions(
         cands,
         &entities,
+        &snap,
         chaosbox_jev::JEV_MODEL_PINNED,
         &mat,
         &policy,
@@ -54,6 +54,7 @@ async fn preflight_counts_uncached_then_cached_then_failed() {
     let decided = Pipeline::<MemoryStore>::decide(
         cands,
         &entities,
+        &snap,
         &mut responder,
         chaosbox_jev::JEV_MODEL_PINNED,
         &mat,
@@ -66,6 +67,7 @@ async fn preflight_counts_uncached_then_cached_then_failed() {
     let pending = uncached_decisions(
         cands,
         &entities,
+        &snap,
         chaosbox_jev::JEV_MODEL_PINNED,
         &mat,
         &policy,
@@ -76,18 +78,27 @@ async fn preflight_counts_uncached_then_cached_then_failed() {
     assert_eq!(pending, 0, "every decision cached: nothing to spend");
 
     // A recorded Failed outcome always re-asks, under an unchanged key.
-    // Seed a fresh store with the full decided set, one of them Failed:
-    // exactly that one candidate must come back pending.
-    let mut failed = decided[0].1.clone();
-    failed.outcome = DecisionOutcome::Failed("preflight test".into());
+// Seed a fresh store with the reusable inferences for all but one
+    // candidate (Failed stores no inference by construction): exactly the
+    // missing one must come back pending.
     let mut retry_store = MemoryStore::default();
-    retry_store.put_decision(failed).await.unwrap();
     for (_, d, _) in decided.iter().skip(1) {
+        let raw = d.raw_answer.clone().expect("fresh inference has raw");
+        retry_store
+            .put_inference(chaosbox_core::InferenceRecord {
+                reuse_key: d.reuse_key.clone(),
+                raw,
+                model_requested: d.model_requested.clone(),
+                model_returned: d.model_returned.clone(),
+            })
+            .await
+            .unwrap();
         retry_store.put_decision(d.clone()).await.unwrap();
     }
     let pending = uncached_decisions(
         cands,
         &entities,
+        &snap,
         chaosbox_jev::JEV_MODEL_PINNED,
         &mat,
         &policy,

@@ -1,7 +1,10 @@
 //! The [`Store`] trait implementation: staging writes, read-side queries,
 //! and atomic publication.
 
-use chaosbox_core::{Candidate, Claim, Decision, Entity, Evidence, GraphBuild, Relation, SnapshotFile};
+use chaosbox_core::{
+    Candidate, Claim, Decision, Entity, Evidence, GraphBuild, InferenceRecord, Relation,
+    SnapshotFile,
+};
 use chaosbox_store::{Store, StoreError, StoreStats};
 use crate::common::decision_key;
 use crate::encode::double_lit;
@@ -63,6 +66,9 @@ impl Store for TypeDbStore {
         if let Some(p) = d.probability {
             double_lit(p).map_err(|e| StoreError::Invariant(e.to_string()))?;
         }
+        if let Some(raw) = &d.raw_answer {
+            validate_raw_finite(raw)?;
+        }
         self.staging.put_decision(d.clone()).await?;
         // Write-through: the decision is paid inference — persist it in a
         // short transaction as produced, so a dead worker or a budget
@@ -72,6 +78,29 @@ impl Store for TypeDbStore {
         // written before publication stays invisible to them.
         self.ensure_connected().await?;
         self.flush_decision(&d).await
+    }
+
+    async fn put_inference(&mut self, rec: InferenceRecord) -> Result<(), StoreError> {
+        validate_raw_finite(&rec.raw)?;
+        self.staging.put_inference(rec.clone()).await?;
+        // Write-through alongside its decision: the inference is the
+        // reusable unit across snapshots, so a dead worker never loses
+        // paid work (resume reuses it through `find_inference`).
+        self.ensure_connected().await?;
+        self.flush_inference(&rec).await
+    }
+
+    async fn find_inference(
+        &self,
+        reuse_key: &str,
+    ) -> Result<Option<InferenceRecord>, StoreError> {
+        if let Some(rec) = self.staging.find_inference(reuse_key).await? {
+            return Ok(Some(rec));
+        }
+        if self.driver.is_none() {
+            return Ok(None);
+        }
+        self.read_inference_row(reuse_key).await
     }
 
     async fn put_evidence(&mut self, e: Evidence) -> Result<(), StoreError> {
@@ -183,4 +212,38 @@ impl Store for TypeDbStore {
     fn stats(&self) -> StoreStats {
         self.staging.stats()
     }
+}
+
+/// Reject non-finite raw floats at the boundary: they have no `TypeQL` form
+/// and must never reach the flush.
+fn validate_raw_finite(raw: &chaosbox_core::RawAnswer) -> Result<(), StoreError> {
+    use chaosbox_core::RawAnswer;
+    let mut vals: Vec<f64> = Vec::new();
+    match raw {
+        RawAnswer::Noul { noul } => vals.push(*noul),
+        RawAnswer::Choice {
+            probabilities,
+            confidence,
+            ..
+        } => {
+            vals.push(*confidence);
+            vals.extend(probabilities.values().copied());
+        }
+        RawAnswer::Score {
+            score,
+            probabilities,
+            confidence,
+            results,
+            ..
+        } => {
+            vals.push(*score);
+            vals.push(*confidence);
+            vals.extend(probabilities.values().copied());
+            vals.extend(results.iter().copied());
+        }
+    }
+    for v in vals {
+        double_lit(v).map_err(|e| StoreError::Invariant(e.to_string()))?;
+    }
+    Ok(())
 }

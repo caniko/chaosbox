@@ -351,6 +351,72 @@ pub struct Decision {
     /// preprocessing, catalog, questions, model, rubric). Reuse compares
     /// this key; threshold-only changes keep it stable.
     pub cache_key: String,
+    /// Relation-local reuse key (`jev-reuse:...`) authorizing cross-snapshot
+    /// reuse (issue #12). Empty for legacy rows written before reuse.
+    #[serde(default)]
+    pub reuse_key: String,
+    /// Validated raw model answer this decision was materialized from.
+    /// `None` for legacy rows and for `Failed` decisions (never reusable).
+    /// Threshold changes rematerialize from this instead of re-asking.
+    #[serde(default)]
+    pub raw_answer: Option<RawAnswer>,
+}
+
+/// Validated raw model answer, stored separately from the
+/// threshold-derived outcome so threshold changes rematerialize without
+/// re-asking (issue #12, Slice 2A).
+///
+/// Mirrors the `chaosbox-jev` `Answer` shape without depending on it
+/// (`chaosbox-jev` depends on this crate). Conversions live in
+/// `chaosbox-jev`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum RawAnswer {
+    /// Yes/no probability answer.
+    Noul {
+        /// Probability of yes, in [0,1].
+        noul: f64,
+    },
+    /// Single-choice answer.
+    Choice {
+        /// The selected option; always a member of the asked criteria.
+        choice: String,
+        /// Full option distribution.
+        probabilities: BTreeMap<String, f64>,
+        /// Model confidence in [0,1]; distinct from the distribution.
+        confidence: f64,
+    },
+    /// Scored answer.
+    Score {
+        /// Weighted value across levels.
+        score: f64,
+        /// Per-level distribution.
+        probabilities: BTreeMap<String, f64>,
+        /// Model confidence in [0,1]; distinct from the value.
+        confidence: f64,
+        /// Per-level results backing the weighted value.
+        #[serde(default)]
+        results: Vec<f64>,
+    },
+}
+
+/// One reusable inference (issue #12, Slice 2A).
+///
+/// The relation-local `reuse_key` authorizes reuse across snapshots;
+/// the raw answer plus model provenance is what gets rematerialized under
+/// current thresholds into a snapshot-bound [`Decision`]. Failed attempts
+/// are never stored here (retries always re-ask); successful negatives
+/// (`Rejected`/`Negative`/`Abstained`) are reusable and stored.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InferenceRecord {
+    /// Relation-local reuse key (`jev-reuse:...`).
+    pub reuse_key: String,
+    /// Validated raw answer to rematerialize.
+    pub raw: RawAnswer,
+    /// Model identity requested.
+    pub model_requested: String,
+    /// Model identity returned by the provider.
+    pub model_returned: String,
 }
 
 /// Candidate catalog/preprocessing version. Bump when parsers, candidate
@@ -360,8 +426,9 @@ pub const CATALOG_VERSION: &str = "catalog-v1";
 
 /// Catalog digest over the sorted candidate set: one record per candidate
 /// `(id, rel_type, from, to, reason)` plus [`CATALOG_VERSION`].
-/// Conservative: any catalog change invalidates every decision in the run
-/// (per-dependency precision is a documented follow-up).
+/// Feeds the run/set identity and the legacy repo-wide decision `cache_key`
+/// audit. Relation-local reuse (issue #12) is catalog-independent: an added
+/// candidate never invalidates unrelated inferences.
 #[must_use]
 pub fn catalog_digest(candidates: &[Candidate]) -> String {
     let mut records: Vec<String> = candidates

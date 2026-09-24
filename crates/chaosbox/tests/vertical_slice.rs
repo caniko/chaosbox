@@ -82,6 +82,7 @@ async fn vertical_slice_publish_query_incremental() {
     let decided = Pipeline::<MemoryStore>::decide(
         cands,
         &entities,
+        &snap,
         &mut responder,
         chaosbox_jev::JEV_MODEL_PINNED,
         &mat,
@@ -144,6 +145,7 @@ async fn vertical_slice_publish_query_incremental() {
     let decided2 = Pipeline::<MemoryStore>::decide(
         cands2,
         &entities2,
+        &snap2,
         &mut responder2,
         chaosbox_jev::JEV_MODEL_PINNED,
         &mat,

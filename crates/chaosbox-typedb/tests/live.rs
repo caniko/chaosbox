@@ -26,7 +26,8 @@
 
 use chaosbox_core::{
     Candidate, Claim, Decision, DecisionOutcome, Entity, EntityKind, Evidence, EvidenceClass,
-    GraphBuild, Relation, RelationScope, RelationType, SnapshotFile, SourceSpan,
+    GraphBuild, InferenceRecord, RawAnswer, Relation, RelationScope, RelationType, SnapshotFile,
+    SourceSpan,
 };
 use chaosbox_store::{GraphQueries, Store, check_conformance};
 use chaosbox_typedb::reader::TypeDbReader;
@@ -254,6 +255,8 @@ fn decision(candidate_id: &str, question: &str, cache_key: &str) -> Decision {
         confidence: Some(0.9),
         probability: Some(0.8),
         cache_key: cache_key.into(),
+        reuse_key: String::new(),
+        raw_answer: None,
     }
 }
 
@@ -651,4 +654,66 @@ async fn reader_passes_reference_conformance_against_live_backend() {
         "other pins only its own active build's snapshots"
     );
     check_conformance(&reader, &a1.id, &b1e.id, &r1.id, &a2.id, &(b1.id, b2.id)).await;
+}
+
+#[tokio::test]
+async fn inference_reuse_key_roundtrips_across_restart() {
+    use std::collections::BTreeMap;
+    let db = test_db("t_reuse");
+    let Some(mut s) = connected_store(&db).await else {
+        return;
+    };
+    // First write wins: same reuse key, different raw — the stored row keeps
+    // the first successful inference (reproducibility over recency).
+    let first = InferenceRecord {
+        reuse_key: "jev-reuse:live-test-1".into(),
+        raw: RawAnswer::Choice {
+            choice: "accept".into(),
+            probabilities: BTreeMap::from([
+                ("accept".into(), 0.9),
+                ("reject".into(), 0.05),
+                ("none".into(), 0.05),
+            ]),
+            confidence: 0.95,
+        },
+        model_requested: "jev-1.13.0".into(),
+        model_returned: "jev-1.13.0".into(),
+    };
+    s.put_inference(first.clone()).await.unwrap();
+    let rival = InferenceRecord {
+        raw: RawAnswer::Choice {
+            choice: "reject".into(),
+            probabilities: BTreeMap::from([
+                ("accept".into(), 0.05),
+                ("reject".into(), 0.9),
+                ("none".into(), 0.05),
+            ]),
+            confidence: 0.9,
+        },
+        ..first.clone()
+    };
+    s.put_inference(rival).await.unwrap();
+    // Decision rows carry the same reuse key + raw for audit.
+    let mut d = decision("cand:1", "q1", "key-1");
+    d.reuse_key = first.reuse_key.clone();
+    d.raw_answer = Some(first.raw.clone());
+    s.put_decision(d.clone()).await.unwrap();
+    // Fresh process (empty staging) reads both back from the server.
+    let fresh = TypeDbStore::new(config(&db));
+    let mut fresh = fresh;
+    fresh.migrate().await.unwrap();
+    let found = fresh
+        .find_inference(&first.reuse_key)
+        .await
+        .unwrap()
+        .expect("inference must survive restart");
+    assert_eq!(found.raw, first.raw, "first write wins");
+    assert_eq!(found.model_returned, "jev-1.13.0");
+    let found_dec = fresh
+        .find_decision("cand:1", "q1")
+        .await
+        .unwrap()
+        .expect("decision must survive restart");
+    assert_eq!(found_dec.reuse_key, first.reuse_key);
+    assert_eq!(found_dec.raw_answer, Some(first.raw));
 }

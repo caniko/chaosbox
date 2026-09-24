@@ -2,13 +2,13 @@
 //! claims, and build rows.
 
 use chaosbox_core::{
-    Claim, Decision, DecisionOutcome, Entity, Evidence, EvidenceClass, GraphBuild, Relation,
-    evidence_class_name,
+    Claim, Decision, DecisionOutcome, Entity, Evidence, EvidenceClass, GraphBuild,
+    InferenceRecord, RawAnswer, Relation, evidence_class_name,
 };
 use chaosbox_store::StoreError;
 use crate::common::{
-    col_double_opt, col_string, decision_key, driver_error, file_version_id, link_id, now_millis,
-    read_rows, span_id_of,
+    col_double_opt, col_string, col_string_opt, decision_key, driver_error, file_version_id,
+    link_id, now_millis, read_rows, span_id_of,
 };
 use crate::encode::{bool_lit, double_lit, int_lit, str_lit};
 
@@ -53,6 +53,16 @@ impl TypeDbStore {
             str_lit(&d.model_returned),
             str_lit(&d.cache_key)
         );
+        if !d.reuse_key.is_empty() {
+            owns.push_str(", has reuse-key ");
+            owns.push_str(&str_lit(&d.reuse_key));
+        }
+        if let Some(raw) = &d.raw_answer {
+            let raw_json =
+                serde_json::to_string(raw).map_err(|e| StoreError::Query(e.to_string()))?;
+            owns.push_str(", has raw-answer ");
+            owns.push_str(&str_lit(&raw_json));
+        }
         if let Some(c) = d.confidence {
             owns.push_str(", has confidence ");
             owns.push_str(&double_lit(c).map_err(|e| StoreError::Query(e.to_string()))?);
@@ -65,13 +75,62 @@ impl TypeDbStore {
         self.insert_ignoring_duplicates(&q).await
     }
 
+    /// Conditional inference write (issue #12): first write wins. The same
+    /// reuse key always means the same inputs, so the first successful
+    /// inference is the reproducible one; later writes never overwrite it.
+    pub(super) async fn flush_inference(&self, rec: &InferenceRecord) -> Result<(), StoreError> {
+        if self.read_inference_row(&rec.reuse_key).await?.is_some() {
+            return Ok(());
+        }
+        let raw_json =
+            serde_json::to_string(&rec.raw).map_err(|e| StoreError::Query(e.to_string()))?;
+        let q = format!(
+            "insert $i isa inference, has reuse-key {}, has raw-answer {}, has model-requested {}, has model-returned {};",
+            str_lit(&rec.reuse_key),
+            str_lit(&raw_json),
+            str_lit(&rec.model_requested),
+            str_lit(&rec.model_returned)
+        );
+        self.insert_ignoring_duplicates(&q).await
+    }
+
+    /// Read one reusable inference by reuse key.
+    pub(super) async fn read_inference_row(
+        &self,
+        reuse_key: &str,
+    ) -> Result<Option<InferenceRecord>, StoreError> {
+        let q = format!(
+            "match $i isa inference, has reuse-key {}, has raw-answer $r, has model-requested $mr, has model-returned $mrr; select $r, $mr, $mrr;",
+            str_lit(reuse_key)
+        );
+        let driver = self
+            .driver
+            .as_ref()
+            .ok_or_else(|| StoreError::Connection("TypeDbStore disconnected".into()))?;
+        let rows = read_rows(driver, &self.config.database, &q, &["r", "mr", "mrr"]).await?;
+        let Some(row) = rows.into_iter().next() else {
+            return Ok(None);
+        };
+        let raw_str = col_string(&row, "r")?;
+        let raw: RawAnswer = serde_json::from_str(&raw_str)
+            .map_err(|e| StoreError::Query(format!("bad raw-answer json: {e}")))?;
+        Ok(Some(InferenceRecord {
+            reuse_key: reuse_key.to_owned(),
+            raw,
+            model_requested: col_string(&row, "mr")?,
+            model_returned: col_string(&row, "mrr")?,
+        }))
+    }
+
     /// Read one decision row by key: (cache key, outcome json, full row).
+    /// Legacy rows without `reuse-key`/`raw-answer` read as empty/`None`
+    /// (misses for relation-local reuse by construction).
     pub(super) async fn read_decision_row(
         &self,
         key: &str,
     ) -> Result<Option<(String, String, Decision)>, StoreError> {
         let q = format!(
-            "match $d isa decision, has decision-key {}, has decision-id $id, has candidate-id $c, has question-id $q, has outcome $o, has evidence-class $e, has model-requested $mr, has model-returned $mrr, has cache-key $k; try {{ $d has confidence $cf; }}; try {{ $d has probability $p; }}; select $id, $c, $q, $o, $e, $mr, $mrr, $k, $cf, $p;",
+            "match $d isa decision, has decision-key {}, has decision-id $id, has candidate-id $c, has question-id $q, has outcome $o, has evidence-class $e, has model-requested $mr, has model-returned $mrr, has cache-key $k; try {{ $d has reuse-key $rk; }}; try {{ $d has raw-answer $ra; }}; try {{ $d has confidence $cf; }}; try {{ $d has probability $p; }}; select $id, $c, $q, $o, $e, $mr, $mrr, $k, $rk, $ra, $cf, $p;",
             str_lit(key)
         );
         let driver = self
@@ -82,7 +141,7 @@ impl TypeDbStore {
             driver,
             &self.config.database,
             &q,
-            &["id", "c", "q", "o", "e", "mr", "mrr", "k", "cf", "p"],
+            &["id", "c", "q", "o", "e", "mr", "mrr", "k", "rk", "ra", "cf", "p"],
         )
         .await?;
         let Some(row) = rows.into_iter().next() else {
@@ -95,6 +154,14 @@ impl TypeDbStore {
         let evidence_class: EvidenceClass = serde_json::from_str(&format!("\"{class_str}\""))
             .map_err(|e| StoreError::Query(format!("bad evidence class: {e}")))?;
         let cache_key = col_string(&row, "k")?;
+        let reuse_key = col_string_opt(&row, "rk").unwrap_or_default();
+        let raw_answer = match col_string_opt(&row, "ra") {
+            None => None,
+            Some(s) => Some(
+                serde_json::from_str::<RawAnswer>(&s)
+                    .map_err(|e| StoreError::Query(format!("bad raw-answer json: {e}")))?,
+            ),
+        };
         let d = Decision {
             id: col_string(&row, "id")?,
             candidate_id: col_string(&row, "c")?,
@@ -106,6 +173,8 @@ impl TypeDbStore {
             confidence: col_double_opt(&row, "cf"),
             probability: col_double_opt(&row, "p"),
             cache_key: cache_key.clone(),
+            reuse_key,
+            raw_answer,
         };
         Ok(Some((cache_key, outcome_str, d)))
     }

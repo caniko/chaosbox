@@ -383,6 +383,56 @@ pub fn reuse_key(input: &ReuseInput) -> String {
     format!("jev-reuse:{}", sha256_hex(&[&doc]))
 }
 
+/// Convert a validated [`Answer`] into its storable [`RawAnswer`] form
+/// (issue #12, Slice 2A). The raw answer is what persists; thresholds
+/// apply later through one shared materialization function.
+#[must_use]
+pub fn raw_from_answer(answer: &Answer) -> chaosbox_core::RawAnswer {
+    match answer {
+        Answer::Noul(n) => chaosbox_core::RawAnswer::Noul { noul: n.noul },
+        Answer::Choice(c) => chaosbox_core::RawAnswer::Choice {
+            choice: c.choice.clone(),
+            probabilities: c.probabilities.clone(),
+            confidence: c.confidence,
+        },
+        Answer::Score(s) => chaosbox_core::RawAnswer::Score {
+            score: s.score,
+            probabilities: s.probabilities.clone(),
+            confidence: s.confidence,
+            results: s.results.clone(),
+        },
+    }
+}
+
+/// Convert a stored [`RawAnswer`] back into a typed [`Answer`] for
+/// validation and rematerialization. Lossless with [`raw_from_answer`].
+#[must_use]
+pub fn answer_from_raw(raw: &chaosbox_core::RawAnswer) -> Answer {
+    match raw {
+        chaosbox_core::RawAnswer::Noul { noul } => Answer::Noul(NoulAnswer { noul: *noul }),
+        chaosbox_core::RawAnswer::Choice {
+            choice,
+            probabilities,
+            confidence,
+        } => Answer::Choice(ChoiceAnswer {
+            choice: choice.clone(),
+            probabilities: probabilities.clone(),
+            confidence: *confidence,
+        }),
+        chaosbox_core::RawAnswer::Score {
+            score,
+            probabilities,
+            confidence,
+            results,
+        } => Answer::Score(ScoreAnswer {
+            score: *score,
+            probabilities: probabilities.clone(),
+            confidence: *confidence,
+            results: results.clone(),
+        }),
+    }
+}
+
 /// Typed client. No OpenAI/Anthropic/Gemini/Ollama fallback anywhere.
 pub struct JevClient {
     http: reqwest::Client,

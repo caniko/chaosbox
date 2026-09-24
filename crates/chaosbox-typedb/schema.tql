@@ -59,6 +59,8 @@ define
   attribute model-requested value string;
   attribute model-returned value string;
   attribute cache-key value string;
+  attribute reuse-key value string;
+  attribute raw-answer value string;
   attribute input-tokens value integer;
   attribute http-status value integer;
   attribute error value string;
@@ -185,8 +187,16 @@ define
     owns model-requested,
     owns model-returned,
     owns cache-key,
+    owns reuse-key,
+    owns raw-answer,
     owns confidence,
     owns probability;
+
+  entity inference
+    owns reuse-key @key,
+    owns raw-answer,
+    owns model-requested,
+    owns model-returned;
 
   entity evidence
     owns evidence-id @key,
