@@ -123,7 +123,24 @@
             };
           };
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-          chaosbox = craneLib.buildPackage (commonArgs // { inherit cargoArtifacts; });
+          chaosbox = craneLib.buildPackage (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.makeWrapper ];
+              # Runtime, not just build: the binary execs pinned session tools
+              # through a node interpreter. Default CHAOSBOX_NODE to the store
+              # node so a standalone Nix install works with no ambient PATH;
+              # --set-default keeps an explicit CHAOSBOX_NODE (the canix
+              # wrapper, or an operator override) authoritative. Declared here
+              # rather than in `commonArgs`, which `buildDepsOnly` also
+              # consumes and in which no binary exists to wrap.
+              postInstall = ''
+                wrapProgram "$out/bin/chaosbox" \
+                  --set-default CHAOSBOX_NODE ${pkgs.lib.getExe' pkgs.nodejs "node"}
+              '';
+            }
+          );
           docs = harbor-docs.lib.mkDocs {
             inherit pkgs;
             src = ./docs;
