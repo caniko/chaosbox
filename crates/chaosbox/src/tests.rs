@@ -767,6 +767,95 @@ async fn cache_invalidates_per_axis() {
     );
 }
 
+/// Policy change with differing answers mints new decision + evidence ids
+/// (no stale collision): same snapshot, different consent flips the reuse
+/// key, re-asks, replaces the stored decision, and persists matching
+/// evidence. Returned and stored rows agree, and evidence ids diverge.
+#[tokio::test]
+async fn policy_change_mints_new_decision_and_evidence() {
+    let (cand, entities) = one_candidate();
+    let snap = test_snapshot();
+    let mat = Materialization::default();
+    let mut store = MemoryStore::new();
+    ensure_a_rs(&mut store).await;
+    let mut accept = ConfResponder { confidence: 0.95 };
+    let first = Pipeline::<MemoryStore>::decide(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        &mut accept,
+        "jev-1.13.0",
+        &mat,
+        &test_policy(),
+        &mut store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first[0].1.outcome, DecisionOutcome::Accepted);
+    let old_dec = first[0].1.clone();
+    let old_ev = first[0].2.clone();
+    // Different consent => different reuse key => re-ask (low conf abstains).
+    let other_policy = chaosbox_core::EffectivePolicy::new(&[], "local", "none").unwrap();
+    let mut low = ConfResponder { confidence: 0.1 };
+    let second = Pipeline::<MemoryStore>::decide(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        &mut low,
+        "jev-1.13.0",
+        &mat,
+        &other_policy,
+        &mut store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(second[0].1.outcome, DecisionOutcome::Abstained);
+    let new_dec = second[0].1.clone();
+    let new_ev = second[0].2.clone();
+    assert_ne!(old_dec.reuse_key, new_dec.reuse_key, "policy flips reuse");
+    assert_ne!(old_dec.id, new_dec.id, "decision id binds reuse");
+    assert_ne!(old_dec.cache_key, new_dec.cache_key);
+    assert_ne!(old_ev.id, new_ev.id, "evidence ids never collide");
+    assert!(!new_ev.supports, "abstained evidence must not support");
+    // Stored readback matches the returned replacement.
+    let qid = format!("rel_{}", cand.id);
+    let kept = store
+        .find_decision(&cand.id, &qid)
+        .await
+        .unwrap()
+        .expect("replacement must persist");
+    assert_eq!(kept.id, new_dec.id);
+    assert_eq!(kept.outcome, DecisionOutcome::Abstained);
+    assert_eq!(kept.reuse_key, new_dec.reuse_key);
+    assert_eq!(kept.raw_answer, new_dec.raw_answer);
+    // Preflight agrees under the new policy (cached), and the old policy
+    // still resolves to its own inference (no cross-consent reuse).
+    let pending_new = crate::uncached_decisions(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        "jev-1.13.0",
+        &mat,
+        &other_policy,
+        &store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(pending_new, 0);
+    let pending_old = crate::uncached_decisions(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        "jev-1.13.0",
+        &mat,
+        &test_policy(),
+        &store,
+    )
+    .await
+    .unwrap();
+    assert_eq!(pending_old, 0, "old policy inference still cached");
+}
+
 #[test]
 fn fresh_process_chains_off_the_live_build() {
     assert_eq!(chain_publication(None).unwrap(), (None, 0));

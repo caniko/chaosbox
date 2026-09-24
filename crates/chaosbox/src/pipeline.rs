@@ -167,11 +167,13 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
             let mat_digest = attempt.mat_digest.clone();
             // Cross-snapshot reuse: rematerialize the validated stored raw
             // under current thresholds; evidence rebinds to current ids.
-            // Identity carries the materialization digest, so a threshold
-            // change replaces the stored row instead of leaving it stale.
+            // Identity carries reuse key + materialization digest, so a
+            // threshold or policy change replaces the stored row instead of
+            // leaving it stale, and evidence ids (content-addressed from
+            // the decision) never collide across materializations.
             if let Some(hit) = attempt.hit {
                 let decision = Decision {
-                    id: deterministic_id("dec", &[&cand.id, &qid, model_requested, &mat_digest]),
+                    id: decision_id_for(&cand.id, &qid, model_requested, &rkey, &mat_digest),
                     candidate_id: cand.id.clone(),
                     question_id: qid.clone(),
                     outcome: hit.outcome.clone(),
@@ -224,10 +226,7 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
             // No inference is stored: failures always re-ask.
             let Ok(r) = responder.respond(state, questions.clone()).await else {
                 let decision = Decision {
-                    id: deterministic_id(
-                        "dec",
-                        &[&cand.id, "failed", model_requested, &mat_digest],
-                    ),
+                    id: decision_id_for(&cand.id, "failed", model_requested, &rkey, &mat_digest),
                     candidate_id: cand.id.clone(),
                     question_id: qid.clone(),
                     outcome: DecisionOutcome::Failed("responder fault".into()),
@@ -278,11 +277,11 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
                 .map_err(|e| PipelineError::Validation(e.to_string()))?;
             let (answered_qid, ans) = resp.answers.iter().next().expect("checked above");
             let raw = chaosbox_jev::raw_from_answer(ans);
-            // Store the reusable inference first: paid work survives a crash
-            // before the snapshot-bound decision lands. Then re-read the
-            // authoritative winner (first-write-wins under races) and
-            // materialize that — concurrent racers converge instead of
-            // diverging on loser raws.
+            // Durable-first + authoritative winner: persist the reusable
+            // inference, then re-read the server winner (first-write-wins)
+            // and validate it through the SAME shared validator cached hits
+            // use. Concurrent racers converge on the winner; a poisoned or
+            // mismatched winner fails closed instead of materializing.
             let submitted = InferenceRecord {
                 reuse_key: rkey.clone(),
                 raw: raw.clone(),
@@ -298,12 +297,24 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
                 .await
                 .map_err(|e| PipelineError::Store(e.to_string()))?
                 .ok_or_else(|| PipelineError::Store("inference missing after put".into()))?;
+            // Shared validation (key, provenance, current-question
+            // semantics) — never materialize an unvalidated winner.
+            let _checked = crate::reuse::validate_stored_inference(
+                &winner,
+                &rkey,
+                model_requested,
+                &questions,
+                &qid,
+            )?;
             let (outcome, class, conf, prob) =
                 materialize_raw(&winner.raw, mat, &cand.reason)?;
             let decision = Decision {
-                id: deterministic_id(
-                    "dec",
-                    &[&cand.id, answered_qid, model_requested, &mat_digest],
+                id: decision_id_for(
+                    &cand.id,
+                    answered_qid,
+                    model_requested,
+                    &rkey,
+                    &mat_digest,
                 ),
                 candidate_id: cand.id.clone(),
                 question_id: answered_qid.clone(),

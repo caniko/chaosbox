@@ -28,8 +28,9 @@ pub struct ReuseHit {
 
 /// One resolver verdict: the relation-local key, the current questions, and
 /// either a validated hit or a miss (re-ask or skip). `Err` is fail-closed
-/// (bindings, missing hashes, multi-question); `Ok` with `hit: None` is a
-/// miss (no inference, invalid raw, model mismatch, Failed retry).
+/// (bindings, missing hashes, multi-question, model or key mismatch,
+/// invalid raw); `Ok` with `hit: None` is a miss (no inference, Failed
+/// retry).
 #[derive(Clone, Debug)]
 pub struct ReuseAttempt {
     /// Relation-local reuse key (`jev-reuse:...`).
@@ -55,6 +56,60 @@ pub fn valid_options_for(qid: &str) -> BTreeMap<String, BTreeSet<String>> {
         qid.to_owned(),
         BTreeSet::from(["accept".into(), "reject".into(), "none".into()]),
     )])
+}
+
+/// Shared record validation: the single choke point for cached hits AND
+/// freshly persisted winners (issue #12 review).
+///
+/// Checks, in order:
+/// * stored `reuse_key` equals the expected relation-local key;
+/// * stored `model_requested` equals the requested model;
+/// * stored `model_returned` is nonempty;
+/// * stored raw converts to a typed answer passing the same
+///   `validate_response` fresh inference passes (type match, finite/range,
+///   distribution sum, option membership against the *current* questions).
+///
+/// Returns the typed answer for rematerialization. `Err` is fail-closed
+/// corruption (never silent reuse, never spend-every-run misses against
+/// first-write-wins poison).
+pub fn validate_stored_inference(
+    inf: &InferenceRecord,
+    expected_reuse_key: &str,
+    ctx_model: &str,
+    questions: &BTreeMap<String, chaosbox_jev::Question>,
+    qid: &str,
+) -> Result<chaosbox_jev::Answer, PipelineError> {
+    if inf.reuse_key != expected_reuse_key {
+        return Err(PipelineError::Validation(format!(
+            "inference reuse-key mismatch: expected {expected_reuse_key}, got {}",
+            inf.reuse_key
+        )));
+    }
+    if inf.model_requested != ctx_model {
+        return Err(PipelineError::Validation(format!(
+            "inference model_requested mismatch for {expected_reuse_key}"
+        )));
+    }
+    if inf.model_returned.is_empty() {
+        return Err(PipelineError::Validation(format!(
+            "inference missing model_returned for {expected_reuse_key}"
+        )));
+    }
+    let answer = chaosbox_jev::answer_from_raw(&inf.raw);
+    let resp = chaosbox_jev::SystemOneResponse {
+        model: inf.model_returned.clone(),
+        answers: BTreeMap::from([(qid.to_owned(), answer.clone())]),
+        usage: chaosbox_jev::Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+        },
+    };
+    chaosbox_jev::validate_response(&resp, questions, &valid_options_for(qid)).map_err(|e| {
+        PipelineError::Validation(format!(
+            "stored inference fails current validation for {expected_reuse_key}: {e}"
+        ))
+    })?;
+    Ok(answer)
 }
 
 /// Resolve one candidate against the store: compute its relation-local key,
@@ -117,39 +172,10 @@ pub async fn resolve_reuse<S: chaosbox_store::Store>(
     else {
         return Ok(base);
     };
-    // Requested-model provenance: the key already covers the model, so a
-    // mismatch means corruption — fail closed, never reuse poison and never
-    // spend every run against first-write-wins.
-    if inf.model_requested != ctx.model {
-        return Err(PipelineError::Validation(format!(
-            "inference model_requested mismatch for {rkey}"
-        )));
-    }
-    if inf.model_returned.is_empty() {
-        return Err(PipelineError::Validation(format!(
-            "inference missing model_returned for {rkey}"
-        )));
-    }
-    // Same validation fresh inference passes: type match, finite/range,
-    // distribution sum, option membership against the *current* questions.
-    // A validated-then-stored raw that no longer validates is corruption
-    // (question semantics changes already flip the reuse key) — fail closed
-    // instead of spending every run against unwritable first-write-wins.
-    let answer = chaosbox_jev::answer_from_raw(&inf.raw);
-    let resp = chaosbox_jev::SystemOneResponse {
-        model: inf.model_returned.clone(),
-        answers: BTreeMap::from([(qid.clone(), answer)]),
-        usage: chaosbox_jev::Usage {
-            input_tokens: 0,
-            output_tokens: 0,
-        },
-    };
-    if let Err(e) = chaosbox_jev::validate_response(&resp, &questions, &valid_options_for(&qid))
-    {
-        return Err(PipelineError::Validation(format!(
-            "stored inference fails current validation for {rkey}: {e}"
-        )));
-    }
+    // Shared validation: key equality, model provenance, current-question
+    // semantics. Corruption fails closed (never silent reuse, never
+    // spend-every-run misses against first-write-wins poison).
+    let _answer = validate_stored_inference(&inf, &rkey, ctx.model, &questions, &qid)?;
     // Failed-always-retry: a recorded `Failed` with the same reuse key
     // blocks reuse even though an inference exists (retries re-ask).
     if let Some(d) = store

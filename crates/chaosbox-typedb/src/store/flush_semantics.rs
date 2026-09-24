@@ -7,10 +7,11 @@ use chaosbox_core::{
 };
 use chaosbox_store::StoreError;
 use crate::common::{
-    col_double_opt, col_string, col_string_opt, decision_key, driver_error, file_version_id,
-    link_id, now_millis, read_rows, span_id_of,
+    WRITE_TIMEOUT, col_double_opt, col_string, col_string_opt, decision_key, drain, driver_error,
+    file_version_id, is_conflict, is_unique_violation, link_id, now_millis, read_rows, span_id_of,
 };
 use crate::encode::{bool_lit, double_lit, int_lit, str_lit};
+use typedb_driver::{TransactionOptions, TransactionType};
 
 use super::TypeDbStore;
 
@@ -19,31 +20,121 @@ impl TypeDbStore {
     /// cache key changed or a recorded failure is retried, keep otherwise.
     /// One row per `(candidate, question)` key; retry-safe under retry and
     /// concurrent flush.
+    ///
+    /// Atomicity: delete + insert execute in ONE write transaction, so a
+    /// crash can never leave no decision. Concurrent replacements resolve
+    /// via commit conflicts (`STC2`): the loser re-reads the winner and
+    /// retries (bounded), converging instead of diverging or losing both.
     pub(super) async fn flush_decision(&self, d: &Decision) -> Result<(), StoreError> {
-        let key = decision_key(&d.candidate_id, &d.question_id);
-        let existing = self.read_decision_row(&key).await?;
-        let replace = match &existing {
-            None => true,
-            Some((old_key, old_outcome, _)) => {
-                *old_key != d.cache_key || is_failed_outcome(old_outcome)
+        for _ in 0..4 {
+            let key = decision_key(&d.candidate_id, &d.question_id);
+            let existing = self.read_decision_row(&key).await?;
+            let replace = match &existing {
+                None => true,
+                Some((old_key, old_outcome, _)) => {
+                    *old_key != d.cache_key || is_failed_outcome(old_outcome)
+                }
+            };
+            if !replace {
+                return Ok(());
             }
-        };
-        if !replace {
+            match self.replace_decision_tx(&key, existing.is_some(), d).await {
+                Ok(()) => return Ok(()),
+                Err(StoreError::Invariant(msg)) if msg.contains("concurrent decision") => (),
+                Err(e) => return Err(e),
+            }
+        }
+        // Contention exhausted: if a winner exists, converge on it (caller
+        // re-reads the winner); otherwise report.
+        let key = decision_key(&d.candidate_id, &d.question_id);
+        if self.read_decision_row(&key).await?.is_some() {
             return Ok(());
         }
-        if existing.is_some() {
-            let q = format!(
+        Err(StoreError::Invariant(
+            "decision replacement contention exhausted".into(),
+        ))
+    }
+
+    /// Atomic delete (when replacing) + insert in one write transaction.
+    /// Returns `Invariant("concurrent decision...")` on commit conflicts or
+    /// duplicate-key races so the caller retries against the fresh winner.
+    async fn replace_decision_tx(
+        &self,
+        key: &str,
+        had_existing: bool,
+        d: &Decision,
+    ) -> Result<(), StoreError> {
+        let driver = self
+            .driver
+            .as_ref()
+            .ok_or_else(|| StoreError::Connection("TypeDbStore disconnected".into()))?;
+        let tx = driver
+            .transaction_with_options(
+                &self.config.database,
+                TransactionType::Write,
+                TransactionOptions::new().transaction_timeout(WRITE_TIMEOUT),
+            )
+            .await
+            .map_err(driver_error)?;
+        if had_existing {
+            let del = format!(
                 "match $d isa decision, has decision-key {}; delete $d;",
-                str_lit(&key)
+                str_lit(key)
             );
-            self.write_one(&q).await.map_err(|e| driver_error(*e))?;
+            match tx.query(&del).await {
+                Ok(answer) => {
+                    drain(answer).await.map_err(|e| {
+                        if is_conflict(&e) || is_unique_violation(&e) {
+                            StoreError::Invariant("concurrent decision write".into())
+                        } else {
+                            driver_error(*e)
+                        }
+                    })?;
+                }
+                Err(e) => {
+                    if is_conflict(&e) || is_unique_violation(&e) {
+                        return Err(StoreError::Invariant("concurrent decision write".into()));
+                    }
+                    return Err(driver_error(e));
+                }
+            }
         }
+        let ins = Self::decision_insert_query(key, d)?;
+        match tx.query(&ins).await {
+            Ok(answer) => {
+                drain(answer).await.map_err(|e| {
+                    if is_conflict(&e) || is_unique_violation(&e) {
+                        StoreError::Invariant("concurrent decision write".into())
+                    } else {
+                        driver_error(*e)
+                    }
+                })?;
+            }
+            Err(e) => {
+                if is_conflict(&e) || is_unique_violation(&e) {
+                    return Err(StoreError::Invariant("concurrent decision write".into()));
+                }
+                return Err(driver_error(e));
+            }
+        }
+        match tx.commit().await {
+            Ok(()) => Ok(()),
+            Err(e) if is_conflict(&e) || is_unique_violation(&e) => Err(StoreError::Invariant(
+                "concurrent decision write".into(),
+            )),
+            Err(e) => Err(driver_error(e)),
+        }
+    }
+
+    /// Build the decision insert query for one row (shared by the atomic
+    /// replace path).
+    fn decision_insert_query(key: &str, d: &Decision) -> Result<String, StoreError> {
         let outcome =
             serde_json::to_string(&d.outcome).map_err(|e| StoreError::Query(e.to_string()))?;
         let class = evidence_class_name(d.evidence_class);
         let mut owns = format!(
             "has decision-key {}, has decision-id {}, has candidate-id {}, has question-id {}, has outcome {}, has evidence-class {}, has model-requested {}, has model-returned {}, has cache-key {}",
-            str_lit(&key),
+            str_lit(key),
             str_lit(&d.id),
             str_lit(&d.candidate_id),
             str_lit(&d.question_id),
@@ -71,8 +162,7 @@ impl TypeDbStore {
             owns.push_str(", has probability ");
             owns.push_str(&double_lit(p).map_err(|e| StoreError::Query(e.to_string()))?);
         }
-        let q = format!("insert $d isa decision, {owns};");
-        self.insert_ignoring_duplicates(&q).await
+        Ok(format!("insert $d isa decision, {owns};"))
     }
 
     /// Conditional inference write (issue #12): first write wins. The same

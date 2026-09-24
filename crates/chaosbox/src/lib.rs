@@ -8,9 +8,9 @@ use std::{
 };
 
 use chaosbox_core::{
-    catalog_digest, check_confidence, check_probability, deterministic_id, Candidate, Claim,
-    Decision, DecisionOutcome, Entity, Evidence, EvidenceClass, GraphBuild, InferenceRecord,
-    RawAnswer, Relation, RelationScope,
+    catalog_digest, check_confidence, check_probability, deterministic_id, evidence_class_name,
+    Candidate, Claim, Decision, DecisionOutcome, Entity, Evidence, EvidenceClass, GraphBuild,
+    InferenceRecord, RawAnswer, Relation, RelationScope,
 };
 use chaosbox_extract::{build_candidates, extract_snapshot, CandidateCatalog, Extraction, Snapshot};
 use chaosbox_store::MemoryStore;
@@ -68,6 +68,11 @@ pub enum PipelineError {
 /// pure functions of (decision, entity), so cache reuse rebuilds
 /// byte-identical rows and puts stay idempotent. Single choke point —
 /// success, failure, and skip paths must all use this.
+///
+/// Identity is content-addressed: decision id + suffix + supports + class +
+/// snapshot + file + text. Two materializations with different outcomes or
+/// bindings never share an evidence id, so TypeDB/Memory first-write-wins
+/// can never retain a stale row under a colliding id.
 fn assemble_evidence(
     decision: &Decision,
     supports: bool,
@@ -78,7 +83,18 @@ fn assemble_evidence(
     suffix: &str,
 ) -> Evidence {
     Evidence {
-        id: deterministic_id("ev", &[&decision.id, suffix]),
+        id: deterministic_id(
+            "ev",
+            &[
+                &decision.id,
+                suffix,
+                if supports { "1" } else { "0" },
+                &evidence_class_name(decision.evidence_class),
+                snapshot,
+                file,
+                &text,
+            ],
+        ),
         class: decision.evidence_class,
         supports,
         text,
@@ -86,6 +102,34 @@ fn assemble_evidence(
         snapshot: snapshot.to_owned(),
         source_file_version: file.to_owned(),
     }
+}
+
+/// Materialized decision identity: candidate + question + requested model +
+/// relation-local reuse key + materialization digest.
+///
+/// Including the reuse key binds the decision to its authoritative
+/// inference inputs (endpoints, excerpt, questions, model, rubric, policy):
+/// a policy or endpoint change mints a new decision (hence new evidence)
+/// instead of colliding with a prior materialization under the same id.
+/// Including the materialization digest versions threshold-derived outcomes
+/// so rematerialization replaces stale rows.
+fn decision_id_for(
+    candidate_id: &str,
+    question_id_for_id: &str,
+    model_requested: &str,
+    reuse_key: &str,
+    mat_digest: &str,
+) -> String {
+    deterministic_id(
+        "dec",
+        &[
+            candidate_id,
+            question_id_for_id,
+            model_requested,
+            reuse_key,
+            mat_digest,
+        ],
+    )
 }
 
 /// Cache-only decisions for an entities-only refresh: reuse every decision
@@ -144,14 +188,12 @@ pub async fn decide_cached<S: chaosbox_store::Store>(
             continue;
         };
         let decision = Decision {
-            id: deterministic_id(
-                "dec",
-                &[
-                    &cand.id,
-                    &attempt.qid,
-                    model_requested,
-                    &attempt.mat_digest,
-                ],
+            id: decision_id_for(
+                &cand.id,
+                &attempt.qid,
+                model_requested,
+                &attempt.reuse_key,
+                &attempt.mat_digest,
             ),
             candidate_id: cand.id.clone(),
             question_id: attempt.qid.clone(),

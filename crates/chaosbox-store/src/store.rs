@@ -169,6 +169,15 @@ impl MemoryStore {
         Self::default()
     }
 
+    /// Whether a (snapshot, path) file version is registered in staging.
+    /// Used by durable-first backends to validate evidence before touching
+    /// the server, so a missing registration fails without a durable write.
+    #[must_use]
+    pub fn has_file(&self, snapshot_id: &str, path: &str) -> bool {
+        self.files
+            .contains_key(&(snapshot_id.to_owned(), path.to_owned()))
+    }
+
     /// Stored-record counts (decisions, evidence, claims, builds) for
     /// pipeline tests and operator diagnostics.
     #[must_use]

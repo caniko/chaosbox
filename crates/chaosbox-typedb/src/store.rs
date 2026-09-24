@@ -27,7 +27,7 @@ use typedb_driver::{
     TransactionType, TypeDBDriver,
 };
 
-use crate::common::{FLUSH_RETRIES, WRITE_TIMEOUT, driver_error, drain, is_unique_violation};
+use crate::common::{FLUSH_RETRIES, WRITE_TIMEOUT, driver_error, drain, is_conflict, is_unique_violation};
 /// Connection config re-exported for backend constructors.
 pub use crate::common::TypeDbConfig;
 
@@ -132,7 +132,11 @@ impl TypeDbStore {
     }
 
     /// Insert-or-ignore: the `@unique` violation means a rival (or an
-    /// earlier retry) already wrote this key.
+    /// earlier retry) already wrote this key. An isolation conflict (`STC2`)
+    /// means a concurrent writer committed first: for these idempotent
+    /// content-keyed rows the durable winner already exists, so treat it as
+    /// success and let the caller re-read the winner. Publication pointer
+    /// swings never use this helper (they must observe conflicts).
     async fn insert_ignoring_duplicates(&self, query: &str) -> Result<(), StoreError> {
         // Bounded transient retries on connection loss; conflicts and
         // constraint outcomes are decided, never retried.
@@ -141,6 +145,7 @@ impl TypeDbStore {
             match self.write_one(query).await {
                 Ok(()) => return Ok(()),
                 Err(e) if is_unique_violation(&e) => return Ok(()),
+                Err(e) if is_conflict(&e) => return Ok(()),
                 Err(e)
                     if matches!(&*e, typedb_driver::Error::Connection(_))
                         && attempt < FLUSH_RETRIES =>

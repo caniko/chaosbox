@@ -69,25 +69,34 @@ impl Store for TypeDbStore {
         if let Some(raw) = &d.raw_answer {
             validate_raw_finite(raw)?;
         }
-        self.staging.put_decision(d.clone()).await?;
-        // Write-through: the decision is paid inference — persist it in a
-        // short transaction as produced, so a dead worker or a budget
-        // failure later in the run never loses completed work (resume
-        // reuses it through `find_decision`). Staged rows still flush
-        // idempotently at publish; readers pin builds, so a decision
-        // written before publication stays invisible to them.
+        // Durable-first: persist atomically before staging anything, so a
+        // failed write leaves no reusable local record. Then stage the
+        // durable winner (not the submitted row) so staging never holds a
+        // loser from a lost race. Readers are server-first, and the
+        // publish-time flush replays winners idempotently.
         self.ensure_connected().await?;
-        self.flush_decision(&d).await
+        self.flush_decision(&d).await?;
+        let key = decision_key(&d.candidate_id, &d.question_id);
+        let winner = self
+            .read_decision_row(&key)
+            .await?
+            .map(|(_, _, w)| w)
+            .ok_or_else(|| StoreError::Invariant("decision missing after flush".into()))?;
+        self.staging.put_decision(winner).await
     }
 
     async fn put_inference(&mut self, rec: InferenceRecord) -> Result<(), StoreError> {
         validate_raw_finite(&rec.raw)?;
-        self.staging.put_inference(rec.clone()).await?;
-        // Write-through alongside its decision: the inference is the
-        // reusable unit across snapshots, so a dead worker never loses
-        // paid work (resume reuses it through `find_inference`).
+        // Durable-first + winner staging: first-write-wins lives on the
+        // server. A failed flush stages nothing; a lost race stages the
+        // winner both racers converge on.
         self.ensure_connected().await?;
-        self.flush_inference(&rec).await
+        self.flush_inference(&rec).await?;
+        let winner = self
+            .read_inference_row(&rec.reuse_key)
+            .await?
+            .ok_or_else(|| StoreError::Invariant("inference missing after flush".into()))?;
+        self.staging.put_inference(winner).await
     }
 
     async fn find_inference(
@@ -108,11 +117,19 @@ impl Store for TypeDbStore {
     }
 
     async fn put_evidence(&mut self, e: Evidence) -> Result<(), StoreError> {
-        self.staging.put_evidence(e.clone()).await?;
-        // Write-through alongside its decision (deterministic evidence id:
-        // re-assembly and the publish-time flush stay idempotent).
+        // Durable-first with pre-validation: the (snapshot, path) linkage is
+        // validated against staging before touching the server, so an
+        // unregistered file fails without a durable write. On success the
+        // winner is staged; on failure nothing is staged.
+        if !self.staging.has_file(&e.snapshot, &e.source_file_version) {
+            return Err(StoreError::Invariant(format!(
+                "evidence {} references unregistered file {} in snapshot {}",
+                e.id, e.source_file_version, e.snapshot
+            )));
+        }
         self.ensure_connected().await?;
-        self.flush_evidence(&e).await
+        self.flush_evidence(&e).await?;
+        self.staging.put_evidence(e).await
     }
 
     async fn put_claim(&mut self, c: Claim) -> Result<(), StoreError> {

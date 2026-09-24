@@ -329,7 +329,10 @@ pub enum DecisionOutcome {
 /// One validated Jev decision over a candidate.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Decision {
-    /// Deterministic `dec:<hex>` identity (candidate + question + model).
+    /// Deterministic `dec:<hex>` identity (candidate + question + model +
+    /// reuse key + materialization digest). Binds the materialization to its
+    /// authoritative inference inputs and thresholds so policy/threshold
+    /// changes mint new rows instead of colliding.
     pub id: String,
     /// Candidate this decision judges.
     pub candidate_id: String,
@@ -350,8 +353,8 @@ pub struct Decision {
     /// Cache identity under which this decision is valid (source,
     /// preprocessing, catalog, questions, model, rubric, policy, plus the
     /// materialization thresholds). Reuse compares the relation-local key;
-    /// this audit key replaces the stored row when thresholds change so
-    /// returned and persisted materializations agree.
+    /// this audit key replaces the stored row when thresholds or policy
+    /// change so returned and persisted materializations agree.
     pub cache_key: String,
     /// Relation-local reuse key (`jev-reuse:...`) authorizing cross-snapshot
     /// reuse (issue #12). Empty for legacy rows written before reuse.

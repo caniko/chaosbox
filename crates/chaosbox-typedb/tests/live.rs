@@ -813,29 +813,153 @@ async fn concurrent_inferences_first_write_wins_across_stores() {
         ]),
         confidence: 0.9,
     };
-    a.put_inference(InferenceRecord {
-        reuse_key: rkey.clone(),
+    // True simultaneity: both writers race in one join, not sequentially.
+    let (ra, rb) = tokio::join!(
+        a.put_inference(InferenceRecord {
+            reuse_key: rkey.clone(),
+            raw: raw_a.clone(),
+            model_requested: "jev-1.13.0".into(),
+            model_returned: "jev-1.13.0".into(),
+        }),
+        b.put_inference(InferenceRecord {
+            reuse_key: rkey.clone(),
+            raw: raw_b.clone(),
+            model_requested: "jev-1.13.0".into(),
+            model_returned: "jev-1.13.0".into(),
+        })
+    );
+    ra.unwrap();
+    rb.unwrap();
+    // Both stores agree on the winner (server-first reads).
+    let winner_a = a.find_inference(&rkey).await.unwrap().unwrap();
+    let winner_b = b.find_inference(&rkey).await.unwrap().unwrap();
+    assert_eq!(winner_a.raw, winner_b.raw, "racers must converge");
+    assert!(
+        winner_a.raw == raw_a || winner_a.raw == raw_b,
+        "winner must be one submitted raw"
+    );
+    let mut fresh = TypeDbStore::new(config(&db));
+    fresh.migrate().await.unwrap();
+    let restarted = fresh.find_inference(&rkey).await.unwrap().unwrap();
+    assert_eq!(restarted.raw, winner_a.raw, "restart reads the winner");
+}
+
+#[tokio::test]
+async fn failed_writes_leave_no_reusable_record() {
+    use std::collections::BTreeMap;
+    use chaosbox_store::Store as _;
+    let db = test_db("t_failwrite");
+    let Some(mut s) = connected_store(&db).await else {
+        return;
+    };
+    // Non-finite raw has no TypeQL form: the write must fail before any
+    // staging, leaving no reusable inference.
+    let bad = InferenceRecord {
+        reuse_key: "jev-reuse:live-bad-1".into(),
+        raw: RawAnswer::Choice {
+            choice: "accept".into(),
+            probabilities: BTreeMap::from([
+                ("accept".into(), 0.9),
+                ("reject".into(), 0.05),
+                ("none".into(), 0.05),
+            ]),
+            confidence: f64::NAN,
+        },
+        model_requested: "jev-1.13.0".into(),
+        model_returned: "jev-1.13.0".into(),
+    };
+    assert!(s.put_inference(bad).await.is_err());
+    assert!(
+        s.find_inference("jev-reuse:live-bad-1")
+            .await
+            .unwrap()
+            .is_none(),
+        "failed inference must leave no reusable record"
+    );
+    // Non-finite decision confidence likewise stages nothing.
+    let mut d = decision("cand:bad", "q1", "key-bad");
+    d.confidence = Some(f64::INFINITY);
+    assert!(s.put_decision(d).await.is_err());
+    assert!(
+        s.find_decision("cand:bad", "q1").await.unwrap().is_none(),
+        "failed decision must leave no record"
+    );
+}
+
+#[tokio::test]
+async fn policy_change_with_differing_answers_replaces_evidence() {
+    use std::collections::BTreeMap;
+    use chaosbox_store::Store as _;
+    let db = test_db("t_policy");
+    let Some(mut s) = connected_store(&db).await else {
+        return;
+    };
+    // Two policies => two reuse keys (different inputs), same
+    // (candidate, question) slot, different answers/outcomes.
+    let mk_raw = |choice: &str, conf: f64| RawAnswer::Choice {
+        choice: choice.into(),
+        probabilities: BTreeMap::from([
+            ("accept".into(), if choice == "accept" { 0.9 } else { 0.05 }),
+            ("reject".into(), if choice == "reject" { 0.9 } else { 0.05 }),
+            ("none".into(), 0.05),
+        ]),
+        confidence: conf,
+    };
+    let rkey_a = "jev-reuse:live-pol-A".to_owned();
+    let rkey_b = "jev-reuse:live-pol-B".to_owned();
+    let raw_a = mk_raw("accept", 0.95);
+    let raw_b = mk_raw("reject", 0.9);
+    s.put_inference(InferenceRecord {
+        reuse_key: rkey_a.clone(),
         raw: raw_a.clone(),
         model_requested: "jev-1.13.0".into(),
         model_returned: "jev-1.13.0".into(),
     })
     .await
     .unwrap();
-    b.put_inference(InferenceRecord {
-        reuse_key: rkey.clone(),
-        raw: raw_b,
+    s.put_inference(InferenceRecord {
+        reuse_key: rkey_b.clone(),
+        raw: raw_b.clone(),
         model_requested: "jev-1.13.0".into(),
         model_returned: "jev-1.13.0".into(),
     })
     .await
     .unwrap();
-    // Both stores agree on the winner (server-first reads).
-    let winner_a = a.find_inference(&rkey).await.unwrap().unwrap();
-    let winner_b = b.find_inference(&rkey).await.unwrap().unwrap();
-    assert_eq!(winner_a.raw, winner_b.raw, "racers must converge");
-    assert_eq!(winner_a.raw, raw_a, "first write wins");
+    // Old materialization (policy A, accepted) then replacement (policy B,
+    // rejected): different audit keys, different decision/evidence ids.
+    let mut old = decision("cand:pol", "q1", "key-pol-A:mat");
+    old.id = "dec:pol-old".into();
+    old.reuse_key = rkey_a.clone();
+    old.raw_answer = Some(raw_a.clone());
+    old.outcome = DecisionOutcome::Accepted;
+    s.put_decision(old).await.unwrap();
+    let mut new = decision("cand:pol", "q1", "key-pol-B:mat");
+    new.id = "dec:pol-new".into();
+    new.reuse_key = rkey_b.clone();
+    new.raw_answer = Some(raw_b.clone());
+    new.outcome = DecisionOutcome::Rejected;
+    s.put_decision(new.clone()).await.unwrap();
+    let found = s
+        .find_decision("cand:pol", "q1")
+        .await
+        .unwrap()
+        .expect("replacement must persist");
+    assert_eq!(found.outcome, DecisionOutcome::Rejected);
+    assert_eq!(found.reuse_key, rkey_b);
+    assert_eq!(found.raw_answer, Some(raw_b.clone()));
+    // Fresh process agrees on the replacement and both inferences survive.
     let mut fresh = TypeDbStore::new(config(&db));
     fresh.migrate().await.unwrap();
-    let restarted = fresh.find_inference(&rkey).await.unwrap().unwrap();
-    assert_eq!(restarted.raw, raw_a);
+    let restarted = fresh
+        .find_decision("cand:pol", "q1")
+        .await
+        .unwrap()
+        .expect("replacement must survive restart");
+    assert_eq!(restarted.outcome, DecisionOutcome::Rejected);
+    assert_eq!(restarted.reuse_key, rkey_b);
+    assert!(
+        fresh.find_inference(&rkey_a).await.unwrap().is_some()
+            && fresh.find_inference(&rkey_b).await.unwrap().is_some(),
+        "both policy inferences survive (different keys)"
+    );
 }
