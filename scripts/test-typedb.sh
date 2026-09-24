@@ -52,6 +52,10 @@ export CHAOSBOX_TYPEDB_ADDR="127.0.0.1:$PORT"
 export CHAOSBOX_TYPEDB_USER=admin
 export CHAOSBOX_TYPEDB_PASSWORD_FILE="$WORK/pw"
 export CHAOSBOX_TYPEDB_DATABASE=test-typedb
+# This script is the server-present gate: with a disposable server running,
+# a live test that cannot connect, authenticates badly, fails to migrate or
+# fails conformance must FAIL. It must never report those as a passing skip.
+export CHAOSBOX_REQUIRE_TYPEDB=1
 
 echo "== pending before migration =="
 if chaosbox db check --json --repo test 2>/dev/null; then
@@ -68,6 +72,9 @@ test -s "$WORK/graph.json"
 
 echo "== readiness =="
 chaosbox db check --json --repo test
+
+echo "== live TypeDB conformance (required: no skip is allowed here) =="
+cargo test -p chaosbox-typedb --test live
 
 echo "== consumer queries =="
 chaosbox query status --repo test

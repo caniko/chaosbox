@@ -7,10 +7,19 @@
 //! (`CHAOSBOX_TYPEDB_USER`, `CHAOSBOX_TYPEDB_PASSWORD_FILE`), then
 //! `TYPEDB_USERNAME`/`TYPEDB_PASSWORD`, then the fresh-server default
 //! (`admin`/`password` — provisioned hosts rotate the admin password and
-//! hand the tests the application credential instead). Without a reachable
-//! server the tests report a skip and pass; a skip is NOT conformance
-//! evidence (see the execution ledger). The named CI gate runs these with a
-//! server present.
+//! hand the tests the application credential instead).
+//!
+//! Only two cases become a skip, and neither can be mistaken for a pass:
+//! no server is listening at all, or a server is reachable but the operator
+//! never supplied credentials (in which case authentication is the only
+//! thing that could have run). Every other outcome — supplied credentials
+//! the server rejects, a failed migration, a failed conformance check — is
+//! a failure, because turning it green would pass off a masked error as
+//! evidence. Under `CHAOSBOX_REQUIRE_TYPEDB` (set by
+//! `scripts/test-typedb.sh`) nothing skips at all: a missing server, bad
+//! credentials, a failed migration or a conformance failure all fail. A skip
+//! is NOT conformance evidence (see the execution ledger); the named gate
+//! runs these with a server present.
 
 use chaosbox_core::{
     Candidate, Claim, Decision, DecisionOutcome, Entity, EntityKind, Evidence, EvidenceClass,
@@ -21,7 +30,63 @@ use chaosbox_typedb::reader::TypeDbReader;
 use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
 
 fn addr() -> String {
-    std::env::var("TYPEDB_ADDR").unwrap_or_else(|_| "127.0.0.1:1729".into())
+    // The CLI contract is authoritative; `TYPEDB_ADDR` stays as the
+    // legacy alias so an existing invocation keeps pointing at its server.
+    std::env::var("CHAOSBOX_TYPEDB_ADDR")
+        .or_else(|_| std::env::var("TYPEDB_ADDR"))
+        .unwrap_or_else(|_| "127.0.0.1:1729".into())
+}
+
+/// Parse the required-server gate from a value. Split out of the reader so
+/// the rule is testable without mutating process environment (which races
+/// across a parallel test run).
+fn required_from(value: Option<&str>) -> bool {
+    value.is_some_and(|v| {
+        let v = v.trim();
+        v.eq_ignore_ascii_case("1")
+            || v.eq_ignore_ascii_case("true")
+            || v.eq_ignore_ascii_case("yes")
+    })
+}
+
+/// Whether anything is listening at `addr`.
+///
+/// The driver reports both "nothing is listening" and "the server rejected
+/// our credentials" as the same connection error, so the error text cannot
+/// distinguish an absent server from a rejected one. Reachability is
+/// therefore measured directly: if the address accepts a TCP connection a
+/// server is present, so a failed migration there deserves a real answer
+/// instead of a skip.
+fn server_reachable(addr: &str) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+    addr.to_socket_addrs().is_ok_and(|mut addrs| {
+        addrs.any(|sa| TcpStream::connect_timeout(&sa, Duration::from_secs(2)).is_ok())
+    })
+}
+
+/// Credential detection, split from the environment so it is testable
+/// without mutating process environment (which races across a parallel
+/// test run).
+fn credentials_configured_from(
+    password_file: Option<&std::ffi::OsString>,
+    password: Option<&std::ffi::OsString>,
+) -> bool {
+    password_file.is_some_and(|p| std::path::Path::new(p).exists()) || password.is_some()
+}
+
+/// Whether the operator told the tests how to authenticate.
+///
+/// Supplied-but-rejected credentials are a failure: that is a broken gate
+/// trying to go green. Never having been given any is an environment gap,
+/// and without a session nothing beyond authentication can even run — so it
+/// skips and says plainly that live conformance was not proven. The
+/// `CHAOSBOX_REQUIRE_TYPEDB` gate admits no skip either way.
+fn credentials_configured() -> bool {
+    credentials_configured_from(
+        std::env::var_os("CHAOSBOX_TYPEDB_PASSWORD_FILE").as_ref(),
+        std::env::var_os("TYPEDB_PASSWORD").as_ref(),
+    )
 }
 
 /// Per-run database name for the publish tests: they exercise the
@@ -58,8 +123,30 @@ async fn connected_store(db: &str) -> Option<TypeDbStore> {
     match s.migrate().await {
         Ok(()) => Some(s),
         Err(e) => {
-            println!("SKIP (no server at {}): {e}", addr());
-            None
+            let required = required_from(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref().ok());
+            assert!(
+                !required,
+                "CHAOSBOX_REQUIRE_TYPEDB is set: live TypeDB migration failed at {}, \
+                 a skip is not conformance evidence: {e}",
+                addr()
+            );
+            if !server_reachable(&addr()) {
+                println!("SKIP (no server at {}): {e}", addr());
+                return None;
+            }
+            if !credentials_configured() {
+                println!(
+                    "SKIP (server at {} reachable, but no credentials configured): live \
+                     conformance NOT proven, this is not a pass: {e}",
+                    addr()
+                );
+                return None;
+            }
+            panic!(
+                "credentials were supplied but the server at {} rejected them, or the \
+                 migration itself failed; refusing to report that as a passing skip: {e}",
+                addr()
+            );
         }
     }
 }
@@ -112,6 +199,67 @@ async fn seed_files_run(s: &mut TypeDbStore, repo: &str, snap: &str) -> (String,
         .await
         .unwrap();
     (run, set, snap.into())
+}
+
+#[test]
+fn only_a_missing_server_may_skip() {
+    // Self-contained: bind an ephemeral port to observe an address that is
+    // definitely listening, then release it to observe one that is not.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral bind");
+    let open = listener.local_addr().expect("local addr");
+    assert!(
+        server_reachable(&open.to_string()),
+        "a listening address must be treated as a present server"
+    );
+    drop(listener);
+    assert!(
+        !server_reachable(&open.to_string()),
+        "a released address must read as no server, which is the only skippable case"
+    );
+    assert!(
+        !server_reachable("definitely-not-a-host.invalid:1729"),
+        "an unresolvable address must not read as a present server"
+    );
+}
+
+#[test]
+fn supplied_credentials_are_distinguished_from_no_credentials() {
+    let existing_path = std::env::temp_dir().join("chaosbox-live-probe");
+    std::fs::write(&existing_path, "probe").expect("write probe file");
+    let existing = std::ffi::OsString::from(existing_path.clone());
+    let missing = std::ffi::OsString::from("/definitely/not/a/chaosbox/password");
+    let inline = std::ffi::OsString::from("s3cret");
+    assert!(
+        credentials_configured_from(Some(&existing), None),
+        "a real password file means credentials were supplied"
+    );
+    assert!(
+        credentials_configured_from(None, Some(&inline)),
+        "an inline password means credentials were supplied"
+    );
+    assert!(
+        !credentials_configured_from(None, None),
+        "nothing supplied must read as an environment gap, not a broken credential"
+    );
+    assert!(
+        !credentials_configured_from(Some(&missing), None),
+        "a password file that does not exist was never actually supplied"
+    );
+    let _ = std::fs::remove_file(&existing_path);
+}
+
+#[test]
+fn required_gate_is_explicit_and_fails_closed_on_empty() {
+    assert!(required_from(Some("1")));
+    assert!(required_from(Some(" true ")));
+    assert!(required_from(Some("YES")));
+    assert!(
+        !required_from(Some("")),
+        "an empty gate value must not enable"
+    );
+    assert!(!required_from(Some("0")));
+    assert!(!required_from(Some("no")));
+    assert!(!required_from(None));
 }
 
 #[tokio::test]
