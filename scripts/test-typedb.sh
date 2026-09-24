@@ -36,7 +36,7 @@ PORT="${TYPEDB_PORT:-1729}"
 # Refuse a busy port. Readiness succeeding against an already-running
 # server while this script's disposable instance failed to bind would
 # silently migrate and test a database this script does not own.
-if timeout 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/$PORT" 2>/dev/null; then
+if timeout -k 1 2 bash -c "exec 3<>/dev/tcp/127.0.0.1/$PORT" 2>/dev/null; then
   echo "refusing to run: 127.0.0.1:$PORT is already in use; set TYPEDB_PORT to a free port" >&2
   exit 1
 fi
@@ -118,11 +118,32 @@ SERVER_PID=$!
 
 echo "== readiness (bounded) =="
 ready=""
-deadline=$((SECONDS + 300))
+# Total wall-clock contract for readiness, including every probe and its
+# KILL grace: no single hanging console may push acceptance past this.
+READINESS_BUDGET=300
+PROBE_TIMEOUT=10
+KILL_AFTER=5
+deadline=$((SECONDS + READINESS_BUDGET))
 for _ in $(seq 1 60); do
-  if ((SECONDS > deadline)); then
-    echo "typedb-server on 127.0.0.1:$PORT exceeded the 300s readiness deadline" >&2
+  if ((SECONDS >= deadline)); then
+    echo "typedb-server on 127.0.0.1:$PORT exceeded the ${READINESS_BUDGET}s readiness deadline" >&2
     exit 1
+  fi
+  remaining=$((deadline - SECONDS))
+  probe_timeout=$PROBE_TIMEOUT
+  kill_after=$KILL_AFTER
+  # Cap this probe (TERM wait + KILL grace) to the time left, so a probe
+  # started just before the deadline cannot be accepted after it. A bare
+  # `timeout 10` sends TERM only: a console that catches or blocks TERM
+  # would hang the gate past every attempt count, so the KILL grace is
+  # part of the bound, not an addition to it.
+  if ((probe_timeout + kill_after > remaining)); then
+    if ((remaining < 2)); then
+      echo "typedb-server on 127.0.0.1:$PORT exceeded the ${READINESS_BUDGET}s readiness deadline (no time left for a bounded probe)" >&2
+      exit 1
+    fi
+    kill_after=1
+    probe_timeout=$((remaining - kill_after))
   fi
   # Prove the child is still alive: a disposable server that died on bind
   # or during startup must fail this gate, not let a probe succeed against
@@ -132,11 +153,15 @@ for _ in $(seq 1 60); do
     wait "$SERVER_PID" || true
     exit 1
   fi
-  # Each probe carries its own timeout: attempt counts only bound the loop
-  # if a single hanging console process cannot stall it.
-  if timeout 10 typedb-console --address "127.0.0.1:$PORT" --tls-disabled \
+  if timeout -k "$kill_after" "$probe_timeout" typedb-console --address "127.0.0.1:$PORT" --tls-disabled \
     --username admin --password password \
     --command "server version" >/dev/null 2>&1; then
+    # A probe that finished after the deadline is late, not ready: accept
+    # only inside the budget even if the console answered.
+    if ((SECONDS > deadline)); then
+      echo "typedb-server on 127.0.0.1:$PORT answered after the ${READINESS_BUDGET}s readiness deadline; refusing the late success" >&2
+      exit 1
+    fi
     # Recheck liveness after a successful probe: the child could have died
     # between the pre-probe check and the console's answer, in which case
     # the answer may have come from somewhere else.
@@ -154,7 +179,9 @@ if [ -z "$ready" ]; then
   echo "typedb-server on 127.0.0.1:$PORT never became ready within the bounded wait" >&2
   exit 1
 fi
-typedb-console --address "127.0.0.1:$PORT" --tls-disabled \
+# Same bound as the loop probes: this print must not reintroduce an
+# unbounded console wait after readiness was already proven.
+timeout -k "$KILL_AFTER" "$PROBE_TIMEOUT" typedb-console --address "127.0.0.1:$PORT" --tls-disabled \
   --username admin --password password \
   --command "server version" | head -n 3
 
