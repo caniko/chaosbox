@@ -1,8 +1,11 @@
 # First delivery: session migration
 
-Status: proposed implementation scope. No `chaosbox sessions` commands exist
-yet. The goal is to replace migration scratch scripts with one bounded Rust
-workflow inside Chaosbox, while implementing the [selective intelligence
+Status: partially implemented. The `chaosbox sessions` command surface exists
+today as `status`, `verify`, `adopt`, `install` and `rollback`
+(`crates/chaosbox/src/sessions/cli.rs`); ingestion, reconciliation, checkpoint
+generation and runtime transfer remain the unimplemented part of this scope.
+The goal is to replace migration scratch scripts with one bounded Rust workflow
+inside Chaosbox, while implementing the [selective intelligence
 lifecycle](intelligence.md).
 
 ## Capability boundaries

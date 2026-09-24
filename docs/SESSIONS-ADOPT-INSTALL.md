@@ -1,14 +1,16 @@
 # `sessions adopt` / `sessions install` — interface contract
 
-**Status: PROPOSAL — pending sign-off.** The Rust CLI surface below is *not* implemented;
-the tools it wraps (`install.mjs`, `rollback.mjs`, `preserve-check.mjs`, `hm-generation.mjs`)
-**are**, and every claim this contract makes about their arguments, state schema and exit
+**Status: IMPLEMENTED.** The Rust CLI surface below ships as
+`sessions adopt` / `sessions install` / `sessions rollback` in
+`crates/chaosbox/src/sessions/cli.rs`, wrapping the pinned tools
+(`install.mjs`, `rollback.mjs`, `preserve-check.mjs`, `hm-generation.mjs`).
+Every claim this contract makes about their arguments, state schema and exit
 codes has been executed rather than asserted — see §6 and the companion runbook.
 
-| Part | For sign-off | Owner |
+| Part | Status | Owner |
 |---|---|---|
-| §1–§3 `adopt` / `install` / `rollback` | **Session D** (integration, gates) | Session C |
-| §4 `journal-v3` supersession receipts | **Session A** (verifier) | Session C |
+| §1–§3 `adopt` / `install` / `rollback` | implemented (Rust CLI) | Session C |
+| §4 `journal-v3` supersession receipts | implemented in `sessions/campaign.rs` | Session A |
 
 Companion document: [`OPENCODE-CUTOVER.md`](./OPENCODE-CUTOVER.md) — the runbook that
 *uses* this interface.
