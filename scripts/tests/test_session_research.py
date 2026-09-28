@@ -339,6 +339,22 @@ class ResearchPilotTest(unittest.TestCase):
         self.assertIn(result["original-part"][0], text)
         self.assertLess(len(result["original-part"][0]), 200)
 
+    def test_report_selection_spans_first_and_last_direct_user_needs(self):
+        findings = [{"session": "ses_long", "kind": "feature", "claim": f"Goal {i}",
+                     "timeCreated": i, "citations": [{"ref": f"r{i}", "quote": f"Goal {i}"}]}
+                    for i in range(20)]
+        findings += [{"session": "ses_long", "kind": "outcome", "claim": "Reported completion",
+                      "timeCreated": 21, "citations": [{"ref": "assistant", "quote": "reported done"}]}]
+        meta = {f"r{i}": {"role": "user", "pastedTemplateText": False,
+                           "embeddedToolText": False} for i in range(20)}
+        meta["assistant"] = {"role": "assistant", "pastedTemplateText": False,
+                              "embeddedToolText": False}
+        chosen = research.select_report_findings(findings, meta, ["ses_long"], per_session=8)
+        self.assertEqual(len(chosen), 8)
+        self.assertIn("Goal 0", [s["claim"] for s in chosen])
+        self.assertIn("Goal 19", [s["claim"] for s in chosen])
+        self.assertIn("Reported completion", [s["claim"] for s in chosen])
+
     def test_report_rechecks_original_quotes_and_current_status(self):
         work = self.root / "work"
         research.prepare(self.archive, work, per_repo=1)
