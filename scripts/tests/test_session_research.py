@@ -104,6 +104,19 @@ class ResearchPilotTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no eligible text"):
             research.export(work)
 
+    def test_null_part_metadata_does_not_discard_verbatim_user_text(self):
+        db = sqlite3.connect(self.db)
+        db.execute("update part set data=? where id='prt_0'",
+                   (json.dumps({"type": "text", "metadata": None,
+                                "text": "Please add an export command"}),))
+        db.commit()
+        db.close()
+        self._repin_fixture()
+        work = self.root / "null-metadata"
+        research.prepare(self.archive, work, session_ids=["ses_a"])
+        bundles = research.export(work)
+        self.assertIn("Please add", bundles[0]["chunks"][0]["records"][0]["text"])
+
     def _repin_fixture(self):
         manifest = json.loads((self.archive / "manifest.json").read_text())
         manifest["sources"][0]["bytes"] = self.db.stat().st_size

@@ -208,7 +208,7 @@ def export(work, max_chars=2500, chunk_chars=12000):
                         continue
                     if (role not in ("user", "assistant") or metadata.get("summary") is True
                             or metadata.get("agent") == "compaction" or value.get("synthetic")
-                            or value.get("metadata", {}).get("chaosboxMigrationDraft")):
+                            or (value.get("metadata") or {}).get("chaosboxMigrationDraft")):
                         derived += 1
                         continue
                     text = value.get("text")
@@ -622,7 +622,9 @@ REPORT_INSTRUCTION = (
     "Current status is unverified unless the supplied repository excerpts directly support "
     "present/partial/rejected; then cite exact excerpt ref and quote in repoEvidence. "
     "Never infer absence from a bounded repository sample; distinguish historical user needs, "
-    "assistant assertions, and actual outcomes. Cwd associations may be wrong."
+    "assistant assertions, and actual outcomes. Cwd associations may be wrong. "
+    "Chaosbox is only the generating research harness: its current working directory "
+    "says nothing about the historical session directories. Do not invent a cwd mismatch."
 )
 
 
@@ -651,7 +653,8 @@ PORTFOLIO_INSTRUCTION = (
     "\"quote\":\"exact original excerpt\"}]}],\"limitations\":[\"...\"]}. At most 8 shared items. "
     "Every shared item must cite original source parts from at least TWO DIFFERENT repositories; "
     "do not treat two child sessions of one incident as independent corroboration. "
-    "If no clear common opportunity, return an empty shared list."
+    "If no clear common opportunity, return an empty shared list. "
+    "Chaosbox is the generating harness, not the historical session cwd."
 )
 
 
