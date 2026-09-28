@@ -472,6 +472,19 @@ class ResearchPilotTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "source part"):
             research.verify_sources(work)
 
+    def test_tampered_export_is_refused_before_sending_to_models(self):
+        work = self.root / "before-model"
+        research.prepare(self.archive, work, session_ids=["ses_a"])
+        research.export(work)
+        bundles = research.load(work / "bundles.json")
+        bundles[0]["chunks"][0]["records"][0]["text"] = "forged user request"
+        (work / "bundles.json").write_text(json.dumps(bundles))
+        with self.assertRaisesRegex(ValueError, "source part"):
+            research.run_extract(work, privacy_reviewed=True)
+        with self.assertRaisesRegex(ValueError, "source part"):
+            research.synthesize(work, privacy_reviewed=True)
+        self.assertFalse((work / "prompts").exists())
+
     def test_portfolio_needs_history_from_two_different_repositories(self):
         shared = {"summary": "shared", "shared": [{"title": "Retries", "owner": "canix",
             "problem": "Repeated errors", "firstSlice": "Add one retry",

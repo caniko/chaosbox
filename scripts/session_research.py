@@ -579,6 +579,7 @@ def run_extract(work, limit=None, privacy_reviewed=False, retry=False):
     if not privacy_reviewed:
         raise ValueError("inspect exported text locally before --privacy-reviewed")
     work = Path(work)
+    verify_sources(work)
     bundles = load(work / "bundles.json")
     directory = work / "signals"
     directory.mkdir(mode=0o700, exist_ok=True)
@@ -876,6 +877,7 @@ def synthesize(work, repo_files=None, privacy_reviewed=False, retry=False):
     if not privacy_reviewed:
         raise ValueError("inspect private findings before --privacy-reviewed")
     work = Path(work)
+    verify_sources(work)
     bundles = load(work / "bundles.json")
     findings = collect(work)  # Refuses partial extraction.
     repo_files = repo_files or {}

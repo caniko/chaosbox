@@ -13,6 +13,8 @@ offsets, original speaker, and message/part creation times. Derived compactions,
 synthetic records and tool payloads are excluded
 from independent evidence. Assistant assertions are labelled as such; they do
 not establish the current repository state.
+Extraction and synthesis recheck every exported slice against its pinned native
+part before invoking a model.
 
 This is intentionally **pilot coverage**: child sessions, divergent variants,
 other source databases, image contents, tool-output text and post-freeze deltas
