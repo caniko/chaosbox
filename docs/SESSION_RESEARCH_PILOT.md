@@ -97,10 +97,12 @@ candidate current-capability checks. Use explicit line ranges for long files.
 The synthesis payload carries independent source windows around cited quotes
 rather than repeating whole 2,500-character parts; the final validators still
 check every quote against the complete exported part and pinned SQLite source.
-For long roots, synthesis retains at most eight chronologically spread,
-user-first findings per root and includes every ordered Spark chunk brief.
-The complete validated findings remain in `signals/` and `briefs.json` for a
-human omission check; the repository report is not a transcript census.
+Synthesis includes every direct user-cited finding to preserve later decisions
+that reverse earlier proposals; it samples assistant context per root and
+includes every ordered Spark chunk brief. An oversized payload is refused for
+batches rather than dropping user constraints. The complete findings remain in
+`signals/` and `briefs.json` for a human omission check; the repository report
+is not a transcript census.
 Present/partial/rejected/confirmed-gap status requires a matching repository excerpt;
 confirmed-gap requires a directly reproducible current failure; an
 absence claim cannot be established by a bounded context sample and remains

@@ -643,7 +643,7 @@ def evenly_spaced(items, count):
 
 
 def select_report_findings(findings, metadata, sessions, per_session=8):
-    """Give every selected root a bounded, chronological, user-first budget."""
+    """Retain every direct user signal, sampling assistant context per root."""
     chosen = []
     for session in sessions:
         items = [item for item in findings if item["session"] == session]
@@ -663,6 +663,9 @@ def select_report_findings(findings, metadata, sessions, per_session=8):
         primary += evenly_spaced(extras, remaining)
         if assistant_outcomes:
             primary.append(assistant_outcomes[-1])
+        # A later user decision can reverse a proposal. Dropping it for a
+        # per-root prompt quota changes the requested scope, not just coverage.
+        primary += [item for item in direct if item not in primary]
         remaining = per_session - len(primary)
         other = [item for item in items if item not in primary and item not in direct
                  and not any(metadata[c["ref"]].get("pastedTemplateText", False)
@@ -837,6 +840,8 @@ REPORT_INSTRUCTION = (
     "assistant assertions, and actual outcomes. Cwd associations may be wrong. "
     "Use sourceMeta roles and timestamps: do not present an assistant's plan, analysis, "
     "or claimed completion as a user request or verified result. Prefer user-cited needs. "
+    "When an explicit later user decision reverses an earlier request or assistant plan, "
+    "preserve the later scope; do not propose the rejected design. "
     "A user-role sourceMeta embeddedToolText or pastedTemplateText flag means a pasted tool "
     "transcript or skill template, not an independent user request. "
     "A pasted skill/template and an assistant brainstorm are not user endorsements of every "
@@ -952,6 +957,8 @@ def synthesize(work, repo_files=None, privacy_reviewed=False, retry=False):
                            "but are generated prose, not independent evidence. Current code context is bounded."}
         if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 200000:
             payload["sourceText"] = source_windows(selected, original, margin=0)
+        if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 200000:
+            raise ValueError(f"{repo} synthesis exceeds prompt budget; split into smaller cited batches")
         target = directory / f"{repo}.json"
         if target.exists():
             report = load(target)
