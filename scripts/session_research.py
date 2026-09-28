@@ -767,7 +767,9 @@ def check_citations(citations, texts, label):
             raise ValueError(f"invalid {label}")
 
 
-def validate_report(report, source, repo_context):
+def validate_report(report, source, repo_context, reproductions=None):
+    if reproductions is not None and not isinstance(reproductions, dict):
+        raise ValueError("reproductions must be an object")
     if (not isinstance(report, dict) or not isinstance(report.get("summary"), str)
             or not isinstance(report.get("limitations"), list)):
         raise ValueError("invalid report")
@@ -791,6 +793,26 @@ def validate_report(report, source, repo_context):
             check_citations(evidence, repo_context, "repository evidence")
         elif evidence:
             check_citations(evidence, repo_context, "repository evidence")
+        if entry["currentStatus"] == "confirmed-gap":
+            ref = entry.get("reproductionRef")
+            receipt = (reproductions or {}).get(ref) if isinstance(ref, str) else None
+            revisions = {c["ref"].split(":", 1)[0] for c in evidence}
+            if (not isinstance(receipt, dict)
+                    or receipt.get("result") != "reproduced-defect"
+                    or not isinstance(receipt.get("sourceRevision"), str)
+                    or receipt["sourceRevision"] not in revisions
+                    or not re.fullmatch(r"[0-9a-f]{40}", receipt["sourceRevision"])
+                    or not isinstance(receipt.get("outputSha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", receipt["outputSha256"])
+                    or not isinstance(receipt.get("command"), list)
+                    or not receipt["command"]
+                    or not all(isinstance(arg, str) and arg for arg in receipt["command"])
+                    or not isinstance(receipt.get("observed"), str)
+                    or not receipt["observed"].strip()
+                    or not isinstance(receipt.get("expected"), str)
+                    or not receipt["expected"].strip()
+                    or receipt.get("sourceState") != "clean"):
+                raise ValueError("confirmed-gap requires a pinned reproduction receipt")
     return report
 
 
@@ -836,7 +858,9 @@ REPORT_INSTRUCTION = (
     "\"limitations\":[\"...\"]}. Only quote original source refs/quotes provided by findings. "
     "Current status is unverified unless the supplied repository excerpts directly support "
     "present/partial/rejected/confirmed-gap; then cite exact excerpt ref and quote in repoEvidence. "
-    "Use confirmed-gap only for directly reproducible current failure, not inferred absence. "
+    "Use confirmed-gap only when a supplied reproductions entry records the failure on the "
+    "same clean source revision; include its key as reproductionRef. Code inspection alone "
+    "does not establish a reproduced defect. Never invent a reproduction receipt. "
     "SourceText contains independent, noncontiguous windows of original parts around citations; "
     "never join them into a new quotation. Never infer absence from a bounded repository sample; "
     "assistant assertions, and actual outcomes. Cwd associations may be wrong. "
@@ -852,6 +876,11 @@ REPORT_INSTRUCTION = (
     "Duplicate lineage IDs represent one historical request, not corroboration. "
     "Chaosbox is only the generating research harness: its current working directory "
     "says nothing about the historical session directories. Do not invent a cwd mismatch."
+    " Summarize only supplied reviewed candidates; every opportunity must include candidateIds "
+    "and copy the reviewed action, implementation and deployment fields exactly. Group only "
+    "candidates with identical reviewed statuses. Full exported conversation context accompanies "
+    "each candidate: interpret brief approvals with their preceding assistant proposals. "
+    "Candidates not selected for the top-eight view remain in the complete candidate ledger."
 )
 
 
@@ -867,8 +896,13 @@ def validate_portfolio(report, texts, repos_by_ref=None):
             if not isinstance(entry.get(name), str) or not entry[name].strip():
                 raise ValueError("incomplete shared opportunity")
         check_citations(entry.get("sessionEvidence"), texts, "cross-repo source evidence")
-        if repos_by_ref is not None and len({repos_by_ref.get(c["ref"]) for c in entry["sessionEvidence"]}) < 2:
-            raise ValueError("shared opportunity needs evidence from two repositories")
+        if repos_by_ref is not None:
+            owners = set()
+            for citation in entry["sessionEvidence"]:
+                value = repos_by_ref.get(citation["ref"], [])
+                owners.update([value] if isinstance(value, str) else value)
+            if len(owners) < 2:
+                raise ValueError("shared opportunity needs evidence from two repositories")
     return report
 
 
@@ -896,13 +930,11 @@ def audit_reports(work):
     reports = {}
     for repo in REPOS:
         report = load(work / "reports" / f"{repo}.json")
-        context = load(work / "prompts" / f"report-{repo}.json")["repoContext"]
-        validate_report(report, source_texts(bundles, repo), context)
+        prompt = load(work / "prompts" / f"report-{repo}.json")
+        validate_saved_report(report, prompt, bundles, repo)
         reports[repo] = [audit_opportunity(entry, meta) for entry in report["opportunities"]]
     portfolio = load(work / "reports" / "portfolio.json")
-    validate_portfolio(portfolio, texts, {ref: next(
-        b["repoCwdHint"] for b in bundles if b["session"] == record["session"])
-        for ref, record in meta.items()})
+    validate_portfolio(portfolio, texts, report_owners(work, bundles))
     return {"sourceSha256": load(work / "plan.json")["sourceSha256"],
             "selectedSessions": len(bundles),
             "lineages": len({b.get("lineage") or b["session"] for b in bundles}),
@@ -926,13 +958,24 @@ PORTFOLIO_INSTRUCTION = (
 )
 
 
-def synthesize(work, repo_files=None, privacy_reviewed=False, retry=False):
+def synthesize(work, repo_files=None, privacy_reviewed=False, retry=False, decisions=None):
+    from session_research_ledger import build_ledger, review_context, validate_candidate_view
     if not privacy_reviewed:
         raise ValueError("inspect private findings before --privacy-reviewed")
     work = Path(work)
     verify_sources(work)
     bundles = load(work / "bundles.json")
     findings = collect(work)  # Refuses partial extraction.
+    if decisions is None:
+        raise ValueError("synthesis requires reviewed candidate decisions; run ledger first")
+    ledger = build_ledger(findings, bundles, decisions)
+    ledger_path = work / "candidate-ledger.json"
+    if ledger_path.exists():
+        if load(ledger_path) != ledger:
+            raise ValueError("candidate review changed; use a new synthesis work directory")
+    else:
+        write_new(ledger_path, ledger)
+    reproductions = load(work / "reproductions.json") if (work / "reproductions.json").exists() else {}
     repo_files = repo_files or {}
     reports = {}
     directory = work / "reports"
@@ -944,21 +987,17 @@ def synthesize(work, repo_files=None, privacy_reviewed=False, retry=False):
             contexts = repo_context(root, files)
         if SENSITIVE.search(json.dumps(contexts)):
             raise ValueError("repo context contains potential credentials")
-        original = source_texts(bundles, repo)
-        selected = select_report_findings(findings[repo], source_meta(bundles, repo),
-                                          [b["session"] for b in bundles if b["repoCwdHint"] == repo])
-        session_briefs = [{"session": row["session"], "title": row["title"], "briefs": row["briefs"]}
-                          for row in load(work / "briefs.json") if row["repoCwdHint"] == repo]
-        payload = {"repoCwdHint": repo, "findings": selected,
-                   "sessionBriefs": session_briefs,
-                   "sourceText": source_windows(selected, original),
-                   "sourceMeta": {ref: meta for ref, meta in source_meta(bundles, repo).items()
-                                   if any(ref == c["ref"] for s in selected for c in s["citations"])},
-                   "repoContext": contexts,
-                   "note": "Source findings are sampled per root for prompt budget; briefs cover all chunks, "
-                           "but are generated prose, not independent evidence. Current code context is bounded."}
-        if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 200000:
-            payload["sourceText"] = source_windows(selected, original, margin=0)
+        review = review_context(ledger, repo)
+        original = {r["ref"]: r["text"] for conversation in review["conversations"]
+                    for r in conversation["records"]}
+        payload = {"targetRepository": repo, "reviewVersion": 1, **review,
+                   "sourceMeta": {ref: meta for ref, meta in source_meta(bundles).items()
+                                  if ref in original},
+                   "repoContext": contexts, "reproductions": reproductions,
+                   "note": "Ownership and status are operator review annotations, not current-code proof. "
+                           "Full exported conversation context is retained; earlier export limits still apply."}
+        if SENSITIVE.search(json.dumps(payload)):
+            raise ValueError("review context contains potential credentials")
         if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 200000:
             raise ValueError(f"{repo} synthesis exceeds prompt budget; split into smaller cited batches")
         target = directory / f"{repo}.json"
@@ -967,9 +1006,11 @@ def synthesize(work, repo_files=None, privacy_reviewed=False, retry=False):
         else:
             report = model_call(work, "openai/gpt-6-astra#max", REPORT_INSTRUCTION,
                                 payload, f"report-{repo}", retry=retry)
-            validate_report(report, source_texts(bundles, repo), contexts)
+            validate_report(report, original, contexts, reproductions)
+            validate_candidate_view(report, review["candidates"])
             write_new(target, report)
-        reports[repo] = validate_report(report, source_texts(bundles, repo), contexts)
+        reports[repo] = validate_report(report, original, contexts, reproductions)
+        validate_candidate_view(report, review["candidates"])
     target = directory / "portfolio.json"
     if target.exists():
         portfolio = load(target)
@@ -977,22 +1018,44 @@ def synthesize(work, repo_files=None, privacy_reviewed=False, retry=False):
         original = source_texts(bundles)
         citations = [{"citations": o["sessionEvidence"]} for report in reports.values()
                      for o in report["opportunities"]]
-        payload = {"reports": reports, "originalSourceText": source_windows(citations, original),
+        payload = {"reports": reports, "sourceOwners": report_owners(work, bundles),
+                   "originalSourceText": source_windows(citations, original),
                    "originalSourceMeta": {ref: meta for ref, meta in source_meta(bundles).items()
                    if any(ref == c["ref"] for report in reports.values()
                           for o in report["opportunities"] for c in o["sessionEvidence"])}}
         if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 200000:
             payload["originalSourceText"] = source_windows(citations, original, margin=0)
+        if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 200000:
+            raise ValueError("portfolio synthesis exceeds prompt budget")
         portfolio = model_call(work, "openai/gpt-6-astra#max", PORTFOLIO_INSTRUCTION,
                                payload, "report-portfolio", retry=retry)
-        validate_portfolio(portfolio, source_texts(bundles), {
-            ref: b["repoCwdHint"] for b in bundles for c in b["chunks"] for ref in
-            (r["ref"] for r in c["records"])})
+        validate_portfolio(portfolio, source_texts(bundles), report_owners(work, bundles))
         write_new(target, portfolio)
-    validate_portfolio(portfolio, source_texts(bundles), {
-        ref: b["repoCwdHint"] for b in bundles for c in b["chunks"] for ref in
-        (r["ref"] for r in c["records"])})
+    validate_portfolio(portfolio, source_texts(bundles), report_owners(work, bundles))
     return reports, portfolio
+
+
+def report_owners(work, bundles):
+    path = Path(work) / "candidate-ledger.json"
+    if not path.exists():
+        return {r["ref"]: b["repoCwdHint"] for b in bundles for c in b["chunks"] for r in c["records"]}
+    owners = {}
+    for row in load(path)["candidates"]:
+        if row["disposition"] == "selected":
+            for citation in row["finding"]["citations"] + row["ownershipEvidence"]:
+                owners.setdefault(citation["ref"], set()).add(row["targetRepository"])
+    return {ref: sorted(values) for ref, values in owners.items()}
+
+
+def validate_saved_report(report, prompt, bundles, repo):
+    from session_research_ledger import validate_candidate_view
+    if prompt.get("reviewVersion") == 1:
+        refs = {r["ref"] for conversation in prompt["conversations"] for r in conversation["records"]}
+        source = {ref: text for ref, text in source_texts(bundles).items() if ref in refs}
+        validate_candidate_view(report, prompt["candidates"])
+    else:
+        source = source_texts(bundles, repo)
+    return validate_report(report, source, prompt["repoContext"], prompt.get("reproductions", {}))
 
 
 def write_markdown(path, content):
@@ -1028,7 +1091,7 @@ def render(work):
     for repo in REPOS:
         report = load(report_dir / f"{repo}.json")
         prompt = load(work / "prompts" / f"report-{repo}.json")
-        validate_report(report, source_texts(bundles, repo), prompt["repoContext"])
+        validate_saved_report(report, prompt, bundles, repo)
         sampled = [row for row in plan["threads"] if row["repo"] == repo]
         updates = [row["timeUpdated"] for row in sampled if row.get("timeUpdated") is not None]
         period = (f"{datetime.fromtimestamp(min(updates) / 1000, timezone.utc).date()} to "
@@ -1038,7 +1101,9 @@ def render(work):
                  f"Frozen primary snapshot: `{plan['sourceSha256']}`", "",
                  f"Sample: {sum(b['repoCwdHint'] == repo for b in bundles)} root sessions; "
                  f"last updated {period}; selected by historical cwd, not a complete repo audit.", "",
-                 report["summary"], ""]
+                  report["summary"], ""]
+        if prompt.get("reviewVersion") == 1:
+            lines.extend(["Ownership: reviewed per candidate; full inventory: `../candidate-ledger.json`.", ""])
         for i, item in enumerate(report["opportunities"], 1):
             lines.extend([f"## {i}. {item['title']} ({item['kind']}; {item['priority']})", "",
                           f"- Problem: {item['problem']}", f"- Proposal: {item['proposal']}",
@@ -1051,12 +1116,14 @@ def render(work):
             for citation in item.get("repoEvidence", []):
                 lines.append(f"- Pinned repository excerpt `{citation['ref']}`: "
                              f"{json.dumps(citation['quote'], ensure_ascii=False)}")
+            if prompt.get("reviewVersion") == 1:
+                lines.extend([f"- Candidate IDs: {', '.join(item['candidateIds'])}",
+                              f"- Reviewed action: {item['action']}; implementation: {item['implementation']}; "
+                              f"deployment: {item['deployment']}"])
             lines.append("")
         lines.extend(["## Limitations", "", *[f"- {note}" for note in report["limitations"]], ""])
         documents[repo] = "\n".join(lines)
-    portfolio = validate_portfolio(load(report_dir / "portfolio.json"), source, {
-        ref: b["repoCwdHint"] for b in bundles for c in b["chunks"] for ref in
-        (r["ref"] for r in c["records"])})
+    portfolio = validate_portfolio(load(report_dir / "portfolio.json"), source, report_owners(work, bundles))
     lines = ["# Cross-repository opportunities", "", portfolio["summary"], ""]
     for i, item in enumerate(portfolio["shared"], 1):
         lines.extend([f"## {i}. {item['title']} (owner: {item['owner']})", "",
@@ -1086,6 +1153,10 @@ def main():
     exp.add_argument("--chunk-chars", type=int, default=12000)
     col = commands.add_parser("collect")
     col.add_argument("--work", type=Path, required=True)
+    ledger = commands.add_parser("ledger")
+    ledger.add_argument("--work", type=Path, required=True)
+    ledger.add_argument("--decisions", type=Path)
+    ledger.add_argument("--out", type=Path, required=True)
     run = commands.add_parser("extract")
     run.add_argument("--work", type=Path, required=True)
     run.add_argument("--limit", type=int)
@@ -1095,6 +1166,7 @@ def main():
     synth.add_argument("--work", type=Path, required=True)
     synth.add_argument("--privacy-reviewed", action="store_true")
     synth.add_argument("--retry", action="store_true")
+    synth.add_argument("--decisions", type=Path, required=True)
     synth.add_argument("--repo-root", action="append", default=[], metavar="REPO=DIR")
     synth.add_argument("--repo-file", action="append", default=[], metavar="REPO=FILE")
     rend = commands.add_parser("render")
@@ -1122,6 +1194,13 @@ def main():
         print(json.dumps({"threads": len(bundles), "chunks": sum(len(b["chunks"]) for b in bundles)}))
     elif args.command == "collect":
         print(json.dumps({key: len(value) for key, value in collect(args.work).items()}))
+    elif args.command == "ledger":
+        from session_research_ledger import build_ledger
+        verify_sources(args.work)
+        result = build_ledger(collect(args.work), load(args.work / "bundles.json"),
+                              load(args.decisions) if args.decisions else None)
+        write_new(args.out, result)
+        print(json.dumps({"candidates": len(result["candidates"]), "out": str(args.out)}))
     elif args.command == "extract":
         print(json.dumps({"processedChunks": run_extract(args.work, args.limit,
                                    args.privacy_reviewed, args.retry)}))
@@ -1140,7 +1219,8 @@ def main():
         if any(files[name] and name not in roots for name in REPOS):
             parser.error("each --repo-file requires its --repo-root")
         context = {name: (root, files[name]) for name, root in roots.items()}
-        reports, portfolio = synthesize(args.work, context, args.privacy_reviewed, args.retry)
+        reports, portfolio = synthesize(args.work, context, args.privacy_reviewed, args.retry,
+                                        load(args.decisions))
         print(json.dumps({"repoOpportunities": {name: len(r["opportunities"]) for name, r in reports.items()},
                           "shared": len(portfolio["shared"])}))
     elif args.command == "render":

@@ -1,5 +1,42 @@
 # Session-derived feature research pilot
 
+## Candidate review and reproduction receipts
+
+`python3 scripts/session_research.py ledger --work WORK --out NEW_FILE` creates
+a private, write-once inventory of every extracted feature, unfinished task and
+friction signal. It retains complete exported conversations alongside stable
+candidate IDs. The top-eight report limit does not apply to this inventory.
+Historical cwd remains `sourceCwdHint`; ownership starts unresolved.
+
+An optional `--decisions FILE` supplies a JSON object keyed by candidate ID.
+Each decision requires a rationale. Resolving `targetRepository` also requires
+`targetComponent` and exact `ownershipEvidence` citations. Targets can belong to
+repositories outside the sampled three. Intent, implementation, deployment,
+action and disposition are separate fields; duplicate links must be acyclic.
+These are review annotations, not proof that a system was deployed. Version 1
+keeps deployment unknown pending an independent deployment-verification path.
+
+New synthesis requires `--decisions FILE`. Only candidates marked `selected`
+with resolved ownership and requested/accepted intent enter repository views.
+Every opportunity carries its candidate IDs and the reviewed action,
+implementation and deployment fields; validators reject changed statuses or
+invented IDs. Ownership can cross historical cwd boundaries. Out-of-cohort
+owners and all unselected candidates remain in `candidate-ledger.json`.
+Synthesis retries require the same ledger; changed review decisions belong in
+a new work directory. Review annotations guide synthesis but do not establish
+that cited text semantically proves a claim: that remains the reviewer's job.
+
+A new synthesis may use `confirmed-gap` only with an independently supplied
+`WORK/reproductions.json` entry and the corresponding `reproductionRef` in the
+opportunity. Each receipt records `sourceRevision` (the same full Git revision
+as the code evidence), `sourceState: "clean"`, `command` (argument array),
+`expected`, `observed`, `outputSha256`, and `result: "reproduced-defect"`.
+Receipts are operator-reviewed evidence; the model cannot create them. Dirty
+checkout results cannot establish failure of a pinned clean revision. Code
+inspection without a receipt remains partial or unverified. Existing historical
+reports remain evidence of their original run, rather than being rewritten to
+meet the stronger validation contract.
+
 `scripts/session_research.py` is a disposable research workflow over the frozen
 OpenCode v1 archive. Its output is a set of **reviewable feature proposals**, not
 a session migration or a write to the Chaosbox knowledge graph.
@@ -94,26 +131,28 @@ They are generated views, never extra corroboration.
 
 To generate reports, give Astra Max bounded **tracked HEAD** excerpts for
 candidate current-capability checks. Use explicit line ranges for long files.
-The synthesis payload carries independent source windows around cited quotes
-rather than repeating whole 2,500-character parts; the final validators still
-check every quote against the complete exported part and pinned SQLite source.
-Synthesis includes every direct user-cited finding to preserve later decisions
-that reverse earlier proposals; it samples assistant context per root and
-includes every ordered Spark chunk brief. An oversized payload is refused for
-batches rather than dropping user constraints. The complete findings remain in
-`signals/` and `briefs.json` for a human omission check; the repository report
-is not a transcript census.
+The synthesis payload carries the full exported conversations associated with
+selected candidates and their ownership citations. This retains assistant
+proposals alongside brief user approvals and later reversals. Validators check
+quotes against exported parts and the pinned SQLite source. An oversized
+payload is refused rather than dropping decisions. Choose a smaller reviewed
+cohort for a new work directory. The complete extracted candidate inventory
+remains in `candidate-ledger.json`; the top-eight report is a view of that
+inventory, not a transcript census. Earlier export and extraction limits apply.
 Present/partial/rejected/confirmed-gap status requires a matching repository excerpt;
-confirmed-gap requires a directly reproducible current failure; an
+confirmed-gap also requires the separate reproduction receipt described above; an
 absence claim cannot be established by a bounded context sample and remains
 `unverified`.
 
 ```sh
+python3 scripts/session_research.py ledger --work "$WORK" --out "$WORK/review-inventory.json"
+# Review the inventory and create $WORK/decisions.json keyed by candidate ID.
 python3 scripts/session_research.py synthesize --work "$WORK" --privacy-reviewed \
+  --decisions "$WORK/decisions.json" \
   --repo-root canix=/path/to/canix --repo-file 'canix=.envrc#L1-L25' \
   --repo-root SynDB=/path/to/SynDB --repo-file 'SynDB=README.md#L1-L80' \
   --repo-root pink-raven=/path/to/pink-raven \
-  --repo-file 'pink-raven=src/app/gallery.rs#L95-L195'
+  --repo-file 'pink-raven=crates/pink-raven-dioxus/src/lib_parts/catalog_entities.rs#L1453-L1497'
 python3 scripts/session_research.py render --work "$WORK"
 python3 scripts/session_research.py audit --work "$WORK"
 ```
@@ -121,7 +160,7 @@ python3 scripts/session_research.py audit --work "$WORK"
 The final render rechecks every source slice against the original pinned part
 and validates both session and repository citations. Generated Markdown and
 machine-readable reports live in `$WORK/reports/`. Portfolio opportunities
-require support from at least two sampled repositories. Model calls are
+require citations associated with at least two reviewed target repositories. Model calls are
 tool-denied and run from the private work directory. Raw prompts, output events,
 and the isolated model DB stay there; do not commit the work directory.
 

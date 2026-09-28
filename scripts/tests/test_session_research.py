@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import session_research as research
@@ -381,8 +382,12 @@ class ResearchPilotTest(unittest.TestCase):
             research.validate_report(report, available, {})
         report["opportunities"][0]["repoEvidence"] = [
             {"ref": "current:file#L1", "quote": "confirmed broken behavior"}]
+        with self.assertRaisesRegex(ValueError, "reproduction receipt"):
+            research.validate_report(report, available,
+                                     {"current:file#L1": "confirmed broken behavior"})
+        report["opportunities"][0]["currentStatus"] = "partial"
         self.assertEqual(research.validate_report(report, available,
-                         {"current:file#L1": "confirmed broken behavior"}), report)
+                          {"current:file#L1": "confirmed broken behavior"}), report)
         report["opportunities"][0]["currentStatus"] = "unverified"
         report["opportunities"][0]["sessionEvidence"][0]["quote"] = "not in source"
         with self.assertRaisesRegex(ValueError, "source evidence"):
@@ -396,6 +401,30 @@ class ResearchPilotTest(unittest.TestCase):
             research.parse_events(event("tool", '{"wrong":true}') + '\n' + raw)
         with self.assertRaisesRegex(ValueError, "tool event"):
             research.parse_events(event("tool", '{"brief":"false"}'))
+
+    def test_confirmed_gap_binds_external_receipt_to_code_revision(self):
+        revision = "a" * 40
+        code = {f"{revision}:fixture#L1": "broken selector"}
+        item = {"title": "Selector", "kind": "friction", "priority": "high",
+                "problem": "Wrong selector", "proposal": "Correct selector",
+                "firstSlice": "Repair fixture", "validation": "Run fixture",
+                "currentStatus": "confirmed-gap", "reproductionRef": "selector",
+                "sessionEvidence": [{"ref": "user", "quote": "fix selector"}],
+                "repoEvidence": [{"ref": next(iter(code)), "quote": "broken selector"}]}
+        report = {"summary": "Pilot", "opportunities": [item], "limitations": []}
+        receipt = {"result": "reproduced-defect", "sourceRevision": revision,
+                   "sourceState": "clean", "outputSha256": "b" * 64,
+                   "command": ["bash", "test-selector.sh"],
+                   "expected": "successful bootstrap", "observed": "selector mismatch"}
+        source = {"user": "fix selector"}
+        research.validate_report(report, source, code, {"selector": receipt})
+        receipt["sourceRevision"] = "c" * 40
+        with self.assertRaisesRegex(ValueError, "reproduction receipt"):
+            research.validate_report(report, source, code, {"selector": receipt})
+        receipt["sourceRevision"] = revision
+        receipt["sourceState"] = "dirty"
+        with self.assertRaisesRegex(ValueError, "reproduction receipt"):
+            research.validate_report(report, source, code, {"selector": receipt})
 
     def test_repo_context_uses_pinned_head_and_line_ranges(self):
         repo = self.root / "repo"
@@ -576,6 +605,54 @@ class ResearchPilotTest(unittest.TestCase):
             research.validate_portfolio(shared, texts, repos)
         shared["shared"][0]["sessionEvidence"].append({"ref": "ref_b", "quote": "failed again elsewhere"})
         self.assertEqual(research.validate_portfolio(shared, texts, repos), shared)
+
+    def test_reviewed_synthesis_routes_ownership_and_renders_cross_cwd_evidence(self):
+        from session_research_ledger import build_ledger
+        work = self.root / "reviewed"
+        research.prepare(self.archive, work, session_ids=["ses_a"])
+        bundles = research.export(work)
+        (work / "signals").mkdir()
+        (work / "prompts").mkdir()
+        for bundle in bundles:
+            for chunk in bundle["chunks"]:
+                record = chunk["records"][0]
+                research.write_new(work / "signals" / f"{chunk['id']}.json", {
+                    "brief": "Request", "signals": [{"kind": "feature", "claim": "Export",
+                    "citations": [{"ref": record["ref"], "quote": record["text"]}]}]})
+        ledger = build_ledger(research.collect(work), bundles)
+        decisions = {row["id"]: {
+            "targetRepository": "pink-raven", "targetComponent": "exports", "intent": "requested",
+            "ownershipEvidence": row["finding"]["citations"], "disposition": "selected",
+            "rationale": "Fixture ownership review"} for row in ledger["candidates"]}
+
+        def model(work, model, instruction, payload, name, **kwargs):
+            research.write_new(work / "prompts" / f"{name}.json", payload)
+            if name == "report-portfolio":
+                return {"summary": "No shared candidate", "shared": []}
+            rows = payload["candidates"]
+            return {"summary": "Reviewed view", "limitations": ["Bounded fixture"],
+                    "opportunities": [{"title": "Export", "kind": "feature", "priority": "low",
+                    "problem": "Need export", "proposal": "Investigate export",
+                    "firstSlice": "Verify need", "validation": "Review source",
+                    "currentStatus": "unverified", "sessionEvidence": row["finding"]["citations"],
+                    "candidateIds": [row["id"]], "action": row["action"],
+                    "implementation": row["implementation"], "deployment": row["deployment"]}
+                    for row in rows[:8]]}
+
+        with patch.object(research, "model_call", side_effect=model) as call:
+            with self.assertRaisesRegex(ValueError, "reviewed candidate decisions"):
+                research.synthesize(work, privacy_reviewed=True)
+            call.assert_not_called()
+            reports, _ = research.synthesize(work, privacy_reviewed=True, decisions=decisions)
+        self.assertFalse(reports["canix"]["opportunities"])
+        self.assertTrue(reports["pink-raven"]["opportunities"])
+        self.assertIn("Reviewed action", research.render(work)["pink-raven"])
+        self.assertTrue(research.audit_reports(work)["repos"]["pink-raven"])
+        # A retry reuses the pinned ledger/reports without another model invocation.
+        with patch.object(research, "model_call", side_effect=AssertionError("unexpected model call")):
+            research.synthesize(work, privacy_reviewed=True, decisions=decisions)
+            with self.assertRaisesRegex(ValueError, "candidate review changed"):
+                research.synthesize(work, privacy_reviewed=True, decisions={})
 
     def test_metrics_do_not_label_partial_extraction_as_complete(self):
         work = self.root / "metrics"
