@@ -637,12 +637,17 @@ def source_meta(bundles, repo=None):
                           if r.get("role") == "user" and re.match(
                               r"(?is)^\s*(?:called the (?:read|grep|glob|bash|shell|edit|write) "
                               r"tool with the following input:|<path>.*?<content>)", r["text"])}
+        template_parts = {r["ref"].split("@", 1)[0] for r in records
+                          if r.get("role") == "user" and re.match(
+                              r"(?is)^\s*(?:# Scientific Brainstorming\s*## Purpose and boundaries"
+                              r"|# Skill: |<skill_content\b)", r["text"])}
         for record in records:
             metadata[record["ref"]] = {
                 "role": record.get("role", "unknown"),
                 "timeCreated": record.get("timeCreated"),
                 "session": bundle["session"], "lineage": bundle.get("lineage"),
-                "embeddedToolText": record["ref"].split("@", 1)[0] in embedded_parts}
+                "embeddedToolText": record["ref"].split("@", 1)[0] in embedded_parts,
+                "pastedTemplateText": record["ref"].split("@", 1)[0] in template_parts}
     return metadata
 
 
@@ -783,8 +788,8 @@ REPORT_INSTRUCTION = (
     "assistant assertions, and actual outcomes. Cwd associations may be wrong. "
     "Use sourceMeta roles and timestamps: do not present an assistant's plan, analysis, "
     "or claimed completion as a user request or verified result. Prefer user-cited needs. "
-    "A user-role sourceMeta embeddedToolText flag means pasted tool output, not an independent "
-    "user request. "
+    "A user-role sourceMeta embeddedToolText or pastedTemplateText flag means a pasted tool "
+    "transcript or skill template, not an independent user request. "
     "A pasted skill/template and an assistant brainstorm are not user endorsements of every "
     "item inside them; require a later explicit user request or state clearly that the idea "
     "is an inferred, unconfirmed opportunity. "
@@ -821,6 +826,7 @@ def audit_opportunity(opportunity, meta):
             "independentLineages": len(lineages),
             "assistantOnly": roles == {"assistant"},
             "embeddedToolText": any(record.get("embeddedToolText", False) for record in cited),
+            "pastedTemplateText": any(record.get("pastedTemplateText", False) for record in cited),
             "repeatLineage": len(sessions) > len(lineages)}
 
 
@@ -859,7 +865,7 @@ PORTFOLIO_INSTRUCTION = (
     "do not treat two child sessions of one incident as independent corroboration. "
     "If no clear common opportunity, return an empty shared list. "
     "Use originalSourceMeta to distinguish user requests from assistant claims and pasted "
-    "tool transcripts (embeddedToolText). "
+    "tool transcripts (embeddedToolText) and skill templates (pastedTemplateText). "
     "Chaosbox is the generating harness, not the historical session cwd."
 )
 
@@ -971,6 +977,7 @@ def render(work):
                 at = (datetime.fromtimestamp(created / 1000, timezone.utc).isoformat(timespec="seconds")
                       if isinstance(created, int) and created > 0 else "time unknown")
                 label = record["role"] + (" (embedded tool text)" if record["embeddedToolText"] else "")
+                label += " (pasted template)" if record["pastedTemplateText"] else ""
                 lines.append(f"  - {label} at {at}, `{citation['ref']}`: "
                              f"{json.dumps(citation['quote'], ensure_ascii=False)}")
             for citation in item.get("repoEvidence", []):
@@ -989,6 +996,7 @@ def render(work):
         for citation in item["sessionEvidence"]:
             record = meta[citation["ref"]]
             label = record["role"] + (" (embedded tool text)" if record["embeddedToolText"] else "")
+            label += " (pasted template)" if record["pastedTemplateText"] else ""
             lines.append(f"- {label}, `{citation['ref']}`: "
                          f"{json.dumps(citation['quote'], ensure_ascii=False)}")
         lines.append("")

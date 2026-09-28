@@ -273,6 +273,22 @@ class ResearchPilotTest(unittest.TestCase):
             {"ref": "p/s/m/part@28:56", "quote": "<path>/repo"}]}, metadata)
         self.assertTrue(result["embeddedToolText"])
 
+    def test_pasted_skill_template_is_not_inferred_as_independent_user_request(self):
+        bundles = [{"repoCwdHint": "SynDB", "session": "ses_a", "lineage": "one",
+                    "chunks": [{"records": [
+                        {"ref": "p/s/m/template@0:2500", "role": "user", "timeCreated": 12,
+                         "text": "# Scientific Brainstorming\n## Purpose and boundaries\nUse this skill..."},
+                        {"ref": "p/s/m/template@2500:3000", "role": "user", "timeCreated": 12,
+                         "text": "Further instructions..."},
+                        {"ref": "p/s/m/request@0:30", "role": "user", "timeCreated": 20,
+                         "text": "Please investigate my manuscript"}]}]}]
+        metadata = research.source_meta(bundles)
+        self.assertTrue(metadata["p/s/m/template@2500:3000"]["pastedTemplateText"])
+        self.assertFalse(metadata["p/s/m/request@0:30"]["pastedTemplateText"])
+        audit = research.audit_opportunity({"title": "Maybe", "sessionEvidence": [
+            {"ref": "p/s/m/template@0:2500", "quote": "Purpose and boundaries"}]}, metadata)
+        self.assertTrue(audit["pastedTemplateText"])
+
     def test_source_windows_keep_cited_context_without_repeating_entire_part(self):
         text = "A" * 1100 + "THE CITED NEED" + "B" * 1100
         findings = [{"citations": [{"ref": "original-part", "quote": "THE CITED NEED"}]}]

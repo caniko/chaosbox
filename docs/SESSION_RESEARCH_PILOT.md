@@ -117,8 +117,8 @@ It rechecks the pinned original parts and prints a bounded neighborhood of
 source text; treat that terminal output as private.
 
 `audit` writes `reports/audit.json`, flagging assistant-only recommendations,
-repeat-lineage citations, obvious pasted tool transcripts inside user-role
-text, and distinct historical root counts. The pasted-text flag is conservative;
+repeat-lineage citations, obvious pasted tool transcripts and skill templates
+inside user-role text, and distinct historical root counts. The flags are conservative;
 an unflagged user-role quote may still contain an embedded template. Review each
 flag against its original context before considering the reports for tasks.
 
