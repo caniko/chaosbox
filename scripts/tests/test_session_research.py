@@ -100,9 +100,8 @@ class ResearchPilotTest(unittest.TestCase):
         db.close()
         self._repin_fixture()
         work = self.root / "empty-session"
-        research.prepare(self.archive, work, session_ids=["ses_b"])
-        with self.assertRaisesRegex(ValueError, "no eligible text"):
-            research.export(work)
+        with self.assertRaisesRegex(ValueError, "not an eligible canonical root"):
+            research.prepare(self.archive, work, session_ids=["ses_b"])
 
     def test_null_part_metadata_does_not_discard_verbatim_user_text(self):
         db = sqlite3.connect(self.db)
@@ -116,6 +115,48 @@ class ResearchPilotTest(unittest.TestCase):
         research.prepare(self.archive, work, session_ids=["ses_a"])
         bundles = research.export(work)
         self.assertIn("Please add", bundles[0]["chunks"][0]["records"][0]["text"])
+
+    def test_export_carries_source_role_and_chronology_and_verifies_them(self):
+        work = self.root / "chronology"
+        research.prepare(self.archive, work, session_ids=["ses_a"])
+        bundle = research.export(work)[0]
+        record = bundle["chunks"][0]["records"][0]
+        self.assertEqual((record["role"], record["timeCreated"], record["partTimeCreated"]),
+                         ("user", 0, 0))
+        self.assertEqual(research.verify_sources(work), 1)
+        bundles = research.load(work / "bundles.json")
+        bundles[0]["chunks"][0]["records"][0]["role"] = "assistant"
+        (work / "bundles.json").write_text(json.dumps(bundles))
+        with self.assertRaisesRegex(ValueError, "source part"):
+            research.verify_sources(work)
+
+    def test_long_root_and_forked_duplicate_are_one_sampled_lineage(self):
+        db = sqlite3.connect(self.db)
+        db.execute("insert into session values ('ses_long','Investigate archive throughput','/old/SynDB')")
+        db.execute("insert into session values ('ses_fork','Investigate archive throughput (fork #1)','/old/SynDB')")
+        for i, sid in enumerate(('ses_long', 'ses_fork')):
+            db.execute("insert into message values (?,?,?,?)",
+                       (f'msg_long{i}', sid, 100 + i, json.dumps({'role': 'user'})))
+            db.execute("insert into part values (?,?,?,?,?)",
+                       (f'prt_long{i}', f'msg_long{i}', sid, 100 + i,
+                        json.dumps({'type': 'text', 'text': 'Why is archive throughput slow?'})))
+        db.commit()
+        db.close()
+        self._repin_fixture()
+        recon = json.loads((self.archive / 'reconciliation.json').read_text())
+        recon['sessions'].extend([
+            {'id': 'ses_long', 'source': 'primary', 'directory': '/old/SynDB',
+             'parentID': None, 'messages': 245, 'timeUpdated': 500, 'variants': []},
+            {'id': 'ses_fork', 'source': 'primary', 'directory': '/old/SynDB',
+             'parentID': None, 'messages': 230, 'timeUpdated': 501, 'variants': []},
+        ])
+        (self.archive / 'reconciliation.json').write_text(json.dumps(recon))
+        plan = research.prepare(self.archive, self.root / 'long', session_ids=['ses_long'])
+        self.assertEqual(plan['threads'][0]['messageCount'], 245)
+        self.assertEqual(plan['threads'][0]['lineageCount'], 2)
+        with self.assertRaisesRegex(ValueError, 'same lineage'):
+            research.prepare(self.archive, self.root / 'fork',
+                             session_ids=['ses_long', 'ses_fork'])
 
     def _repin_fixture(self):
         manifest = json.loads((self.archive / "manifest.json").read_text())
@@ -150,6 +191,16 @@ class ResearchPilotTest(unittest.TestCase):
         bad["signals"][0]["citations"][0]["ref"] = "prt_invented"
         with self.assertRaisesRegex(ValueError, "citation"):
             research.validate_signals(bad, chunk)
+
+    def test_verbatim_short_user_approval_is_citable_but_fragment_is_not(self):
+        record = {"ref": "user-short", "role": "user", "text": "commit"}
+        chunk = {"records": [record]}
+        good = {"brief": "Approval", "signals": [{"kind": "decision", "claim": "User approved",
+            "citations": [{"ref": "user-short", "quote": "commit"}]}]}
+        self.assertEqual(research.validate_signals(good, chunk), good)
+        chunk["records"][0]["text"] = "Please commit this change"
+        with self.assertRaisesRegex(ValueError, "citation"):
+            research.validate_signals(good, chunk)
         bad = json.loads(json.dumps(good))
         bad["signals"][0]["citations"][0]["quote"] = "a fictional quote"
         with self.assertRaisesRegex(ValueError, "citation"):
@@ -177,6 +228,34 @@ class ResearchPilotTest(unittest.TestCase):
         self.assertEqual(briefs[0]["session"], "ses_a")
         self.assertEqual(briefs[0]["briefs"], ["Part 1", "Part 2"])
         self.assertEqual(briefs[0]["chunkCount"], 2)
+
+    def test_signal_timeline_uses_original_role_and_time_not_model_prose(self):
+        work = self.root / "timeline"
+        research.prepare(self.archive, work, session_ids=["ses_a"])
+        bundle = research.export(work)[0]
+        chunk = bundle["chunks"][0]
+        (work / "signals").mkdir()
+        research.write_new(work / "signals" / f"{chunk['id']}.json", {
+            "brief": "Claim by user", "signals": [{"kind": "feature", "claim": "Add export",
+                "citations": [{"ref": chunk["records"][0]["ref"], "quote": "add an export"}]}]})
+        signal = research.collect(work)["pink-raven"][0]
+        self.assertEqual(signal["evidenceRoles"], ["user"])
+        self.assertEqual(signal["timeCreated"], 0)
+        self.assertEqual(research.build_briefs(work)[0]["timeline"][0]["citations"],
+                         signal["citations"])
+
+    def test_opportunity_audit_flags_assistant_only_and_repeated_lineage(self):
+        opportunity = {"title": "Maybe add export", "currentStatus": "unverified",
+                       "sessionEvidence": [{"ref": "r1", "quote": "assistant plan"},
+                                           {"ref": "r2", "quote": "same plan again"}]}
+        meta = {"r1": {"role": "assistant", "session": "ses_one", "lineage": "family"},
+                "r2": {"role": "assistant", "session": "ses_fork", "lineage": "family"}}
+        audit = research.audit_opportunity(opportunity, meta)
+        self.assertEqual(audit["independentLineages"], 1)
+        self.assertTrue(audit["assistantOnly"])
+        self.assertTrue(audit["repeatLineage"])
+        meta["r2"]["role"] = "user"
+        self.assertFalse(research.audit_opportunity(opportunity, meta)["assistantOnly"])
 
     def test_report_rechecks_original_quotes_and_current_status(self):
         work = self.root / "work"

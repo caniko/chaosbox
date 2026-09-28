@@ -9,13 +9,18 @@ The pilot uses the pinned `manifest.json` and `reconciliation.json`: canonical
 `pink-raven`. It reads SQLite with `mode=ro&immutable=1`, verifies the full
 snapshot SHA-256 and size, and refuses a nonempty snapshot WAL. Each exported
 text slice retains its native session, message and part IDs plus character
-offsets. Derived compactions, synthetic records and tool payloads are excluded
+offsets, original speaker, and message/part creation times. Derived compactions,
+synthetic records and tool payloads are excluded
 from independent evidence. Assistant assertions are labelled as such; they do
 not establish the current repository state.
 
 This is intentionally **pilot coverage**: child sessions, divergent variants,
 other source databases, image contents, tool-output text and post-freeze deltas
-are not analyzed. The cwd is a sampling hint, not an inferred repo identity.
+are not analyzed. Roots with up to 500 messages are eligible; a selected thread
+above 120,000 exported text characters is refused rather than silently
+truncated. Normalized root title and first user request identify repeated fork
+lineages; only one root from a lineage enters a pilot. The cwd is a sampling
+hint, not an inferred repo identity.
 No frequency claim should be made from the pilot alone.
 
 ## Run a disposable pilot
@@ -65,11 +70,14 @@ python3 scripts/session_research.py metrics --work "$WORK"
 
 Spark 1.3 Contributor xhigh produces a brief and at most 12 typed findings per
 chunk. Every finding must cite an exact substring in a native source part. A
+short user reply (for example, `commit`) is citable only as the entire exported
+text record; shorter fragments of a longer record do not satisfy the gate. A
 failed call retains private events and can be retried with `--retry`; completed
 chunks are reused after validation. Calls refuse payloads above 200 KB;
 `collect` refuses missing chunks.
 `briefs.json` keeps each Spark chunk's prose in source order under its session;
-the briefs are generated views, never extra corroboration.
+the briefs also include a timestamped, speaker-labelled findings timeline.
+They are generated views, never extra corroboration.
 
 To generate reports, give Astra Max bounded **tracked HEAD** excerpts for
 candidate current-capability checks. Use explicit line ranges for long files.
@@ -84,6 +92,7 @@ python3 scripts/session_research.py synthesize --work "$WORK" --privacy-reviewed
   --repo-root pink-raven=/path/to/pink-raven \
   --repo-file 'pink-raven=src/app/gallery.rs#L95-L195'
 python3 scripts/session_research.py render --work "$WORK"
+python3 scripts/session_research.py audit --work "$WORK"
 ```
 
 The final render rechecks every source slice against the original pinned part
@@ -97,6 +106,10 @@ For source drill-down, copy a report citation verbatim into
 `python3 scripts/session_research.py inspect --work "$WORK" --ref 'primary/ses_.../msg_.../prt_...@0:2500'`.
 It rechecks the pinned original parts and prints a bounded neighborhood of
 source text; treat that terminal output as private.
+
+`audit` writes `reports/audit.json`, flagging assistant-only recommendations,
+repeat-lineage citations, and distinct historical root counts. Review each
+flag against its original context before considering the reports for tasks.
 
 ## Pilot evaluation
 
