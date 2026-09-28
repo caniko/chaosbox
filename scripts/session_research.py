@@ -362,8 +362,10 @@ def metrics(work):
         "selectedSessions": len(bundles), "totalChunks": len(chunks),
         "longRoots": sum(t["messageCount"] > 120 for t in load(work / "plan.json")["threads"]),
         "distinctLineages": len({b.get("lineage") or b["session"] for b in bundles}),
-        "duplicateVariants": sum(t.get("lineageCount", 1) - 1
-                                 for t in load(work / "plan.json")["threads"]),
+        "replayedRoots": sum(t.get("lineageCount", 1) - 1
+                             for t in load(work / "plan.json")["threads"]),
+        "reconciliationVariants": sum(len(t.get("variants", []))
+                                      for t in load(work / "plan.json")["threads"]),
         "extractedChunks": len(completed), "missingChunks": len(chunks) - len(completed),
         "sourceSlices": sum(len(c["records"]) for c in chunks),
         "sourceCharacters": sum(len(r["text"]) for c in chunks for r in c["records"]),

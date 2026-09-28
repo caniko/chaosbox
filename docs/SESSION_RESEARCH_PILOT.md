@@ -21,6 +21,8 @@ above 120,000 exported text characters is refused rather than silently
 truncated. Normalized root title and first user request identify repeated fork
 lineages; only one root from a lineage enters a pilot. The cwd is a sampling
 hint, not an inferred repo identity.
+Metrics distinguish `replayedRoots` (same title/request family among primary
+roots) from `reconciliationVariants` (recorded alternate snapshot copies).
 No frequency claim should be made from the pilot alone.
 
 ## Run a disposable pilot

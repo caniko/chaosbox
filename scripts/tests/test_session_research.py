@@ -154,6 +154,8 @@ class ResearchPilotTest(unittest.TestCase):
         plan = research.prepare(self.archive, self.root / 'long', session_ids=['ses_long'])
         self.assertEqual(plan['threads'][0]['messageCount'], 245)
         self.assertEqual(plan['threads'][0]['lineageCount'], 2)
+        research.export(self.root / 'long')
+        self.assertEqual(research.metrics(self.root / 'long')['replayedRoots'], 1)
         with self.assertRaisesRegex(ValueError, 'same lineage'):
             research.prepare(self.archive, self.root / 'fork',
                              session_ids=['ses_long', 'ses_fork'])
