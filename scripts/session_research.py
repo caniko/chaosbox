@@ -942,6 +942,16 @@ def write_markdown(path, content):
         output.write(content)
 
 
+def format_historical_citation(citation, record):
+    created = record["timeCreated"]
+    at = (datetime.fromtimestamp(created / 1000, timezone.utc).isoformat(timespec="seconds")
+          if isinstance(created, int) and created > 0 else "time unknown")
+    label = record["role"]
+    label += " (embedded tool text)" if record["embeddedToolText"] else ""
+    label += " (pasted template)" if record["pastedTemplateText"] else ""
+    return f"{label} at {at}, `{citation['ref']}`: {json.dumps(citation['quote'], ensure_ascii=False)}"
+
+
 def render(work):
     work = Path(work)
     bundles = load(work / "bundles.json")
@@ -978,14 +988,7 @@ def render(work):
                           "- Historical evidence:"])
             for citation in item["sessionEvidence"]:
                 check_citations([citation], source, "source evidence")
-                record = meta[citation["ref"]]
-                created = record["timeCreated"]
-                at = (datetime.fromtimestamp(created / 1000, timezone.utc).isoformat(timespec="seconds")
-                      if isinstance(created, int) and created > 0 else "time unknown")
-                label = record["role"] + (" (embedded tool text)" if record["embeddedToolText"] else "")
-                label += " (pasted template)" if record["pastedTemplateText"] else ""
-                lines.append(f"  - {label} at {at}, `{citation['ref']}`: "
-                             f"{json.dumps(citation['quote'], ensure_ascii=False)}")
+                lines.append("  - " + format_historical_citation(citation, meta[citation["ref"]]))
             for citation in item.get("repoEvidence", []):
                 lines.append(f"- Pinned repository excerpt `{citation['ref']}`: "
                              f"{json.dumps(citation['quote'], ensure_ascii=False)}")
@@ -1000,11 +1003,7 @@ def render(work):
         lines.extend([f"## {i}. {item['title']} (owner: {item['owner']})", "",
                       item["problem"], "", f"First slice: {item['firstSlice']}", ""])
         for citation in item["sessionEvidence"]:
-            record = meta[citation["ref"]]
-            label = record["role"] + (" (embedded tool text)" if record["embeddedToolText"] else "")
-            label += " (pasted template)" if record["pastedTemplateText"] else ""
-            lines.append(f"- {label}, `{citation['ref']}`: "
-                         f"{json.dumps(citation['quote'], ensure_ascii=False)}")
+            lines.append("- " + format_historical_citation(citation, meta[citation["ref"]]))
         lines.append("")
     lines.extend(["## Limitations", "", *[f"- {note}" for note in portfolio.get("limitations", [])], ""])
     documents["portfolio"] = "\n".join(lines)

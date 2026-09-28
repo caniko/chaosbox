@@ -322,6 +322,14 @@ class ResearchPilotTest(unittest.TestCase):
             {"ref": "p/s/m/template@0:2500", "quote": "Purpose and boundaries"}]}, metadata)
         self.assertTrue(audit["pastedTemplateText"])
 
+    def test_report_citations_retain_role_and_time_including_portfolio(self):
+        citation = {"ref": "native@0:13", "quote": "exact excerpt"}
+        meta = {"role": "user", "timeCreated": 1781023885618,
+                "embeddedToolText": False, "pastedTemplateText": False}
+        line = research.format_historical_citation(citation, meta)
+        self.assertIn("user at 2026-06-09T", line)
+        self.assertIn("`native@0:13`", line)
+
     def test_source_windows_keep_cited_context_without_repeating_entire_part(self):
         text = "A" * 1100 + "THE CITED NEED" + "B" * 1100
         findings = [{"citations": [{"ref": "original-part", "quote": "THE CITED NEED"}]}]
