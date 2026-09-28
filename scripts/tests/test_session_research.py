@@ -257,6 +257,31 @@ class ResearchPilotTest(unittest.TestCase):
         meta["r2"]["role"] = "user"
         self.assertFalse(research.audit_opportunity(opportunity, meta)["assistantOnly"])
 
+    def test_pasted_tool_transcript_in_user_role_is_flagged_as_ambiguous(self):
+        bundles = [{"repoCwdHint": "canix", "session": "ses_a", "lineage": "family",
+                    "chunks": [{"records": [
+                        {"ref": "p/s/m/part@0:28", "role": "user", "timeCreated": 12,
+                         "text": "Called the Read tool with the following input:"},
+                        {"ref": "p/s/m/part@28:56", "role": "user", "timeCreated": 12,
+                         "text": "<path>/repo/flake.nix</path><content>..."},
+                        {"ref": "p/s/m/normal@0:22", "role": "user", "timeCreated": 20,
+                         "text": "Please check the flake"}]}]}]
+        metadata = research.source_meta(bundles)
+        self.assertTrue(metadata["p/s/m/part@28:56"]["embeddedToolText"])
+        self.assertFalse(metadata["p/s/m/normal@0:22"]["embeddedToolText"])
+        result = research.audit_opportunity({"title": "Candidate", "sessionEvidence": [
+            {"ref": "p/s/m/part@28:56", "quote": "<path>/repo"}]}, metadata)
+        self.assertTrue(result["embeddedToolText"])
+
+    def test_source_windows_keep_cited_context_without_repeating_entire_part(self):
+        text = "A" * 1100 + "THE CITED NEED" + "B" * 1100
+        findings = [{"citations": [{"ref": "original-part", "quote": "THE CITED NEED"}]}]
+        result = research.source_windows(findings, {"original-part": text}, margin=80)
+        self.assertEqual(len(result["original-part"]), 1)
+        self.assertIn("THE CITED NEED", result["original-part"][0])
+        self.assertIn(result["original-part"][0], text)
+        self.assertLess(len(result["original-part"][0]), 200)
+
     def test_report_rechecks_original_quotes_and_current_status(self):
         work = self.root / "work"
         research.prepare(self.archive, work, per_repo=1)

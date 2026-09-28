@@ -604,13 +604,46 @@ def source_texts(bundles, repo=None):
             for chunk in bundle["chunks"] for record in chunk["records"]}
 
 
+def source_windows(findings, original, margin=96):
+    """Original substrings around cited quotes; each window stays independent."""
+    ranges = {}
+    for finding in findings:
+        for citation in finding["citations"]:
+            ref, quote = citation["ref"], citation["quote"]
+            start = original[ref].find(quote)
+            if start < 0:
+                raise ValueError("cited quote absent from original source")
+            ranges.setdefault(ref, []).append((max(0, start - margin),
+                                                 min(len(original[ref]), start + len(quote) + margin)))
+    windows = {}
+    for ref, locations in ranges.items():
+        merged = []
+        for begin, end in sorted(locations):
+            if merged and begin <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((begin, end))
+        windows[ref] = [original[ref][begin:end] for begin, end in merged]
+    return windows
+
+
 def source_meta(bundles, repo=None):
-    return {r["ref"]: {"role": r.get("role", "unknown"),
-                       "timeCreated": r.get("timeCreated"),
-                       "session": bundle["session"],
-                       "lineage": bundle.get("lineage")}
-            for bundle in bundles if repo is None or bundle["repoCwdHint"] == repo
-            for chunk in bundle["chunks"] for r in chunk["records"]}
+    metadata = {}
+    for bundle in bundles:
+        if repo is not None and bundle["repoCwdHint"] != repo:
+            continue
+        records = [r for chunk in bundle["chunks"] for r in chunk["records"]]
+        embedded_parts = {r["ref"].split("@", 1)[0] for r in records
+                          if r.get("role") == "user" and re.match(
+                              r"(?is)^\s*(?:called the (?:read|grep|glob|bash|shell|edit|write) "
+                              r"tool with the following input:|<path>.*?<content>)", r["text"])}
+        for record in records:
+            metadata[record["ref"]] = {
+                "role": record.get("role", "unknown"),
+                "timeCreated": record.get("timeCreated"),
+                "session": bundle["session"], "lineage": bundle.get("lineage"),
+                "embeddedToolText": record["ref"].split("@", 1)[0] in embedded_parts}
+    return metadata
 
 
 def verify_sources(work):
@@ -745,10 +778,13 @@ REPORT_INSTRUCTION = (
     "\"limitations\":[\"...\"]}. Only quote original source refs/quotes provided by findings. "
     "Current status is unverified unless the supplied repository excerpts directly support "
     "present/partial/rejected; then cite exact excerpt ref and quote in repoEvidence. "
-    "Never infer absence from a bounded repository sample; distinguish historical user needs, "
+    "SourceText contains independent, noncontiguous windows of original parts around citations; "
+    "never join them into a new quotation. Never infer absence from a bounded repository sample; "
     "assistant assertions, and actual outcomes. Cwd associations may be wrong. "
     "Use sourceMeta roles and timestamps: do not present an assistant's plan, analysis, "
     "or claimed completion as a user request or verified result. Prefer user-cited needs. "
+    "A user-role sourceMeta embeddedToolText flag means pasted tool output, not an independent "
+    "user request. "
     "A pasted skill/template and an assistant brainstorm are not user endorsements of every "
     "item inside them; require a later explicit user request or state clearly that the idea "
     "is an inferred, unconfirmed opportunity. "
@@ -784,6 +820,7 @@ def audit_opportunity(opportunity, meta):
             "sourceRoles": sorted(roles), "citedSessions": len(sessions),
             "independentLineages": len(lineages),
             "assistantOnly": roles == {"assistant"},
+            "embeddedToolText": any(record.get("embeddedToolText", False) for record in cited),
             "repeatLineage": len(sessions) > len(lineages)}
 
 
@@ -821,7 +858,8 @@ PORTFOLIO_INSTRUCTION = (
     "Every shared item must cite original source parts from at least TWO DIFFERENT repositories; "
     "do not treat two child sessions of one incident as independent corroboration. "
     "If no clear common opportunity, return an empty shared list. "
-    "Use originalSourceMeta to distinguish user requests from assistant claims. "
+    "Use originalSourceMeta to distinguish user requests from assistant claims and pasted "
+    "tool transcripts (embeddedToolText). "
     "Chaosbox is the generating harness, not the historical session cwd."
 )
 
@@ -843,13 +881,15 @@ def synthesize(work, repo_files=None, privacy_reviewed=False, retry=False):
             contexts = repo_context(root, files)
         if len(findings[repo]) > 300 or SENSITIVE.search(json.dumps(contexts)):
             raise ValueError("repo context too large or contains potential credentials")
+        original = source_texts(bundles, repo)
         payload = {"repoCwdHint": repo, "findings": findings[repo],
-                   "sourceText": {ref: text for ref, text in source_texts(bundles, repo).items()
-                                   if any(ref == c["ref"] for s in findings[repo] for c in s["citations"])},
+                   "sourceText": source_windows(findings[repo], original),
                    "sourceMeta": {ref: meta for ref, meta in source_meta(bundles, repo).items()
-                                  if any(ref == c["ref"] for s in findings[repo] for c in s["citations"])},
+                                   if any(ref == c["ref"] for s in findings[repo] for c in s["citations"])},
                    "repoContext": contexts,
                    "note": "Current context is bounded at pinned HEAD; no exhaustive absence check."}
+        if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 200000:
+            payload["sourceText"] = source_windows(findings[repo], original, margin=0)
         target = directory / f"{repo}.json"
         if target.exists():
             report = load(target)
@@ -863,13 +903,15 @@ def synthesize(work, repo_files=None, privacy_reviewed=False, retry=False):
     if target.exists():
         portfolio = load(target)
     else:
-        payload = {"reports": reports, "originalSourceText": {
-            ref: text for ref, text in source_texts(bundles).items()
-            if any(ref == c["ref"] for report in reports.values()
-                   for o in report["opportunities"] for c in o["sessionEvidence"])},
+        original = source_texts(bundles)
+        citations = [{"citations": o["sessionEvidence"]} for report in reports.values()
+                     for o in report["opportunities"]]
+        payload = {"reports": reports, "originalSourceText": source_windows(citations, original),
                    "originalSourceMeta": {ref: meta for ref, meta in source_meta(bundles).items()
                    if any(ref == c["ref"] for report in reports.values()
                           for o in report["opportunities"] for c in o["sessionEvidence"])}}
+        if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 200000:
+            payload["originalSourceText"] = source_windows(citations, original, margin=0)
         portfolio = model_call(work, "openai/gpt-6-astra#max", PORTFOLIO_INSTRUCTION,
                                payload, "report-portfolio", retry=retry)
         validate_portfolio(portfolio, source_texts(bundles), {
@@ -928,7 +970,8 @@ def render(work):
                 created = record["timeCreated"]
                 at = (datetime.fromtimestamp(created / 1000, timezone.utc).isoformat(timespec="seconds")
                       if isinstance(created, int) and created > 0 else "time unknown")
-                lines.append(f"  - {record['role']} at {at}, `{citation['ref']}`: "
+                label = record["role"] + (" (embedded tool text)" if record["embeddedToolText"] else "")
+                lines.append(f"  - {label} at {at}, `{citation['ref']}`: "
                              f"{json.dumps(citation['quote'], ensure_ascii=False)}")
             for citation in item.get("repoEvidence", []):
                 lines.append(f"- Pinned repository excerpt `{citation['ref']}`: "
@@ -944,7 +987,9 @@ def render(work):
         lines.extend([f"## {i}. {item['title']} (owner: {item['owner']})", "",
                       item["problem"], "", f"First slice: {item['firstSlice']}", ""])
         for citation in item["sessionEvidence"]:
-            lines.append(f"- {meta[citation['ref']]['role']}, `{citation['ref']}`: "
+            record = meta[citation["ref"]]
+            label = record["role"] + (" (embedded tool text)" if record["embeddedToolText"] else "")
+            lines.append(f"- {label}, `{citation['ref']}`: "
                          f"{json.dumps(citation['quote'], ensure_ascii=False)}")
         lines.append("")
     lines.extend(["## Limitations", "", *[f"- {note}" for note in portfolio.get("limitations", [])], ""])

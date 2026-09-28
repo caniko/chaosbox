@@ -87,6 +87,9 @@ They are generated views, never extra corroboration.
 
 To generate reports, give Astra Max bounded **tracked HEAD** excerpts for
 candidate current-capability checks. Use explicit line ranges for long files.
+The synthesis payload carries independent source windows around cited quotes
+rather than repeating whole 2,500-character parts; the final validators still
+check every quote against the complete exported part and pinned SQLite source.
 Present/partial/rejected status requires a matching repository excerpt; an
 absence claim cannot be established by a bounded context sample and remains
 `unverified`.
@@ -114,7 +117,9 @@ It rechecks the pinned original parts and prints a bounded neighborhood of
 source text; treat that terminal output as private.
 
 `audit` writes `reports/audit.json`, flagging assistant-only recommendations,
-repeat-lineage citations, and distinct historical root counts. Review each
+repeat-lineage citations, obvious pasted tool transcripts inside user-role
+text, and distinct historical root counts. The pasted-text flag is conservative;
+an unflagged user-role quote may still contain an embedded template. Review each
 flag against its original context before considering the reports for tasks.
 
 ## Pilot evaluation
