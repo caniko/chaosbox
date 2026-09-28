@@ -373,6 +373,13 @@ class ResearchPilotTest(unittest.TestCase):
         report["opportunities"][0]["currentStatus"] = "present"
         with self.assertRaisesRegex(ValueError, "repository evidence"):
             research.validate_report(report, available, {})
+        report["opportunities"][0]["currentStatus"] = "confirmed-gap"
+        with self.assertRaisesRegex(ValueError, "repository evidence"):
+            research.validate_report(report, available, {})
+        report["opportunities"][0]["repoEvidence"] = [
+            {"ref": "current:file#L1", "quote": "confirmed broken behavior"}]
+        self.assertEqual(research.validate_report(report, available,
+                         {"current:file#L1": "confirmed broken behavior"}), report)
         report["opportunities"][0]["currentStatus"] = "unverified"
         report["opportunities"][0]["sessionEvidence"][0]["quote"] = "not in source"
         with self.assertRaisesRegex(ValueError, "source evidence"):
