@@ -282,10 +282,11 @@ class ResearchPilotTest(unittest.TestCase):
 
     def test_model_event_reader_never_uses_tool_text_as_an_answer(self):
         event = lambda kind, text: json.dumps({"type": kind, "part": {"type": kind, "text": text}})
-        raw = "\n".join([event("tool", "{\"wrong\":true}"),
-                         event("text", '{"brief":"Done","signals":[]}')])
+        raw = event("text", '{"brief":"Done","signals":[]}')
         self.assertEqual(research.parse_events(raw), {"brief": "Done", "signals": []})
-        with self.assertRaisesRegex(ValueError, "model text"):
+        with self.assertRaisesRegex(ValueError, "tool event"):
+            research.parse_events(event("tool", '{"wrong":true}') + '\n' + raw)
+        with self.assertRaisesRegex(ValueError, "tool event"):
             research.parse_events(event("tool", '{"brief":"false"}'))
 
     def test_repo_context_uses_pinned_head_and_line_ranges(self):
@@ -348,6 +349,36 @@ class ResearchPilotTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "private work"):
             research.model_call(work, "mock-model", "Analyze", {"text": "fixture"}, "public")
         self.assertFalse((work / "prompts").exists())
+
+    def test_model_config_denies_all_tools_even_mcp_and_preserves_prior_config(self):
+        work = self.root / "config"
+        work.mkdir(mode=0o700)
+        old = research.legacy_opencode_config()
+        research.write_new(work / "opencode.json", old)
+        new = research.ensure_model_config(work)
+        self.assertEqual(new["agents"]["session-research"]["permissions"],
+                         [{"action": "*", "resource": "*", "effect": "deny"}])
+        self.assertEqual(research.load(work / "opencode.previous.json"), old)
+        self.assertEqual(research.ensure_model_config(work), new)
+        (work / "opencode.json").write_text('{"unknown":"user work"}')
+        with self.assertRaisesRegex(ValueError, "permissions changed"):
+            research.ensure_model_config(work)
+
+    def test_model_config_pins_host_provider_config_in_private_merge(self):
+        work = self.root / "config-merge"
+        work.mkdir(mode=0o700)
+        host = self.root / "host.json"
+        host.write_text(json.dumps({"providers": {"muse-code": {"enabled": True}},
+                                    "permissions": [{"action": "*", "resource": "*",
+                                                     "effect": "allow"}]}))
+        research.ensure_model_config(work)
+        env = research.model_configuration(work, {"OPENCODE_CONFIG": str(host)})
+        merged = research.load(env["OPENCODE_CONFIG"])
+        self.assertEqual(merged["providers"]["muse-code"]["enabled"], True)
+        self.assertEqual(merged["agents"]["session-research"]["permissions"][-1]["effect"],
+                         "deny")
+        self.assertEqual(research.model_configuration(work, {"OPENCODE_CONFIG": str(host)}), env)
+        self.assertEqual(json.loads(host.read_text())["providers"]["muse-code"]["enabled"], True)
 
     def test_auth_seed_copies_only_needed_credentials_and_catalog(self):
         source, target = self.root / "source.db", self.root / "target.db"

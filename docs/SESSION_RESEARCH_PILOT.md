@@ -51,6 +51,12 @@ This host's Nix `opencode` launcher explicitly unsets `OPENCODE_DB`. Point
 launcher, and carry over the host's provider configuration and XDG environment.
 The runner checks that `debug paths db` resolves to `$WORK/model.sqlite` before
 each call. A launcher that clears the override is rejected before inference.
+The standalone server may not load an agent from the scratch directory even if
+`debug config` lists that file. The runner explicitly pins a private merge of
+the host's `OPENCODE_CONFIG` and a `session-research` primary agent denying
+**all** tool actions (including MCP tools). A previous exact-match pilot config
+is preserved as `opencode.previous.json` before upgrade; unknown config changes
+are refused. Model event streams with any tool or error event are rejected.
 
 An empty isolated DB may not have the required provider credentials and model
 catalog. `seed-auth` initializes it and copies **only the active Muse/OpenAI

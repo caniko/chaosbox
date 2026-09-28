@@ -388,6 +388,10 @@ def parse_events(output):
     texts = []
     for line in output.splitlines():
         event = json.loads(line)
+        if event.get("type") == "tool" or event.get("part", {}).get("type") == "tool":
+            raise ValueError("model called a tool event in a tool-free research run")
+        if event.get("type") == "error":
+            raise ValueError("model produced an error event")
         if event.get("type") == "text" and event.get("part", {}).get("type") == "text":
             texts.append(event["part"]["text"])
     if not texts:
@@ -406,9 +410,9 @@ def private_work(work):
     return work
 
 
-def opencode_environment(work):
+def opencode_environment(work, env=None):
     work = private_work(work)
-    env = os.environ.copy()
+    env = (env or os.environ).copy()
     env["OPENCODE_DB"] = str(work / "model.sqlite")
     binary = env.get("SESSION_RESEARCH_OPENCODE_BIN", "opencode")
     preflight = subprocess.run([binary, "debug", "paths", "db"], cwd=work, env=env,
@@ -454,6 +458,60 @@ SENSITIVE = re.compile(r"(?i)(-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----|
                        r"(?:password|api[_-]?key|secret)\s*[:=]\s*['\"]?[A-Za-z0-9+/=_-]{16,})")
 
 
+def legacy_opencode_config():
+    return {"snapshots": False, "compaction": {"auto": False},
+            "permissions": [{"action": action, "resource": "*", "effect": "deny"}
+                            for action in ("shell", "edit", "read", "glob", "grep",
+                                           "webfetch", "websearch", "subagent", "execute")]}
+
+
+def ensure_model_config(work):
+    """An explicit tool-free agent overrides allowed global and MCP tools."""
+    desired = {**legacy_opencode_config(), "default_agent": "session-research",
+               "agents": {"session-research": {
+                   "description": "Tool-free historical evidence analysis", "mode": "primary",
+                   "steps": 3, "permissions": [{"action": "*", "resource": "*", "effect": "deny"}]}}}
+    path = Path(work) / "opencode.json"
+    if not path.exists():
+        write_new(path, desired)
+    elif path.is_symlink():
+        raise ValueError("pilot OpenCode permissions changed (symlink)")
+    elif load(path) == legacy_opencode_config():
+        # Prior pilot configuration is recognized exactly and retained for audit.
+        write_new(Path(work) / "opencode.previous.json", load(path))
+        temporary = Path(work) / "opencode.next.json"
+        write_new(temporary, desired)
+        os.replace(temporary, path)
+    elif load(path) != desired:
+        raise ValueError("pilot OpenCode permissions changed")
+    return desired
+
+
+def model_configuration(work, environment):
+    """Pin provider configuration while selecting a tool-free primary agent.
+
+    A scratch directory can be listed as a client config source yet omitted by
+    OpenCode's standalone server. Passing an explicit merged config to the
+    server makes the permission boundary observable and reproducible.
+    """
+    host_path = environment.get("OPENCODE_CONFIG")
+    if not host_path or not Path(host_path).is_file():
+        raise ValueError("model calls require an explicit pinned OpenCode provider config")
+    host = load(host_path)
+    local = ensure_model_config(work)
+    merged = {**host, **local,
+              "permissions": host.get("permissions", []) + local["permissions"],
+              "agents": {**host.get("agents", {}), **local["agents"]}}
+    pinned = Path(work) / "opencode.merged.json"
+    if not pinned.exists():
+        write_new(pinned, merged)
+    elif pinned.is_symlink() or load(pinned) != merged:
+        raise ValueError("pinned model config differs from provider source or permission policy")
+    env = environment.copy()
+    env["OPENCODE_CONFIG"] = str(pinned.resolve())
+    return env
+
+
 def model_call(work, model, instruction, payload, name, retry=False):
     """Invoke an isolated OpenCode V2 CLI run with tools denied; retain raw events privately."""
     if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > 200000:
@@ -473,21 +531,13 @@ def model_call(work, model, instruction, payload, name, retry=False):
             i += 1
         raw = prompts / f"{name}.attempt-{i}.events.jsonl"
     if not raw.exists():
-        config = work / "opencode.json"
-        expected = {"snapshots": False, "compaction": {"auto": False},
-                    "permissions": [{"action": action, "resource": "*", "effect": "deny"}
-                                    for action in ("shell", "edit", "read", "glob", "grep",
-                                                   "webfetch", "websearch", "subagent", "execute")]}
-        if not config.exists():
-            write_new(config, expected)
-        elif load(config) != expected:
-            raise ValueError("pilot OpenCode permissions changed")
-        binary, env = opencode_environment(work)
+        binary, env = opencode_environment(work, model_configuration(work, os.environ))
         timeout = int(env.get("SESSION_RESEARCH_MODEL_TIMEOUT", "1200"))
         if not 60 <= timeout <= 3600:
             raise ValueError("model timeout must be between 60 and 3600 seconds")
         try:
-            proc = subprocess.run([binary, "run", "--standalone", "--model", model,
+            proc = subprocess.run([binary, "run", "--standalone", "--agent", "session-research",
+                                   "--model", model,
                                    "--format", "json", "--file", str(request), instruction],
                                   cwd=work, env=env, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired as error:
