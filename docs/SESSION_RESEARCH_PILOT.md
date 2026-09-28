@@ -70,6 +70,9 @@ alters the source credential DB or the frozen session snapshot.
 
 ```sh
 export SESSION_RESEARCH_OPENCODE_BIN=/absolute/path/to/underlying/opencode
+export OPENCODE_CONFIG=/absolute/path/to/pinned/provider-opencode.json
+# Also carry the intended XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME,
+# and XDG_CACHE_HOME for that provider profile, if they are not the defaults.
 python3 scripts/session_research.py seed-auth --work "$WORK" \
   --credential-db /path/to/existing/opencode.db
 python3 scripts/session_research.py extract --work "$WORK" --privacy-reviewed

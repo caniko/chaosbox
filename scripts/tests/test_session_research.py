@@ -160,6 +160,34 @@ class ResearchPilotTest(unittest.TestCase):
             research.prepare(self.archive, self.root / 'fork',
                              session_ids=['ses_long', 'ses_fork'])
 
+    def test_synthetic_user_part_does_not_identify_unrelated_fork_lineages(self):
+        db = sqlite3.connect(self.db)
+        for i, text in enumerate(('Implement archive export', 'Implement archive import')):
+            sid = f'ses_variant{i}'
+            db.execute("insert into session values (?,?,?)",
+                       (sid, 'Implement archive sync' + (' (fork #1)' if i else ''), '/old/SynDB'))
+            db.execute("insert into message values (?,?,?,?)",
+                       (f'msg_variant{i}', sid, 100 + i, json.dumps({'role': 'user'})))
+            db.execute("insert into part values (?,?,?,?,?)",
+                       (f'prt_synthetic{i}', f'msg_variant{i}', sid, 100 + i,
+                        json.dumps({'type': 'text', 'synthetic': True,
+                                    'text': 'Repeated synthetic tool transcript'})))
+            db.execute("insert into part values (?,?,?,?,?)",
+                       (f'prt_real{i}', f'msg_variant{i}', sid, 101 + i,
+                        json.dumps({'type': 'text', 'text': text})))
+        db.commit()
+        db.close()
+        self._repin_fixture()
+        recon = json.loads((self.archive / 'reconciliation.json').read_text())
+        recon['sessions'].extend([
+            {'id': f'ses_variant{i}', 'source': 'primary', 'directory': '/old/SynDB',
+             'parentID': None, 'messages': 2, 'timeUpdated': 100 + i, 'variants': []}
+            for i in range(2)])
+        (self.archive / 'reconciliation.json').write_text(json.dumps(recon))
+        plan = research.prepare(self.archive, self.root / 'variants',
+                                session_ids=['ses_variant0', 'ses_variant1'])
+        self.assertEqual([entry['lineageCount'] for entry in plan['threads']], [1, 1])
+
     def _repin_fixture(self):
         manifest = json.loads((self.archive / "manifest.json").read_text())
         manifest["sources"][0]["bytes"] = self.db.stat().st_size

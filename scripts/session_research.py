@@ -123,6 +123,8 @@ def prepare(archive, work, per_repo=12, session_ids=None):
                 "select json_extract(p.data,'$.text') from message m join part p on p.message_id=m.id "
                 "where m.session_id=? and json_extract(m.data,'$.role')='user' "
                 "and json_extract(p.data,'$.type')='text' "
+                "and coalesce(json_extract(p.data,'$.synthetic'),0)=0 "
+                "and coalesce(json_extract(p.data,'$.metadata.chaosboxMigrationDraft'),0)=0 "
                 "order by m.time_created,m.id,p.time_created,p.id limit 1", (item["id"],)
             ).fetchone()
             if first is None or not first[0]:
