@@ -281,9 +281,12 @@ class ResearchPilotTest(unittest.TestCase):
                         {"ref": "p/s/m/template@2500:3000", "role": "user", "timeCreated": 12,
                          "text": "Further instructions..."},
                         {"ref": "p/s/m/request@0:30", "role": "user", "timeCreated": 20,
-                         "text": "Please investigate my manuscript"}]}]}]
+                         "text": "Please investigate my manuscript"},
+                        {"ref": "p/s/m/skill@0:85", "role": "user", "timeCreated": 21,
+                         "text": "# Grouped Git Commits\nThis skill is the canonical reference..."}]}]}]
         metadata = research.source_meta(bundles)
         self.assertTrue(metadata["p/s/m/template@2500:3000"]["pastedTemplateText"])
+        self.assertTrue(metadata["p/s/m/skill@0:85"]["pastedTemplateText"])
         self.assertFalse(metadata["p/s/m/request@0:30"]["pastedTemplateText"])
         audit = research.audit_opportunity({"title": "Maybe", "sessionEvidence": [
             {"ref": "p/s/m/template@0:2500", "quote": "Purpose and boundaries"}]}, metadata)

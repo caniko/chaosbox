@@ -639,7 +639,7 @@ def source_meta(bundles, repo=None):
                               r"tool with the following input:|<path>.*?<content>)", r["text"])}
         template_parts = {r["ref"].split("@", 1)[0] for r in records
                           if r.get("role") == "user" and re.match(
-                              r"(?is)^\s*(?:# Scientific Brainstorming\s*## Purpose and boundaries"
+                              r"(?i)^\s*(?:# [^\n]{1,90}\n\s*(?:## Purpose and boundaries|This skill\b)"
                               r"|# Skill: |<skill_content\b)", r["text"])}
         for record in records:
             metadata[record["ref"]] = {
