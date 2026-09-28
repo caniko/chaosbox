@@ -728,7 +728,9 @@ def verify_sources(work):
                     body, meta = json.loads(row[0]), json.loads(row[1])
                     text = body.get("text")
                     if (meta.get("role") not in ("user", "assistant") or meta.get("summary") is True
-                            or meta.get("agent") == "compaction" or body.get("type") != "text"
+                            or meta.get("agent") == "compaction" or body.get("synthetic")
+                            or (body.get("metadata") or {}).get("chaosboxMigrationDraft")
+                            or body.get("type") != "text"
                             or not isinstance(text, str) or not 0 <= int(begin) < int(end) <= len(text)
                             or record["text"] != text[int(begin):int(end)]
                             or (plan["version"] >= 2 and

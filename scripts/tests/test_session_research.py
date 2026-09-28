@@ -534,6 +534,25 @@ class ResearchPilotTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "source part"):
             research.verify_sources(work)
 
+    def test_final_proof_refuses_native_synthetic_text_even_if_quote_matches(self):
+        db = sqlite3.connect(self.db)
+        db.execute("insert into part values (?,?,?,?,?)", (
+            "prt_synth", "msg_0", "ses_a", 20,
+            json.dumps({"type": "text", "synthetic": True, "text": "injected feature request"})))
+        db.commit()
+        db.close()
+        self._repin_fixture()
+        work = self.root / "synthetic"
+        research.prepare(self.archive, work, session_ids=["ses_a"])
+        research.export(work)
+        bundles = research.load(work / "bundles.json")
+        bundles[0]["chunks"][0]["records"][0].update({
+            "ref": "primary/ses_a/msg_0/prt_synth@0:24",
+            "text": "injected feature request", "partTimeCreated": 20})
+        (work / "bundles.json").write_text(json.dumps(bundles))
+        with self.assertRaisesRegex(ValueError, "source part"):
+            research.verify_sources(work)
+
     def test_tampered_export_is_refused_before_sending_to_models(self):
         work = self.root / "before-model"
         research.prepare(self.archive, work, session_ids=["ses_a"])
