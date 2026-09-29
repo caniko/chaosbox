@@ -26,6 +26,7 @@ use chaosbox_typedb::{
 use clap::{Parser, Subcommand};
 
 mod backend_cmd;
+mod jev_cmd;
 mod mcp_server;
 mod pipeline_cmd;
 mod query_cmd;
@@ -51,6 +52,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Operator-only typed Typesafe Jev evaluation (external inference).
+    Jev {
+        #[command(subcommand)]
+        command: jev_cmd::Command,
+    },
     /// Capture and query a source-cited, version-bound workspace impact pilot.
     Workspace {
         #[command(subcommand)]
@@ -245,6 +251,13 @@ enum DbCmd {
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
+        Command::Jev { command } => {
+            let (receipt, success) = jev_cmd::run(command).await;
+            println!("{receipt}");
+            if !success {
+                std::process::exit(1);
+            }
+        }
         Command::Workspace { command } => match chaosbox::workspace::cli::run(command).await {
             Ok(value) => println!("{value}"),
             Err(error) => {
