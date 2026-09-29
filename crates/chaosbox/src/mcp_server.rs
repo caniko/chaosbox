@@ -252,85 +252,87 @@ pub(super) async fn mcp_call_tool(
             );
         }
     };
-    let payload: Result<serde_json::Value, String> =
-        match name {
-            "search" => {
-                let q = args["query"].as_str().unwrap_or_default();
-                let limit = args
-                    .get("limit")
-                    .and_then(serde_json::Value::as_i64)
-                    .unwrap_or(20);
-                reader
-                    .search(q, limit)
-                    .await
-                    .map(|rows| serde_json::to_value(&rows).unwrap())
-                    .map_err(|e| e.to_string())
-            }
-            "lookup" => {
-                let eid = args["id"].as_str().unwrap_or_default();
-                reader
-                    .lookup(eid)
-                    .await
-                    .map(|row| serde_json::to_value(&row).unwrap())
-                    .map_err(|e| e.to_string())
-            }
-            "neighbors" => {
-                let eid = args["id"].as_str().unwrap_or_default();
-                let raw = args
-                    .get("rel")
-                    .and_then(|r| r.as_str())
-                    .map(|r| vec![r.to_owned()]);
-                let filter = match chaosbox::validate_rel_filter(raw) {
-                    Ok(f) => f,
-                    Err(e) => return mcp_error(id, -32602, e.to_string(), None),
-                };
-                reader.neighbors(eid, filter).await
+    let payload: Result<serde_json::Value, String> = match name {
+        "search" => {
+            let q = args["query"].as_str().unwrap_or_default();
+            let limit = args
+                .get("limit")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(20);
+            reader
+                .search(q, limit)
+                .await
+                .map(|rows| serde_json::to_value(&rows).unwrap())
+                .map_err(|e| e.to_string())
+        }
+        "lookup" => {
+            let eid = args["id"].as_str().unwrap_or_default();
+            reader
+                .lookup(eid)
+                .await
+                .map(|row| serde_json::to_value(&row).unwrap())
+                .map_err(|e| e.to_string())
+        }
+        "neighbors" => {
+            let eid = args["id"].as_str().unwrap_or_default();
+            let raw = args
+                .get("rel")
+                .and_then(|r| r.as_str())
+                .map(|r| vec![r.to_owned()]);
+            let filter = match chaosbox::validate_rel_filter(raw) {
+                Ok(f) => f,
+                Err(e) => return mcp_error(id, -32602, e.to_string(), None),
+            };
+            reader
+                .neighbors(eid, filter)
+                .await
                 .map(|(out, inc)| serde_json::json!({"id": eid, "outgoing": out, "incoming": inc}))
                 .map_err(|e| e.to_string())
-            }
-            "path" => {
-                let from = args["from"].as_str().unwrap_or_default();
-                let to = args["to"].as_str().unwrap_or_default();
-                let hops = usize::try_from(
-                    args.get("max_hops")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(4),
-                )
-                .expect("hop count fits in usize");
-                reader
-                    .path(from, to, hops)
-                    .await
-                    .map(|path| serde_json::json!({"from": from, "to": to, "path": path}))
-                    .map_err(|e| e.to_string())
-            }
-            "evidence" => {
-                let rel = args["rel"].as_str().unwrap_or_default();
-                reader.evidence(rel).await.map_err(|e| e.to_string())
-            }
-            "status" => Ok(serde_json::json!({
-                "repo": repo, "build_id": reader.build_id(), "generation": reader.generation(),
-                "status": reader.status(), "snapshots": reader.snapshots(),
-                "export_caps": {"nodes": EXPORT_NODE_CAP, "edges": EXPORT_EDGE_CAP},
-            })),
-            "diff" => {
-                let from = args["from_build"].as_str().unwrap_or_default();
-                let to = args["to_build"].as_str().unwrap_or_default();
-                reader.diff(repo, from, to).await.map_err(|e| e.to_string())
-            }
-            "export" => reader.export().await.map_err(|e| e.to_string()),
-            "explain" => {
-                let eid = args["id"].as_str().unwrap_or_default();
-                reader.explain(eid).await.map_err(|e| e.to_string())
-            }
-            _ => {
-                return mcp_error(
-                    id,
-                    -32601,
-                    format!("read-only MCP: no such tool (rejected): {name}"),
-                    None,
-                );
-            }
-        };
+        }
+        "path" => {
+            let from = args["from"].as_str().unwrap_or_default();
+            let to = args["to"].as_str().unwrap_or_default();
+            let hops = usize::try_from(
+                args.get("max_hops")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(4),
+            )
+            .expect("hop count fits in usize");
+            reader
+                .path(from, to, hops)
+                .await
+                .map(|path| serde_json::json!({"from": from, "to": to, "path": path}))
+                .map_err(|e| e.to_string())
+        }
+        "evidence" => {
+            let rel = args["rel"].as_str().unwrap_or_default();
+            reader.evidence(rel).await.map_err(|e| e.to_string())
+        }
+        "status" => Ok(serde_json::json!({
+            "repo": repo, "build_id": reader.build_id(), "generation": reader.generation(),
+            "status": reader.status(), "snapshots": reader.snapshots(),
+            "coverage": reader.coverage.as_ref().map(chaosbox_core::coverage::BuildCoverage::report),
+            "export_caps": {"nodes": EXPORT_NODE_CAP, "edges": EXPORT_EDGE_CAP},
+        })),
+        "diff" => {
+            let from = args["from_build"].as_str().unwrap_or_default();
+            let to = args["to_build"].as_str().unwrap_or_default();
+            reader.diff(repo, from, to).await.map_err(|e| e.to_string())
+        }
+        "export" => reader.export().await.map_err(|e| e.to_string()),
+        "explain" => {
+            let eid = args["id"].as_str().unwrap_or_default();
+            reader.explain(eid).await.map_err(|e| e.to_string())
+        }
+        _ => {
+            return mcp_error(
+                id,
+                -32601,
+                format!("read-only MCP: no such tool (rejected): {name}"),
+                None,
+            );
+        }
+    };
     match payload {
         Ok(v) => mcp_text_result(id, &v),
         Err(e) => mcp_error(id, -32603, e, None),

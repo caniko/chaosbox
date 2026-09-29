@@ -34,6 +34,7 @@ pub fn export_json(build: &GraphBuild) -> serde_json::Value {
                 "source_file": e.file,
                 "source_location": format!("L{}", e.span.start_line),
                 "qualified_name": e.qualified_name,
+                "snapshot": e.snapshot, "span": e.span,
             })
         })
         .collect();
@@ -54,6 +55,7 @@ pub fn export_json(build: &GraphBuild) -> serde_json::Value {
         "directed": true, "multigraph": true,
         "nodes": nodes, "links": links,
         "build_id": build.id, "generation": build.generation,
+        "snapshots": build.snapshot_ids, "coverage": build.coverage.as_ref().map(chaosbox_core::coverage::BuildCoverage::report),
     })
 }
 

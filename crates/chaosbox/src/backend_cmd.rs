@@ -66,7 +66,7 @@ pub(super) async fn typedb_publication_chain(
         .map_err(|e| format!("publication chain: {e}"))
 }
 
-/// Whether the active build still publishes relations.
+/// Whether the active build publishes decision-backed (or legacy) relations.
 ///
 /// Returns `Ok(None)` when the store definitively has no active build for
 /// the repository (nothing consumers could lose), `Ok(Some(_))` when the
@@ -86,7 +86,12 @@ pub(super) async fn active_publishes_relations<S: chaosbox_store::Store>(
     repo: &str,
 ) -> Result<Option<bool>, String> {
     if let Some(build) = store.active(repo) {
-        return Ok(Some(!build.edges.is_empty()));
+        return Ok(Some(
+            build
+                .coverage
+                .as_ref()
+                .map_or(!build.edges.is_empty(), |c| c.decision_relations > 0),
+        ));
     }
     if backend() != Backend::Typedb {
         return Ok(Some(false));
@@ -102,6 +107,9 @@ pub(super) async fn active_publishes_relations<S: chaosbox_store::Store>(
     let Some(build) = build else {
         return Ok(None);
     };
+    if let Some(coverage) = build.coverage {
+        return Ok(Some(coverage.decision_relations > 0));
+    }
     // Presence is all the gate asks: one row answers it without pulling the
     // whole relation set out of the store.
     let relations = Box::pin(handle.build_relationships(&build.build_id, 1))

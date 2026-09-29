@@ -3,7 +3,8 @@
 use std::collections::BTreeMap;
 
 use chaosbox_core::{
-    Candidate, Claim, Decision, Entity, Evidence, GraphBuild, InferenceRecord, Relation, SnapshotFile,
+    Candidate, Claim, Decision, Entity, Evidence, GraphBuild, InferenceRecord, Relation,
+    SnapshotFile,
 };
 
 use crate::StoreError;
@@ -54,10 +55,7 @@ pub trait Store: Send + Sync {
     /// Look up a reusable inference by reuse key for cross-snapshot reuse.
     /// Returns `None` on a miss; legacy rows without raw data are misses
     /// by construction (nothing stored under their key).
-    async fn find_inference(
-        &self,
-        reuse_key: &str,
-    ) -> Result<Option<InferenceRecord>, StoreError>;
+    async fn find_inference(&self, reuse_key: &str) -> Result<Option<InferenceRecord>, StoreError>;
     /// Record evidence (idempotent per evidence id; the (snapshot, path)
     /// file version must be registered first).
     async fn put_evidence(&mut self, e: Evidence) -> Result<(), StoreError>;
@@ -269,10 +267,7 @@ impl Store for MemoryStore {
         self.inferences.entry(rec.reuse_key.clone()).or_insert(rec);
         Ok(())
     }
-    async fn find_inference(
-        &self,
-        reuse_key: &str,
-    ) -> Result<Option<InferenceRecord>, StoreError> {
+    async fn find_inference(&self, reuse_key: &str) -> Result<Option<InferenceRecord>, StoreError> {
         Ok(self.inferences.get(reuse_key).cloned())
     }
     async fn put_evidence(&mut self, e: Evidence) -> Result<(), StoreError> {
@@ -353,6 +348,32 @@ impl Store for MemoryStore {
         expected_predecessor: Option<String>,
     ) -> Result<(), StoreError> {
         // Validate invariants before pointer swing.
+        if let Some(coverage) = &build.coverage {
+            // The no-decisions refresh gate trusts this distinction. Derive
+            // it from retained provenance, never solely from caller counts.
+            let structural = build
+                .edges
+                .values()
+                .filter(|edge| {
+                    !edge.evidence_ids.is_empty()
+                        && edge.evidence_ids.iter().all(|id| {
+                            self.evidence.get(id).is_some_and(|evidence| {
+                                evidence.producer.is_some()
+                                    && evidence.supports
+                                    && evidence.class == chaosbox_core::EvidenceClass::Extracted
+                            })
+                        })
+                })
+                .count();
+            if coverage.structural_relations != structural
+                || coverage.decision_relations != build.edges.len() - structural
+                || coverage.files.iter().map(|file| file.facts).sum::<usize>() != structural
+            {
+                return Err(StoreError::Invariant(
+                    "build coverage disagrees with evidence provenance".into(),
+                ));
+            }
+        }
         for r in build.edges.values() {
             if !build.nodes.contains_key(&r.from) || !build.nodes.contains_key(&r.to) {
                 return Err(StoreError::Invariant(format!(

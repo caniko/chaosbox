@@ -61,6 +61,8 @@ define
   attribute cache-key value string;
   attribute reuse-key value string;
   attribute raw-answer value string;
+  attribute producer value string;
+  attribute coverage-json value string;
   attribute input-tokens value integer;
   attribute http-status value integer;
   attribute error value string;
@@ -205,6 +207,7 @@ define
     owns text,
     owns span-id,
     owns file-version-id,
+    owns producer,
     plays supporting:evidence,
     plays contradicting:evidence;
 
@@ -223,6 +226,7 @@ define
     owns predecessor,
     owns status,
     owns created,
+    owns coverage-json,
     plays node-membership:build,
     plays edge-membership:build;
 

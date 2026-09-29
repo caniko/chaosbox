@@ -25,6 +25,49 @@ impl MemoryReader {
         Self::default()
     }
 
+    /// Snapshot the actual published store, including source-linked claims.
+    #[must_use]
+    pub fn from_store(store: &crate::MemoryStore) -> Self {
+        let mut reader = Self {
+            builds: store.builds.clone(),
+            active: store.active.clone(),
+            evidence: BTreeMap::new(),
+        };
+        for claim in store.claims.values() {
+            for id in claim.supporting.iter().chain(&claim.contradicting) {
+                let Some(e) = store.evidence.get(id) else {
+                    continue;
+                };
+                let citation = store
+                    .files
+                    .get(&(e.snapshot.clone(), e.source_file_version.clone()))
+                    .map(|(sha256, _)| crate::rows::SourceCitation {
+                        snapshot: e.snapshot.clone(),
+                        file: e.source_file_version.clone(),
+                        sha256: sha256.clone(),
+                        span: e.span.clone(),
+                    });
+                reader
+                    .evidence
+                    .entry(claim.relation_id.clone())
+                    .or_default()
+                    .push(EvidenceRow {
+                        evidence_id: e.id.clone(),
+                        class: chaosbox_core::evidence_class_name(e.class),
+                        supports: e.supports,
+                        text: e.text.clone(),
+                        citation,
+                        producer: e.producer.clone(),
+                    });
+            }
+        }
+        for rows in reader.evidence.values_mut() {
+            rows.sort_by(|a, b| a.evidence_id.cmp(&b.evidence_id));
+            rows.dedup_by(|a, b| a.evidence_id == b.evidence_id);
+        }
+        reader
+    }
+
     /// Insert a build (indexed by its id).
     pub fn insert_build(&mut self, build: GraphBuild) {
         self.builds.insert(build.id.clone(), build);
@@ -89,6 +132,7 @@ impl GraphQueries for MemoryReader {
                     generation: i64::try_from(b.generation).expect("generation fits in i64"),
                     status: "active".to_owned(),
                     snapshots,
+                    coverage: b.coverage.clone(),
                 }
             }))
     }

@@ -21,7 +21,7 @@ mod task;
 pub use conformance::{ConformanceSeed, check_conformance, conformance_seed};
 pub use memory_reader::MemoryReader;
 pub use queries::GraphQueries;
-pub use rows::{BuildRow, EndpointRef, EntityRow, EvidenceRow, RelRow};
+pub use rows::{BuildRow, EndpointRef, EntityRow, EvidenceRow, RelRow, SourceCitation};
 pub use store::{MemoryStore, StagedData, Store, StoreStats};
 pub use task::{Task, TaskState, claim_task, heartbeat_task, reclaim_task};
 
@@ -61,40 +61,8 @@ mod tests {
         )
     }
 
-    /// Shared write-path conformance over any [`Store`] impl: file linkage,
-    /// decision idempotency + Failed-supersedure, and publication guards.
-    /// Runs against [`MemoryStore`] now; a live-backend test seeds nothing
-    /// extra and calls this against the `TypeDB` store once available.
-    pub async fn check_write_conformance<S: Store>(s: &mut S) {
-        use chaosbox_core::{DecisionOutcome, EvidenceClass, RelationType, SourceSpan};
-        // Run + set identity registers before candidates may reference it.
-        s.ensure_run("run:1", "r", "s1", "set:1", "catalog:1", "rubric-v1")
-            .await
-            .unwrap();
-        assert_eq!(s.stats().runs, 1);
-        // Same inputs re-register idempotently; changed inputs are rejected.
-        s.ensure_run("run:1", "r", "s1", "set:1", "catalog:1", "rubric-v1")
-            .await
-            .unwrap();
-        assert!(s
-            .ensure_run("run:1", "r", "s1", "set:1", "catalog:2", "rubric-v1")
-            .await
-            .is_err());
-        let cand = Candidate {
-            id: "cand:1".into(),
-            rel_type: RelationType::Calls,
-            from_entity: "ent:a".into(),
-            to_entity: "ent:b".into(),
-            reason: "structural".into(),
-            state_excerpt: String::new(),
-        };
-        assert!(
-            s.put_candidate("set:missing", &cand).await.is_err(),
-            "unregistered sets never resolve"
-        );
-        s.put_candidate("set:1", &cand).await.unwrap();
-        s.put_candidate("set:1", &cand).await.unwrap();
-        assert_eq!(s.stats().candidates, 1);
+    async fn check_evidence_linkage<S: Store>(s: &mut S) {
+        use chaosbox_core::{EvidenceClass, SourceSpan};
         // File versions register before evidence may reference them.
         let files = vec![SnapshotFile {
             snapshot: "s1".into(),
@@ -111,6 +79,7 @@ mod tests {
             span: Some(SourceSpan::point("a.rs", 1, 1, 0)),
             snapshot: "s1".into(),
             source_file_version: "a.rs".into(),
+            producer: None,
         };
         s.put_evidence(ev).await.unwrap();
         assert_eq!(s.stats().evidence, 1);
@@ -122,11 +91,50 @@ mod tests {
             span: None,
             snapshot: "s9".into(),
             source_file_version: "missing.rs".into(),
+            producer: None,
         };
         assert!(
             s.put_evidence(bad).await.is_err(),
             "unregistered files never resolve"
         );
+    }
+
+    /// Shared write-path conformance over any [`Store`] impl: file linkage,
+    /// decision idempotency + Failed-supersedure, and publication guards.
+    /// Runs against [`MemoryStore`] now; a live-backend test seeds nothing
+    /// extra and calls this against the `TypeDB` store once available.
+    pub async fn check_write_conformance<S: Store>(s: &mut S) {
+        use chaosbox_core::{DecisionOutcome, EvidenceClass, RelationType};
+        // Run + set identity registers before candidates may reference it.
+        s.ensure_run("run:1", "r", "s1", "set:1", "catalog:1", "rubric-v1")
+            .await
+            .unwrap();
+        assert_eq!(s.stats().runs, 1);
+        // Same inputs re-register idempotently; changed inputs are rejected.
+        s.ensure_run("run:1", "r", "s1", "set:1", "catalog:1", "rubric-v1")
+            .await
+            .unwrap();
+        assert!(
+            s.ensure_run("run:1", "r", "s1", "set:1", "catalog:2", "rubric-v1")
+                .await
+                .is_err()
+        );
+        let cand = Candidate {
+            id: "cand:1".into(),
+            rel_type: RelationType::Calls,
+            from_entity: "ent:a".into(),
+            to_entity: "ent:b".into(),
+            reason: "structural".into(),
+            state_excerpt: String::new(),
+        };
+        assert!(
+            s.put_candidate("set:missing", &cand).await.is_err(),
+            "unregistered sets never resolve"
+        );
+        s.put_candidate("set:1", &cand).await.unwrap();
+        s.put_candidate("set:1", &cand).await.unwrap();
+        assert_eq!(s.stats().candidates, 1);
+        check_evidence_linkage(s).await;
         // Decisions: first write wins, except Failed supersedes once.
         let mk = |id: &str, outcome| Decision {
             id: id.into(),
@@ -159,10 +167,11 @@ mod tests {
         s.publish(b1.clone(), None).await.unwrap();
         let mut stale = GraphBuild::new("r", vec!["s1".into()], 1);
         stale.add_node(ent("r", "s1", "b.rs", "b")).unwrap();
-        assert!(s
-            .publish(stale, Some("wrong-predecessor".into()))
-            .await
-            .is_err());
+        assert!(
+            s.publish(stale, Some("wrong-predecessor".into()))
+                .await
+                .is_err()
+        );
         let mut b2 = GraphBuild::new("r", vec!["s2".into()], 2);
         b2.predecessor = Some(b1.id.clone());
         b2.add_node(ent("r", "s2", "c.rs", "c")).unwrap();

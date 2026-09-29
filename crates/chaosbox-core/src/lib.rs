@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub mod coverage;
 pub mod intelligence;
 
 /// Hash `parts` with SHA-256, joined by `\0`, hex-encoded.
@@ -279,6 +280,10 @@ pub struct Evidence {
     pub snapshot: String,
     /// Repository-relative path of the source file version.
     pub source_file_version: String,
+    /// Parser/grammar/contract version for direct syntax evidence; absent for
+    /// decision evidence and legacy records.
+    #[serde(default)]
+    pub producer: Option<String>,
 }
 
 /// Content identity of one source file version. Both backends key
@@ -427,7 +432,7 @@ pub struct InferenceRecord {
 /// Candidate catalog/preprocessing version. Bump when parsers, candidate
 /// construction, or question semantics change: the digest below feeds every
 /// decision cache key, so a bump conservatively re-asks all decisions.
-pub const CATALOG_VERSION: &str = "catalog-v1";
+pub const CATALOG_VERSION: &str = "catalog-v2";
 
 /// Catalog digest over the sorted candidate set: one record per candidate
 /// `(id, rel_type, from, to, reason)` plus [`CATALOG_VERSION`].
@@ -631,6 +636,9 @@ pub struct GraphBuild {
     pub generation: u64,
     /// Previous build id, if any.
     pub predecessor: Option<String>,
+    /// Persisted processing accounting; unknown for legacy builds.
+    #[serde(default)]
+    pub coverage: Option<coverage::BuildCoverage>,
 }
 
 impl GraphBuild {
@@ -649,6 +657,7 @@ impl GraphBuild {
             edges: BTreeMap::new(),
             generation,
             predecessor: None,
+            coverage: None,
         }
     }
 

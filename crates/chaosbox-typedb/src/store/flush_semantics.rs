@@ -2,8 +2,8 @@
 //! claims, and build rows.
 
 use chaosbox_core::{
-    Claim, Decision, DecisionOutcome, Entity, Evidence, EvidenceClass, GraphBuild,
-    InferenceRecord, RawAnswer, Relation, evidence_class_name,
+    Claim, Decision, DecisionOutcome, Entity, Evidence, EvidenceClass, GraphBuild, InferenceRecord,
+    RawAnswer, Relation, evidence_class_name,
 };
 use chaosbox_store::StoreError;
 use crate::common::{
@@ -119,9 +119,9 @@ impl TypeDbStore {
         }
         match tx.commit().await {
             Ok(()) => Ok(()),
-            Err(e) if is_conflict(&e) || is_unique_violation(&e) => Err(StoreError::Invariant(
-                "concurrent decision write".into(),
-            )),
+            Err(e) if is_conflict(&e) || is_unique_violation(&e) => {
+                Err(StoreError::Invariant("concurrent decision write".into()))
+            }
             Err(e) => Err(driver_error(e)),
         }
     }
@@ -231,7 +231,9 @@ impl TypeDbStore {
             driver,
             &self.config.database,
             &q,
-            &["id", "c", "q", "o", "e", "mr", "mrr", "k", "rk", "ra", "cf", "p"],
+            &[
+                "id", "c", "q", "o", "e", "mr", "mrr", "k", "rk", "ra", "cf", "p",
+            ],
         )
         .await?;
         let Some(row) = rows.into_iter().next() else {
@@ -280,6 +282,7 @@ impl TypeDbStore {
             str_lit(&file_version_id(&e.snapshot, &e.source_file_version))
         );
         if let Some(s) = &e.span {
+            self.flush_span(s).await?;
             owns.push_str(", has span-id ");
             owns.push_str(&str_lit(&span_id_of(
                 &s.file,
@@ -290,6 +293,10 @@ impl TypeDbStore {
                 s.byte_start,
                 s.byte_end,
             )));
+        }
+        if let Some(producer) = &e.producer {
+            owns.push_str(", has producer ");
+            owns.push_str(&str_lit(producer));
         }
         let q = format!("insert $x isa evidence, {owns};");
         self.insert_ignoring_duplicates(&q).await
@@ -347,6 +354,12 @@ impl TypeDbStore {
         if let Some(pred) = &build.predecessor {
             owns.push_str(", has predecessor ");
             owns.push_str(&str_lit(pred));
+        }
+        if let Some(coverage) = &build.coverage {
+            let json =
+                serde_json::to_string(coverage).map_err(|e| StoreError::Query(e.to_string()))?;
+            owns.push_str(", has coverage-json ");
+            owns.push_str(&str_lit(&json));
         }
         self.insert_ignoring_duplicates(&format!("insert $b isa graph-build, {owns};"))
             .await?;

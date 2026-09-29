@@ -382,6 +382,132 @@ async fn migrate_is_idempotent() {
 }
 
 #[tokio::test]
+async fn direct_fact_citations_and_coverage_survive_a_fresh_reader() {
+    use chaosbox_core::coverage::{BuildCoverage, FileCoverage, SyntaxStatus};
+    let db = test_db("t_facts");
+    let Some(mut store) = connected_store(&db).await else {
+        return;
+    };
+    let repo = "facts";
+    let file = ent(repo, "s1", "a.rs", "file");
+    let definition = ent(repo, "s1", "a.rs", "declaration");
+    store
+        .ensure_snapshot_files(
+            "s1",
+            repo,
+            &[SnapshotFile {
+                snapshot: "s1".into(),
+                path: "a.rs".into(),
+                sha256: "known-content-hash".into(),
+                bytes: 40,
+            }],
+        )
+        .await
+        .unwrap();
+    let mut build = GraphBuild::new(repo, vec!["s1".into()], 1);
+    build.add_node(file.clone()).unwrap();
+    build.add_node(definition.clone()).unwrap();
+    let mut rel = Relation::new(
+        RelationType::Defines,
+        &file.id,
+        &definition.id,
+        RelationScope::File,
+        &build.id,
+    );
+    // Deliberately different from any entity span: evidence spans must be
+    // persisted themselves rather than incidentally via an entity write.
+    let source_span = SourceSpan {
+        file: "a.rs".into(),
+        start_line: 2,
+        start_col: 4,
+        end_line: 2,
+        end_col: 15,
+        byte_start: 10,
+        byte_end: 21,
+    };
+    let evidence = Evidence {
+        id: "ev:direct".into(),
+        class: EvidenceClass::Extracted,
+        supports: true,
+        text: "declaration".into(),
+        span: Some(source_span.clone()),
+        snapshot: "s1".into(),
+        source_file_version: "a.rs".into(),
+        producer: Some("declarations-test-v1".into()),
+    };
+    store.put_evidence(evidence.clone()).await.unwrap();
+    rel.evidence_ids.push(evidence.id.clone());
+    store
+        .put_claim(Claim {
+            id: "claim:direct".into(),
+            relation_id: rel.id.clone(),
+            supporting: vec![evidence.id],
+            contradicting: vec![],
+            accepted: true,
+        })
+        .await
+        .unwrap();
+    build.add_edge(rel.clone()).unwrap();
+    build.coverage = Some(BuildCoverage {
+        files: vec![FileCoverage {
+            file: "a.rs".into(),
+            producer: "declarations-test-v1".into(),
+            status: SyntaxStatus::Parsed,
+            facts: 1,
+        }],
+        structural_relations: 1,
+        decision_relations: 0,
+    });
+    store.publish(build.clone(), None).await.unwrap();
+    assert_eq!(store.stats().decisions, 0);
+    let mut reader = TypeDbReader::new(config(&db));
+    reader.connect().await.unwrap();
+    assert_direct_readback(&reader, &build, &rel, &definition, &source_span).await;
+}
+
+async fn assert_direct_readback(
+    reader: &TypeDbReader,
+    build: &GraphBuild,
+    rel: &Relation,
+    definition: &Entity,
+    source_span: &SourceSpan,
+) {
+    assert!(reader.probe().await.unwrap());
+    assert_eq!(
+        reader
+            .active_build(&build.repo)
+            .await
+            .unwrap()
+            .unwrap()
+            .coverage,
+        build.coverage
+    );
+    let rows = reader.evidence_for(&build.id, &rel.id).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].producer.as_deref(), Some("declarations-test-v1"));
+    let citation = rows[0].citation.as_ref().unwrap();
+    assert_eq!(citation.sha256, "known-content-hash");
+    assert_eq!(citation.snapshot, "s1");
+    assert_eq!(citation.span.as_ref(), Some(source_span));
+    assert_eq!(
+        reader
+            .entity_by_id(&build.id, &definition.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .span,
+        Some(definition.span.clone())
+    );
+    assert!(
+        reader
+            .evidence_for("build:other", &rel.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn publish_readback_and_predecessor_guards() {
     let db = test_db("t_pub");
     let Some(mut s) = connected_store(&db).await else {
@@ -406,6 +532,7 @@ async fn publish_readback_and_predecessor_guards() {
         span: Some(span("a.rs")),
         snapshot: "s1".into(),
         source_file_version: "a.rs".into(),
+        producer: None,
     })
     .await
     .unwrap();
@@ -596,6 +723,7 @@ async fn reader_passes_reference_conformance_against_live_backend() {
         span: None,
         snapshot: "s1".into(),
         source_file_version: "f.rs".into(),
+        producer: None,
     })
     .await
     .unwrap();

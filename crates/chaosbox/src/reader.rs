@@ -83,6 +83,8 @@ pub struct GraphReader<R> {
     /// reports so consumers can detect a build that no longer matches its
     /// sources. Empty when the backend's projection predates the field.
     pub snapshots: Vec<String>,
+    /// Processing coverage pinned with the build; unknown for legacy builds.
+    pub coverage: Option<chaosbox_core::coverage::BuildCoverage>,
 }
 
 impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
@@ -100,6 +102,7 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
             generation: build.generation,
             status: build.status,
             snapshots: build.snapshots,
+            coverage: build.coverage,
         })
     }
 
@@ -247,6 +250,7 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
                 serde_json::json!({
                     "id": e.entity_id, "label": e.name, "kind": e.kind,
                     "source_file": e.file, "qualified_name": e.qualified_name,
+                    "snapshot": e.snapshot, "span": e.span,
                 })
             })
             .collect();
@@ -265,6 +269,7 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
             "directed": true, "multigraph": true,
             "nodes": nodes, "links": links,
             "build_id": self.build_id, "generation": self.generation,
+            "snapshots": self.snapshots, "coverage": self.coverage.as_ref().map(chaosbox_core::coverage::BuildCoverage::report),
         }))
     }
 
@@ -293,6 +298,7 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
         Ok(serde_json::json!({
             "id": e.entity_id, "kind": e.kind, "file": e.file,
             "qualified_name": e.qualified_name,
+            "snapshot": e.snapshot, "span": e.span,
             "outgoing": out.len(), "incoming": inc.len(),
         }))
     }

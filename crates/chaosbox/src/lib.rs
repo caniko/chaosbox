@@ -101,6 +101,7 @@ fn assemble_evidence(
         span,
         snapshot: snapshot.to_owned(),
         source_file_version: file.to_owned(),
+        producer: None,
     }
 }
 

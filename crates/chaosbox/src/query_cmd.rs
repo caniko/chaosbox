@@ -136,6 +136,7 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
                     "generation": reader.generation(),
                     "status": reader.status(),
                     "snapshots": reader.snapshots(),
+                    "coverage": reader.coverage.as_ref().map(chaosbox_core::coverage::BuildCoverage::report),
                     "export_caps": {"nodes": EXPORT_NODE_CAP, "edges": EXPORT_EDGE_CAP},
                 }))
                 .unwrap()
