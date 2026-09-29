@@ -94,8 +94,13 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Candi
         omitted: BTreeMap::new(),
         cap: max_candidates,
     };
-    let mut seen: BTreeSet<(String, String, String)> = BTreeSet::new();
-    // 1. structural edges from extraction refs
+    let mut seen: BTreeSet<(String, String, String)> = extraction
+        .facts
+        .iter()
+        .map(|fact| (rel_name(&fact.rel_type), fact.from.clone(), fact.to.clone()))
+        .collect();
+    // 1. Uncertified extraction proposals. Certified facts are already in
+    // `seen`: they consume neither candidate slots nor omitted accounting.
     for (from, to, kind) in &extraction.explicit_refs {
         let rel = match kind.as_str() {
             "defines" => RelationType::Defines,

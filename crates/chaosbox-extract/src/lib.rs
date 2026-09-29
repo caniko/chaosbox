@@ -1,12 +1,12 @@
 //! Deterministic source parsing and candidate generation.
 //!
 //! Supported (explicit, no complete-call-resolution claims):
-//! - Rust / Python / JavaScript+TypeScript: files, modules, symbols,
-//!   definitions, imports, containment, explicit textual references.
-//! - Nix: bindings/functions as definitions, relative `.nix` imports
-//!   (resolved to the target file when it is part of the snapshot),
-//!   interpolation/inherit references to in-file bindings (regex-based,
-//!   parse-only; no attribute-set or module-system evaluation).
+//! - Rust / TypeScript / TSX / MTS / CTS / Nix: parser-certified source
+//!   declarations and file/module containment, exact spans and syntax coverage.
+//!   Imports and lexical name matches remain uncertified decision proposals.
+//!   Nix relative `.nix` path proposals resolve to captured file targets;
+//!   no compiler, scope, attribute-set or module-system evaluation is claimed.
+//! - Python / JavaScript: heuristic definitions/imports/textual references.
 //! - Markdown: headings, links, code mentions, source spans.
 //! - Plain text: file/symbol records, lexical mentions.
 //!   Unsupported images/audio/video and office docs are reported, never
@@ -21,12 +21,13 @@ use thiserror::Error;
 mod candidates;
 mod extractors;
 mod paths;
+mod syntax;
 
 #[cfg(test)]
 mod tests;
 
 pub use candidates::{CandidateCatalog, build_candidates};
-pub use extractors::{Extraction, extract_file, report_unsupported};
+pub use extractors::{Extraction, StructuralFact, extract_file, report_unsupported};
 
 use crate::extractors::is_supported;
 use crate::paths::resolve_nix_imports;
@@ -320,6 +321,8 @@ impl Snapshot {
 pub fn extract_snapshot(snapshot: &Snapshot) -> Extraction {
     let mut entities = Vec::new();
     let mut refs = Vec::new();
+    let mut facts = Vec::new();
+    let mut coverage = Vec::new();
     let mut paths: Vec<&String> = snapshot.contents.keys().collect();
     paths.sort();
     for path in paths {
@@ -327,10 +330,14 @@ pub fn extract_snapshot(snapshot: &Snapshot) -> Extraction {
         let one = extract_file(&snapshot.repo, &snapshot.id, path, text);
         entities.extend(one.entities);
         refs.extend(one.explicit_refs);
+        facts.extend(one.facts);
+        coverage.extend(one.coverage);
     }
     resolve_nix_imports(snapshot, &mut entities, &mut refs);
     Extraction {
         entities,
         explicit_refs: refs,
+        facts,
+        coverage,
     }
 }

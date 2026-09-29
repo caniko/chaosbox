@@ -53,17 +53,9 @@ pub async fn uncached_decisions<S: chaosbox_store::Store>(
         let to = entities
             .get(&cand.to_entity)
             .ok_or_else(|| PipelineError::Validation("missing to".into()))?;
-        let attempt = crate::reuse::resolve_reuse(
-            cand,
-            from,
-            to,
-            &snapshot.id,
-            &ctx,
-            mat,
-            &catalog,
-            store,
-        )
-        .await?;
+        let attempt =
+            crate::reuse::resolve_reuse(cand, from, to, &snapshot.id, &ctx, mat, &catalog, store)
+                .await?;
         if attempt.hit.is_none() {
             uncached += 1;
         }
@@ -306,16 +298,9 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
                 &questions,
                 &qid,
             )?;
-            let (outcome, class, conf, prob) =
-                materialize_raw(&winner.raw, mat, &cand.reason)?;
+            let (outcome, class, conf, prob) = materialize_raw(&winner.raw, mat, &cand.reason)?;
             let decision = Decision {
-                id: decision_id_for(
-                    &cand.id,
-                    answered_qid,
-                    model_requested,
-                    &rkey,
-                    &mat_digest,
-                ),
+                id: decision_id_for(&cand.id, answered_qid, model_requested, &rkey, &mat_digest),
                 candidate_id: cand.id.clone(),
                 question_id: answered_qid.clone(),
                 outcome: outcome.clone(),
@@ -385,6 +370,37 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
                 .add_node(e.clone())
                 .map_err(|e| PipelineError::Validation(e.to_string()))?;
         }
+        crate::structural::publish_facts(
+            &mut self.store,
+            &mut build,
+            snapshot,
+            extraction,
+            &entities,
+        )
+        .await?;
+        let structural_relations = build.edges.len();
+        self.materialize_decisions(&mut build, decided, mat, &entities)
+            .await?;
+        build.coverage = Some(chaosbox_core::coverage::BuildCoverage {
+            files: extraction.coverage.clone(),
+            structural_relations,
+            decision_relations: build.edges.len() - structural_relations,
+        });
+        // Invariant: published edges refer to same-build members (enforced by add_edge).
+        self.store
+            .publish(build.clone(), expected_predecessor)
+            .await
+            .map_err(|e| PipelineError::Store(e.to_string()))?;
+        Ok(build)
+    }
+
+    async fn materialize_decisions(
+        &mut self,
+        build: &mut GraphBuild,
+        decided: &[(Candidate, Decision, Evidence)],
+        mat: &Materialization,
+        entities: &BTreeMap<String, Entity>,
+    ) -> Result<(), PipelineError> {
         // Materialize accepted relations as first-class objects.
         // Index rejected evidence by endpoint triple so materialized claims
         // carry their same-batch contradicting evidence.
@@ -470,12 +486,7 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
                 .await
                 .map_err(|e| PipelineError::Store(e.to_string()))?;
         }
-        // Invariant: published edges refer to same-build members (enforced by add_edge).
-        self.store
-            .publish(build.clone(), expected_predecessor)
-            .await
-            .map_err(|e| PipelineError::Store(e.to_string()))?;
-        Ok(build)
+        Ok(())
     }
 }
 

@@ -115,17 +115,12 @@ enum Command {
         /// decisions are recorded under the `fixture-test` model identity.
         #[arg(long, default_value_t = false, conflicts_with = "no_decisions")]
         fixture_decisions: bool,
-        /// Publish extracted entities with no new inference: no live Jev
-        /// requests, no fixture accept-all. Decisions an earlier run paid
-        /// for are republished from cache, so an entities-only refresh
-        /// keeps the active build's relations instead of replacing it with
-        /// a node-only one; uncached candidates are left for the next
-        /// decisions run to ask. When the cache cannot cover every current
-        /// candidate while the active build still publishes relations
-        /// (an ordinary source edit does exactly that), the run keeps the
-        /// active build and exits 4 with a `coverage:` line instead of
-        /// publishing an under-covered graph. Safe for real corpora before
-        /// Jev approval.
+        /// Publish entities and certified syntax facts without new inference.
+        /// Valid paid inferences are reused; uncached candidates stay pending.
+        /// Structural-only builds can refresh freely. A decision-bearing or
+        /// legacy active build is kept (exit 4, `coverage:` diagnostic) when
+        /// current candidates lack reusable decisions. No Jev requests or
+        /// fixture accept-all decisions are made.
         #[arg(long, default_value_t = false)]
         no_decisions: bool,
         /// Live-Jev spend guards (defaults = `JevPolicy::default`).

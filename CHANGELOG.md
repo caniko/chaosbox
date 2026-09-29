@@ -11,6 +11,12 @@
 
 ### Added
 
+- Parser-certified Rust, TypeScript/TSX/MTS/CTS and Nix declarations with
+  zero-model structural publication independent of candidate budgets.
+- Source citations and parser provenance in read-only queries, plus persisted
+  syntax coverage and direct/decision relationship counts (additive TypeDB
+  schema v3; run `chaosbox db migrate`). Structural-only builds can refresh
+  under `--no-decisions` without inference coverage.
 - Release tooling: six per-crate CI workflows and six signed-tag
   `publish-crate-*` workflows (simit-generated, drift-checked by
   `simit init ci --check`), with the maintainer public key in

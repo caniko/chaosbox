@@ -316,6 +316,8 @@ async fn failed_refresh_preserves_last_good_build() {
     let ext = Extraction {
         entities: entities.values().cloned().collect(),
         explicit_refs: vec![],
+        facts: vec![],
+        coverage: vec![],
     };
     // First publish a good build on one pipeline/store.
     let mut pipe = Pipeline::<MemoryStore>::new();
@@ -388,6 +390,8 @@ async fn cache_only_refresh_republishes_paid_for_relations() {
     let ext = Extraction {
         entities: entities.values().cloned().collect(),
         explicit_refs: vec![],
+        facts: vec![],
+        coverage: vec![],
     };
     let mut pipe = Pipeline::<MemoryStore>::new();
     ensure_a_rs(&mut pipe.store).await;
@@ -514,6 +518,8 @@ async fn source_edit_leaves_capture_only_refresh_without_coverage() {
     let ext = Extraction {
         entities: entities.values().cloned().collect(),
         explicit_refs: vec![],
+        facts: vec![],
+        coverage: vec![],
     };
     let mut pipe = Pipeline::<MemoryStore>::new();
     ensure_a_rs(&mut pipe.store).await;
@@ -892,6 +898,8 @@ async fn empty_decisions_publish_entities_only() {
             SourceSpan::point("a.rs", 1, 1, 0),
         )],
         explicit_refs: vec![],
+        facts: vec![],
+        coverage: vec![],
     };
     let mut pipe = Pipeline::<MemoryStore>::new();
     let build = pipe
@@ -1344,6 +1352,8 @@ async fn reuse_rematerializes_threshold_change_without_respend() {
     let ext = Extraction {
         entities: entities.values().cloned().collect(),
         explicit_refs: vec![],
+        facts: vec![],
+        coverage: vec![],
     };
     let mut pipe2 = Pipeline::<MemoryStore>::new();
     pipe2.store = store2;

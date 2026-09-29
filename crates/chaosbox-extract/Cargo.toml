@@ -20,6 +20,10 @@ thiserror = { workspace = true }
 regex = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+tree-sitter = "=0.25.10"
+tree-sitter-rust = "=0.24.2"
+tree-sitter-typescript = "=0.23.2"
+rnix = "=0.14.0"
 
 [dev-dependencies]
 tempfile = "3"

@@ -219,6 +219,42 @@ chaosbox query status --repo test
 chaosbox query search main --repo test | head -c 400
 echo
 
+echo "== zero-model structural publication and fresh-process refresh =="
+mkdir "$WORK/syntax"
+printf 'export function before() {}\nexport const value = 1;\n' >"$WORK/syntax/app.ts"
+chaosbox run "$WORK/syntax" --repo syntax --no-decisions --max-candidates 0 >"$WORK/first.json" 2>"$WORK/first.log"
+printf 'export function after() {}\nexport const value = 2;\n' >"$WORK/syntax/app.ts"
+# The changed file now has an uncached co-occurrence candidate. Syntax-only
+# publication must still refresh, even across a process restart.
+chaosbox run "$WORK/syntax" --repo syntax --no-decisions --max-candidates 10 >"$WORK/second.json" 2>"$WORK/second.log"
+# The run contract emits usage only for live inference. Both cold zero-model
+# runs must report zero decisions instead.
+grep -q 'decisions: accepted=0 rejected=0 abstained=0 negative=0 failed=0' "$WORK/first.log"
+grep -q 'decisions: accepted=0 rejected=0 abstained=0 negative=0 failed=0' "$WORK/second.log"
+chaosbox query status --repo syntax >"$WORK/status.json"
+python3 - "$WORK" <<'PY'
+import json
+import pathlib
+import sys
+root = pathlib.Path(sys.argv[1])
+first, second, status = [json.loads((root / p).read_text()) for p in ("first.json", "second.json", "status.json")]
+assert len(first["links"]) == len(second["links"]) == 3
+assert first["build_id"] != second["build_id"]
+assert second["generation"] == first["generation"] + 1
+assert {n["label"] for n in second["nodes"] if n["kind"] == "Definition"} == {"after", "value"}
+assert status["coverage"]["structural_relations"] == 3
+assert status["coverage"]["decision_relations"] == 0
+assert status["coverage"]["files"][0]["status"] == "parsed"
+PY
+# A legacy/decision-bearing build still receives the existing exit-4 guard.
+if chaosbox run "$WORK/syntax" --repo test --no-decisions --max-candidates 0 >"$WORK/deferred.json" 2>"$WORK/deferred.log"; then
+  echo "decision-bearing active build was replaced without coverage" >&2
+  exit 1
+else
+  test "$?" -eq 4
+fi
+grep -q '^coverage:' "$WORK/deferred.log"
+
 # Explicit shutdown before the verdict: the EXIT trap only covers abnormal
 # exits from here on, and waiting for the server here (rather than in the
 # trap after the verdict) keeps a slow shutdown from flipping a green run.

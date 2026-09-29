@@ -45,6 +45,15 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         serde_json::to_string(&cat.omitted).unwrap(),
     );
     eprintln!(
+        "structural: facts={} files={} parse_errors={}",
+        ext.facts.len(),
+        ext.coverage.len(),
+        ext.coverage
+            .iter()
+            .filter(|f| f.status == chaosbox_core::coverage::SyntaxStatus::ParseError)
+            .count()
+    );
+    eprintln!(
         "scope: {}",
         if snap.scope.is_empty() {
             "(whole tree)".to_owned()
@@ -94,10 +103,8 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         }
     }
     let decided = if no_decisions {
-        // No live inference and no fixture accept-all: republish the
-        // decisions an earlier run already paid for and skip the rest, so
-        // an entities-only refresh can never swing the active pointer to a
-        // build that silently drops published relations.
+        // Certified syntax facts publish independently. Reuse only validated
+        // model inferences; the gate below protects decision-bearing builds.
         let reused = match chaosbox::decide_cached(
             cands,
             &entities,
@@ -115,19 +122,11 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
                 return 1;
             }
         };
-        // Cache identity carries the repository snapshot, the whole
-        // catalog, and the effective policy, so an ordinary source edit (or
-        // a scope/consent change) leaves nothing reusable.
-        // Publishing that graph would swing the active pointer onto a build
-        // with fewer relations than the one consumers are querying today;
-        // keep it instead and report the pending work. Exit 4 means "kept
-        // the previous build, spent nothing", which callers defer on rather
-        // than retry with backoff. The one exception is a repository with
-        // no active build at all: there is nothing to keep, so the first
-        // capture-only publish goes ahead and bootstraps the query view
-        // without spending anything. An unreadable active build is neither:
-        // it fails outright (exit 1, no `coverage:` line) so the batch
-        // reports failure rather than a successful deferral.
+        // A structural-only build can refresh without model coverage. For
+        // decision-bearing or legacy builds retain the conservative exit-4
+        // guard when current proposals lack reusable inferences. Relation-local
+        // reuse survives unrelated edits, but never an endpoint/policy change.
+        // An unreadable active build fails outright (exit 1).
         let active = active_publishes_relations(&pipe.store, repo).await;
         if let Err(error) = &active {
             eprintln!(
@@ -268,9 +267,7 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
             }
         }
     };
-    // Operator visibility: structural vs semantic coverage is a follow-up;
-    // today every candidate consumes the Jev budget, so report the outcome
-    // mix before publication (a failed batch refuses to publish below).
+    // Decision accounting is separate from the uncapped syntax facts above.
     let counts = chaosbox::summarize_outcomes(&decided);
     let n = |k: &str| counts.get(k).copied().unwrap_or(0);
     eprintln!(

@@ -15,10 +15,11 @@ described in the new book chapters are not yet implemented.
 - Snapshot (content-addressed, repo-scoped), deterministic extraction for
   Rust/Python/JS-TS/Nix/Markdown/text (files, modules, symbols, definitions,
   imports, containment, explicit refs, headings, links, code mentions, spans).
-  Nix: bindings/functions as definitions, relative `.nix` imports resolved to
-  the target file when it is in the snapshot (stubs stay visible when not),
-  interpolation/`inherit` references to in-file bindings (regex-based,
-  parse-only; no Nix evaluation)
+  Rust/TypeScript/TSX use pinned tree-sitter grammars; Nix uses rnix. Certified
+  declaration and file/module containment facts publish without model decisions
+  or candidate slots. Syntax failures withhold direct facts with explicit
+  coverage. Imports/name matches remain proposals; see `STRUCTURAL_FACTS.md`
+  for the exact subset (no compiler resolution or Nix evaluation).
 - Bounded candidate catalog (structural, lexical-import, co-occurrence; capped,
   never cartesian) with truthful truncation accounting: per-reason
   selected/omitted counts in `CandidateCatalog`, surfaced by `extract` and
@@ -96,6 +97,10 @@ described in the new book chapters are not yet implemented.
   consumers can detect a build that no longer matches its sources) alongside
   repo/build/generation/export caps; the in-memory and TypeDB backends fill
   it, readers whose projection predates the field report an empty list
+- Schema v3 retains per-file syntax coverage, direct/decision relation counts,
+  and parser provenance. Entity projections expose spans; relationship evidence
+  exposes snapshot/path/content hash/range. Structural-only builds refresh under
+  `--no-decisions`; decision-bearing and legacy builds retain the coverage guard.
 - Pilot safety: snapshot capture stays inside the repository boundary
   (outside symlinks, dangling links, nested checkouts, and link cycles
   excluded); batches with failed decisions refuse to publish so the last
@@ -154,7 +159,7 @@ admission policy; it does not turn fluent summaries into facts.
   communities/hyperedges materialization. Hyperedges are **in scope** for the
   stats/communities work (issue #10), not deferred to the capability backlog;
   only the grammar expansion is out of scope there.
-- Stored build statistics in `status` (node/edge counts, extraction coverage,
+- Remaining build statistics in `status` (node/edge counts, candidate omissions,
   catalog/rubric/model provenance recorded at publish; needs schema work —
   tracked in the chaosbox issue tracker), bounded NL `query ask`, workspace
   aggregate build, stats/communities read surface

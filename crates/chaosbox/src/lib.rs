@@ -30,12 +30,12 @@ mod reader;
 mod responder;
 pub(crate) mod reuse;
 pub mod sessions;
+mod structural;
 mod view;
 
 pub use lifecycle::LifecycleReport;
 pub use materialization::{
-    Materialization, ReuseContext, file_hashes_for, materialize_raw, questions_for,
-    reuse_input_for,
+    Materialization, ReuseContext, file_hashes_for, materialize_raw, questions_for, reuse_input_for,
 };
 pub use pipeline::{Pipeline, chain_publication, summarize_outcomes, uncached_decisions};
 pub use reader::{
@@ -174,17 +174,9 @@ pub async fn decide_cached<S: chaosbox_store::Store>(
         let to = entities
             .get(&cand.to_entity)
             .ok_or_else(|| PipelineError::Validation("missing to".into()))?;
-        let attempt = crate::reuse::resolve_reuse(
-            cand,
-            from,
-            to,
-            &snapshot.id,
-            &ctx,
-            mat,
-            &catalog,
-            &*store,
-        )
-        .await?;
+        let attempt =
+            crate::reuse::resolve_reuse(cand, from, to, &snapshot.id, &ctx, mat, &catalog, &*store)
+                .await?;
         let Some(hit) = attempt.hit else {
             continue;
         };
@@ -238,20 +230,16 @@ pub async fn decide_cached<S: chaosbox_store::Store>(
 /// Whether a cache-only (`--no-decisions`) refresh may swing the active
 /// pointer.
 ///
-/// Cache identity is bound to the repository snapshot, the whole catalog,
-/// and the effective policy (scope, privacy, inference), so an ordinary
-/// source edit — or a scope/consent change — leaves a capture-only run with
-/// nothing to reuse: publishing that under-covered graph would replace a
-/// with a node-only one and silently drop the relations consumers are querying
-/// today. Therefore:
+/// The input flag denotes decision-backed relationships, or any relationships
+/// in a legacy build whose provenance is unknown. Certified syntax-only builds
+/// can always refresh; relation-local reuse protects paid semantic work:
 ///
 /// * no active build at all always publishes: a first capture-only publish
 ///   protects nothing and enables everything, and without it no build could
 ///   ever exist (snapshot mode is what bootstraps a repository before
 ///   anyone consents to infer anything);
-/// * a repository that publishes no relations yet always refreshes, so entity
-///   indexing keeps working before anyone consents to infer anything;
-/// * a repository whose relations are live only publishes when every current
+/// * a repository with only certified facts (or no relations) always refreshes;
+/// * a repository with decision-backed/legacy relations publishes when every current
 ///   candidate still has a reusable decision (including the degenerate
 ///   "assessed nothing" case, which is not coverage either);
 /// * when the active build cannot be read at all, leave it alone — Chaosbox

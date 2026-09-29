@@ -81,7 +81,12 @@ fn no_cartesian_product() {
 
 #[test]
 fn candidate_cap_reports_omissions() {
-    let (_t, root) = tmp_repo(&[("a.rs", "fn one() {}\nfn two() {}\nfn three() {}\n")]);
+    // Four declarations produce three semantic co-occurrence proposals;
+    // their certified declaration facts do not consume this cap.
+    let (_t, root) = tmp_repo(&[(
+        "a.rs",
+        "fn one() {}\nfn two() {}\nfn three() {}\nfn four() {}\n",
+    )]);
     let snap = Snapshot::capture("r", &root).unwrap();
     let ext = extract_snapshot(&snap);
     // Well under the cap: everything selected, nothing omitted.
