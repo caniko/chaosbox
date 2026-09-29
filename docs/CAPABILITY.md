@@ -20,6 +20,18 @@ described in the new book chapters are not yet implemented.
   or candidate slots. Syntax failures withhold direct facts with explicit
   coverage. Imports/name matches remain proposals; see `STRUCTURAL_FACTS.md`
   for the exact subset (no compiler resolution or Nix evaluation).
+- Optional SCIP protobuf ingestion: operator-only capture with source/configuration
+  receipts, exact occurrence ranges, package-qualified/global and scoped-local
+  anchors, explicit resolved references and implementation links. Compiler facts
+  persist without model decisions in both stores; schema v4 adds compiler identity.
+  Missing/ambiguous targets and omitted files are counted. Calls, typecheck success
+  and active-configuration membership are not inferred; see `COMPILER_EVIDENCE.md`.
+- Reviewed workspace-impact pilot: immutable private selected-file member builds,
+  cited cross-language links and constraints, strict lockfile/Git version checks,
+  and directed bounded impact queries with stale/missing-member reporting. The
+  TS consumer → Rust command → Nix package → Canix recipe exposes the consumer
+  pin mismatch; it is not general automatic workspace inference or calibrated
+  memory admission. See `WORKSPACE_IMPACT.md`.
 - Bounded candidate catalog (structural, lexical-import, co-occurrence; capped,
   never cartesian) with truthful truncation accounting: per-reason
   selected/omitted counts in `CandidateCatalog`, surfaced by `extract` and

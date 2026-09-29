@@ -57,14 +57,28 @@ Fixture graphs are disposable/test-only and recorded under `fixture-test`.
 `run --no-decisions` publishes parser-certified declarations and file/module
 containment for Rust, TypeScript/TSX (including `.mts`/`.cts`), and Nix. These
 facts consume no candidate slots or model requests, even with
-`--max-candidates 0`. Other relationships remain bounded decision proposals.
+`--max-candidates 0`. Optional `compiler capture` / `run --compiler` adds
+receipt-bound SCIP definitions, resolved references and explicit implementation
+links with the same zero-model publication path. Other relationships remain
+bounded decision proposals.
 
 Previously paid, validated inferences can still be reused. A structural-only
 build can refresh without any model coverage. A decision-bearing or legacy
 build keeps the conservative exit-4 guard when current candidates lack reusable
 decisions. See the [certified fact contract](docs/STRUCTURAL_FACTS.md) for the
 exact syntax subset, citation format, coverage limits, and regression baseline.
-Existing TypeDB databases need `chaosbox db migrate` for additive schema v3.
+Existing TypeDB databases need `chaosbox db migrate` for additive schema v4.
+
+See [optional compiler evidence](docs/COMPILER_EVIDENCE.md) for capture/import,
+source/configuration staleness checks and capability limits. The
+[workspace impact pilot](docs/WORKSPACE_IMPACT.md) adds private local artifacts
+with exact member builds, reviewed source-cited bridges, scoped constraints and
+bounded impact queries:
+
+```sh
+chaosbox workspace capture recipe.json --output /path/to/new-workspace.json
+chaosbox workspace impact /path/to/new-workspace.json response-endpoint --scope private:owner
+```
 
 ### Machine-readable run contract
 

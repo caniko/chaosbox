@@ -11,6 +11,18 @@
 
 ### Added
 
+- Optional `compiler capture`, `compiler inspect` and `run --compiler` commands
+  for source/configuration-bound SCIP evidence. Definitions, resolved references
+  and explicit implementations publish without model decisions; omission and
+  resolution limits remain visible. Existing TypeDB databases need additive
+  schema v4 (`chaosbox db migrate`).
+- Private `workspace capture` and `workspace impact` artifacts with exact member
+  builds, quoted reviewed bridges, scoped constraints and bounded traversal.
+  Stale sources withhold current answers; mismatched consumer/provider revisions
+  block cross-repository links. Includes the TS/Rust/Nix/Canix impact pilot and
+  an opt-in runtime consumer experiment.
+- Bounded, deterministic selected-file snapshots with strict repository path
+  checks, including shared validation for explicit compiler inputs.
 - Parser-certified Rust, TypeScript/TSX/MTS/CTS and Nix declarations with
   zero-model structural publication independent of candidate budgets.
 - Source citations and parser provenance in read-only queries, plus persisted
