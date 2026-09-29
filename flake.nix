@@ -110,10 +110,14 @@
             pname = "chaosbox";
             version = "0.1.0";
             strictDeps = true;
+            # Workspace provenance tests use disposable Git repositories.
             # `cargo test` execs pinned session tools through a node
             # interpreter; the build sandbox has no ambient node. Deployments
             # pin CHAOSBOX_NODE instead of relying on PATH.
-            nativeBuildInputs = [ pkgs.nodejs ];
+            nativeBuildInputs = [
+              pkgs.nodejs
+              pkgs.gitMinimal
+            ];
             cargoExtraArgs = "--locked -p chaosbox";
             meta = {
               description = "Chaosbox deterministic code-graph pipeline";
@@ -134,10 +138,12 @@
               # --set-default keeps an explicit CHAOSBOX_NODE (the canix
               # wrapper, or an operator override) authoritative. Declared here
               # rather than in `commonArgs`, which `buildDepsOnly` also
-              # consumes and in which no binary exists to wrap.
+              # consumes and in which no binary exists to wrap. Workspace
+              # freshness/revision checks also need Git at runtime.
               postInstall = ''
                 wrapProgram "$out/bin/chaosbox" \
-                  --set-default CHAOSBOX_NODE ${pkgs.lib.getExe' pkgs.nodejs "node"}
+                  --set-default CHAOSBOX_NODE ${pkgs.lib.getExe' pkgs.nodejs "node"} \
+                  --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.gitMinimal ]}
               '';
             }
           );
@@ -276,9 +282,12 @@
             pname = "chaosbox";
             version = "0.1.0";
             strictDeps = true;
-            # Same node dependency as the package build: the unit check runs
-            # `cargo test`, which execs pinned session tools.
-            nativeBuildInputs = [ pkgs.nodejs ];
+            # Same test dependencies as the package build: Node for session
+            # tools and Git for exact-revision workspace provenance fixtures.
+            nativeBuildInputs = [
+              pkgs.nodejs
+              pkgs.gitMinimal
+            ];
             cargoExtraArgs = "--locked --workspace";
           };
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;

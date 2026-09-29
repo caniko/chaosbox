@@ -33,6 +33,7 @@ pub(crate) mod reuse;
 pub mod sessions;
 mod structural;
 mod view;
+pub mod workspace;
 
 pub use lifecycle::LifecycleReport;
 pub use materialization::{

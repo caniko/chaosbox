@@ -51,6 +51,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Capture and query a source-cited, version-bound workspace impact pilot.
+    Workspace {
+        #[command(subcommand)]
+        command: chaosbox::workspace::cli::Command,
+    },
     /// Capture or inspect optional context-bound SCIP compiler evidence.
     Compiler {
         #[command(subcommand)]
@@ -240,6 +245,13 @@ enum DbCmd {
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
+        Command::Workspace { command } => match chaosbox::workspace::cli::run(command).await {
+            Ok(value) => println!("{value}"),
+            Err(error) => {
+                eprintln!("workspace: {error}");
+                std::process::exit(1);
+            }
+        },
         Command::Compiler { command } => match chaosbox::compiler::run(command).await {
             Ok(value) => println!("{value}"),
             Err(error) => {
