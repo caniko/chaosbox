@@ -36,6 +36,9 @@ pub struct BuildCoverage {
     pub structural_relations: usize,
     /// Relationships published from accepted model decisions.
     pub decision_relations: usize,
+    /// Optional compiler analysis; absence means it was not requested.
+    #[serde(default)]
+    pub compiler: Option<crate::compiler::CompilerCoverage>,
 }
 
 impl BuildCoverage {
@@ -60,6 +63,10 @@ impl BuildCoverage {
                 .count(),
             files: &self.files[..shown],
             omitted_files: self.files.len() - shown,
+            compiler: self
+                .compiler
+                .as_ref()
+                .map(crate::compiler::CompilerCoverage::report),
         }
     }
 }
@@ -81,4 +88,6 @@ pub struct CoverageReport<'a> {
     pub files: &'a [FileCoverage],
     /// Detail rows not included in this bounded response.
     pub omitted_files: usize,
+    /// Bounded compiler coverage with separate capability accounting.
+    pub compiler: Option<crate::compiler::CompilerReport<'a>>,
 }

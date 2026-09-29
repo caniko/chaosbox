@@ -3,6 +3,8 @@
 Real compiler-indexer smoke runs succeeded for Rust and TypeScript. They provide
 useful resolved references, with important qualifications for the next adapter.
 The fixtures and decoder assertions are in `fixtures/indexer-smoke/`.
+The implemented optional importer and capture contract are documented in
+[COMPILER_EVIDENCE.md](COMPILER_EVIDENCE.md).
 
 ## Pinned inputs
 

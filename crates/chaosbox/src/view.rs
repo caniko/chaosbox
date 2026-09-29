@@ -35,6 +35,7 @@ pub fn export_json(build: &GraphBuild) -> serde_json::Value {
                 "source_location": format!("L{}", e.span.start_line),
                 "qualified_name": e.qualified_name,
                 "snapshot": e.snapshot, "span": e.span,
+                "compiler": e.compiler,
             })
         })
         .collect();
@@ -67,6 +68,7 @@ pub fn explain_entity(build: &GraphBuild, id: &str) -> Option<serde_json::Value>
         "id": e.id, "kind": format!("{:?}", e.kind),
         "file": e.file, "qualified_name": e.qualified_name,
         "span": e.span,
+        "compiler": e.compiler,
         "outgoing": build.outgoing(id, None).len(),
         "incoming": build.incoming(id, None).len(),
     }))

@@ -21,6 +21,7 @@ use chaosbox_jev::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub mod compiler;
 pub mod history;
 pub mod intelligence;
 mod lifecycle;

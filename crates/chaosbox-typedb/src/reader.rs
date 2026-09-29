@@ -29,11 +29,13 @@ use crate::encode::{int_lit, str_lit};
 /// Entity attribute columns selected by every member query.
 const ENTITY_COLS: &[&str] = &[
     "id", "kind", "repo", "snap", "file", "name", "qn", "sf", "sl", "sc", "el", "ec", "bs", "be",
+    "compiler",
 ];
 const ENTITY_SELECT: &str =
-    "$id, $kind, $repo, $snap, $file, $name, $qn, $sf, $sl, $sc, $el, $ec, $bs, $be";
+    "$id, $kind, $repo, $snap, $file, $name, $qn, $sf, $sl, $sc, $el, $ec, $bs, $be, $compiler";
 // Optional for historical rows whose evidence range was not persisted.
 const SOURCE_SPAN: &str = "try { $e has span-id $spid; $sp isa source-span, has span-id $spid, has file $sf, has start-line $sl, has start-col $sc, has end-line $el, has end-col $ec, has byte-start $bs, has byte-end $be; };";
+const COMPILER_IDENTITY: &str = "try { $e has compiler-json $compiler; };";
 /// Relationship columns: header plus endpoint ids.
 const REL_COLS: &[&str] = &["r", "rt", "fid", "tid"];
 
@@ -50,6 +52,10 @@ fn row_to_entity(
         name: col_string(row, "name")?,
         qualified_name: col_string(row, "qn")?,
         span: row_span(row)?,
+        compiler: col_string_opt(row, "compiler")
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(|e| StoreError::Query(format!("invalid compiler identity: {e}")))?,
     })
 }
 
@@ -178,7 +184,7 @@ impl TypeDbReader {
             .await
             .map_err(driver_error)?;
         match tx
-            .query("match $x isa active-pointer; $g isa graph-build; try { $g has coverage-json $c; }; $e isa evidence; try { $e has producer $p; }; select $x; limit 1;")
+            .query("match $x isa active-pointer; $g isa graph-build; try { $g has coverage-json $c; }; $e isa evidence; try { $e has producer $p; }; $n isa code-entity; try { $n has compiler-json $ci; }; select $x; limit 1;")
             .await
         {
             Ok(answer) => {
@@ -205,7 +211,7 @@ impl TypeDbReader {
         limit: Option<i64>,
     ) -> Result<Vec<EntityRow>, StoreError> {
         let mut q = format!(
-            "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; {SOURCE_SPAN} select {ENTITY_SELECT}; sort $qn;",
+            "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; {SOURCE_SPAN} {COMPILER_IDENTITY} select {ENTITY_SELECT}; sort $qn;",
             str_lit(build_id)
         );
         if let Some(n) = limit {
@@ -295,7 +301,7 @@ impl GraphQueries for TypeDbReader {
         let mut merged: BTreeMap<String, EntityRow> = BTreeMap::new();
         for col in ["name-fold", "qualified-name-fold"] {
             let q = format!(
-                "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has {col} $hit, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; $hit contains {}; {SOURCE_SPAN} select {ENTITY_SELECT}; sort $qn; limit {lim};",
+                "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has {col} $hit, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; $hit contains {}; {SOURCE_SPAN} {COMPILER_IDENTITY} select {ENTITY_SELECT}; sort $qn; limit {lim};",
                 str_lit(build_id),
                 str_lit(&needle)
             );
@@ -318,7 +324,7 @@ impl GraphQueries for TypeDbReader {
         id: &str,
     ) -> Result<Option<EntityRow>, StoreError> {
         let q = format!(
-            "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id {}, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; {SOURCE_SPAN} select {ENTITY_SELECT};",
+            "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id {}, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; {SOURCE_SPAN} {COMPILER_IDENTITY} select {ENTITY_SELECT};",
             str_lit(build_id),
             str_lit(id)
         );

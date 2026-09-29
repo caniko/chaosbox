@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub mod compiler;
 pub mod coverage;
 pub mod intelligence;
 
@@ -109,6 +110,9 @@ pub struct Entity {
     pub span: SourceSpan,
     /// Alternate labels observed in source.
     pub aliases: Vec<String>,
+    /// Optional compiler identity; syntax/legacy occurrences retain their ids.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler: Option<compiler::SymbolIdentity>,
 }
 
 impl Entity {
@@ -145,6 +149,7 @@ impl Entity {
             qualified_name: qualified_name.to_owned(),
             span,
             aliases: Vec::new(),
+            compiler: None,
         }
     }
 }
@@ -164,6 +169,8 @@ pub enum RelationType {
     References,
     /// A call from one symbol to another.
     Calls,
+    /// Explicit compiler-reported implementation (implementor -> interface).
+    Implements,
     /// A Markdown link target.
     LinksTo,
     /// A Markdown code mention of a symbol.

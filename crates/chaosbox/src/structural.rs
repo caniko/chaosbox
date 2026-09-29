@@ -1,4 +1,4 @@
-//! Materialize certified syntax observations without creating model decisions.
+//! Materialize certified syntax/compiler observations without model decisions.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,6 +18,34 @@ fn validate_facts(
     entities: &BTreeMap<String, Entity>,
 ) -> Result<(), PipelineError> {
     let mut verified_files = BTreeSet::new();
+    if let Some(compiler) = &extraction.compiler {
+        let facts: Vec<_> = extraction
+            .facts
+            .iter()
+            .filter(|f| f.producer == compiler.context.producer)
+            .collect();
+        if facts.len() != compiler.relations()
+            || facts
+                .iter()
+                .filter(|f| f.rel_type == RelationType::Defines)
+                .count()
+                != compiler.definitions
+            || facts
+                .iter()
+                .filter(|f| f.rel_type == RelationType::References)
+                .count()
+                != compiler.references
+            || facts
+                .iter()
+                .filter(|f| f.rel_type == RelationType::Implements)
+                .count()
+                != compiler.implementations
+        {
+            return Err(PipelineError::Validation(
+                "compiler coverage disagrees with facts".into(),
+            ));
+        }
+    }
     // Validate the entire batch before writing. A stale or cross-snapshot
     // extraction must not certify facts against different source bytes.
     for fact in &extraction.facts {
@@ -28,15 +56,7 @@ fn validate_facts(
                 && to.repo == repo
                 && from.snapshot == snapshot.id
                 && to.snapshot == snapshot.id
-                && from.file == fact.span.file
-                && to.file == fact.span.file
-                && from.kind == EntityKind::File
-                && to.span == fact.span
-                && matches!(
-                    (&fact.rel_type, &to.kind),
-                    (RelationType::Defines, EntityKind::Definition)
-                        | (RelationType::Contains, EntityKind::Module)
-                )
+                && valid_fact_endpoints(from, to, fact, extraction)
         });
         let content = snapshot.contents.get(&fact.span.file);
         if verified_files.insert(&fact.span.file) {
@@ -57,11 +77,56 @@ fn validate_facts(
         });
         if repo != snapshot.repo || !valid_endpoints || !valid_source || fact.producer.is_empty() {
             return Err(PipelineError::Validation(
-                "invalid certified syntax observation".into(),
+                "invalid certified source observation".into(),
             ));
         }
     }
     Ok(())
+}
+
+fn valid_fact_endpoints(
+    from: &Entity,
+    to: &Entity,
+    fact: &chaosbox_extract::StructuralFact,
+    extraction: &Extraction,
+) -> bool {
+    let declaration = from.kind == EntityKind::File
+        && from.file == to.file
+        && to.span == fact.span
+        && matches!(
+            (&fact.rel_type, &to.kind),
+            (RelationType::Defines, EntityKind::Definition)
+                | (RelationType::Contains, EntityKind::Module)
+        );
+    if from.compiler.is_none() && to.compiler.is_none() {
+        return declaration;
+    }
+    let Some(coverage) = &extraction.compiler else {
+        return false;
+    };
+    if fact.producer != coverage.context.producer {
+        return false;
+    }
+    let Some(target) = &to.compiler else {
+        return false;
+    };
+    if target.context != coverage.context.id || to.kind != EntityKind::Definition {
+        return false;
+    }
+    if declaration {
+        return fact.rel_type == RelationType::Defines;
+    }
+    from.compiler.as_ref().is_some_and(|source| {
+        source.context == coverage.context.id
+            && from.span == fact.span
+            && match fact.rel_type {
+                RelationType::References => {
+                    source.anchor == target.anchor && from.kind == EntityKind::Symbol
+                }
+                RelationType::Implements => from.kind == EntityKind::Definition,
+                _ => false,
+            }
+    })
 }
 
 pub(crate) async fn publish_facts<S: Store>(
@@ -78,7 +143,11 @@ pub(crate) async fn publish_facts<S: Store>(
             fact.rel_type.clone(),
             &fact.from,
             &fact.to,
-            RelationScope::File,
+            if entities[&fact.from].file == entities[&fact.to].file {
+                RelationScope::File
+            } else {
+                RelationScope::CrossFile
+            },
             &build.id,
         );
         let evidence = Evidence {

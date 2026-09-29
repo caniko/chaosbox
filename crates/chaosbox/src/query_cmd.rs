@@ -115,6 +115,7 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
                         serde_json::to_string(&serde_json::json!({
                             "id": e.entity_id, "kind": e.kind, "file": e.file,
                             "qualified_name": e.qualified_name,
+                            "snapshot": e.snapshot, "span": e.span, "compiler": e.compiler,
                             "outgoing": out.len(), "incoming": inc.len(),
                         }))
                         .unwrap()

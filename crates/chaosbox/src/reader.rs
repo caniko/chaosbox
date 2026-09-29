@@ -27,6 +27,7 @@ pub fn all_relation_types() -> Vec<String> {
         "imports",
         "references",
         "calls",
+        "implements",
         "links_to",
         "mentions",
     ]
@@ -251,6 +252,7 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
                     "id": e.entity_id, "label": e.name, "kind": e.kind,
                     "source_file": e.file, "qualified_name": e.qualified_name,
                     "snapshot": e.snapshot, "span": e.span,
+                    "compiler": e.compiler,
                 })
             })
             .collect();
@@ -299,6 +301,7 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
             "id": e.entity_id, "kind": e.kind, "file": e.file,
             "qualified_name": e.qualified_name,
             "snapshot": e.snapshot, "span": e.span,
+            "compiler": e.compiler,
             "outgoing": out.len(), "incoming": inc.len(),
         }))
     }

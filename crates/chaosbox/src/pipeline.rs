@@ -359,6 +359,9 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
         reject_failed(decided)?;
         self.generation += 1;
         let mut build = GraphBuild::new(repo, vec![snapshot.id.clone()], self.generation);
+        if let Some(compiler) = &extraction.compiler {
+            build.id = chaosbox_core::deterministic_id("build", &[&build.id, &compiler.context.id]);
+        }
         build.predecessor = expected_predecessor.clone();
         let entities: BTreeMap<String, Entity> = extraction
             .entities
@@ -378,13 +381,18 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
             &entities,
         )
         .await?;
-        let structural_relations = build.edges.len();
+        let direct_relations = build.edges.len();
         self.materialize_decisions(&mut build, decided, mat, &entities)
             .await?;
         build.coverage = Some(chaosbox_core::coverage::BuildCoverage {
             files: extraction.coverage.clone(),
-            structural_relations,
-            decision_relations: build.edges.len() - structural_relations,
+            structural_relations: direct_relations
+                - extraction
+                    .compiler
+                    .as_ref()
+                    .map_or(0, chaosbox_core::compiler::CompilerCoverage::relations),
+            decision_relations: build.edges.len() - direct_relations,
+            compiler: extraction.compiler.clone(),
         });
         // Invariant: published edges refer to same-build members (enforced by add_edge).
         self.store

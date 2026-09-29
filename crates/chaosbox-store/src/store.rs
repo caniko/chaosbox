@@ -365,9 +365,14 @@ impl Store for MemoryStore {
                         })
                 })
                 .count();
-            if coverage.structural_relations != structural
+            let compiler = coverage
+                .compiler
+                .as_ref()
+                .map_or(0, chaosbox_core::compiler::CompilerCoverage::relations);
+            if coverage.structural_relations + compiler != structural
                 || coverage.decision_relations != build.edges.len() - structural
-                || coverage.files.iter().map(|file| file.facts).sum::<usize>() != structural
+                || coverage.files.iter().map(|file| file.facts).sum::<usize>()
+                    != coverage.structural_relations
             {
                 return Err(StoreError::Invariant(
                     "build coverage disagrees with evidence provenance".into(),

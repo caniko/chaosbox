@@ -91,6 +91,7 @@ impl<'a> Pass<'a> {
             file_id: file.id.clone(),
             mentions: BTreeSet::new(),
             out: Extraction {
+                compiler: None,
                 entities: vec![file],
                 explicit_refs: Vec::new(),
                 facts: Vec::new(),

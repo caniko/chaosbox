@@ -40,6 +40,7 @@ define
   attribute qualified-name value string;
   attribute qualified-name-fold value string;
   attribute aliases value string;
+  attribute compiler-json value string;
   attribute entity-id value string;
   attribute span-id value string;
   attribute file-version-id value string;
@@ -137,6 +138,7 @@ define
     owns qualified-name,
     owns qualified-name-fold,
     owns aliases,
+    owns compiler-json,
     owns span-id,
     plays relationship:from-entity,
     plays relationship:to-entity,

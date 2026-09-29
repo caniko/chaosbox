@@ -314,6 +314,7 @@ async fn failed_refresh_preserves_last_good_build() {
         contents: BTreeMap::new(),
     };
     let ext = Extraction {
+        compiler: None,
         entities: entities.values().cloned().collect(),
         explicit_refs: vec![],
         facts: vec![],
@@ -388,6 +389,7 @@ async fn cache_only_refresh_republishes_paid_for_relations() {
         contents: BTreeMap::new(),
     };
     let ext = Extraction {
+        compiler: None,
         entities: entities.values().cloned().collect(),
         explicit_refs: vec![],
         facts: vec![],
@@ -516,6 +518,7 @@ async fn source_edit_leaves_capture_only_refresh_without_coverage() {
         contents: BTreeMap::new(),
     };
     let ext = Extraction {
+        compiler: None,
         entities: entities.values().cloned().collect(),
         explicit_refs: vec![],
         facts: vec![],
@@ -888,6 +891,7 @@ async fn empty_decisions_publish_entities_only() {
         contents: BTreeMap::from([("a.rs".into(), "fn a() {}\n".into())]),
     };
     let ext = Extraction {
+        compiler: None,
         entities: vec![Entity::new(
             EntityKind::Symbol,
             "r",
@@ -1350,6 +1354,7 @@ async fn reuse_rematerializes_threshold_change_without_respend() {
     .unwrap();
     assert_eq!(pending2, 0, "abstained rematerialization stays cached");
     let ext = Extraction {
+        compiler: None,
         entities: entities.values().cloned().collect(),
         explicit_refs: vec![],
         facts: vec![],

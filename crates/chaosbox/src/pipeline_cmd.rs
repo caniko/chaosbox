@@ -23,8 +23,9 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
     max_retries: Option<u32>,
     expected_predecessor: Option<String>,
     spend: &RunSpend,
+    compiler: Option<&Path>,
 ) -> i32 {
-    let (snap, ext, cat) =
+    let (snap, mut ext, cat) =
         match Pipeline::<S>::snapshot_extract(repo, path, max_candidates, effective_policy) {
             Ok(v) => v,
             Err(e) => {
@@ -32,6 +33,12 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
                 return 1;
             }
         };
+    if let Some(artifact) = compiler {
+        if let Err(error) = chaosbox::compiler::attach(artifact, path, &snap, &mut ext) {
+            eprintln!("compiler import: {error}");
+            return 1;
+        }
+    }
     let cands = &cat.candidates;
     // Truncation must be observable: report what the cap selected and
     // omitted before any decision is made. Scope is part of the snapshot
@@ -279,6 +286,14 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         n("failed"),
         cands.len()
     );
+    if let Some(artifact) = compiler {
+        let valid = chaosbox::compiler::load_receipt(artifact)
+            .and_then(|receipt| receipt.verify(path).map_err(Into::into));
+        if let Err(error) = valid {
+            eprintln!("compiler inputs before publication: {error}");
+            return 1;
+        }
+    }
     match pipe
         .build_and_publish(repo, &snap, &ext, &decided, &mat, expected_predecessor)
         .await

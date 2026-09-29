@@ -59,6 +59,9 @@ pub struct Extraction {
     /// Per-file syntax coverage.
     #[serde(default)]
     pub coverage: Vec<FileCoverage>,
+    /// Optional context-bound compiler facts and processing accounting.
+    #[serde(default)]
+    pub compiler: Option<chaosbox_core::compiler::CompilerCoverage>,
 }
 
 /// One source-backed syntax observation. Only containment and declarations
@@ -168,6 +171,7 @@ pub fn extract_file(repo: &str, snapshot: &str, path: &str, text: &str) -> Extra
         entities,
         explicit_refs: refs,
         facts: Vec::new(),
+        compiler: None,
         coverage: vec![FileCoverage {
             file: path.to_owned(),
             producer: "legacy-regex-v1".into(),

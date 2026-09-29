@@ -79,6 +79,9 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Candi
         .collect();
     let mut name_index: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for e in &extraction.entities {
+        if e.compiler.is_some() {
+            continue;
+        }
         name_index
             .entry(e.name.clone())
             .or_default()
@@ -124,7 +127,7 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Candi
     let defs: Vec<&Entity> = extraction
         .entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Definition)
+        .filter(|e| e.kind == EntityKind::Definition && e.compiler.is_none())
         .collect();
     for imp in &imports {
         let last = imp
@@ -152,7 +155,7 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Candi
     // 3. same-file definition co-occurrence (bounded pairs per file)
     let mut by_file: BTreeMap<&str, Vec<&Entity>> = BTreeMap::new();
     for e in &extraction.entities {
-        if e.kind == EntityKind::Definition {
+        if e.kind == EntityKind::Definition && e.compiler.is_none() {
             by_file.entry(e.file.as_str()).or_default().push(e);
         }
     }

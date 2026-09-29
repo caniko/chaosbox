@@ -24,6 +24,9 @@ pub struct EntityRow {
     /// Exact occurrence location; absent in older projections.
     #[serde(default)]
     pub span: Option<SourceSpan>,
+    /// Compiler anchor/context when this is a compiler occurrence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler: Option<chaosbox_core::compiler::SymbolIdentity>,
 }
 
 /// Published build header row.
@@ -109,6 +112,7 @@ pub(crate) fn entity_row(e: &Entity) -> EntityRow {
         name: e.name.clone(),
         qualified_name: e.qualified_name.clone(),
         span: Some(e.span.clone()),
+        compiler: e.compiler.clone(),
     }
 }
 

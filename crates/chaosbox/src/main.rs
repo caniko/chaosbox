@@ -51,6 +51,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Capture or inspect optional context-bound SCIP compiler evidence.
+    Compiler {
+        #[command(subcommand)]
+        command: chaosbox::compiler::Command,
+    },
     /// Extract, assess and retrieve selective session intelligence.
     Intelligence {
         #[command(subcommand)]
@@ -87,6 +92,9 @@ enum Command {
     /// spends nothing).
     Run {
         path: PathBuf,
+        /// Optional artifact directory from `compiler capture`.
+        #[arg(long)]
+        compiler: Option<PathBuf>,
         #[arg(long, default_value = "demo")]
         repo: String,
         #[arg(long, default_value_t = 200)]
@@ -232,6 +240,13 @@ enum DbCmd {
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
+        Command::Compiler { command } => match chaosbox::compiler::run(command).await {
+            Ok(value) => println!("{value}"),
+            Err(error) => {
+                eprintln!("compiler: {error}");
+                std::process::exit(1);
+            }
+        },
         Command::Intelligence { command } => {
             match chaosbox::intelligence::cli::run(command).await {
                 Ok(value) => println!("{value}"),
@@ -295,6 +310,7 @@ async fn main() {
         }
         Command::Run {
             path,
+            compiler,
             repo,
             max_candidates,
             source_paths,
@@ -346,6 +362,7 @@ async fn main() {
                         max_retries,
                         None,
                         &spend,
+                        compiler.as_deref(),
                     )
                     .await
                 }
@@ -393,6 +410,7 @@ async fn main() {
                         max_retries,
                         expected_predecessor,
                         &spend,
+                        compiler.as_deref(),
                     )
                     .await
                 }

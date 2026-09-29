@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod candidates;
+pub mod compiler;
 mod extractors;
 mod paths;
 mod syntax;
@@ -159,6 +160,16 @@ impl Snapshot {
     // session's refactor. Allowed to keep CI unblocked.
     #[allow(clippy::too_many_lines)]
     pub fn capture_scoped(repo: &str, root: &Path, scope: &[String]) -> Result<Self, ExtractError> {
+        Self::capture_matching(repo, root, scope, is_supported)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn capture_matching(
+        repo: &str,
+        root: &Path,
+        scope: &[String],
+        include: fn(&str) -> bool,
+    ) -> Result<Self, ExtractError> {
         let scope = validate_scope(scope)?;
         // Resolve scope roots up front: every entry must exist, be a
         // directory, and not itself be a symlink or a nested repository.
@@ -255,7 +266,7 @@ impl Snapshot {
                 {
                     continue;
                 }
-                if is_supported(&rel) {
+                if include(&rel) {
                     // Overlapping scopes (e.g. `a` + `a/b`) visit one file
                     // twice: keep the first copy so the snapshot stays a set.
                     if contents.contains_key(&rel) {
@@ -339,5 +350,6 @@ pub fn extract_snapshot(snapshot: &Snapshot) -> Extraction {
         explicit_refs: refs,
         facts,
         coverage,
+        compiler: None,
     }
 }
