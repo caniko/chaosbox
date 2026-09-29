@@ -88,8 +88,10 @@ candidate budget, including exported TS functions and duplicate names.
   of a decision-bearing active build.
 
 This is a deterministic correctness baseline. Comparative Graphify quality,
-compiler/SCIP interoperability, stable logical-symbol identity, cross-repository
-impact and calibrated memory utility still need their planned proving cases.
+compiler/SCIP ingestion, stable logical-symbol identity, cross-repository impact
+and calibrated memory utility still need their planned proving cases. The
+[real indexer feasibility probe](INDEXER_FEASIBILITY.md) records the initial
+Rust/TypeScript/rnix results and the constraints they establish for that work.
 
 ## Verification — 2026-09-29
 

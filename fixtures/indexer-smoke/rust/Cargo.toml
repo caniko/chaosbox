@@ -1,0 +1,13 @@
+[package]
+name = "chaosbox-rust-indexer-smoke"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+members = ["helper"]
+
+[features]
+extra = []
+
+[dependencies]
+helper = { path = "helper" }
