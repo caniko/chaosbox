@@ -3,6 +3,18 @@
 Continue the evidence-first sequence approved in the conversation. Tasks and
 verification are tracked in `tasks/todo.md`.
 
+## Jev-first inference follow-up
+
+User priority: replace as much general-purpose LLM consumption as possible with
+Typesafe Jev. Keep source/compiler facts deterministic. Graph proposals and
+memory admission already use typed Jev; migrate the remaining session-research
+extraction, repository-report and cross-repository synthesis calls to finite
+choices over exact source spans and reviewed candidates. Render prose locally.
+Reuse the native Rust client and pinned model; persist input-bound decisions,
+abstentions and work-wide attempt budgets. Preserve source scopes, reviewed
+actions and reproduction requirements. Verify with protocol/behavior tests and
+a synthetic live transport smoke; model-quality/outcome claims remain separate.
+
 ## Contract
 
 1. Optional SCIP is genuine protobuf, decoded with the official `scip` crate.

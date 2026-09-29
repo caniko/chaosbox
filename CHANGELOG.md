@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Session research uses pinned Typesafe Jev choices for extraction, reviewed
+  reports and cross-repository comparison. Exact source spans and fixed action
+  templates replace generated claims/prose, with explicit abstention and omission
+  accounting. Persistent request/token budgets and content-bound receipts survive
+  restarts. Start a new work directory for Jev generation; legacy reports remain
+  readable. The OpenCode model-session runner and `seed-auth` were removed.
+
 ### Fixed
 
 - Run publication no longer defers on unreadable active builds. Typed
@@ -10,6 +19,10 @@
   deferral.
 
 ### Added
+
+- Operator-only `jev evaluate --input FILE --privacy-reviewed` exposes the shared
+  Rust Jev client for bounded Choice requests, with pinned-model validation and
+  JSON success/failure receipts.
 
 - Optional `compiler capture`, `compiler inspect` and `run --compiler` commands
   for source/configuration-bound SCIP evidence. Definitions, resolved references

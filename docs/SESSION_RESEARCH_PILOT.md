@@ -84,53 +84,72 @@ Review it before transmitting it to models. Extraction blocks recognizable
 credential patterns, but the local check is not a comprehensive privacy review.
 `--privacy-reviewed` is the operator's explicit attestation for that batch.
 
-### Isolate model sessions
+### Typed Jev decisions
 
-OpenCode's `--standalone` isolates the server, **not automatically its DB**.
-This host's Nix `opencode` launcher explicitly unsets `OPENCODE_DB`. Point
-`SESSION_RESEARCH_OPENCODE_BIN` at the underlying OpenCode binary, not that
-launcher, and carry over the host's provider configuration and XDG environment.
-The runner checks that `debug paths db` resolves to `$WORK/model.sqlite` before
-each call. A launcher that clears the override is rejected before inference.
-The standalone server may not load an agent from the scratch directory even if
-`debug config` lists that file. The runner explicitly pins a private merge of
-the host's `OPENCODE_CONFIG` and a `session-research` primary agent denying
-**all** tool actions (including MCP tools). A previous exact-match pilot config
-is preserved as `opencode.previous.json` before upgrade; unknown config changes
-are refused. Model event streams with any tool or error event are rejected.
+All three inference stages use pinned Typesafe `jev-1.13.0` Choice questions:
+source-span classification, reviewed-candidate priority/status, and shared-work
+comparison. `scripts/session_research_jev.py` builds finite choices and renders
+the results. `chaosbox jev evaluate` reuses the existing Rust HTTP client,
+credentials, deadlines and context checks. It sends at most 16 independent
+questions in one request, with 2–255 options per question. The model never
+generates quotations, candidate IDs, new plans or report prose.
 
-An empty isolated DB may not have the required provider credentials and model
-catalog. `seed-auth` initializes it and copies **only the active Muse/OpenAI
-credential rows and model catalog** from a read-only credential DB. The new
-private DB contains credentials and must be treated accordingly. It never
-alters the source credential DB or the frozen session snapshot.
+The contract follows the official [API](https://docs.typesafe.ai/api) and
+[models](https://docs.typesafe.ai/models) documentation, checked 2026-09-30.
+Question keys are not sent to the model: source/candidate selectors are included
+in the instructions and option descriptions. Dependent decisions run in separate
+stages: select exact repository evidence first, then assess status against it.
+
+Build the current CLI or select an installed binary that supports `jev evaluate`.
+Credentials come from `CHAOSBOX_JEV_API_KEY_FILE`, falling back to the explicit
+operator `TYPESAFE_API_KEY`. No OpenCode server, provider configuration, model
+session database or copied provider credentials is needed.
 
 ```sh
-export SESSION_RESEARCH_OPENCODE_BIN=/absolute/path/to/underlying/opencode
-export OPENCODE_CONFIG=/absolute/path/to/pinned/provider-opencode.json
-# Also carry the intended XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME,
-# and XDG_CACHE_HOME for that provider profile, if they are not the defaults.
-python3 scripts/session_research.py seed-auth --work "$WORK" \
-  --credential-db /path/to/existing/opencode.db
+cargo build -p chaosbox
+export SESSION_RESEARCH_CHAOSBOX_BIN="$PWD/target/debug/chaosbox"
+# Supply CHAOSBOX_JEV_API_KEY_FILE or TYPESAFE_API_KEY through the operator environment.
 python3 scripts/session_research.py extract --work "$WORK" --privacy-reviewed
 python3 scripts/session_research.py collect --work "$WORK"
 python3 scripts/session_research.py briefs --work "$WORK"
 python3 scripts/session_research.py metrics --work "$WORK"
 ```
 
-Spark 1.3 Contributor xhigh produces a brief and at most 12 typed findings per
-chunk. Every finding must cite an exact substring in a native source part. A
-short user reply (for example, `commit`) is citable only as the entire exported
-text record; shorter fragments of a longer record do not satisfy the gate. A
-failed call retains private events and can be retried with `--retry`; completed
-chunks are reused after validation. Calls refuse payloads above 200 KB;
-`collect` refuses missing chunks.
-`briefs.json` keeps each Spark chunk's prose in source order under its session;
-the briefs also include a timestamped, speaker-labelled findings timeline.
-They are generated views, never extra corroboration.
+Extraction enumerates exact sentence/line spans, then Jev chooses a signal kind,
+`none`, or `uncertain`. A short user reply (for example, `commit`) is citable only
+as the entire exported record. Shorter fragments of longer records are excluded
+by the citation gate. Ambiguous or multi-topic spans should abstain; this finite
+candidate strategy can miss requests and requires recall evaluation. At most 12
+signals enter each chunk view; every evaluated span retains its answer and
+admitted/rejected/abstained/omitted disposition. `briefs.json` is a deterministic
+view of selected original statements with a speaker-labelled timeline.
 
-To generate reports, give Astra Max bounded **tracked HEAD** excerpts for
-candidate current-capability checks. Use explicit line ranges for long files.
+Choice answers require the pinned returned model, exact answer/option sets,
+finite probabilities summing to one (within 0.01), and a selected maximum.
+Materialization requires selected probability ≥0.8 and confidence ≥0.6.
+These are versioned conservative thresholds, **not calibrated accuracy claims**.
+Uncertain priority stays `unverified`; it does not discard the reviewed candidate.
+
+Each request is content-addressed under `WORK/jev/`, including source-plan hash,
+state, questions, model, rubric and thresholds. Files are private and create-only.
+A process lock serializes calls; an intent is persisted before launching the CLI.
+Successes, including negatives and abstentions, are reused even with `--retry`.
+Failures/interrupted attempts require explicit `--retry` and still consume the
+work-wide request allowance. No automatic retries or general-purpose fallback run.
+
+`extract` and `synthesize` share persistent budgets: `--max-requests` defaults to
+100 and `--max-input-tokens` to 1,000,000. Each dispatch reserves serialized input
+bytes plus overhead; accounting charges the larger of that reservation and
+reported usage. Unknown timeout usage is covered conservatively by the reservation,
+not treated as a zero-cost success. This is a spending guard, not an exact billing
+estimate. `metrics` separates reservations, reported tokens and failed/interrupted
+attempts. Increase the explicit total allowance when resuming a larger reviewed
+batch. The CLI enforces Jev's 64k total / 32k state-plus-longest context ceilings;
+oversized inputs fail rather than silently losing context.
+
+To generate reports, supply bounded **tracked HEAD** excerpts for
+candidate current-capability checks. Use explicit line ranges for long files
+and at most 254 excerpt lines for one evidence-selection Choice.
 The synthesis payload carries the full exported conversations associated with
 selected candidates and their ownership citations. This retains assistant
 proposals alongside brief user approvals and later reversals. Validators check
@@ -160,9 +179,23 @@ python3 scripts/session_research.py audit --work "$WORK"
 The final render rechecks every source slice against the original pinned part
 and validates both session and repository citations. Generated Markdown and
 machine-readable reports live in `$WORK/reports/`. Portfolio opportunities
-require citations associated with at least two reviewed target repositories. Model calls are
-tool-denied and run from the private work directory. Raw prompts, output events,
-and the isolated model DB stay there; do not commit the work directory.
+require citations associated with at least two reviewed target repositories.
+Pairs from overlapping historical lineages are excluded before inference.
+Jev chooses commonality and ownership only from supplied candidates; report
+proposals and first steps use fixed action templates. Report coverage includes
+omitted candidate/pair IDs. Source text and all decision receipts stay in the
+private work directory; do not commit it.
+
+### Migrating an earlier pilot
+
+Start a new work directory for Jev extraction/synthesis. `seed-auth`,
+`SESSION_RESEARCH_OPENCODE_BIN` and the generative model runner have been removed.
+Earlier artifacts remain readable through `collect`, `briefs`, `render`, `audit`
+and legacy usage metrics; they are historical results, not Jev receipts. New
+Jev synthesis may consume reviewed legacy findings, but cannot overwrite earlier
+reports or reinterpret their model events as typed answers. Candidate IDs can
+change when new extraction uses verbatim statements instead of generated claims;
+review a new ledger rather than reusing old decisions by position.
 
 For source drill-down, copy a report citation verbatim into
 `python3 scripts/session_research.py inspect --work "$WORK" --ref 'primary/ses_.../msg_.../prt_...@0:2500'`.
@@ -184,4 +217,20 @@ unsupported. Measure missed requests, wrong outcomes, cross-repo attribution,
 failed calls, and citation validity before increasing the sample. Do not treat
 multiple assistant repetitions as independent users or evidence.
 
-Tests: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_session_research.py`.
+Tests: `PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests` and
+`cargo test -p chaosbox --bin chaosbox --test jev_cli`.
+
+A 2026-09-30 synthetic-only live smoke exercised extraction, report decisions and
+portfolio comparison through the actual Rust CLI: five Jev requests, 4,608 reported
+input tokens and 396 output tokens. Each of two invented feature requests yielded
+one signal; weak code-status/ownership evidence remained unverified or unselected.
+Replaying the portfolio added zero requests. This validates the transport and
+receipt path, not recall, calibration, cost savings against a baseline, or improved
+agent outcomes on real sessions.
+
+Local verification artifacts: the synthetic smoke is
+`/data/scratch/tmp/opencode/chaosbox-jev-synthetic-75tdtb3t/smoke.json`; the
+workspace-test log is `/data/scratch/tmp/opencode/chaosbox-jev-workspace-tests.log`
+(250 passed, three opt-in tests ignored). All 53 Python tests, strict Clippy and
+mdBook also passed. Production-package realization remains blocked by another
+session's Canix evaluation lock, as recorded in `WORKSPACE_IMPACT.md`.

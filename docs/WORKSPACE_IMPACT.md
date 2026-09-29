@@ -154,6 +154,8 @@ via `canix cache binary build .#chaosbox --no-push` was blocked, including on re
 by another session holding `/run/lock/canix/nix-eval.lock`. Realizing the package
 and exercising its Git-enabled wrapper remains an explicit pending check in
 `tasks/todo.md`; native test results do not establish that packaging gate.
+The Jev follow-up retry on 2026-09-30 was also blocked by the same evaluation
+lock (holder PID 2342763, building `.#provenance-oauth`).
 
 The integration is intentionally reviewed and selected-file based. Compiler
 resolution does not establish these cross-language packaging links. Nix

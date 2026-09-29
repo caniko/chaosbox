@@ -14,6 +14,13 @@ Pipeline: `source snapshot -> certified syntax facts + bounded candidates ->
 optional Jev decisions -> validated evidence/claims -> policy build ->
 atomic publication -> read-only consumers`.
 
+Inference policy: prefer deterministic source/compiler facts, then cached typed
+Typesafe Jev decisions for bounded semantic judgments. Session research now uses
+Jev for span classification, candidate priority/status and cross-repository
+comparison; citations and report text are rendered deterministically. See the
+[typed research workflow](docs/SESSION_RESEARCH_PILOT.md) for request receipts,
+shared budgets, abstentions and migration from the earlier generative pilot.
+
 ## Direction: selective intelligence across code and sessions
 
 Chaosbox should connect repository structure with the decisions, findings and

@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import os
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -13,6 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import session_research as research
+from test_session_research_jev import response as jev_response
 
 
 class ResearchPilotTest(unittest.TestCase):
@@ -393,14 +393,13 @@ class ResearchPilotTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "source evidence"):
             research.validate_report(report, available, {})
 
-    def test_model_event_reader_never_uses_tool_text_as_an_answer(self):
-        event = lambda kind, text: json.dumps({"type": kind, "part": {"type": kind, "text": text}})
-        raw = event("text", '{"brief":"Done","signals":[]}')
-        self.assertEqual(research.parse_events(raw), {"brief": "Done", "signals": []})
-        with self.assertRaisesRegex(ValueError, "tool event"):
-            research.parse_events(event("tool", '{"wrong":true}') + '\n' + raw)
-        with self.assertRaisesRegex(ValueError, "tool event"):
-            research.parse_events(event("tool", '{"brief":"false"}'))
+    def test_jev_never_uses_tool_or_generated_text_as_an_answer(self):
+        questions = {"q": research.jev.choice("Classify", {"yes": "Yes", "none": "None"})}
+        for answer in ({"type": "tool", "text": "yes"}, {"type": "text", "text": "yes"}):
+            result = jev_response(questions)
+            result["answers"]["q"] = answer
+            with self.assertRaisesRegex(ValueError, "choice"):
+                research.jev.validate_response(result, questions)
 
     def test_confirmed_gap_binds_external_receipt_to_code_revision(self):
         revision = "a" * 40
@@ -452,99 +451,105 @@ class ResearchPilotTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "too large"):
             research.repo_context(repo, ["huge.md#L1-L1"])
 
-    def test_model_runner_refuses_launchers_that_ignore_disposable_db(self):
+    @staticmethod
+    def jev_process(command, **kwargs):
+        request = research.load(command[-1])
+        result = jev_response(request["questions"])
+        return subprocess.CompletedProcess(command, 0, json.dumps({"version": 1, "error": None,
+                    "response": result, "sent_requests": 1, "input_tokens": 100}), "")
+
+    def test_jev_runner_uses_native_client_and_reuses_negative_receipts_even_on_retry(self):
         work = self.root / "model"
         work.mkdir(mode=0o700)
         research.write_new(work / "plan.json", {"version": 1})
-        wrapper = work / "opencode"
-        wrapper.write_text("#!/bin/sh\necho /home/user/live-opencode.db\n")
-        wrapper.chmod(0o700)
-        previous = os.environ.get("SESSION_RESEARCH_OPENCODE_BIN")
-        os.environ["SESSION_RESEARCH_OPENCODE_BIN"] = str(wrapper)
-        try:
-            with self.assertRaisesRegex(ValueError, "isolation"):
-                research.model_call(work, "mock-model", "Analyze", {"text": "fixture"}, "try")
-        finally:
-            if previous is None:
-                os.environ.pop("SESSION_RESEARCH_OPENCODE_BIN", None)
-            else:
-                os.environ["SESSION_RESEARCH_OPENCODE_BIN"] = previous
-        self.assertFalse((work / "prompts" / "try.events.jsonl").exists())
+        questions = {"q": research.jev.choice("Classify", {"none": "None", "feature": "Feature"})}
+        with patch.object(research.subprocess, "run", side_effect=self.jev_process) as call:
+            first = research.JevRunner(work)({"text": "fixture"}, questions)
+            self.assertEqual(first["answers"]["q"]["choice"], "none")
+            self.assertEqual(research.JevRunner(work, retry=True)({"text": "fixture"}, questions), first)
+            call.assert_called_once()
+            self.assertEqual(call.call_args.args[0][1:5], ["jev", "evaluate", "--privacy-reviewed", "--input"])
+            research.JevRunner(work)({"text": "changed input"}, questions)
+            self.assertEqual(call.call_count, 2)
+        self.assertFalse((work / "model.sqlite").exists())
+        for artifact in (work / "jev").glob("*.json"):
+            self.assertEqual(artifact.stat().st_mode & 0o777, 0o600)
 
-    def test_model_runner_refuses_unbounded_prompt_before_inference(self):
+    def test_jev_runner_refuses_unbounded_prompt_before_inference(self):
         work = self.root / "large-prompt"
         work.mkdir(mode=0o700)
         research.write_new(work / "plan.json", {"version": 1})
         with self.assertRaisesRegex(ValueError, "prompt exceeds"):
-            research.model_call(work, "mock-model", "Analyze", {"text": "x" * 210000}, "large")
-        self.assertFalse((work / "prompts" / "large.json").exists())
+            research.JevRunner(work)({"text": "x" * 210000}, {})
+        self.assertFalse((work / "jev").exists())
 
-    def test_model_runner_requires_prepared_private_workdir(self):
+    def test_jev_runner_requires_prepared_private_workdir(self):
         work = self.root / "public-workdir"
         work.mkdir(mode=0o755)
         research.write_new(work / "plan.json", {"version": 1})
         with self.assertRaisesRegex(ValueError, "private work"):
-            research.model_call(work, "mock-model", "Analyze", {"text": "fixture"}, "public")
-        self.assertFalse((work / "prompts").exists())
+            research.JevRunner(work)
+        self.assertFalse((work / "jev").exists())
 
-    def test_model_config_denies_all_tools_even_mcp_and_preserves_prior_config(self):
-        work = self.root / "config"
+    def test_failed_and_interrupted_jev_attempts_spend_persistent_budget(self):
+        work = self.root / "failed"
         work.mkdir(mode=0o700)
-        old = research.legacy_opencode_config()
-        research.write_new(work / "opencode.json", old)
-        new = research.ensure_model_config(work)
-        self.assertEqual(new["agents"]["session-research"]["permissions"],
-                         [{"action": "*", "resource": "*", "effect": "deny"}])
-        self.assertEqual(research.load(work / "opencode.previous.json"), old)
-        self.assertEqual(research.ensure_model_config(work), new)
-        (work / "opencode.json").write_text('{"unknown":"user work"}')
-        with self.assertRaisesRegex(ValueError, "permissions changed"):
-            research.ensure_model_config(work)
+        research.write_new(work / "plan.json", {"version": 1})
+        questions = {"q": research.jev.choice("Classify", {"none": "None", "yes": "Yes"})}
+        with patch.object(research.subprocess, "run", side_effect=subprocess.TimeoutExpired("fixture", 90)) as call:
+            with self.assertRaisesRegex(ValueError, "evaluation failed"):
+                research.JevRunner(work)({}, questions)
+            with self.assertRaisesRegex(ValueError, "explicit --retry"):
+                research.JevRunner(work)({}, questions)
+            with self.assertRaisesRegex(ValueError, "budget exceeded"):
+                research.JevRunner(work, retry=True, max_requests=1)({}, questions)
+            call.assert_called_once()
+        # Losing the result to a crash never refunds the already reserved attempt.
+        next((work / "jev").glob("*.result.json")).unlink()
+        self.assertEqual(research.jev_usage(work)["reservedRequests"], 1)
+        with patch.object(research.subprocess, "run", side_effect=self.jev_process) as call:
+            research.JevRunner(work, retry=True, max_requests=2)({}, questions)
+            call.assert_called_once()
+        self.assertEqual(research.jev_usage(work)["reservedRequests"], 2)
 
-    def test_model_config_pins_host_provider_config_in_private_merge(self):
-        work = self.root / "config-merge"
+    def test_jev_input_budget_is_shared_between_invocations(self):
+        work = self.root / "budget"
         work.mkdir(mode=0o700)
-        host = self.root / "host.json"
-        host.write_text(json.dumps({"providers": {"muse-code": {"enabled": True}},
-                                    "permissions": [{"action": "*", "resource": "*",
-                                                     "effect": "allow"}]}))
-        research.ensure_model_config(work)
-        env = research.model_configuration(work, {"OPENCODE_CONFIG": str(host)})
-        merged = research.load(env["OPENCODE_CONFIG"])
-        self.assertEqual(merged["providers"]["muse-code"]["enabled"], True)
-        self.assertEqual(merged["agents"]["session-research"]["permissions"][-1]["effect"],
-                         "deny")
-        self.assertEqual(research.model_configuration(work, {"OPENCODE_CONFIG": str(host)}), env)
-        self.assertEqual(json.loads(host.read_text())["providers"]["muse-code"]["enabled"], True)
+        research.write_new(work / "plan.json", {"version": 1})
+        questions = {"q": research.jev.choice("Classify", {"none": "None", "yes": "Yes"})}
+        with patch.object(research.subprocess, "run", side_effect=self.jev_process) as call:
+            research.JevRunner(work)({}, questions)
+            spent = research.jev_usage(work)["chargedInputTokens"]
+            with self.assertRaisesRegex(ValueError, "budget exceeded"):
+                research.JevRunner(work, max_input_tokens=spent)({"changed": True}, questions)
+            call.assert_called_once()
 
-    def test_auth_seed_copies_only_needed_credentials_and_catalog(self):
-        source, target = self.root / "source.db", self.root / "target.db"
-        for file in (source, target):
-            db = sqlite3.connect(file)
-            db.executescript("""
-                create table credential(id text primary key, integration_id text, label text,
-                  value text, connector_id text, method_id text, active integer,
-                  time_created integer, time_updated integer);
-                create table kv(key text primary key, value text, time_created integer,
-                  time_updated integer);
-            """)
-            db.close()
-        db = sqlite3.connect(source)
-        for provider in ("muse-code", "openai", "opencode-omniroute"):
-            db.execute("insert into credential values (?, ?, '', 'fixture secret', null, null, 1, 1, 1)",
-                       (provider, provider))
-        db.execute("insert into kv values ('models-dev:catalog','fixture catalog',1,1)")
-        db.execute("insert into kv values ('unrelated','ignore this',1,1)")
-        db.commit()
-        db.close()
-        research.seed_auth(source, target)
-        db = sqlite3.connect(target)
-        self.assertEqual([x[0] for x in db.execute('select integration_id from credential order by id')],
-                         ['muse-code', 'openai'])
-        self.assertEqual(db.execute('select key from kv').fetchone()[0], 'models-dev:catalog')
-        db.close()
-        with self.assertRaisesRegex(ValueError, "already seeded"):
-            research.seed_auth(source, target)
+    def test_jev_source_plan_is_part_of_cache_identity(self):
+        work = self.root / "scope"
+        work.mkdir(mode=0o700)
+        research.write_new(work / "plan.json", {"version": 1})
+        questions = {"q": research.jev.choice("Classify", {"none": "None", "yes": "Yes"})}
+        with patch.object(research.subprocess, "run", side_effect=self.jev_process) as call:
+            research.JevRunner(work)({}, questions)
+            (work / "plan.json").write_text('{"version":2}')
+            research.JevRunner(work)({}, questions)
+            self.assertEqual(call.call_count, 2)
+
+    def test_typed_extraction_replay_checks_artifact_and_does_not_call_provider(self):
+        work = self.root / "typed-extraction"
+        research.prepare(self.archive, work, session_ids=["ses_a"])
+        research.export(work)
+        with patch.object(research.subprocess, "run", side_effect=self.jev_process) as call:
+            self.assertEqual(research.run_extract(work, privacy_reviewed=True), 1)
+            self.assertEqual(research.run_extract(work, privacy_reviewed=True, retry=True), 0)
+            call.assert_called_once()
+            artifact = next((work / "signals").glob("*.json"))
+            result = research.load(artifact)
+            result["signals"][0]["claim"] = "Invented claim"
+            artifact.write_text(json.dumps(result))
+            with self.assertRaisesRegex(ValueError, "artifact differs"):
+                research.run_extract(work, privacy_reviewed=True)
+            call.assert_called_once()
 
     def test_final_proof_checks_citations_against_original_part_not_only_bundle(self):
         work = self.root / "work"
@@ -625,21 +630,7 @@ class ResearchPilotTest(unittest.TestCase):
             "ownershipEvidence": row["finding"]["citations"], "disposition": "selected",
             "rationale": "Fixture ownership review"} for row in ledger["candidates"]}
 
-        def model(work, model, instruction, payload, name, **kwargs):
-            research.write_new(work / "prompts" / f"{name}.json", payload)
-            if name == "report-portfolio":
-                return {"summary": "No shared candidate", "shared": []}
-            rows = payload["candidates"]
-            return {"summary": "Reviewed view", "limitations": ["Bounded fixture"],
-                    "opportunities": [{"title": "Export", "kind": "feature", "priority": "low",
-                    "problem": "Need export", "proposal": "Investigate export",
-                    "firstSlice": "Verify need", "validation": "Review source",
-                    "currentStatus": "unverified", "sessionEvidence": row["finding"]["citations"],
-                    "candidateIds": [row["id"]], "action": row["action"],
-                    "implementation": row["implementation"], "deployment": row["deployment"]}
-                    for row in rows[:8]]}
-
-        with patch.object(research, "model_call", side_effect=model) as call:
+        with patch.object(research.subprocess, "run", side_effect=self.jev_process) as call:
             with self.assertRaisesRegex(ValueError, "reviewed candidate decisions"):
                 research.synthesize(work, privacy_reviewed=True)
             call.assert_not_called()
@@ -649,7 +640,7 @@ class ResearchPilotTest(unittest.TestCase):
         self.assertIn("Reviewed action", research.render(work)["pink-raven"])
         self.assertTrue(research.audit_reports(work)["repos"]["pink-raven"])
         # A retry reuses the pinned ledger/reports without another model invocation.
-        with patch.object(research, "model_call", side_effect=AssertionError("unexpected model call")):
+        with patch.object(research.subprocess, "run", side_effect=AssertionError("unexpected model call")):
             research.synthesize(work, privacy_reviewed=True, decisions=decisions)
             with self.assertRaisesRegex(ValueError, "candidate review changed"):
                 research.synthesize(work, privacy_reviewed=True, decisions={})
