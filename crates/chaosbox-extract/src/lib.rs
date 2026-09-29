@@ -22,6 +22,7 @@ mod candidates;
 pub mod compiler;
 mod extractors;
 mod paths;
+mod selection;
 mod syntax;
 
 #[cfg(test)]

@@ -6,7 +6,8 @@ use scip::types::Index;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{invalid, relative_path, CompilerError};
+use super::{invalid, CompilerError};
+use crate::paths::checked_path;
 use crate::{FileVersion, Snapshot};
 
 const CONTRACT: &str = "scip-receipt-v1/scip-0.10.0";
@@ -80,11 +81,12 @@ impl AnalysisInputs {
         additional: &[String],
     ) -> Result<Self, CompilerError> {
         let root = root.canonicalize()?;
+        let scope = crate::validate_scope(scope)?;
         // Check all ancestors of explicit scopes as well as the final directory.
-        for path in scope {
-            safe_file(&root, path, false)?;
+        for path in &scope {
+            checked_path(&root, path, false)?;
         }
-        let snapshot = Snapshot::capture_scoped(repo, &root, scope)?;
+        let snapshot = Snapshot::capture_scoped(repo, &root, &scope)?;
         let config = Snapshot::capture_matching(repo, &root, &[], configuration_file)?;
         let mut configuration: BTreeMap<_, _> = config
             .files
@@ -95,7 +97,7 @@ impl AnalysisInputs {
         additional.sort();
         additional.dedup();
         for path in &additional {
-            let file = safe_file(&root, path, true)?;
+            let file = checked_path(&root, path, true)?;
             let text = std::fs::read_to_string(file)?;
             configuration.insert(
                 path.clone(),
@@ -118,28 +120,6 @@ impl AnalysisInputs {
             additional,
         })
     }
-}
-
-fn safe_file(
-    root: &Path,
-    path: &str,
-    require_file: bool,
-) -> Result<std::path::PathBuf, CompilerError> {
-    relative_path(path)?;
-    let mut full = root.to_path_buf();
-    for component in path.split('/') {
-        full.push(component);
-        let meta = std::fs::symlink_metadata(&full)?;
-        if meta.is_symlink() || (meta.is_dir() && full.join(".git").exists()) {
-            return Err(invalid(format!(
-                "input crosses symlink/repository boundary: {path}"
-            )));
-        }
-    }
-    if require_file && !full.is_file() {
-        return Err(invalid("additional input is not a regular file"));
-    }
-    Ok(full)
 }
 
 /// Explicit compiler execution settings, retained rather than guessed from SCIP.

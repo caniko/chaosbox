@@ -69,7 +69,11 @@ async fn compiler_facts_publish_with_zero_budget_and_retain_anchors_and_citation
         extraction.compiler
     );
     let exported = reader.export().await.unwrap();
-    assert!(exported["nodes"].as_array().unwrap().iter().any(|node| node["compiler"]["anchor"].is_string()));
+    assert!(exported["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["compiler"]["anchor"].is_string()));
     for edge in build
         .edges
         .values()

@@ -31,13 +31,5 @@ fn invalid(message: impl Into<String>) -> CompilerError {
 
 /// Strict portable repository-relative path, without normalization surprises.
 pub(crate) fn relative_path(path: &str) -> Result<(), CompilerError> {
-    if path.is_empty()
-        || path.contains(['\\', ':', '\0'])
-        || path
-            .split('/')
-            .any(|s| s.is_empty() || s == "." || s == "..")
-    {
-        return Err(invalid(format!("invalid relative path {path:?}")));
-    }
-    Ok(())
+    crate::paths::strict_relative(path).map_err(Into::into)
 }

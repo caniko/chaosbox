@@ -287,3 +287,133 @@ fn typed_ranges_and_ambiguous_targets_are_handled_without_guessing() {
     assert_eq!(output.coverage.ambiguous_references, 1);
     assert_eq!(output.coverage.definitions, 2);
 }
+
+#[test]
+fn real_unresolved_typescript_index_never_promotes_symbol_information_to_definitions() {
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/indexer-smoke");
+    let bytes = fs::read(fixtures.join("typescript-unresolved.scip")).unwrap();
+    let raw = Index::parse_from_bytes(&bytes).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    for document in &raw.documents {
+        let file = dir.path().join(&document.relative_path);
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let source =
+            fs::read_to_string(fixtures.join("typescript").join(&document.relative_path)).unwrap();
+        fs::write(
+            file,
+            source.replace("@local/provider.js", "@local/missing.js"),
+        )
+        .unwrap();
+    }
+    let mut inputs = AnalysisInputs::capture("unresolved", dir.path(), &[], &[]).unwrap();
+    inputs
+        .root
+        .clone_from(&raw.metadata.as_ref().unwrap().project_root);
+    let mut settings = settings();
+    settings.unspecified_encoding = Some(chaosbox_extract::compiler::Encoding::Utf16);
+    let receipt = Receipt::seal(inputs, settings, &bytes).unwrap();
+    let output = normalize(
+        &Snapshot::capture("unresolved", dir.path()).unwrap(),
+        &receipt,
+        &bytes,
+    )
+    .unwrap();
+    assert!(output.coverage.references < 18);
+    assert!(output.coverage.unresolved_references > 1);
+    let unresolved = output
+        .entities
+        .iter()
+        .filter(|e| e.file == "src/main.ts" && e.name == "renamed" && e.span.start_line < 6)
+        .collect::<Vec<_>>();
+    assert!(!unresolved.is_empty());
+    for entity in unresolved {
+        assert_eq!(entity.kind, chaosbox_core::EntityKind::Symbol);
+        assert!(!output
+            .facts
+            .iter()
+            .any(|f| f.from == entity.id || f.to == entity.id));
+    }
+    assert_eq!(output.coverage.typecheck, "unknown");
+}
+
+#[test]
+fn utf32_multiline_crlf_ranges_are_exact_and_conflicting_encodings_fail() {
+    let dir = project();
+    fs::write(dir.path().join("a.ts"), "α🦀foo\r\nbar\n").unwrap();
+    let mut idx = index(dir.path());
+    idx.documents[0].position_encoding = PositionEncoding::UTF32CodeUnitOffsetFromLineStart.into();
+    idx.documents[0].occurrences = vec![occurrence(FOO, &[0, 2, 1, 3], false)];
+    idx.documents[0].occurrences[0].set_multi_line_range(scip::types::MultiLineRange {
+        start_line: 0,
+        start_character: 2,
+        end_line: 1,
+        end_character: 3,
+        ..Default::default()
+    });
+    let bytes = idx.write_to_bytes().unwrap();
+    let inputs = AnalysisInputs::capture("demo", dir.path(), &[], &[]).unwrap();
+    let receipt = Receipt::seal(inputs.clone(), settings(), &bytes).unwrap();
+    let snapshot = Snapshot::capture("demo", dir.path()).unwrap();
+    let output = normalize(&snapshot, &receipt, &bytes).unwrap();
+    let fact = output
+        .facts
+        .iter()
+        .find(|f| f.rel_type == RelationType::References)
+        .unwrap();
+    assert_eq!(fact.text, "foo\r\nbar");
+    assert_eq!(
+        (
+            fact.span.byte_start,
+            fact.span.byte_end,
+            fact.span.start_col,
+            fact.span.end_line,
+            fact.span.end_col
+        ),
+        (6, 14, 3, 2, 4)
+    );
+    idx.documents[0].occurrences[0].range = vec![0, 2, 4];
+    let conflicting = idx.write_to_bytes().unwrap();
+    let receipt = Receipt::seal(inputs, settings(), &conflicting).unwrap();
+    assert!(normalize(&snapshot, &receipt, &conflicting).is_err());
+}
+
+#[test]
+fn scoped_receipts_normalize_scopes_and_track_config_additions_and_deletions() {
+    let dir = project();
+    fs::create_dir(dir.path().join("src")).unwrap();
+    fs::write(dir.path().join("src/main.ts"), "export const x = 1;\n").unwrap();
+    let inputs = AnalysisInputs::capture("demo", dir.path(), &["src/".into()], &[]).unwrap();
+    assert_eq!(inputs.scope, ["src"]);
+    assert_eq!(inputs.sources.len(), 1);
+    assert!(inputs
+        .configuration
+        .iter()
+        .any(|f| f.path == "tsconfig.json"));
+    let bytes = index(dir.path()).write_to_bytes().unwrap();
+    let receipt = Receipt::seal(inputs, settings(), &bytes).unwrap();
+    let output = normalize(
+        &Snapshot::capture_scoped("demo", dir.path(), &["src".into()]).unwrap(),
+        &receipt,
+        &bytes,
+    )
+    .unwrap();
+    assert_eq!(output.coverage.references, 0);
+    assert!(output
+        .coverage
+        .files
+        .iter()
+        .any(|f| f.file == "src/main.ts" && f.status == "omitted_by_indexer"));
+    assert!(normalize(
+        &Snapshot::capture("demo", dir.path()).unwrap(),
+        &receipt,
+        &bytes
+    )
+    .is_err());
+    fs::write(dir.path().join("tsconfig.extra.json"), "{}\n").unwrap();
+    assert!(receipt.verify(dir.path()).is_err());
+    fs::remove_file(dir.path().join("tsconfig.extra.json")).unwrap();
+    receipt.verify(dir.path()).unwrap();
+    fs::remove_file(dir.path().join("tsconfig.json")).unwrap();
+    assert!(receipt.verify(dir.path()).is_err());
+}
