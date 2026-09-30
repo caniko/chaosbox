@@ -449,6 +449,7 @@ async fn direct_fact_citations_and_coverage_survive_a_fresh_reader() {
         .unwrap();
     build.add_edge(rel.clone()).unwrap();
     build.coverage = Some(BuildCoverage {
+        catalog: None,
         compiler: None,
         files: vec![FileCoverage {
             file: "a.rs".into(),
@@ -499,11 +500,13 @@ async fn assert_direct_readback(
             .span,
         Some(definition.span.clone())
     );
-    assert!(reader
-        .evidence_for("build:other", &rel.id)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        reader
+            .evidence_for("build:other", &rel.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]

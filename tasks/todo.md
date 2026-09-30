@@ -67,3 +67,27 @@ lock is held by PID 164642 building
 checks remain pending. Canix still pins `a4dcdc2dc7f9bd82f22d2dc57f2f8c7a2aac0b0d`;
 the new CLI can be selected through `SESSION_RESEARCH_CHAOSBOX_BIN` until package
 adoption is completed. This follow-up is local and does not claim deployment.
+
+## Graphify retirement and Chaosbox cutover
+
+- [ ] Realize and adopt the production package; verify schema and CLI capabilities.
+- [x] Repair scoped selection and forward source paths, privacy and destination consent.
+- [x] Transfer Canix selection policy and helpers to Chaosbox-owned integration names.
+- [x] Complete deterministic graph context/statistics and managed workspace/memory reads.
+- [x] Implement deterministic PostgreSQL capture, publication and Hermes access wiring.
+- [x] Complete bounded source-selected continuation/checkpoint rendering.
+- [ ] Measure deployed coding, workspace and memory outcomes (not a cutover gate).
+- [ ] Remove Graphify from Infernix, Canix and agent skills, including transitive inputs.
+- [ ] Retire Graphify runtime state, PostgreSQL grants and workspace registration.
+
+Initial facade verification: the scoped-selection regression failed before the
+repair and the commands-crate Chaosbox tests pass after it. End-to-end facade
+tests currently encounter a concurrent Canix dependency change: the locked
+Fleetix crate lacks `fleetix::health`, imported by `publish_health.rs`.
+
+The operator subsequently requested the default-branch source cutover and full
+Graphify removal without deployment verification. That supersedes the previous
+verification-before-retirement order. Local PostgreSQL SELECT-only capture and
+continuation/replay checks passed before that instruction; no live Hermes
+verification or deployment is claimed. Package pins and source retirement are
+recorded in Canix's cutover commit.

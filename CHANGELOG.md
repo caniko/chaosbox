@@ -29,6 +29,15 @@
 
 ### Added
 
+- Read-only graph statistics, bounded task context and deterministic connectivity
+  components through CLI and MCP, with optional reviewed workspace artifacts.
+- PostgreSQL catalog capture and zero-model publication with private receipts,
+  real columns/deparsed definitions, SELECT-role-visible foreign keys and
+  explicit catalog coverage. Packaged SQL and PostgreSQL tools ship with the CLI.
+- Bounded source-selected continuation with exact native records, mandatory user
+  anchors, Jev Choice classification, deterministic rendering and persistent
+  paid-attempt reservations/replay.
+
 - Credential-free `jev capabilities` emits the model, endpoint, receipt version
   and enforced identity/redirect policy for machine-readable compatibility checks.
 - Operator-only `jev evaluate --input FILE --privacy-reviewed` exposes the shared

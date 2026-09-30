@@ -72,6 +72,24 @@ pub(super) fn mcp_tool_defs() -> Vec<serde_json::Value> {
             serde_json::json!({"id": {"type": "string"}}),
             vec!["id"],
         ),
+        mcp_tool(
+            "context",
+            "Bounded lexical graph context with pinned source and relationship identities.",
+            serde_json::json!({"query":{"type":"string","minLength":1,"maxLength":2048},"depth":{"type":"integer","minimum":1,"maximum":6},"max_nodes":{"type":"integer","minimum":1,"maximum":200},"max_chars":{"type":"integer","minimum":256,"maximum":32000}}),
+            vec!["query"],
+        ),
+        mcp_tool(
+            "stats",
+            "Deterministic counts, degree hubs and weak connectivity groups (not semantic clusters).",
+            serde_json::json!({"limit":{"type":"integer","minimum":1,"maximum":200}}),
+            Vec::<&str>::new(),
+        ),
+        mcp_tool(
+            "community",
+            "Build-bound weak connectivity group, with explicit omitted members.",
+            serde_json::json!({"id":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":200}}),
+            vec!["id"],
+        ),
     ]
 }
 
@@ -143,8 +161,8 @@ pub(super) fn mcp_args(
     let args = params.get("arguments").unwrap_or(&serde_json::Value::Null);
     let map = args.as_object().cloned().unwrap_or_default();
     let required: &[&str] = match name {
-        "search" => &["query"],
-        "lookup" | "neighbors" | "explain" => &["id"],
+        "search" | "context" => &["query"],
+        "lookup" | "neighbors" | "explain" | "community" => &["id"],
         "path" => &["from", "to"],
         "evidence" => &["rel"],
         "diff" => &["from_build", "to_build"],
@@ -193,6 +211,9 @@ pub(super) async fn mcp_call_tool(
             | "diff"
             | "export"
             | "explain"
+            | "context"
+            | "stats"
+            | "community"
     ) {
         return mcp_error(
             id,
@@ -239,6 +260,41 @@ pub(super) async fn mcp_call_tool(
                 );
             }
         }
+    }
+    let bounds: &[(&str, u64, u64)] = match name {
+        "context" => &[
+            ("depth", 1, 6),
+            ("max_nodes", 1, 200),
+            ("max_chars", 256, 32_000),
+        ],
+        "stats" | "community" => &[("limit", 1, 200)],
+        _ => &[],
+    };
+    for (key, minimum, maximum) in bounds {
+        if args.get(*key).is_some_and(|value| {
+            !value
+                .as_u64()
+                .is_some_and(|n| (*minimum..=*maximum).contains(&n))
+        }) {
+            return mcp_error(
+                id,
+                -32602,
+                format!("{key} must be an integer in {minimum}..{maximum}"),
+                None,
+            );
+        }
+    }
+    if name == "context"
+        && args["query"]
+            .as_str()
+            .is_none_or(|query| query.trim().is_empty() || query.len() > 2048)
+    {
+        return mcp_error(
+            id,
+            -32602,
+            "context query must be 1..2048 bytes".into(),
+            None,
+        );
     }
     let reader = match Box::pin(AnyReader::connect(repo)).await {
         Ok(r) => r,
@@ -320,6 +376,24 @@ pub(super) async fn mcp_call_tool(
             reader.diff(repo, from, to).await.map_err(|e| e.to_string())
         }
         "export" => reader.export().await.map_err(|e| e.to_string()),
+        "context" | "stats" | "community" => match reader.export().await {
+            Err(error) => Err(error.to_string()),
+            Ok(graph) => match name {
+                "context" => chaosbox::navigation::context(
+                    &graph,
+                    args["query"].as_str().unwrap_or_default(),
+                    integer(args.get("depth"), 3),
+                    integer(args.get("max_nodes"), 20),
+                    integer(args.get("max_chars"), 12000),
+                ),
+                "stats" => chaosbox::navigation::summary(&graph, integer(args.get("limit"), 10)),
+                _ => chaosbox::navigation::community(
+                    &graph,
+                    args["id"].as_str().unwrap_or_default(),
+                    integer(args.get("limit"), 100),
+                ),
+            },
+        },
         "explain" => {
             let eid = args["id"].as_str().unwrap_or_default();
             reader.explain(eid).await.map_err(|e| e.to_string())
@@ -344,7 +418,10 @@ pub(super) async fn mcp_call_tool(
 // Long CLI/dispatch functions; splitting them apart is the owning
 // session's refactor. Allowed to keep CI unblocked.
 #[allow(clippy::too_many_lines)]
-pub(super) async fn serve_mcp(intelligence: Option<chaosbox::intelligence::Bundle>) {
+pub(super) async fn serve_mcp(
+    intelligence: Option<chaosbox::intelligence::Bundle>,
+    workspace: Option<chaosbox::workspace::Workspace>,
+) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
@@ -426,6 +503,10 @@ pub(super) async fn serve_mcp(intelligence: Option<chaosbox::intelligence::Bundl
                             vec!["id"],
                         ));
                     }
+                    if workspace.is_some() {
+                        defs.push(mcp_tool("workspace_impact", "Reviewed directed impact, with current freshness, exact pins and private scope checks.",
+                            serde_json::json!({"changed":{"type":"string"},"scope":{"type":"string"},"max_hops":{"type":"integer","minimum":1,"maximum":8},"max_nodes":{"type":"integer","minimum":1,"maximum":100}}), vec!["changed", "scope"]));
+                    }
                     let cursor = params
                         .get("cursor")
                         .and_then(|c| c.as_str())
@@ -449,7 +530,22 @@ pub(super) async fn serve_mcp(intelligence: Option<chaosbox::intelligence::Bundl
             "tools/call" => {
                 if initialized {
                     let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    if name.starts_with("intelligence_") {
+                    if name == "workspace_impact" {
+                        match workspace.as_ref() {
+                            Some(workspace) => {
+                                match workspace_call(workspace, &params["arguments"]) {
+                                    Ok(value) => mcp_text_result(&id, &value),
+                                    Err(error) => mcp_error(&id, -32602, error, None),
+                                }
+                            }
+                            None => mcp_error(
+                                &id,
+                                -32601,
+                                "no workspace artifact configured".into(),
+                                None,
+                            ),
+                        }
+                    } else if name.starts_with("intelligence_") {
                         match intelligence.as_ref() {
                             Some(bundle) => match chaosbox::intelligence::mcp_query(
                                 bundle,
@@ -485,4 +581,43 @@ pub(super) async fn serve_mcp(intelligence: Option<chaosbox::intelligence::Bundl
             .await;
     }
     let _ = all_relation_types;
+}
+
+fn workspace_call(
+    workspace: &chaosbox::workspace::Workspace,
+    args: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let scope = args["scope"].as_str().ok_or("missing scope")?;
+    let repo = args["repo"].as_str().ok_or("missing repo")?;
+    let changed = args["changed"].as_str().ok_or("missing changed endpoint")?;
+    if workspace
+        .endpoints
+        .get(changed)
+        .is_none_or(|endpoint| endpoint.member != repo)
+    {
+        return Err("changed endpoint is outside requested repository".into());
+    }
+    for (key, maximum) in [("max_hops", 8), ("max_nodes", 100)] {
+        if args
+            .get(key)
+            .is_some_and(|value| !value.as_u64().is_some_and(|n| (1..=maximum).contains(&n)))
+        {
+            return Err(format!("{key} must be an integer in 1..{maximum}"));
+        }
+    }
+    workspace
+        .impact(
+            scope,
+            changed,
+            integer(args.get("max_hops"), 4),
+            integer(args.get("max_nodes"), 20),
+        )
+        .map_err(|e| e.to_string())
+}
+
+fn integer(value: Option<&serde_json::Value>, default: usize) -> usize {
+    value
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|number| usize::try_from(number).ok())
+        .unwrap_or(default)
 }

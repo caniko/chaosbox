@@ -68,10 +68,17 @@ pub async fn run(command: Command) -> Result<serde_json::Value> {
             max_hops,
             max_nodes,
         } => {
-            let artifact: Workspace = read_json(&artifact)?;
+            let artifact = load_workspace(&artifact)?;
             artifact.impact(&scope, &changed, max_hops, max_nodes)
         }
     }
+}
+
+/// Load a bounded, fingerprint-validated artifact for read-only CLI/MCP use.
+pub fn load_workspace(path: &Path) -> Result<Workspace> {
+    let workspace: Workspace = read_json(path)?;
+    workspace.validate(&workspace.scope)?;
+    Ok(workspace)
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {

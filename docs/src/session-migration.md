@@ -72,7 +72,11 @@ and relate those supplied records; Rust assembles a fixed-schema packet and
 cited text through deterministic templates. No model generates checkpoint prose
 or invents a task, quotation or evidence reference. Ambiguous decisions retain
 the source and an explicit unresolved state. This replaces the earlier
-generative-model campaign choice; checkpoint implementation remains pending.
+generative-model campaign choice. The bounded `checkpoint prepare` and
+`checkpoint assemble` commands implement source-selected rendering and
+persistent spending; see [Source-selected continuation](checkpoints.md).
+Automatic native transfer and the complete continuity/audit workflow remain
+separate implementation milestones.
 
 Checkpoint generation must:
 

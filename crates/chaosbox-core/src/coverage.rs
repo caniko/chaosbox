@@ -39,6 +39,35 @@ pub struct BuildCoverage {
     /// Optional compiler analysis; absence means it was not requested.
     #[serde(default)]
     pub compiler: Option<crate::compiler::CompilerCoverage>,
+    /// Read-only database catalog coverage; absent for source-code builds.
+    #[serde(default)]
+    pub catalog: Option<CatalogCoverage>,
+}
+
+/// Captured PostgreSQL catalog scope and observation time, never row-data or
+/// continuous freshness. Native omissions remain explicitly visible.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CatalogCoverage {
+    /// Relationships published directly from native catalog observations.
+    pub relations: usize,
+    /// Fixed native catalog producer.
+    pub producer: String,
+    /// Capture receipt digest.
+    pub receipt: String,
+    /// Connected database.
+    pub database: String,
+    /// Selected namespace.
+    pub schema: String,
+    /// Actual collector identity.
+    pub role: String,
+    /// Unix observation time.
+    pub observed_at: u64,
+    /// Object counts by native class.
+    pub objects: std::collections::BTreeMap<String, usize>,
+    /// Foreign keys whose targets fall outside selected scope.
+    pub unresolved_foreign_keys: usize,
+    /// Native counts and documented non-covered classes.
+    pub omissions: serde_json::Value,
 }
 
 impl BuildCoverage {
@@ -48,6 +77,7 @@ impl BuildCoverage {
     pub fn report(&self) -> CoverageReport<'_> {
         let shown = self.files.len().min(100);
         CoverageReport {
+            catalog: self.catalog.as_ref(),
             structural_relations: self.structural_relations,
             decision_relations: self.decision_relations,
             file_count: self.files.len(),
@@ -74,6 +104,8 @@ impl BuildCoverage {
 /// Bounded status/export representation of stored processing coverage.
 #[derive(Serialize)]
 pub struct CoverageReport<'a> {
+    /// Explicit catalog scope, observation time and omissions.
+    pub catalog: Option<&'a CatalogCoverage>,
     /// Directly published syntax relationships.
     pub structural_relations: usize,
     /// Decision-backed relationships.

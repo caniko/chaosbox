@@ -85,7 +85,7 @@ pub struct Snapshot {
     pub contents: BTreeMap<String, String>,
 }
 
-/// Validate explicit source scope entries (Graphify `sourcePaths` parity).
+/// Validate explicit repository-relative source scope entries.
 /// Returns the sorted, deduped scope. Rejects absolute paths, backslashes,
 /// empty entries, `.`/`..` segments, and empty segments (no trailing
 /// slashes after normalization), so a scope can never escape the corpus
@@ -141,7 +141,7 @@ impl Snapshot {
         Self::capture_scoped(repo, root, &[])
     }
 
-    /// Walk only `scope` subtrees of `root` (Graphify `sourcePaths` parity).
+    /// Walk only explicitly selected `scope` subtrees of `root`.
     ///
     /// An empty scope captures the whole tree exactly like [`Snapshot::capture`].
     /// A non-empty scope restricts capture to those repository-relative

@@ -5,7 +5,7 @@ use super::mcp_server::{mcp_args, mcp_call_tool, mcp_tool_defs};
 #[test]
 fn tool_defs_are_read_only_with_schemas() {
     let defs = mcp_tool_defs();
-    assert_eq!(defs.len(), 9);
+    assert_eq!(defs.len(), 12);
     for d in &defs {
         assert_eq!(d["annotations"]["readOnlyHint"], true);
         assert!(d["inputSchema"]["properties"].is_object(), "{d}");
@@ -90,6 +90,25 @@ async fn unbounded_queries_rejected_before_backend() {
         ))
         .await;
     assert_eq!(over_hops["error"]["code"], -32602, "{over_hops}");
+    for (name, arguments) in [
+        (
+            "context",
+            serde_json::json!({"repo":"demo","query":"entry","depth":100}),
+        ),
+        (
+            "context",
+            serde_json::json!({"repo":"demo","query":"entry","max_nodes":-1}),
+        ),
+        ("stats", serde_json::json!({"repo":"demo","limit":"all"})),
+    ] {
+        let response = mcp_call_tool(
+            &serde_json::json!(1),
+            name,
+            &serde_json::json!({"arguments":arguments}),
+        )
+        .await;
+        assert_eq!(response["error"]["code"], -32602, "{response}");
+    }
 }
 
 #[tokio::test]
@@ -112,7 +131,7 @@ fn mcp_tool_set_loads_no_provider_credentials() {
     // than trusting the shape alone, so a future mutation tool cannot slip
     // past the closed set unnoticed.
     let defs = mcp_tool_defs();
-    assert_eq!(defs.len(), 9);
+    assert_eq!(defs.len(), 12);
     let names: Vec<_> = defs
         .iter()
         .map(|d| d["name"].as_str().unwrap_or_default())

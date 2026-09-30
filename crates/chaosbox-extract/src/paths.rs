@@ -79,7 +79,7 @@ fn resolve_relative_path(from_file: &str, target: &str) -> Option<String> {
 
 /// Resolve relative `.nix` imports against the snapshot's file set: an
 /// in-repo target replaces its import stub with an edge to the target's
-/// real `File` entity (graphify nix parity: imports land on the file node,
+/// real `File` entity (Nix imports land on the file node,
 /// never a duplicate stub). A missing or external target keeps the stub so
 /// the import stays visible instead of silently vanishing.
 pub(crate) fn resolve_nix_imports(

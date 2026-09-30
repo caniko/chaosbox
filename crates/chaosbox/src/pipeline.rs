@@ -396,6 +396,7 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
                     .map_or(0, chaosbox_core::compiler::CompilerCoverage::relations),
             decision_relations: build.edges.len() - direct_relations,
             compiler: extraction.compiler.clone(),
+            catalog: None,
         });
         // Invariant: published edges refer to same-build members (enforced by add_edge).
         self.store

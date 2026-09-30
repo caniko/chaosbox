@@ -369,7 +369,22 @@ impl Store for MemoryStore {
                 .compiler
                 .as_ref()
                 .map_or(0, chaosbox_core::compiler::CompilerCoverage::relations);
-            if coverage.structural_relations + compiler != structural
+            let catalog = build
+                .edges
+                .values()
+                .filter(|edge| {
+                    !edge.evidence_ids.is_empty()
+                        && edge.evidence_ids.iter().all(|id| {
+                            self.evidence.get(id).is_some_and(|evidence| {
+                                evidence.producer.as_deref() == Some("postgres-catalog-v1")
+                                    && evidence.supports
+                                    && evidence.class == chaosbox_core::EvidenceClass::Extracted
+                            })
+                        })
+                })
+                .count();
+            if coverage.catalog.as_ref().map_or(0, |c| c.relations) != catalog
+                || coverage.structural_relations + compiler + catalog != structural
                 || coverage.decision_relations != build.edges.len() - structural
                 || coverage.files.iter().map(|file| file.facts).sum::<usize>()
                     != coverage.structural_relations

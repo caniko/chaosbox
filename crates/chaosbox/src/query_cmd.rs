@@ -7,6 +7,27 @@ use super::{QueryCmd, AnyReader, consumer_err, EXPORT_NODE_CAP, EXPORT_EDGE_CAP}
 #[allow(clippy::too_many_lines)]
 pub(super) async fn run_query(q: QueryCmd) -> i32 {
     match q {
+        QueryCmd::Context {
+            query,
+            repo,
+            depth,
+            max_nodes,
+            max_chars,
+        } => {
+            run_navigation(&repo, |graph| {
+                chaosbox::navigation::context(graph, &query, depth, max_nodes, max_chars)
+            })
+            .await
+        }
+        QueryCmd::Stats { repo, limit } => {
+            run_navigation(&repo, |graph| chaosbox::navigation::summary(graph, limit)).await
+        }
+        QueryCmd::Community { id, repo, limit } => {
+            run_navigation(&repo, |graph| {
+                chaosbox::navigation::community(graph, &id, limit)
+            })
+            .await
+        }
         QueryCmd::Search { query, repo, limit } => {
             let reader = match Box::pin(AnyReader::connect(&repo)).await {
                 Ok(r) => r,
@@ -144,5 +165,23 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
             );
             0
         }
+    }
+}
+
+async fn run_navigation(
+    repo: &str,
+    query: impl FnOnce(&serde_json::Value) -> Result<serde_json::Value, String>,
+) -> i32 {
+    let result = async {
+        let reader = AnyReader::connect(repo).await.map_err(|e| e.to_string())?;
+        query(&reader.export().await.map_err(|e| e.to_string())?)
+    }
+    .await;
+    match result {
+        Ok(value) => {
+            println!("{value}");
+            0
+        }
+        Err(error) => consumer_err("query navigation", error),
     }
 }

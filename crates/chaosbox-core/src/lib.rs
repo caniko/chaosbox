@@ -514,7 +514,7 @@ pub enum ValidationError {
 /// Effective ingestion + inference policy for one run (issue #8).
 ///
 /// The single choke point for "what may this run read, and where may its
-/// excerpts go": the source scope (Graphify `sourcePaths` parity, empty =
+/// excerpts go": the source scope (empty =
 /// whole tree), the privacy class (`local` = private fleet only,
 /// `private` = no external inference ever), and the explicit external
 /// inference grant (`none` = no provider, `typesafe-jev` = Typesafe Jev
