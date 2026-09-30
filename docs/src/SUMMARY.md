@@ -8,6 +8,7 @@
 # Implementation and historical reference
 
 - [Capability reference](capability.md)
+- [Run-bound graph read views](read-views.md)
 - [Optional compiler evidence](compiler-evidence.md)
 - [Compiler indexer feasibility](indexer-feasibility.md)
 - [Reviewed workspace impact pilot](workspace-impact.md)

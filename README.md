@@ -52,6 +52,12 @@ Jev credentials: `CHAOSBOX_JEV_API_KEY_FILE` (or operator `TYPESAFE_API_KEY`).
 Backend: TypeDB only — `db check`/`db migrate`/query/MCP always target
 TypeDB; `run` publishes through TypeDB with `CHAOSBOX_DB_BACKEND=typedb`,
 in-memory otherwise.
+For a trusted host connector, `chaosbox reader --admission /private/read-view.json`
+serves a run-isolated, source-scoped and version-pinned MCP connection. See
+[run-bound read views](docs/READ_VIEWS.md) for its admission contract, budgets,
+revocation, and worker-integration gates. The admission file is not a credential;
+the existing `chaosbox mcp` command remains an operator surface.
+
 Choose `--no-decisions`, `--live-jev`, or `--fixture-decisions` explicitly.
 Fixture graphs are disposable/test-only and recorded under `fixture-test`.
 `run --no-decisions` publishes parser-certified declarations and file/module

@@ -27,6 +27,7 @@ pub mod intelligence;
 mod lifecycle;
 mod materialization;
 mod pipeline;
+pub mod read_view;
 mod reader;
 mod responder;
 pub(crate) mod reuse;
