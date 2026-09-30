@@ -4,6 +4,8 @@
 
 ### Changed
 
+- The continuation design now requires Jev-selected records and deterministic
+  source-backed rendering, replacing the earlier generative-model contract.
 - Session research uses pinned Typesafe Jev choices for extraction, reviewed
   reports and cross-repository comparison. Exact source spans and fixed action
   templates replace generated claims/prose, with explicit abstention and omission
@@ -13,6 +15,13 @@
 
 ### Fixed
 
+- Live inference is restricted to the exact pinned Typesafe Jev model and
+  endpoint, with redirects disabled. Fresh graph decisions, cached inferences
+  and publication reject model substitutions; explicit offline fixtures retain
+  their separate identity. Legacy cache records with substituted identities are
+  refused rather than silently reused.
+- Research checks the CLI's enforced Jev capabilities before reserving an
+  attempt, so incompatible installed binaries do not consume its request budget.
 - Run publication no longer defers on unreadable active builds. Typed
   backend diagnostics flow through `active_publishes_relations`, and callers
   exit 1 with an `active build:` message instead of reporting a successful
@@ -20,6 +29,8 @@
 
 ### Added
 
+- Credential-free `jev capabilities` emits the model, endpoint, receipt version
+  and enforced identity/redirect policy for machine-readable compatibility checks.
 - Operator-only `jev evaluate --input FILE --privacy-reviewed` exposes the shared
   Rust Jev client for bounded Choice requests, with pinned-model validation and
   JSON success/failure receipts.

@@ -14,12 +14,17 @@ Pipeline: `source snapshot -> certified syntax facts + bounded candidates ->
 optional Jev decisions -> validated evidence/claims -> policy build ->
 atomic publication -> read-only consumers`.
 
-Inference policy: prefer deterministic source/compiler facts, then cached typed
-Typesafe Jev decisions for bounded semantic judgments. Session research now uses
-Jev for span classification, candidate priority/status and cross-repository
-comparison; citations and report text are rendered deterministically. See the
+Inference policy: deterministic source/compiler facts first, then cached typed
+Typesafe Jev decisions for bounded semantic judgments. Every Chaosbox-owned live
+inference must use `jev-1.13.0` at the approved Typesafe endpoint; aliases,
+endpoint overrides, returned-model substitutions and HTTP redirects are rejected.
+Session research uses Jev for span classification, candidate priority/status and
+cross-repository comparison; citations and report text are rendered
+deterministically. See the
 [typed research workflow](docs/SESSION_RESEARCH_PILOT.md) for request receipts,
 shared budgets, abstentions and migration from the earlier generative pilot.
+`chaosbox jev capabilities` reports this policy without credentials or network
+access; research checks it before reserving a new inference attempt.
 
 ## Direction: selective intelligence across code and sessions
 
@@ -29,8 +34,9 @@ boundaries, use Jev's typed decisions to assess support, scope, novelty and valu
 and admit only useful, grounded knowledge. Other LLM sessions should retrieve a
 small, applicable set with citations instead of receiving another large summary.
 
-Source archives, admitted intelligence and generated continuation checkpoints
-have different roles. Generated summaries are never independent evidence;
+Source archives, admitted intelligence and continuation checkpoints
+have different roles. Continuation will use Jev selections and deterministic
+source-backed templates; derived views are never independent evidence;
 contradictions, scope and superseded decisions remain visible. Session migration
 is the first proposed application, not a capability already shipped.
 

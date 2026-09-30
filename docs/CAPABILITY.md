@@ -37,12 +37,17 @@ described in the new book chapters are not yet implemented.
   selected/omitted counts in `CandidateCatalog`, surfaced by `extract` and
   `run` output (cap never silently drops candidates)
 - Typed Jev `POST /v1/systemone` client: Noul/Choice/Score, pinned `jev-1.13.0`,
-  requested+returned model identities, 64k/32k enforcement (error, never silent
-  truncate), TLS endpoint, deadlines, concurrency/spend/request budgets, 429/529
-  retries honoring `retry-after`, no retry on 401/403/400/404/422, response size
+  exact requested+returned model enforcement, 64k/32k enforcement (error, never
+  silent truncate), sole approved TLS endpoint, redirects disabled, deadlines,
+  concurrency/spend/request budgets, 429/529 retries honoring `retry-after`,
+  no retry on 401/403/400/404/422, response size
   caps, answer-id reconciliation, finite/range + candidate-membership checks,
   attempt accounting, sanitized diagnostics, cache identity incl. all decision
   inputs (thresholds excluded — materialization identity)
+- Credential-free `jev capabilities` policy report and research preflight;
+  incompatible installed binaries fail before reserving an inference attempt.
+  Offline fixture decisions have their own explicit `fixture-test` identity;
+  the live client never accepts that identity.
 - Evidence classes EXTRACTED/INFERRED/AMBIGUOUS (confidence never upgrades);
   below-floor confidence abstains (recorded, never retried); responder faults
   become recorded `Failed` decisions with catch-and-continue (fault text never
@@ -155,10 +160,10 @@ described in the new book chapters are not yet implemented.
   summaries/labels/dedup/query-repair, arbitrary query escape hatches,
   single giant graph JSON storage, endpoint-to-endpoint multi-links
 
-The proposed session extension keeps that evidence boundary: generated
-continuation checkpoints are derived artifacts, not source labels, evidence or
-independent corroboration. Jev assesses bounded candidates under an explicit
-admission policy; it does not turn fluent summaries into facts.
+The proposed session extension keeps that evidence boundary: deterministically
+rendered, Jev-selected continuation checkpoints are derived artifacts, not source
+labels, evidence or independent corroboration. Jev assesses bounded candidates
+under an explicit admission policy; it does not turn fluent summaries into facts.
 
 ## Not yet implemented (explicit)
 

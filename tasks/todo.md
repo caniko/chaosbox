@@ -37,3 +37,33 @@ constraint; the Canix bridge remains blocked by its older Chaosbox revision pin.
   five-request synthetic Jev smoke; cache replay adds no requests.
 - [x] Document inference policy, migration and uncalibrated quality boundaries in
   `docs/SESSION_RESEARCH_PILOT.md`.
+
+## Strict Jev-only enforcement
+
+- [x] Pin the production endpoint/model, disable redirects, and share exact
+  model checks across fresh decisions, cache reuse, intelligence and publication.
+- [x] Keep explicit offline fixtures distinct from live Jev output.
+- [x] Replace Spark/generative continuation guidance with Jev-selected records
+  and deterministic source-backed rendering.
+- [x] Add credential-free `jev capabilities` and a research preflight before
+  reserving attempts; replay successful cached receipts without invoking a CLI.
+- [x] Run full native/Python tests, strict Clippy, formatting and docs checks.
+- [ ] Validate the production package and record downstream adoption status.
+
+2026-09-30 verification: 257 Rust tests pass (three existing opt-in tests remain
+ignored), 57 Python tests pass, strict workspace/all-target Clippy, changed-file
+treefmt, diff checks and mdBook pass. Regressions cover endpoint/model overrides,
+redirects, fresh/cached/publication substitutions, research preflight, failure
+accounting and offline fixture separation. Credential-free smoke confirms the
+installed CLI fails preflight with zero reserved attempts, the current CLI
+reports its policy and returns `auth` without provider access, and offline fixture
+publication still succeeds. Artifact:
+`/data/scratch/tmp/opencode/chaosbox-jev-only-smoke-je98erem/smoke.json`.
+
+Production-package retry log:
+`/data/scratch/tmp/opencode/chaosbox-jev-only-package.log`. The shared evaluation
+lock is held by PID 164642 building
+`.#checks.x86_64-linux.stalwart016-proxy-vmtest`; the package and packaged Git/CLI
+checks remain pending. Canix still pins `a4dcdc2dc7f9bd82f22d2dc57f2f8c7a2aac0b0d`;
+the new CLI can be selected through `SESSION_RESEARCH_CHAOSBOX_BIN` until package
+adoption is completed. This follow-up is local and does not claim deployment.

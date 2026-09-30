@@ -101,6 +101,13 @@ in the instructions and option descriptions. Dependent decisions run in separate
 stages: select exact repository evidence first, then assess status against it.
 
 Build the current CLI or select an installed binary that supports `jev evaluate`.
+It must also support `jev capabilities`, reporting the pinned model, approved
+endpoint, receipt version, strict returned-model identity and disabled redirects.
+The runner checks this credential-free command before persisting a new attempt
+reservation. A missing or incompatible binary leaves the request budget intact;
+successful cached receipts replay without requiring the binary or its preflight.
+Canix's installed revision predates these commands; until package adoption is
+completed, select a current build with `SESSION_RESEARCH_CHAOSBOX_BIN` as below.
 Credentials come from `CHAOSBOX_JEV_API_KEY_FILE`, falling back to the explicit
 operator `TYPESAFE_API_KEY`. No OpenCode server, provider configuration, model
 session database or copied provider credentials is needed.
@@ -108,6 +115,7 @@ session database or copied provider credentials is needed.
 ```sh
 cargo build -p chaosbox
 export SESSION_RESEARCH_CHAOSBOX_BIN="$PWD/target/debug/chaosbox"
+"$SESSION_RESEARCH_CHAOSBOX_BIN" jev capabilities
 # Supply CHAOSBOX_JEV_API_KEY_FILE or TYPESAFE_API_KEY through the operator environment.
 python3 scripts/session_research.py extract --work "$WORK" --privacy-reviewed
 python3 scripts/session_research.py collect --work "$WORK"

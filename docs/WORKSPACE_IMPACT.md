@@ -156,6 +156,9 @@ and exercising its Git-enabled wrapper remains an explicit pending check in
 `tasks/todo.md`; native test results do not establish that packaging gate.
 The Jev follow-up retry on 2026-09-30 was also blocked by the same evaluation
 lock (holder PID 2342763, building `.#provenance-oauth`).
+The strict Jev-only retry was also blocked by that lock (holder PID 164642,
+building `.#checks.x86_64-linux.stalwart016-proxy-vmtest`); its log is
+`/data/scratch/tmp/opencode/chaosbox-jev-only-package.log`.
 
 The integration is intentionally reviewed and selected-file based. Compiler
 resolution does not establish these cross-language packaging links. Nix

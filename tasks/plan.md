@@ -15,6 +15,19 @@ abstentions and work-wide attempt budgets. Preserve source scopes, reviewed
 actions and reproduction requirements. Verify with protocol/behavior tests and
 a synthetic live transport smoke; model-quality/outcome claims remain separate.
 
+## Strict Jev-only follow-up
+
+User requirement: eradicate general-purpose LLM consumption from Chaosbox.
+Enforce the approved Jev endpoint and exact pinned model in the shared live
+client; disable redirects. Fresh decisions, cached inferences and graph
+publication must reject substitutions before committing output. Explicit
+offline fixtures keep their distinct identity and cannot enter the HTTP path.
+Replace the generative continuation contract with Jev-selected exact records
+and deterministic Rust rendering. Add a credential-free CLI capability report
+and check it before research reserves attempts. Verify transport failure,
+identity, cache/publication and preflight boundaries, then realize the production
+package and record any downstream adoption blocker.
+
 ## Contract
 
 1. Optional SCIP is genuine protobuf, decoded with the official `scip` crate.
