@@ -120,10 +120,21 @@ fn unescape_like(like: &str) -> String {
 #[async_trait::async_trait]
 impl GraphQueries for MemoryReader {
     async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, StoreError> {
+        match self.active.get(repo) {
+            Some(id) => self.published_build(repo, id).await,
+            None => Ok(None),
+        }
+    }
+
+    async fn published_build(
+        &self,
+        repo: &str,
+        build_id: &str,
+    ) -> Result<Option<BuildRow>, StoreError> {
         Ok(self
-            .active
-            .get(repo)
-            .and_then(|id| self.builds.get(id))
+            .builds
+            .get(build_id)
+            .filter(|b| b.repo == repo)
             .map(|b| {
                 let mut snapshots = b.snapshot_ids.clone();
                 snapshots.sort();
@@ -228,6 +239,15 @@ impl GraphQueries for MemoryReader {
         build_id: &str,
         rel_id: &str,
     ) -> Result<Vec<EvidenceRow>, StoreError> {
+        self.evidence_for_limited(build_id, rel_id, i64::MAX).await
+    }
+
+    async fn evidence_for_limited(
+        &self,
+        build_id: &str,
+        rel_id: &str,
+        limit: i64,
+    ) -> Result<Vec<EvidenceRow>, StoreError> {
         if self
             .builds
             .get(build_id)
@@ -235,6 +255,12 @@ impl GraphQueries for MemoryReader {
         {
             return Ok(Vec::new());
         }
-        Ok(self.evidence.get(rel_id).cloned().unwrap_or_default())
+        let mut rows: Vec<_> = self.evidence.get(rel_id).into_iter().flatten().collect();
+        rows.sort_by(|a, b| a.evidence_id.cmp(&b.evidence_id));
+        Ok(rows
+            .into_iter()
+            .take(usize::try_from(limit.max(0)).unwrap_or(usize::MAX))
+            .cloned()
+            .collect())
     }
 }

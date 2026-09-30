@@ -107,6 +107,21 @@ pub async fn check_conformance<R: GraphQueries>(
     assert_eq!(active.build_id, builds.1);
     assert_eq!(active.generation, 2);
     assert!(r.active_build("missing-repo").await.unwrap().is_none());
+    let historical = r.published_build("conf", &builds.0).await.unwrap().unwrap();
+    assert_eq!(historical.build_id, builds.0);
+    assert_eq!(historical.generation, 1);
+    assert!(
+        r.published_build("other", &builds.0)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        r.published_build("conf", "missing")
+            .await
+            .unwrap()
+            .is_none()
+    );
     // Search is scoped: each build sees only its own Alpha.
     let hits: Vec<_> = r
         .search_entities(&builds.0, "%alpha%", 10)
@@ -217,6 +232,19 @@ pub async fn check_conformance<R: GraphQueries>(
     // Evidence attaches to the relationship within its own build only.
     let ev = r.evidence_for(&builds.0, rel1).await.unwrap();
     assert_eq!(ev.len(), 1);
+    assert!(
+        r.evidence_for_limited(&builds.0, rel1, 0)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        r.evidence_for_limited(&builds.0, rel1, 1)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(ev[0].evidence_id, "ev1");
     assert!(ev[0].supports);
     assert!(r.evidence_for(&builds.1, rel1).await.unwrap().is_empty());

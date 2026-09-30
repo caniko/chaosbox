@@ -990,6 +990,28 @@ async fn graph_reader_serves_fake_backend() {
 }
 
 #[tokio::test]
+async fn graph_reader_diff_rejects_foreign_and_missing_builds() {
+    let mut seed = chaosbox_store::conformance_seed();
+    // Even an empty foreign build must be checked by its owner, not by
+    // inspecting whichever entities happen to be returned.
+    let foreign = GraphBuild::new("other", vec!["secret".into()], 1);
+    let foreign_id = foreign.id.clone();
+    seed.reader.insert_build(foreign);
+    let reader = GraphReader::pinned(seed.reader, "conf").await.unwrap();
+    for (repo, from, to) in [
+        ("conf", foreign_id.as_str(), seed.builds.1.as_str()),
+        ("conf", seed.builds.0.as_str(), foreign_id.as_str()),
+        ("conf", "missing", seed.builds.1.as_str()),
+        ("other", seed.builds.0.as_str(), seed.builds.1.as_str()),
+    ] {
+        assert!(
+            reader.diff(repo, from, to).await.is_err(),
+            "{repo}: {from} -> {to}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn path_traversal_budget_is_explicit() {
     let seed = chaosbox_store::conformance_seed();
     let reader: GraphReader<chaosbox_store::MemoryReader> =

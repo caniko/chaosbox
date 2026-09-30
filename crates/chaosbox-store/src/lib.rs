@@ -2,7 +2,7 @@
 //!
 //! [`Store`] is the write-side contract (idempotent staging, invariant
 //! validation, guarded publication); [`GraphQueries`] is the read-side
-//! contract (every read scoped to one pinned active build). Both ship with
+//! contract (member reads scoped to one explicit build). Both ship with
 //! in-memory implementations — [`MemoryStore`] and [`MemoryReader`] — for
 //! tests and environments without a server, and `chaosbox-typedb`
 //! implements them over the live `TypeDB` backend. The conformance suite
@@ -34,6 +34,9 @@ pub enum StoreError {
     #[error("query: {0}")]
     /// Query execution or typed-decoding failure.
     Query(String),
+    #[error("query row budget exceeded; completeness cannot be proved")]
+    /// A bounded backend query saturated before a complete result was known.
+    QueryBudget,
     #[error("invariant: {0}")]
     /// A graph invariant was violated (cross-build edge, stale predecessor, ...).
     Invariant(String),

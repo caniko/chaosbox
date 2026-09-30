@@ -241,19 +241,12 @@ impl TypeDbReader {
         let rows = read_rows(self.driver()?, &self.config.database, &q, REL_COLS).await?;
         rows.iter().map(row_to_rel).collect()
     }
-}
 
-#[async_trait::async_trait]
-impl GraphQueries for TypeDbReader {
-    async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, StoreError> {
-        let q = format!(
-            "match $p isa active-pointer, has repo-name {}, has build-id $b; $g isa graph-build, has build-id $b, has generation $gen, has status $st; try {{ $g has coverage-json $coverage; }}; select $b, $gen, $st, $coverage;",
-            str_lit(repo)
-        );
+    async fn build_header(&self, query: &str) -> Result<Option<BuildRow>, StoreError> {
         let rows = read_rows(
             self.driver()?,
             &self.config.database,
-            &q,
+            query,
             &["b", "gen", "st", "coverage"],
         )
         .await?;
@@ -286,6 +279,28 @@ impl GraphQueries for TypeDbReader {
                 })
                 .transpose()?,
         }))
+    }
+}
+
+#[async_trait::async_trait]
+impl GraphQueries for TypeDbReader {
+    async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, StoreError> {
+        self.build_header(&format!(
+            "match $p isa active-pointer, has repo-name {repo}, has build-id $b; $g isa graph-build, has build-id $b, has repo-name {repo}, has generation $gen, has status $st; $st == \"active\"; try {{ $g has coverage-json $coverage; }}; select $b, $gen, $st, $coverage;",
+            repo = str_lit(repo),
+        )).await
+    }
+
+    async fn published_build(
+        &self,
+        repo: &str,
+        build_id: &str,
+    ) -> Result<Option<BuildRow>, StoreError> {
+        self.build_header(&format!(
+            "match $g isa graph-build, has build-id {build}, has build-id $b, has repo-name {repo}, has generation $gen, has status $st; $st == \"active\"; try {{ $g has coverage-json $coverage; }}; select $b, $gen, $st, $coverage;",
+            build = str_lit(build_id),
+            repo = str_lit(repo),
+        )).await
     }
 
     async fn search_entities(
@@ -371,15 +386,29 @@ impl GraphQueries for TypeDbReader {
         build_id: &str,
         rel_id: &str,
     ) -> Result<Vec<EvidenceRow>, StoreError> {
+        self.evidence_for_limited(build_id, rel_id, i64::MAX).await
+    }
+
+    async fn evidence_for_limited(
+        &self,
+        build_id: &str,
+        rel_id: &str,
+        limit: i64,
+    ) -> Result<Vec<EvidenceRow>, StoreError> {
+        if limit <= 0 {
+            return Ok(Vec::new());
+        }
+        let cap = usize::try_from(limit).unwrap_or(usize::MAX);
         // Claims about this relationship, gated on its membership in the
         // pinned build; supporting and contradicting links union below.
         let mut out: BTreeMap<String, EvidenceRow> = BTreeMap::new();
         for link in ["supporting", "contradicting"] {
             let q = format!(
-                "match (build: $b, edge: $rel) isa edge-membership; $b isa graph-build, has build-id {}; $rel isa relationship, has rel-id {}; $c isa claim, has relationship-id {}; (claim: $c, evidence: $e) isa {link}; $e isa evidence, has evidence-id $id, has class $cl, has supports $s, has text $t; try {{ $e has producer $producer; }}; try {{ $e has file-version-id $fv; $v isa file-version, has file-version-id $fv, has snapshot-id $snap, has path $file, has sha256 $sha; }}; {SOURCE_SPAN} select $id, $cl, $s, $t, $producer, $snap, $file, $sha, $sf, $sl, $sc, $el, $ec, $bs, $be;",
+                "match (build: $b, edge: $rel) isa edge-membership; $b isa graph-build, has build-id {}; $rel isa relationship, has rel-id {}; $c isa claim, has relationship-id {}; (claim: $c, evidence: $e) isa {link}; $e isa evidence, has evidence-id $id, has class $cl, has supports $s, has text $t; try {{ $e has producer $producer; }}; try {{ $e has file-version-id $fv; $v isa file-version, has file-version-id $fv, has snapshot-id $snap, has path $file, has sha256 $sha; }}; {SOURCE_SPAN} select $id, $cl, $s, $t, $producer, $snap, $file, $sha, $sf, $sl, $sc, $el, $ec, $bs, $be; sort $id; limit {};",
                 str_lit(build_id),
                 str_lit(rel_id),
-                str_lit(rel_id)
+                str_lit(rel_id),
+                int_lit(limit.saturating_add(1)),
             );
             let rows = read_rows(
                 self.driver()?,
@@ -391,6 +420,12 @@ impl GraphQueries for TypeDbReader {
                 ],
             )
             .await?;
+            // Check raw rows before de-duplication. Multiple claims can repeat
+            // one evidence id: LIMIT followed by a map must not disguise a
+            // saturated query as complete and hide later unauthorized sources.
+            if rows.len() > cap {
+                return Err(StoreError::QueryBudget);
+            }
             for row in &rows {
                 let ev = EvidenceRow {
                     evidence_id: col_string(row, "id")?,
@@ -414,6 +449,7 @@ impl GraphQueries for TypeDbReader {
         }
         let mut v: Vec<EvidenceRow> = out.into_values().collect();
         v.sort_by(|a, b| a.evidence_id.cmp(&b.evidence_id));
+        v.truncate(usize::try_from(limit.max(0)).unwrap_or(usize::MAX));
         Ok(v)
     }
 }
