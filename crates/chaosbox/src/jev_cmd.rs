@@ -13,6 +13,8 @@ const MAX_BYTES: u64 = 200_000;
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Report the enforced inference policy; no input, credentials or network.
+    Capabilities,
     /// Evaluate up to 16 independent Choice questions using pinned Typesafe Jev.
     /// Emits a JSON receipt on success or failure. One attempt, no fallback.
     Evaluate {
@@ -104,10 +106,20 @@ fn complete_choices(response: &SystemOneResponse, questions: &BTreeMap<String, Q
 }
 
 pub async fn run(command: Command) -> (Value, bool) {
-    let Command::Evaluate {
-        input,
-        privacy_reviewed,
-    } = command;
+    let (input, privacy_reviewed) = match command {
+        Command::Capabilities => {
+            return (
+                json!({"version":1, "model":JEV_MODEL_PINNED,
+                "endpoint":chaosbox_jev::JEV_ENDPOINT, "receipt_version":1,
+                "strict_model_identity":true, "redirects":false}),
+                true,
+            );
+        }
+        Command::Evaluate {
+            input,
+            privacy_reviewed,
+        } => (input, privacy_reviewed),
+    };
     let mut receipt = json!({"version":1, "model_requested":JEV_MODEL_PINNED,
         "sent_requests":0, "input_tokens":0, "response":null, "error":null});
     let Some(input) = read_input(&input).filter(|_| privacy_reviewed) else {
@@ -144,10 +156,7 @@ pub async fn run(command: Command) -> (Value, bool) {
     receipt["sent_requests"] = json!(client.sent_requests());
     receipt["input_tokens"] = json!(client.spent_tokens());
     match result {
-        Ok(response)
-            if response.model == JEV_MODEL_PINNED
-                && complete_choices(&response, &input.questions) =>
-        {
+        Ok(response) if complete_choices(&response, &input.questions) => {
             receipt["response"] = json!(response);
             (receipt, true)
         }

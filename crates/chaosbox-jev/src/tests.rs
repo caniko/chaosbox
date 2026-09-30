@@ -3,6 +3,59 @@
 use super::*;
 
 #[test]
+fn production_client_rejects_provider_model_and_endpoint_overrides() {
+    for model in ["jev-latest", "jev-9.9.9", "other-provider", "fixture-test"] {
+        assert!(JevClient::new(JevPolicy {
+            model: model.into(),
+            ..JevPolicy::default()
+        })
+        .is_err());
+    }
+    for endpoint in [
+        "http://api.typesafe.ai/v1/systemone",
+        "https://example.org/v1/systemone",
+        "http://127.0.0.1:4321/v1/systemone",
+        "https://api.typesafe.ai/v1/systemone?proxy=1",
+    ] {
+        assert!(JevClient::new(JevPolicy {
+            endpoint: endpoint.into(),
+            ..JevPolicy::default()
+        })
+        .is_err());
+    }
+    assert!(JevClient::new(JevPolicy::default()).is_ok());
+}
+
+#[test]
+fn fixture_identity_cannot_masquerade_as_live_jev() {
+    let response = SystemOneResponse {
+        model: FIXTURE_MODEL.into(),
+        answers: BTreeMap::new(),
+        usage: Usage {
+            input_tokens: 0,
+            output_tokens: 0,
+        },
+    };
+    assert!(validate_response(&response, &BTreeMap::new(), &BTreeMap::new()).is_err());
+    assert!(validate_response_for_model(
+        &response,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        FIXTURE_MODEL
+    )
+    .is_ok());
+    for (requested, returned) in [
+        ("", ""),
+        ("other", "other"),
+        ("jev-latest", JEV_MODEL_PINNED),
+        (JEV_MODEL_PINNED, ""),
+        (FIXTURE_MODEL, JEV_MODEL_PINNED),
+    ] {
+        assert!(validate_model_identity(requested, returned).is_err());
+    }
+}
+
+#[test]
 fn context_limits_reject_silently_truncatable() {
     let big = "x".repeat(CTX_TOTAL_MAX * 5);
     let mut q = BTreeMap::new();
@@ -159,7 +212,12 @@ fn reuse_key_is_snapshot_and_catalog_independent() {
     // The relation's own excerpt changed: must re-ask.
     assert_ne!(
         key,
-        reuse_key(&input_with("rel_cand:1", "a calls c", "policy-1", JEV_MODEL_PINNED))
+        reuse_key(&input_with(
+            "rel_cand:1",
+            "a calls c",
+            "policy-1",
+            JEV_MODEL_PINNED
+        ))
     );
     // Either endpoint file's bytes changed: must re-ask even when names,
     // excerpt, and questions are unchanged.
@@ -169,12 +227,22 @@ fn reuse_key_is_snapshot_and_catalog_independent() {
     // Consent changed: must re-ask, never reuse across policy.
     assert_ne!(
         key,
-        reuse_key(&input_with("rel_cand:1", "a calls b", "policy-2", JEV_MODEL_PINNED))
+        reuse_key(&input_with(
+            "rel_cand:1",
+            "a calls b",
+            "policy-2",
+            JEV_MODEL_PINNED
+        ))
     );
     // Model/rubric changed: must re-ask.
     assert_ne!(
         key,
-        reuse_key(&input_with("rel_cand:1", "a calls b", "policy-1", "jev-9.9.9"))
+        reuse_key(&input_with(
+            "rel_cand:1",
+            "a calls b",
+            "policy-1",
+            "jev-9.9.9"
+        ))
     );
     let mut edited_rubric = base.clone();
     edited_rubric.rubric_version = "rubric-v2".into();

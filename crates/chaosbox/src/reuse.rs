@@ -64,7 +64,7 @@ pub fn valid_options_for(qid: &str) -> BTreeMap<String, BTreeSet<String>> {
 /// Checks, in order:
 /// * stored `reuse_key` equals the expected relation-local key;
 /// * stored `model_requested` equals the requested model;
-/// * stored `model_returned` is nonempty;
+/// * requested identity is approved and `model_returned` matches it exactly;
 /// * stored raw converts to a typed answer passing the same
 ///   `validate_response` fresh inference passes (type match, finite/range,
 ///   distribution sum, option membership against the *current* questions).
@@ -90,11 +90,6 @@ pub fn validate_stored_inference(
             "inference model_requested mismatch for {expected_reuse_key}"
         )));
     }
-    if inf.model_returned.is_empty() {
-        return Err(PipelineError::Validation(format!(
-            "inference missing model_returned for {expected_reuse_key}"
-        )));
-    }
     let answer = chaosbox_jev::answer_from_raw(&inf.raw);
     let resp = chaosbox_jev::SystemOneResponse {
         model: inf.model_returned.clone(),
@@ -104,11 +99,12 @@ pub fn validate_stored_inference(
             output_tokens: 0,
         },
     };
-    chaosbox_jev::validate_response(&resp, questions, &valid_options_for(qid)).map_err(|e| {
-        PipelineError::Validation(format!(
-            "stored inference fails current validation for {expected_reuse_key}: {e}"
-        ))
-    })?;
+    chaosbox_jev::validate_response_for_model(&resp, questions, &valid_options_for(qid), ctx_model)
+        .map_err(|e| {
+            PipelineError::Validation(format!(
+                "stored inference fails current validation for {expected_reuse_key}: {e}"
+            ))
+        })?;
     Ok(answer)
 }
 
@@ -121,7 +117,7 @@ pub fn validate_stored_inference(
 /// * bindings (repo, snapshot, candidate refs) via `reuse_input_for`;
 /// * exactly one question (multi-question is fail-closed `Err`);
 /// * stored `model_requested` equals the requested model; stored
-///   `model_returned` is nonempty — mismatches are corruption (`Err`);
+///   `model_returned` matches the approved identity — mismatches are corruption (`Err`);
 /// * stored raw converts to a typed answer that passes the same
 ///   `validate_response` fresh inference passes — failures are corruption
 ///   (`Err`), not spend-every-run misses against first-write-wins poison;
@@ -138,6 +134,8 @@ pub async fn resolve_reuse<S: chaosbox_store::Store>(
     catalog_digest: &str,
     store: &S,
 ) -> Result<ReuseAttempt, PipelineError> {
+    chaosbox_jev::validate_model_identity(ctx.model, ctx.model)
+        .map_err(|e| PipelineError::Validation(e.to_string()))?;
     let questions = questions_for(cand, from, to);
     if questions.len() != 1 {
         return Err(PipelineError::Validation(

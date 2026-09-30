@@ -254,13 +254,13 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         }
         let mut responder = FixtureResponder::new(true);
         // Fixture decisions must never masquerade as Jev model output.
-        responder.model = "fixture-test".into();
+        responder.model = chaosbox_jev::FIXTURE_MODEL.into();
         match Pipeline::<S>::decide(
             cands,
             &entities,
             &snap,
             &mut responder,
-            "fixture-test",
+            chaosbox_jev::FIXTURE_MODEL,
             &mat,
             effective_policy,
             &mut pipe.store,

@@ -453,10 +453,85 @@ class ResearchPilotTest(unittest.TestCase):
 
     @staticmethod
     def jev_process(command, **kwargs):
+        if command[1:] == ["jev", "capabilities"]:
+            return subprocess.CompletedProcess(command, 0, json.dumps({"version": 1,
+                "model": research.jev.MODEL, "endpoint": "https://api.typesafe.ai/v1/systemone",
+                "receipt_version": 1, "strict_model_identity": True, "redirects": False}), "")
         request = research.load(command[-1])
         result = jev_response(request["questions"])
         return subprocess.CompletedProcess(command, 0, json.dumps({"version": 1, "error": None,
                     "response": result, "sent_requests": 1, "input_tokens": 100}), "")
+
+    def test_incompatible_jev_binary_does_not_reserve_an_attempt(self):
+        work = self.root / "old-binary"
+        work.mkdir(mode=0o700)
+        research.write_new(work / "plan.json", {"version": 1})
+        questions = {"q": research.jev.choice("Classify", {"none": "None", "yes": "Yes"})}
+        with patch.object(research.subprocess, "run", return_value=
+                          subprocess.CompletedProcess([], 2, "", "unknown subcommand")) as call:
+            with self.assertRaisesRegex(ValueError, "capabilities"):
+                research.JevRunner(work)({}, questions)
+            self.assertEqual(call.call_args.args[0][1:], ["jev", "capabilities"])
+        self.assertEqual(research.jev_usage(work)["reservedRequests"], 0)
+        self.assertFalse(list((work / "jev").glob("*.request.json")))
+
+    def test_preflight_rejects_unapproved_policy_without_spending(self):
+        work = self.root / "wrong-policy"
+        work.mkdir(mode=0o700)
+        research.write_new(work / "plan.json", {"version": 1})
+        questions = {"q": research.jev.choice("Classify", {"none": "None", "yes": "Yes"})}
+        baseline = json.loads(self.jev_process(["chaosbox", "jev", "capabilities"]).stdout)
+        for key, value in [("model", "jev-latest"), ("endpoint", "https://example.org"),
+                           ("receipt_version", 2), ("strict_model_identity", False),
+                           ("strict_model_identity", 1), ("redirects", True)]:
+            with self.subTest(key=key, value=value):
+                capabilities = {**baseline, key: value}
+                with patch.object(research.subprocess, "run", return_value=
+                                  subprocess.CompletedProcess([], 0, json.dumps(capabilities), "")):
+                    with self.assertRaisesRegex(ValueError, "capabilities"):
+                        research.JevRunner(work)({}, questions)
+                self.assertEqual(research.jev_usage(work)["reservedRequests"], 0)
+
+    def test_substituted_model_is_failed_without_fallback_or_automatic_retry(self):
+        work = self.root / "substitution"
+        work.mkdir(mode=0o700)
+        research.write_new(work / "plan.json", {"version": 1})
+        questions = {"q": research.jev.choice("Classify", {"none": "None", "yes": "Yes"})}
+
+        def substitute(command, **kwargs):
+            result = self.jev_process(command, **kwargs)
+            if command[1:] != ["jev", "capabilities"]:
+                receipt = json.loads(result.stdout)
+                receipt["response"]["model"] = "other-model"
+                result.stdout = json.dumps(receipt)
+            return result
+
+        with patch.object(research.subprocess, "run", side_effect=substitute) as call:
+            with self.assertRaisesRegex(ValueError, "evaluation failed"):
+                research.JevRunner(work)({}, questions)
+            with self.assertRaisesRegex(ValueError, "explicit --retry"):
+                research.JevRunner(work)({}, questions)
+            self.assertEqual(call.call_count, 2)
+            self.assertEqual(call.call_args.args[0][1:3], ["jev", "evaluate"])
+        usage = research.jev_usage(work)
+        self.assertEqual(usage["reservedRequests"], 1)
+        self.assertEqual(usage["failedOrInterrupted"], 1)
+
+    def test_substituted_cached_model_fails_without_invoking_any_binary(self):
+        work = self.root / "poisoned-cache"
+        work.mkdir(mode=0o700)
+        research.write_new(work / "plan.json", {"version": 1})
+        questions = {"q": research.jev.choice("Classify", {"none": "None", "yes": "Yes"})}
+        with patch.object(research.subprocess, "run", side_effect=self.jev_process):
+            research.JevRunner(work)({}, questions)
+        result = next((work / "jev").glob("*.result.json"))
+        receipt = research.load(result)
+        receipt["response"]["model"] = "other-model"
+        result.write_text(json.dumps(receipt))
+        with patch.object(research.subprocess, "run") as call:
+            with self.assertRaisesRegex(ValueError, "model"):
+                research.JevRunner(work, retry=True)({}, questions)
+            call.assert_not_called()
 
     def test_jev_runner_uses_native_client_and_reuses_negative_receipts_even_on_retry(self):
         work = self.root / "model"
@@ -467,10 +542,10 @@ class ResearchPilotTest(unittest.TestCase):
             first = research.JevRunner(work)({"text": "fixture"}, questions)
             self.assertEqual(first["answers"]["q"]["choice"], "none")
             self.assertEqual(research.JevRunner(work, retry=True)({"text": "fixture"}, questions), first)
-            call.assert_called_once()
+            self.assertEqual(call.call_count, 2)
             self.assertEqual(call.call_args.args[0][1:5], ["jev", "evaluate", "--privacy-reviewed", "--input"])
             research.JevRunner(work)({"text": "changed input"}, questions)
-            self.assertEqual(call.call_count, 2)
+            self.assertEqual(call.call_count, 4)
         self.assertFalse((work / "model.sqlite").exists())
         for artifact in (work / "jev").glob("*.json"):
             self.assertEqual(artifact.stat().st_mode & 0o777, 0o600)
@@ -496,20 +571,24 @@ class ResearchPilotTest(unittest.TestCase):
         work.mkdir(mode=0o700)
         research.write_new(work / "plan.json", {"version": 1})
         questions = {"q": research.jev.choice("Classify", {"none": "None", "yes": "Yes"})}
-        with patch.object(research.subprocess, "run", side_effect=subprocess.TimeoutExpired("fixture", 90)) as call:
+        def timeout(command, **kwargs):
+            if command[1:] == ["jev", "capabilities"]:
+                return self.jev_process(command, **kwargs)
+            raise subprocess.TimeoutExpired("fixture", 90)
+        with patch.object(research.subprocess, "run", side_effect=timeout) as call:
             with self.assertRaisesRegex(ValueError, "evaluation failed"):
                 research.JevRunner(work)({}, questions)
             with self.assertRaisesRegex(ValueError, "explicit --retry"):
                 research.JevRunner(work)({}, questions)
             with self.assertRaisesRegex(ValueError, "budget exceeded"):
                 research.JevRunner(work, retry=True, max_requests=1)({}, questions)
-            call.assert_called_once()
+            self.assertEqual(call.call_count, 2)
         # Losing the result to a crash never refunds the already reserved attempt.
         next((work / "jev").glob("*.result.json")).unlink()
         self.assertEqual(research.jev_usage(work)["reservedRequests"], 1)
         with patch.object(research.subprocess, "run", side_effect=self.jev_process) as call:
             research.JevRunner(work, retry=True, max_requests=2)({}, questions)
-            call.assert_called_once()
+            self.assertEqual(call.call_count, 2)
         self.assertEqual(research.jev_usage(work)["reservedRequests"], 2)
 
     def test_jev_input_budget_is_shared_between_invocations(self):
@@ -522,7 +601,7 @@ class ResearchPilotTest(unittest.TestCase):
             spent = research.jev_usage(work)["chargedInputTokens"]
             with self.assertRaisesRegex(ValueError, "budget exceeded"):
                 research.JevRunner(work, max_input_tokens=spent)({"changed": True}, questions)
-            call.assert_called_once()
+            self.assertEqual(call.call_count, 2)
 
     def test_jev_source_plan_is_part_of_cache_identity(self):
         work = self.root / "scope"
@@ -533,7 +612,7 @@ class ResearchPilotTest(unittest.TestCase):
             research.JevRunner(work)({}, questions)
             (work / "plan.json").write_text('{"version":2}')
             research.JevRunner(work)({}, questions)
-            self.assertEqual(call.call_count, 2)
+            self.assertEqual(call.call_count, 4)
 
     def test_typed_extraction_replay_checks_artifact_and_does_not_call_provider(self):
         work = self.root / "typed-extraction"
@@ -542,14 +621,14 @@ class ResearchPilotTest(unittest.TestCase):
         with patch.object(research.subprocess, "run", side_effect=self.jev_process) as call:
             self.assertEqual(research.run_extract(work, privacy_reviewed=True), 1)
             self.assertEqual(research.run_extract(work, privacy_reviewed=True, retry=True), 0)
-            call.assert_called_once()
+            self.assertEqual(call.call_count, 2)
             artifact = next((work / "signals").glob("*.json"))
             result = research.load(artifact)
             result["signals"][0]["claim"] = "Invented claim"
             artifact.write_text(json.dumps(result))
             with self.assertRaisesRegex(ValueError, "artifact differs"):
                 research.run_extract(work, privacy_reviewed=True)
-            call.assert_called_once()
+            self.assertEqual(call.call_count, 2)
 
     def test_final_proof_checks_citations_against_original_part_not_only_bundle(self):
         work = self.root / "work"

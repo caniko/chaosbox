@@ -420,6 +420,28 @@ class JevRunner:
         if max_requests < 1 or max_input_tokens < 1:
             raise ValueError("Jev budgets must be positive")
         self.max_requests, self.max_input_tokens = max_requests, max_input_tokens
+        self.binary = None
+
+    def _preflight(self):
+        if self.binary is not None:
+            return self.binary
+        binary = os.environ.get("SESSION_RESEARCH_CHAOSBOX_BIN", "chaosbox")
+        expected = {"version": 1, "model": jev.MODEL,
+                    "endpoint": "https://api.typesafe.ai/v1/systemone", "receipt_version": 1,
+                    "strict_model_identity": True, "redirects": False}
+        try:
+            proc = subprocess.run([binary, "jev", "capabilities"], cwd=self.work,
+                                  capture_output=True, text=True, timeout=10)
+            capabilities = json.loads(proc.stdout)
+            if (proc.returncode or not isinstance(capabilities, dict)
+                    or any(type(capabilities.get(key)) is not type(value)
+                           or capabilities[key] != value for key, value in expected.items())):
+                raise ValueError("incompatible policy")
+        except (OSError, subprocess.TimeoutExpired, ValueError):
+            raise ValueError("Jev capabilities preflight failed; build the current Chaosbox CLI and "
+                             "set SESSION_RESEARCH_CHAOSBOX_BIN to its absolute path") from None
+        self.binary = binary
+        return binary
 
     def __call__(self, state, questions):
         request = {"model": jev.MODEL, "state": {**state, "rubric": jev.RUBRIC},
@@ -462,14 +484,14 @@ class JevRunner:
         if (usage["reservedRequests"] >= self.max_requests
                 or usage["chargedInputTokens"] + reserved > self.max_input_tokens):
             raise ValueError("work-wide Jev budget exceeded")
+        binary = self._preflight()
         stem = f"{key}.{len(attempts) + 1:04d}"
-        write_new(directory / f"{stem}.intent.json", {"reservedInputTokens": reserved})
         wire = directory / f"{key}.request.json"
         if not wire.exists():
             write_new(wire, request)
         elif load(wire) != request:
             raise ValueError("Jev wire request differs from pinned input")
-        binary = os.environ.get("SESSION_RESEARCH_CHAOSBOX_BIN", "chaosbox")
+        write_new(directory / f"{stem}.intent.json", {"reservedInputTokens": reserved})
         reported_tokens = 0
         try:
             proc = subprocess.run([binary, "jev", "evaluate", "--privacy-reviewed", "--input", str(wire)],

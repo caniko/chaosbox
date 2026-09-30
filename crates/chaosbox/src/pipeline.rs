@@ -252,10 +252,6 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
                 continue;
             };
             let resp = r;
-            // Record requested vs returned model identities.
-            if resp.model.is_empty() {
-                return Err(PipelineError::Validation("empty returned model".into()));
-            }
             // Validate + reconcile per question. The present pipeline asks
             // exactly one semantic question per candidate; multi-question
             // reuse needs per-question raw records (follow-up).
@@ -265,7 +261,7 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
                 ));
             }
             let valid = crate::reuse::valid_options_for(&qid);
-            chaosbox_jev::validate_response(&resp, &questions, &valid)
+            chaosbox_jev::validate_response_for_model(&resp, &questions, &valid, model_requested)
                 .map_err(|e| PipelineError::Validation(e.to_string()))?;
             let (answered_qid, ans) = resp.answers.iter().next().expect("checked above");
             let raw = chaosbox_jev::raw_from_answer(ans);
@@ -357,6 +353,13 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
         expected_predecessor: Option<String>,
     ) -> Result<GraphBuild, PipelineError> {
         reject_failed(decided)?;
+        for (_, decision, _) in decided {
+            chaosbox_jev::validate_model_identity(
+                &decision.model_requested,
+                &decision.model_returned,
+            )
+            .map_err(|e| PipelineError::Validation(e.to_string()))?;
+        }
         self.generation += 1;
         let mut build = GraphBuild::new(repo, vec![snapshot.id.clone()], self.generation);
         if let Some(compiler) = &extraction.compiler {

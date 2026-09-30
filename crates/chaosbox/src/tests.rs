@@ -344,16 +344,20 @@ async fn failed_refresh_preserves_last_good_build() {
     assert_eq!(active_before, Some(build.id.clone()));
     assert_eq!(pipe.generation, 1);
     // A failed refresh on the same repository must not publish: the
-    // active build and generation stay exactly as-is. A new model
-    // identity forces re-asking instead of reusing the cached accept.
+    // active build and generation stay exactly as-is. A new rubric
+    // forces re-asking instead of reusing the cached accept.
+    let new_rubric = Materialization {
+        rubric_version: "refresh-rubric".into(),
+        ..mat.clone()
+    };
     let mut failing = FailResponder;
     let bad = Pipeline::<MemoryStore>::decide(
         &[cand],
         &entities,
         &test_snapshot(),
         &mut failing,
-        "jev-9.9.9",
-        &mat,
+        chaosbox_jev::JEV_MODEL_PINNED,
+        &new_rubric,
         &test_policy(),
         &mut pipe.store,
     )
@@ -651,8 +655,7 @@ async fn cache_invalidates_per_axis() {
     .await
     .unwrap();
     assert_eq!(first[0].1.outcome, DecisionOutcome::Accepted);
-    // Model change invalidates: re-asked (low confidence now abstains),
-    // and the stale row is replaced because the key differs.
+    // Unapproved model changes fail before asking or reusing anything.
     let mut low = ConfResponder { confidence: 0.1 };
     let second = Pipeline::<MemoryStore>::decide(
         std::slice::from_ref(&cand),
@@ -664,9 +667,8 @@ async fn cache_invalidates_per_axis() {
         &test_policy(),
         &mut store,
     )
-    .await
-    .unwrap();
-    assert_eq!(second[0].1.outcome, DecisionOutcome::Abstained);
+    .await;
+    assert!(second.is_err());
     // Rubric change invalidates the same way.
     let mat2 = Materialization {
         rubric_version: "rubric-v2".into(),
@@ -1442,7 +1444,7 @@ async fn failed_retry_blocks_reuse_until_respend() {
 }
 
 /// Shared resolver: corrupt inferences fail closed — wrong requested model,
-/// empty returned model, and invalid raws are `Err`, never silent reuse and
+/// substituted/empty returned model, and invalid raws are `Err`, never silent reuse and
 /// never spend-every-run misses against first-write-wins poison.
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
@@ -1469,6 +1471,28 @@ async fn corrupt_inferences_fail_closed() {
     .unwrap();
     let rkey = paid[0].1.reuse_key.clone();
     let valid_raw = paid[0].1.raw_answer.clone().expect("paid has raw");
+    // A nonempty but substituted returned identity must not be reused, even
+    // when every other field is from a valid paid inference.
+    let poisoned = chaosbox_core::InferenceRecord {
+        reuse_key: rkey.clone(),
+        raw: valid_raw.clone(),
+        model_requested: chaosbox_jev::JEV_MODEL_PINNED.into(),
+        model_returned: "other-model".into(),
+    };
+    let mut poisoned_store = MemoryStore::new();
+    ensure_a_rs(&mut poisoned_store).await;
+    poisoned_store.put_inference(poisoned).await.unwrap();
+    assert!(crate::uncached_decisions(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        chaosbox_jev::JEV_MODEL_PINNED,
+        &mat,
+        &test_policy(),
+        &poisoned_store
+    )
+    .await
+    .is_err());
     let mk_store = |rec: InferenceRecord| async move {
         let mut s = MemoryStore::new();
         ensure_a_rs(&mut s).await;
@@ -1567,6 +1591,90 @@ async fn corrupt_inferences_fail_closed() {
         .is_err(),
         "decide must fail closed on corrupt inference"
     );
+}
+
+#[tokio::test]
+async fn fresh_substituted_model_never_enters_the_cache() {
+    let (cand, entities) = one_candidate();
+    let snap = test_snapshot();
+    let mut store = MemoryStore::new();
+    ensure_a_rs(&mut store).await;
+    let mut responder = FixtureResponder::new(true);
+    responder.model = "other-model".into();
+    let mat = Materialization::default();
+    assert!(Pipeline::<MemoryStore>::decide(
+        std::slice::from_ref(&cand),
+        &entities,
+        &snap,
+        &mut responder,
+        chaosbox_jev::JEV_MODEL_PINNED,
+        &mat,
+        &test_policy(),
+        &mut store
+    )
+    .await
+    .is_err());
+    assert_eq!(
+        crate::uncached_decisions(
+            std::slice::from_ref(&cand),
+            &entities,
+            &snap,
+            chaosbox_jev::JEV_MODEL_PINNED,
+            &mat,
+            &test_policy(),
+            &store
+        )
+        .await
+        .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn publication_rejects_substituted_model_before_mutation() {
+    let (cand, entities) = one_candidate();
+    let snap = test_snapshot();
+    let mat = Materialization::default();
+    let mut pipe = Pipeline::<MemoryStore>::new();
+    ensure_a_rs(&mut pipe.store).await;
+    let mut responder = FixtureResponder::new(true);
+    let mut decided = Pipeline::<MemoryStore>::decide(
+        &[cand],
+        &entities,
+        &snap,
+        &mut responder,
+        chaosbox_jev::JEV_MODEL_PINNED,
+        &mat,
+        &test_policy(),
+        &mut pipe.store,
+    )
+    .await
+    .unwrap();
+    let ext = Extraction {
+        compiler: None,
+        entities: entities.values().cloned().collect(),
+        explicit_refs: vec![],
+        facts: vec![],
+        coverage: vec![],
+    };
+    let build = pipe
+        .build_and_publish("r", &snap, &ext, &decided, &mat, None)
+        .await
+        .unwrap();
+    for (requested, returned) in [
+        (chaosbox_jev::JEV_MODEL_PINNED, "other-model"),
+        ("other-model", "other-model"),
+        (chaosbox_jev::JEV_MODEL_PINNED, chaosbox_jev::FIXTURE_MODEL),
+    ] {
+        decided[0].1.model_requested = requested.into();
+        decided[0].1.model_returned = returned.into();
+        assert!(pipe
+            .build_and_publish("r", &snap, &ext, &decided, &mat, Some(build.id.clone()))
+            .await
+            .is_err());
+        assert_eq!(pipe.generation, 1);
+        assert_eq!(pipe.store.active("r").unwrap().id, build.id);
+    }
 }
 
 /// Issue #12 Slice 2B: cross-snapshot reuse — an unrelated-file edit keeps

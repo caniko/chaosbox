@@ -21,6 +21,22 @@ use thiserror::Error;
 
 /// Pinned reproducible model. Never a moving alias in production.
 pub const JEV_MODEL_PINNED: &str = "jev-1.13.0";
+/// Sole production inference endpoint. Redirects are never followed.
+pub const JEV_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
+/// Explicit offline fixture identity; never accepted by the HTTP client.
+pub const FIXTURE_MODEL: &str = "fixture-test";
+
+/// Require an approved decision identity and an exact returned match.
+/// Offline callers may explicitly request [`FIXTURE_MODEL`]; live callers
+/// always request [`JEV_MODEL_PINNED`]. Aliases and substitutions fail closed.
+pub fn validate_model_identity(requested: &str, returned: &str) -> Result<(), JevError> {
+    if !matches!(requested, JEV_MODEL_PINNED | FIXTURE_MODEL) || returned != requested {
+        return Err(JevError::Protocol(
+            "unapproved or mismatched model identity".into(),
+        ));
+    }
+    Ok(())
+}
 /// Documented ceiling: total tokens per request.
 pub const CTX_TOTAL_MAX: usize = 64_000;
 /// Documented ceiling: state plus longest-question tokens.
@@ -177,9 +193,9 @@ pub struct Usage {
 /// Endpoint + deadline + concurrency + spending/request budgets.
 #[derive(Clone, Debug)]
 pub struct JevPolicy {
-    /// Full `POST /v1/systemone` endpoint URL (explicit TLS host).
+    /// Must equal [`JEV_ENDPOINT`]; provider overrides are rejected.
     pub endpoint: String,
-    /// Pinned model identity.
+    /// Must equal [`JEV_MODEL_PINNED`]; aliases and fixture identities are rejected.
     pub model: String,
     /// Per-request deadline (also bounds cancellation).
     pub deadline: Duration,
@@ -200,7 +216,7 @@ pub struct JevPolicy {
 impl Default for JevPolicy {
     fn default() -> Self {
         Self {
-            endpoint: "https://api.typesafe.ai/v1/systemone".to_owned(),
+            endpoint: JEV_ENDPOINT.to_owned(),
             model: JEV_MODEL_PINNED.to_owned(),
             deadline: Duration::from_secs(60),
             max_questions_per_request: 16,
@@ -446,8 +462,20 @@ pub struct JevClient {
 impl JevClient {
     /// Build a client from an explicit policy (timeouts from its deadline).
     pub fn new(policy: JevPolicy) -> Result<Self, JevError> {
+        if policy.model != JEV_MODEL_PINNED || policy.endpoint != JEV_ENDPOINT {
+            return Err(JevError::Protocol(
+                "only the pinned Typesafe Jev model and endpoint are allowed".into(),
+            ));
+        }
+        Self::build(policy)
+    }
+
+    // Private transport constructor also used by this crate's loopback unit
+    // tests. No feature flag or public endpoint bypass exists.
+    fn build(policy: JevPolicy) -> Result<Self, JevError> {
         let http = reqwest::Client::builder()
             .timeout(policy.deadline)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| JevError::Transport(e.to_string()))?;
         Ok(Self {
@@ -649,12 +677,25 @@ async fn backoff(attempt: u32) {
     tokio::time::sleep(Duration::from_millis(ms.min(5_000))).await;
 }
 
-/// Validate: answer-id reconciliation, type match, finite/range, membership.
+/// Validate pinned Jev identity, answer ids, type, finite/range and membership.
 pub fn validate_response(
     resp: &SystemOneResponse,
     asked: &BTreeMap<String, Question>,
     valid_options: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<(), JevError> {
+    validate_response_for_model(resp, asked, valid_options, JEV_MODEL_PINNED)
+}
+
+/// Validate a graph decision with an explicit model identity. The sole offline
+/// exception is [`FIXTURE_MODEL`], which must be requested and returned exactly.
+/// The HTTP client never uses this exception.
+pub fn validate_response_for_model(
+    resp: &SystemOneResponse,
+    asked: &BTreeMap<String, Question>,
+    valid_options: &BTreeMap<String, BTreeSet<String>>,
+    requested: &str,
+) -> Result<(), JevError> {
+    validate_model_identity(requested, &resp.model)?;
     if resp.answers.len() != asked.len() {
         return Err(JevError::Protocol(format!(
             "answer count {} != asked {}",
@@ -712,7 +753,6 @@ pub fn validate_response(
             _ => return Err(JevError::Schema(format!("type mismatch for {id}"))),
         }
     }
-    // Returned model recorded by caller; pinned request model enforced at call site.
     Ok(())
 }
 
