@@ -1,0 +1,10 @@
+{
+  "name": "chaosbox-compaction",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "description": "Private source custody, source-backed compaction and deferred Chaosbox intelligence publication for OpenCode V2."
+}

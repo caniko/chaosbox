@@ -28,6 +28,11 @@ access; research checks it before reserving a new inference attempt.
 
 ## Direction: selective intelligence across code and sessions
 
+The [source-custodied compaction coordinator](docs/SESSION_COMPACTION.md)
+preserves native OpenCode evidence before context reduction, assembles
+source-backed checkpoints, and defers intelligence assessment and private
+TypeDB publication through a restartable journal.
+
 Chaosbox should connect repository structure with the decisions, findings and
 constraints discovered while working on it. Extract at meaningful evidence
 boundaries, use Jev's typed decisions to assess support, scope, novelty and value,

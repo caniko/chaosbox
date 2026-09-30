@@ -102,8 +102,46 @@ define
   attribute supporting-id value string;
   attribute contradicting-id value string;
 
+  # Private session intelligence has a publication chain independent of code builds.
+  attribute memory-scope value string;
+  attribute memory-build-id value string;
+  attribute memory-item-id value string;
+  attribute intelligence-id value string;
+  attribute memory-evidence-id value string;
+  attribute memory-link-id value string;
+  attribute native-source value string;
+  attribute native-session value string;
+  attribute native-message value string;
+  attribute json-pointer value string;
+
   # ---- entities ----
   entity repository owns repo-name @key;
+
+  entity session-knowledge-build
+    owns memory-build-id @key, owns memory-scope, owns raw-envelope,
+    plays session-knowledge-membership:build;
+  entity session-knowledge-pointer
+    owns memory-scope @key, owns memory-build-id;
+  entity session-intelligence
+    owns memory-item-id @key, owns intelligence-id, owns memory-scope,
+    owns kind, owns state, owns text, owns raw-envelope,
+    plays session-knowledge-membership:item,
+    plays session-support:item,
+    plays session-conflict:lhs, plays session-conflict:rhs,
+    plays session-supersession:newer, plays session-supersession:older;
+  entity session-source-evidence
+    owns memory-evidence-id @key, owns memory-scope,
+    owns native-source, owns native-session, owns native-message,
+    owns snapshot-id, owns json-pointer, owns start-line, owns text,
+    owns raw-envelope, plays session-support:evidence;
+  relation session-knowledge-membership
+    relates build, relates item, owns memory-link-id @key;
+  relation session-support
+    relates item, relates evidence, owns memory-link-id @key;
+  relation session-conflict
+    relates lhs, relates rhs, owns memory-link-id @key;
+  relation session-supersession
+    relates newer, relates older, owns memory-link-id @key;
 
   entity source-snapshot
     owns snapshot-id @key,

@@ -33,6 +33,104 @@ use chaosbox_store::{GraphQueries, Store, check_conformance};
 use chaosbox_typedb::reader::TypeDbReader;
 use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
 
+#[tokio::test]
+async fn private_session_knowledge_is_pinned_idempotent_and_predecessor_guarded() {
+    use chaosbox_core::intelligence::{
+        Intelligence, IntelligenceKind, IntelligenceStatus, SessionEvidence,
+    };
+    let db = test_db("t_session_memory");
+    let Some(mut store) = connected_store(&db).await else {
+        return;
+    };
+    let scope = "private:test-owner";
+    let item = Intelligence {
+        id: "intel:fixture".into(),
+        scope: scope.into(),
+        repositories: vec!["test-repo".into()],
+        statement: "Preserve explicit operator-selected private scope.".into(),
+        kind: IntelligenceKind::Constraint,
+        status: IntelligenceStatus::Admitted,
+        interpretation_class: EvidenceClass::Inferred,
+        evidence: vec![SessionEvidence {
+            source: "opencode".into(),
+            snapshot: "a".repeat(64),
+            session: "ses_native".into(),
+            message: "msg_native".into(),
+            pointer: "/text".into(),
+            line: 1,
+            quote: "Preserve explicit operator-selected private scope.".into(),
+            speaker: "user".into(),
+            observed_at_ms: Some(1),
+        }],
+        contradicts: vec![],
+        supersedes: None,
+        assessments: vec!["fixture-receipt".into()],
+    };
+    let first =
+        serde_json::json!({"scope":scope,"records":[item],"assessments":["fixture-receipt"]})
+            .to_string();
+    let records = vec![item];
+    let id = store
+        .publish_knowledge(scope, &first, &records, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .publish_knowledge(scope, &first, &records, None)
+            .await
+            .unwrap(),
+        id
+    );
+    assert_eq!(
+        store.knowledge(scope).await.unwrap(),
+        Some((id.clone(), first.clone()))
+    );
+    assert!(
+        store
+            .knowledge("private:someone-else")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let second=serde_json::json!({"scope":scope,"records":records,"assessments":["fixture-receipt"],"coverage":"second-generation"}).to_string();
+    assert!(
+        store
+            .publish_knowledge(scope, &second, &records, None)
+            .await
+            .is_err()
+    );
+    let next = store
+        .publish_knowledge(scope, &second, &records, Some(&id))
+        .await
+        .unwrap();
+    assert_ne!(next, id);
+    assert!(
+        store
+            .publish_knowledge(scope, &first, &records, Some(&id))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        store.knowledge(scope).await.unwrap(),
+        Some((next.clone(), second))
+    );
+    let mut rival = TypeDbStore::new(config(&db));
+    let left = serde_json::json!({"scope":scope,"records":records,"generation":"left"}).to_string();
+    let right =
+        serde_json::json!({"scope":scope,"records":records,"generation":"right"}).to_string();
+    let (a, b) = tokio::join!(
+        store.publish_knowledge(scope, &left, &records, Some(&next)),
+        rival.publish_knowledge(scope, &right, &records, Some(&next))
+    );
+    assert_ne!(
+        a.is_ok(),
+        b.is_ok(),
+        "exactly one scope publisher may advance the predecessor"
+    );
+    let winner = a.or(b).unwrap();
+    assert_eq!(store.knowledge(scope).await.unwrap().unwrap().0, winner);
+}
+
 fn addr() -> String {
     // The CLI contract is authoritative; `TYPEDB_ADDR` stays as the
     // legacy alias so an existing invocation keeps pointing at its server.

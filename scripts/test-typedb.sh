@@ -213,6 +213,8 @@ chaosbox db check --json --repo test
 
 echo "== live TypeDB conformance (required: no skip is allowed here) =="
 cargo test -p chaosbox-typedb --test live
+cargo test -p chaosbox --test compaction -- --ignored
+CHAOSBOX_TEST_BIN="$(command -v chaosbox)" node --test plugins/chaosbox-compaction/test/*.test.mjs
 cargo test -p chaosbox --test compiler -- --ignored
 
 echo "== consumer queries =="

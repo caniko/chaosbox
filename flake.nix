@@ -165,6 +165,7 @@
           name = "chaosbox-test-typedb";
           runtimeInputs = [
             chaosbox
+            pkgs.nodejs
           ];
           text = builtins.readFile ./scripts/test-typedb.sh;
         };

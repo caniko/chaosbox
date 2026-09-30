@@ -103,7 +103,7 @@ pub fn prepare(text: &str, window: &Window<'_>) -> Result<Input, String> {
         {
             continue;
         }
-        if !matches!(kind, "user" | "assistant" | "tool") {
+        if !matches!(kind, "user" | "assistant" | "tool" | "shell") {
             return Err(
                 "normalize native records to user/assistant/tool message groups first".into(),
             );
@@ -123,7 +123,7 @@ pub fn prepare(text: &str, window: &Window<'_>) -> Result<Input, String> {
         native.push(SourceRecord {
             id: id.into(),
             line: i + 1,
-            speaker: kind.into(),
+            speaker: if kind == "shell" { "tool" } else { kind }.into(),
             raw: line.into(),
         });
     }

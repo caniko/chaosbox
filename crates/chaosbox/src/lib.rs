@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub mod compiler;
+pub mod compaction;
 pub mod continuation;
 pub mod history;
 pub mod intelligence;

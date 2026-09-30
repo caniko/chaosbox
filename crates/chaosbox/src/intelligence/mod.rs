@@ -7,7 +7,7 @@ pub mod cli;
 mod extract;
 
 pub use assess::{assess, questions, Assessment, Outcome, RUBRIC_VERSION};
-pub use extract::{extract, extract_window, Candidates};
+pub use extract::{extract, extract_window, extract_complete_window, Candidates};
 
 use chaosbox_core::intelligence::{Intelligence, IntelligenceStatus};
 use serde::{Deserialize, Serialize};

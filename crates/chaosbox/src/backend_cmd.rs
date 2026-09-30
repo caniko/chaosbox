@@ -36,16 +36,7 @@ pub(super) struct RunSpend {
 /// credential file (never a value, flag, or log); only the file path
 /// appears in diagnostics.
 pub(super) fn typedb_config_from_env() -> Result<TypeDbConfig, String> {
-    let password_file = std::env::var("CHAOSBOX_TYPEDB_PASSWORD_FILE")
-        .map_err(|_| "CHAOSBOX_TYPEDB_PASSWORD_FILE unset".to_owned())?;
-    let password =
-        std::fs::read_to_string(&password_file).map_err(|e| format!("read password file: {e}"))?;
-    Ok(TypeDbConfig {
-        address: std::env::var("CHAOSBOX_TYPEDB_ADDR").unwrap_or_else(|_| "127.0.0.1:1729".into()),
-        username: std::env::var("CHAOSBOX_TYPEDB_USER").unwrap_or_else(|_| "admin".into()),
-        password: password.trim().to_owned(),
-        database: std::env::var("CHAOSBOX_TYPEDB_DATABASE").unwrap_or_else(|_| "chaosbox".into()),
-    })
+    TypeDbConfig::from_env()
 }
 
 /// Live publication chain for one repo: (expected predecessor, starting

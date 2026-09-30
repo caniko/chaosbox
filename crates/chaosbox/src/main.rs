@@ -53,6 +53,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Durable session custody and Chaosbox-owned context reduction.
+    Memory {
+        #[command(subcommand)]
+        command: chaosbox::compaction::cli::Command,
+    },
     /// Jev-selected exact-source continuation with deterministic Rust rendering.
     Checkpoint {
         #[command(subcommand)]
@@ -292,6 +297,13 @@ enum DbCmd {
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
+        Command::Memory { command } => match Box::pin(chaosbox::compaction::cli::run(command)).await {
+            Ok(value) => println!("{value}"),
+            Err(error) => {
+                eprintln!("memory: {error}");
+                std::process::exit(2);
+            }
+        },
         Command::Checkpoint { command } => {
             match Box::pin(chaosbox::continuation::cli::run(command)).await {
                 Ok(value) => println!("{value}"),
