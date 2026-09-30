@@ -500,13 +500,11 @@ async fn assert_direct_readback(
             .span,
         Some(definition.span.clone())
     );
-    assert!(
-        reader
-            .evidence_for("build:other", &rel.id)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(reader
+        .evidence_for("build:other", &rel.id)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

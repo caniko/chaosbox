@@ -5,11 +5,14 @@
 name: Publish Crate
 
 on:
+  push:
+    tags:
+      - "[0-9]*"
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow_ref }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -27,6 +30,11 @@ jobs:
 
       - name: Install Nix
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+
+      - name: Configure GitHub input transport
+        run: |
+          git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
+          git config --global --add url.https://github.com/.insteadOf git@github.com:
 
       - name: Add cargo bin to PATH
         run: echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
@@ -77,14 +85,17 @@ jobs:
       - name: Check flake
         run: nix flake check
 
-      - name: Test
-        run: nix develop -c cargo test -p chaosbox-typedb
+      - name: Check nextest tool
+        run: nix develop -c cargo-nextest --version
+
+      - name: Test all features
+        run: nix develop -c cargo nextest run -p chaosbox-typedb --all-features
 
       - name: Build docs
         run: nix develop .#docs -c cargo doc --no-deps --all-features
 
-      - name: Clippy
-        run: nix develop -c cargo clippy -p chaosbox-typedb --all-targets -- --deny warnings
+      - name: Clippy all features
+        run: nix develop -c cargo clippy -p chaosbox-typedb --all-targets --all-features -- --deny warnings
 
       - name: Dry-run publish
         run: nix develop -c cargo publish -p chaosbox-typedb --dry-run

@@ -124,34 +124,32 @@ fn select_only_catalog_capture_refresh_and_scope() {
     );
     let capture = chaosbox::postgres::load_capture(&path).unwrap();
     assert_eq!(capture.catalog.role, "catalog_reader");
-    assert!(
-        capture
-            .catalog
-            .records
-            .iter()
-            .any(|r| r.kind == "constraint" && r.target.is_some() && r.details["type"] == "f")
-    );
+    assert!(capture
+        .catalog
+        .records
+        .iter()
+        .any(|r| r.kind == "constraint" && r.target.is_some() && r.details["type"] == "f"));
     assert!(capture.catalog.records.iter().any(|r| r.kind == "column"
         && r.name == "label"
         && r.details["nullable"] == false
         && r.details["default"].as_str().unwrap().contains("original")));
-    assert!(
-        capture
-            .catalog
-            .records
-            .iter()
-            .any(|r| r.kind == "view" && r.definition.as_ref().unwrap().contains("child"))
-    );
-    assert!(capture.catalog.records.iter().any(|r| r.kind == "routine" && r.definition.as_ref().unwrap().contains("SELECT value")));
+    assert!(capture
+        .catalog
+        .records
+        .iter()
+        .any(|r| r.kind == "view" && r.definition.as_ref().unwrap().contains("child")));
+    assert!(capture
+        .catalog
+        .records
+        .iter()
+        .any(|r| r.kind == "routine" && r.definition.as_ref().unwrap().contains("SELECT value")));
     let mode =
         std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&path).unwrap().permissions());
     assert_eq!(mode & 0o077, 0);
-    assert!(
-        !server
-            .psql("catalog_reader", "INSERT INTO parent VALUES (1, 'denied')")
-            .status
-            .success()
-    );
+    assert!(!server
+        .psql("catalog_reader", "INSERT INTO parent VALUES (1, 'denied')")
+        .status
+        .success());
     assert!(!server.capture("public", &path).status.success());
     let altered = server.psql("fixture_owner", "ALTER TABLE child ADD COLUMN added bigint");
     assert!(altered.status.success());
@@ -159,20 +157,16 @@ fn select_only_catalog_capture_refresh_and_scope() {
     assert!(server.capture("public", &next).status.success());
     let refreshed = chaosbox::postgres::load_capture(&next).unwrap();
     assert_ne!(capture.digest, refreshed.digest);
-    assert!(
-        refreshed
-            .catalog
-            .records
-            .iter()
-            .any(|r| r.kind == "column" && r.name == "added")
-    );
-    assert!(
-        !server
-            .capture(
-                "absent'; SELECT 1; --",
-                &server.directory.path().join("missing.json")
-            )
-            .status
-            .success()
-    );
+    assert!(refreshed
+        .catalog
+        .records
+        .iter()
+        .any(|r| r.kind == "column" && r.name == "added"));
+    assert!(!server
+        .capture(
+            "absent'; SELECT 1; --",
+            &server.directory.path().join("missing.json")
+        )
+        .status
+        .success());
 }

@@ -209,12 +209,14 @@ pub fn reuse_input_for(
             "candidate does not reference the given endpoints".into(),
         ));
     }
-    let from_hash = ctx.file_hashes.get(&from.file).ok_or_else(|| {
-        PipelineError::Validation(format!("missing file hash for {}", from.file))
-    })?;
-    let to_hash = ctx.file_hashes.get(&to.file).ok_or_else(|| {
-        PipelineError::Validation(format!("missing file hash for {}", to.file))
-    })?;
+    let from_hash = ctx
+        .file_hashes
+        .get(&from.file)
+        .ok_or_else(|| PipelineError::Validation(format!("missing file hash for {}", from.file)))?;
+    let to_hash = ctx
+        .file_hashes
+        .get(&to.file)
+        .ok_or_else(|| PipelineError::Validation(format!("missing file hash for {}", to.file)))?;
     Ok(chaosbox_jev::ReuseInput {
         version: chaosbox_jev::REUSE_VERSION.to_owned(),
         repo: ctx.repo.to_owned(),
@@ -253,15 +255,7 @@ pub fn materialize_raw(
     raw: &RawAnswer,
     mat: &Materialization,
     reason: &str,
-) -> Result<
-    (
-        DecisionOutcome,
-        EvidenceClass,
-        Option<f64>,
-        Option<f64>,
-    ),
-    PipelineError,
-> {
+) -> Result<(DecisionOutcome, EvidenceClass, Option<f64>, Option<f64>), PipelineError> {
     let (outcome, class, conf, prob) = match raw {
         RawAnswer::Noul { noul } => {
             check_probability(*noul).map_err(|e| PipelineError::Validation(e.to_string()))?;
