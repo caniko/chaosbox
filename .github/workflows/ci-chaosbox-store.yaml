@@ -7,8 +7,11 @@ on:
     tags-ignore: ["**"]
   pull_request:
 
+permissions:
+  contents: read
+
 concurrency:
-  group: ${{ github.workflow_ref }}-${{ github.ref }}
+  group: ${{ github.workflow_ref }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -29,19 +32,22 @@ jobs:
         run: echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
 
       - name: Format check
-        run: nix develop -c cargo fmt --all -- --check
+        run: nix develop -c treefmt --ci
 
       - name: Check flake
         run: nix flake check
 
-      - name: Test
-        run: nix develop -c cargo test -p chaosbox-store
+      - name: Check nextest tool
+        run: nix develop -c cargo-nextest --version
+
+      - name: Test all features
+        run: nix develop -c cargo nextest run -p chaosbox-store --all-features
 
       - name: Build docs
         run: nix develop .#docs -c cargo doc -p chaosbox-store --no-deps --all-features
 
-      - name: Clippy
-        run: nix develop -c cargo clippy -p chaosbox-store --all-targets -- --deny warnings
+      - name: Clippy all features
+        run: nix develop -c cargo clippy -p chaosbox-store --all-targets --all-features -- --deny warnings
 
       - name: Package crate
         run: nix develop -c cargo package -p chaosbox-store --allow-dirty --list

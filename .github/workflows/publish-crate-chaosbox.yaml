@@ -5,11 +5,14 @@
 name: Publish Crate
 
 on:
+  push:
+    tags:
+      - "[0-9]*"
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow_ref }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -77,14 +80,17 @@ jobs:
       - name: Check flake
         run: nix flake check
 
-      - name: Test
-        run: nix develop -c cargo test -p chaosbox
+      - name: Check nextest tool
+        run: nix develop -c cargo-nextest --version
+
+      - name: Test all features
+        run: nix develop -c cargo nextest run -p chaosbox --all-features
 
       - name: Build docs
         run: nix develop .#docs -c cargo doc --no-deps --all-features
 
-      - name: Clippy
-        run: nix develop -c cargo clippy -p chaosbox --all-targets -- --deny warnings
+      - name: Clippy all features
+        run: nix develop -c cargo clippy -p chaosbox --all-targets --all-features -- --deny warnings
 
       - name: Dry-run publish
         run: nix develop -c cargo publish -p chaosbox --dry-run
