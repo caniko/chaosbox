@@ -464,6 +464,338 @@ async fn direct_fact_citations_and_coverage_survive_a_fresh_reader() {
     let mut reader = TypeDbReader::new(config(&db));
     reader.connect().await.unwrap();
     assert_direct_readback(&reader, &build, &rel, &definition, &source_span).await;
+    assert_sealed_recovery(&mut store, &db, &build, &rel).await;
+}
+
+async fn assert_sealed_recovery(
+    store: &mut TypeDbStore,
+    db: &str,
+    build: &GraphBuild,
+    rel: &Relation,
+) {
+    // An additional claim can be flushed by a later publication, but must
+    // never change recovery/readback of the earlier published evidence.
+    store
+        .put_claim(Claim {
+            id: "claim:missing".into(),
+            relation_id: rel.id.clone(),
+            supporting: vec!["ev:direct".into()],
+            contradicting: vec!["ev:absent".into()],
+            accepted: true,
+        })
+        .await
+        .expect_err("a missing contradiction must not disappear");
+    store
+        .put_evidence(Evidence {
+            id: "ev:later".into(),
+            class: EvidenceClass::Extracted,
+            supports: false,
+            text: "later contradiction".into(),
+            span: None,
+            snapshot: "s1".into(),
+            source_file_version: "a.rs".into(),
+            producer: None,
+        })
+        .await
+        .unwrap();
+    store
+        .put_claim(Claim {
+            id: "claim:later".into(),
+            relation_id: rel.id.clone(),
+            supporting: vec![],
+            contradicting: vec!["ev:later".into()],
+            accepted: false,
+        })
+        .await
+        .unwrap();
+    let next = GraphBuild::new(&build.repo, vec!["s1".into()], 2);
+    store.publish(next, Some(build.id.clone())).await.unwrap();
+    let mut recovered = TypeDbReader::new(config(db));
+    recovered.connect().await.unwrap();
+    let rows = recovered.evidence_for(&build.id, &rel.id).await.unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "historical evidence changed after publication"
+    );
+    assert_eq!(rows[0].evidence_id, "ev:direct");
+    // Model a legacy membership after additive migration: no expected
+    // references survived, so completeness cannot be established from links.
+    let driver = live_driver(db).await;
+    let tx = driver
+        .transaction(db, typedb_driver::TransactionType::Write)
+        .await
+        .unwrap();
+    let query = format!(
+        "match $m isa edge-membership (build: $b); $b isa graph-build, has build-id {}; $m has sealed-evidence-json $sealed; delete has $sealed of $m;",
+        chaosbox_typedb::encode::str_lit(&build.id)
+    );
+    tx.query(query).await.unwrap();
+    tx.commit().await.unwrap();
+    assert!(matches!(
+        recovered.evidence_for(&build.id, &rel.id).await,
+        Err(chaosbox_store::StoreError::EvidenceClosureUnavailable)
+    ));
+}
+
+async fn live_driver(db: &str) -> typedb_driver::TypeDBDriver {
+    use typedb_driver::{Address, Addresses, DriverOptions, DriverTlsConfig};
+    let cfg = config(db);
+    typedb_driver::TypeDBDriver::new(
+        Addresses::from_address(cfg.address.parse::<Address>().unwrap()),
+        typedb_driver::Credentials::new(&cfg.username, &cfg.password),
+        DriverOptions::new(DriverTlsConfig::disabled()),
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn same_identity_rival_graphs_cannot_mutate_published_membership() {
+    let db = test_db("t_same_id");
+    let Some(mut left) = connected_store(&db).await else {
+        return;
+    };
+    let mut right = TypeDbStore::new(config(&db));
+    right.migrate().await.unwrap();
+    let mut a = GraphBuild::new("rivals", vec!["snapshot".into()], 1);
+    a.add_node(ent("rivals", "snapshot", "a.rs", "a")).unwrap();
+    let mut b = a.clone();
+    b.add_node(ent("rivals", "snapshot", "b.rs", "b")).unwrap();
+    assert_eq!(a.id, b.id);
+    let (l, r) = tokio::join!(
+        left.publish(a.clone(), None),
+        right.publish(b.clone(), None)
+    );
+    assert!(
+        l.is_ok() ^ r.is_ok(),
+        "different versions shared an identity: {l:?}, {r:?}"
+    );
+    let (winner, loser) = if l.is_ok() { (a, b) } else { (b, a) };
+    let mut reader = TypeDbReader::new(config(&db));
+    reader.connect().await.unwrap();
+    let before =
+        serde_json::to_value(reader.build_entities(&winner.id, 10).await.unwrap()).unwrap();
+    let mut retry = TypeDbStore::new(config(&db));
+    retry.migrate().await.unwrap();
+    assert!(
+        retry.publish(loser, None).await.is_err(),
+        "same-id retry bypassed version checks"
+    );
+    let after = serde_json::to_value(reader.build_entities(&winner.id, 10).await.unwrap()).unwrap();
+    assert_eq!(before, after);
+    assert_eq!(after.as_array().unwrap().len(), winner.nodes.len());
+    retry.publish(winner, None).await.unwrap();
+}
+
+#[tokio::test]
+async fn claim_payload_is_immutable_across_store_restarts() {
+    use futures::TryStreamExt;
+    let db = test_db("t_claim_seal");
+    let Some(mut first) = connected_store(&db).await else {
+        return;
+    };
+    seed_files_run(&mut first, "claims", "s1").await;
+    first
+        .put_evidence(Evidence {
+            id: "support".into(),
+            class: EvidenceClass::Extracted,
+            supports: true,
+            text: "support".into(),
+            span: None,
+            snapshot: "s1".into(),
+            source_file_version: "a.rs".into(),
+            producer: None,
+        })
+        .await
+        .unwrap();
+    let original = Claim {
+        id: "stable-claim".into(),
+        relation_id: "rel".into(),
+        supporting: vec!["support".into()],
+        contradicting: vec![],
+        accepted: true,
+    };
+    first.put_claim(original.clone()).await.unwrap();
+    first
+        .publish(GraphBuild::new("claims", vec!["s1".into()], 1), None)
+        .await
+        .unwrap();
+    let mut restarted = TypeDbStore::new(config(&db));
+    restarted.migrate().await.unwrap();
+    restarted
+        .ensure_snapshot_files(
+            "s1",
+            "claims",
+            &[SnapshotFile {
+                snapshot: "s1".into(),
+                path: "a.rs".into(),
+                sha256: "aa".into(),
+                bytes: 16,
+            }],
+        )
+        .await
+        .unwrap();
+    restarted
+        .put_evidence(Evidence {
+            id: "new-ref".into(),
+            class: EvidenceClass::Extracted,
+            supports: false,
+            text: "different".into(),
+            span: None,
+            snapshot: "s1".into(),
+            source_file_version: "a.rs".into(),
+            producer: None,
+        })
+        .await
+        .unwrap();
+    for conflict in [
+        Claim {
+            relation_id: "different-rel".into(),
+            ..original.clone()
+        },
+        Claim {
+            accepted: false,
+            ..original.clone()
+        },
+        Claim {
+            supporting: vec!["new-ref".into()],
+            ..original.clone()
+        },
+        Claim {
+            contradicting: vec!["new-ref".into()],
+            ..original.clone()
+        },
+    ] {
+        assert!(restarted.put_claim(conflict).await.is_err());
+    }
+    let driver = live_driver(&db).await;
+    let tx = driver
+        .transaction(&db, typedb_driver::TransactionType::Read)
+        .await
+        .unwrap();
+    let answer = tx.query("match $c isa claim, has claim-id \"stable-claim\"; $e isa evidence, has evidence-id \"new-ref\"; { (claim: $c, evidence: $e) isa supporting; } or { (claim: $c, evidence: $e) isa contradicting; }; select $c;").await.unwrap();
+    let typedb_driver::answer::QueryAnswer::ConceptRowStream(_, rows) = answer else {
+        panic!("expected rows");
+    };
+    assert!(
+        rows.try_collect::<Vec<_>>().await.unwrap().is_empty(),
+        "conflicting references were persisted"
+    );
+}
+
+#[tokio::test]
+async fn cancelled_read_future_closes_its_live_transaction() {
+    let db = test_db("t_cancel");
+    let Some(_store) = connected_store(&db).await else {
+        return;
+    };
+    let driver = std::sync::Arc::new(live_driver(&db).await);
+    let task_driver = std::sync::Arc::clone(&driver);
+    let (closed, on_close) = tokio::sync::oneshot::channel();
+    let (opened, on_open) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let tx = task_driver
+            .transaction(&db, typedb_driver::TransactionType::Read)
+            .await
+            .unwrap();
+        tx.on_close(move |_| {
+            let _ = closed.send(());
+        })
+        .await
+        .unwrap();
+        opened.send(()).unwrap();
+        std::future::pending::<()>().await;
+        drop(tx);
+    });
+    on_open.await.unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    tokio::time::timeout(std::time::Duration::from_secs(3), on_close)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+async fn stage_racing_claim(store: &mut TypeDbStore, snapshot: &str, supports: bool) -> Claim {
+    seed_files_run(store, snapshot, snapshot).await;
+    store
+        .put_evidence(Evidence {
+            id: snapshot.into(),
+            class: EvidenceClass::Extracted,
+            supports,
+            text: snapshot.into(),
+            span: None,
+            snapshot: snapshot.into(),
+            source_file_version: "a.rs".into(),
+            producer: None,
+        })
+        .await
+        .unwrap();
+    let claim = Claim {
+        id: "racing-claim".into(),
+        relation_id: "rel".into(),
+        supporting: if supports {
+            vec![snapshot.into()]
+        } else {
+            vec![]
+        },
+        contradicting: if supports {
+            vec![]
+        } else {
+            vec![snapshot.into()]
+        },
+        accepted: supports,
+    };
+    store.put_claim(claim.clone()).await.unwrap();
+    claim
+}
+
+#[tokio::test]
+async fn conflicting_claims_staged_before_publication_cannot_add_losing_links() {
+    use futures::TryStreamExt;
+    use typedb_driver::{answer::QueryAnswer, concept::Concept, TransactionType};
+    let db = test_db("t_claim_race");
+    let Some(mut left) = connected_store(&db).await else {
+        return;
+    };
+    let mut right = TypeDbStore::new(config(&db));
+    right.migrate().await.unwrap();
+    // Both pass the durable precheck before either claim is flushed.
+    // put_evidence is durable-first, so both potential link targets exist.
+    let a = stage_racing_claim(&mut left, "left", true).await;
+    let b = stage_racing_claim(&mut right, "right", false).await;
+    let (l, r) = tokio::join!(
+        left.publish(GraphBuild::new("left", vec!["left".into()], 1), None),
+        right.publish(GraphBuild::new("right", vec!["right".into()], 1), None)
+    );
+    assert!(
+        l.is_ok() ^ r.is_ok(),
+        "conflicting claim payloads both published: {l:?}, {r:?}"
+    );
+    let (winner, evidence) = if l.is_ok() { (a, "left") } else { (b, "right") };
+    let driver = live_driver(&db).await;
+    let tx = driver
+        .transaction(&db, TransactionType::Read)
+        .await
+        .unwrap();
+    let answer = tx.query("match $c isa claim, has claim-id \"racing-claim\", has claim-json $json; { (claim: $c, evidence: $e) isa supporting; } or { (claim: $c, evidence: $e) isa contradicting; }; $e isa evidence, has evidence-id $id; select $json, $id;").await.unwrap();
+    let QueryAnswer::ConceptRowStream(_, rows) = answer else {
+        panic!("expected rows");
+    };
+    let rows = rows.try_collect::<Vec<_>>().await.unwrap();
+    assert_eq!(rows.len(), 1, "losing references changed the winning claim");
+    let Some(Concept::Attribute(payload)) = rows[0].get("json").unwrap() else {
+        panic!("claim payload missing");
+    };
+    let Some(Concept::Attribute(reference)) = rows[0].get("id").unwrap() else {
+        panic!("claim evidence missing");
+    };
+    assert_eq!(
+        payload.value.get_string().unwrap(),
+        serde_json::to_string(&winner).unwrap()
+    );
+    assert_eq!(reference.value.get_string().unwrap(), evidence);
 }
 
 async fn assert_direct_readback(
@@ -499,11 +831,13 @@ async fn assert_direct_readback(
             .span,
         Some(definition.span.clone())
     );
-    assert!(reader
-        .evidence_for("build:other", &rel.id)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        reader
+            .evidence_for("build:other", &rel.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[tokio::test]

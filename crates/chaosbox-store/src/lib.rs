@@ -15,6 +15,7 @@ mod conformance;
 mod memory_reader;
 mod queries;
 mod rows;
+mod sealed_evidence;
 mod store;
 mod task;
 
@@ -22,6 +23,7 @@ pub use conformance::{ConformanceSeed, check_conformance, conformance_seed};
 pub use memory_reader::MemoryReader;
 pub use queries::GraphQueries;
 pub use rows::{BuildRow, EndpointRef, EntityRow, EvidenceRow, RelRow, SourceCitation};
+pub use sealed_evidence::SEALED_EVIDENCE_BYTES_MAX;
 pub use store::{MemoryStore, StagedData, Store, StoreStats};
 pub use task::{Task, TaskState, claim_task, heartbeat_task, reclaim_task};
 
@@ -37,6 +39,9 @@ pub enum StoreError {
     #[error("query row budget exceeded; completeness cannot be proved")]
     /// A bounded backend query saturated before a complete result was known.
     QueryBudget,
+    #[error("published evidence closure unavailable; republish under a new build identity")]
+    /// A legacy membership has no publication-sealed, source-complete evidence.
+    EvidenceClosureUnavailable,
     #[error("invariant: {0}")]
     /// A graph invariant was violated (cross-build edge, stale predecessor, ...).
     Invariant(String),

@@ -66,7 +66,7 @@ pub fn conformance_seed() -> ConformanceSeed {
     reader.set_active("conf", &b2.id);
     reader.attach_evidence(
         &r1.id,
-        vec![EvidenceRow {
+        &[EvidenceRow {
             evidence_id: "ev1".into(),
             class: "extracted".into(),
             supports: true,

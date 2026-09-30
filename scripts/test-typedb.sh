@@ -247,6 +247,8 @@ assert status["coverage"]["structural_relations"] == 3
 assert status["coverage"]["decision_relations"] == 0
 assert status["coverage"]["files"][0]["status"] == "parsed"
 PY
+echo "== admitted reader pinning and revocation =="
+python3 scripts/tests/read_view_smoke.py "$WORK"
 # A legacy/decision-bearing build still receives the existing exit-4 guard.
 if chaosbox run "$WORK/syntax" --repo test --no-decisions --max-candidates 0 >"$WORK/deferred.json" 2>"$WORK/deferred.log"; then
   echo "decision-bearing active build was replaced without coverage" >&2

@@ -144,10 +144,12 @@ impl TypeDbStore {
         &self,
         build_id: &str,
         entity_id: &str,
+        digest: &str,
     ) -> Result<(), StoreError> {
         let q = format!(
-            "match $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id {}; insert (build: $b, member: $e) isa node-membership, has membership-id {};",
+            "match $b isa graph-build, has build-id {}, has publication-digest {}, has status \"staging\"; $e isa code-entity, has entity-id {}; insert (build: $b, member: $e) isa node-membership, has membership-id {};",
             str_lit(build_id),
+            str_lit(digest),
             str_lit(entity_id),
             str_lit(&membership_id(build_id, entity_id))
         );
@@ -159,14 +161,36 @@ impl TypeDbStore {
         &self,
         build_id: &str,
         rel_id: &str,
+        digest: &str,
     ) -> Result<(), StoreError> {
+        let sealed = serde_json::to_string(self.staging.sealed_evidence(build_id, rel_id)?)
+            .map_err(|e| StoreError::Invariant(e.to_string()))?;
         let q = format!(
-            "match $b isa graph-build, has build-id {}; $rel isa relationship, has rel-id {}; insert (build: $b, edge: $rel) isa edge-membership, has edge-membership-id {};",
+            "match $b isa graph-build, has build-id {}, has publication-digest {}, has status \"staging\"; $rel isa relationship, has rel-id {}; insert (build: $b, edge: $rel) isa edge-membership, has edge-membership-id {}, has sealed-evidence-json {};",
             str_lit(build_id),
+            str_lit(digest),
             str_lit(rel_id),
-            str_lit(&edge_membership_id(build_id, rel_id))
+            str_lit(&edge_membership_id(build_id, rel_id)),
+            str_lit(&sealed),
         );
-        self.insert_ignoring_duplicates(&q).await
+        self.insert_ignoring_duplicates(&q).await?;
+        let q = format!(
+            "match $m isa edge-membership, has edge-membership-id {}, has sealed-evidence-json $sealed; select $sealed; limit 2;",
+            str_lit(&edge_membership_id(build_id, rel_id)),
+        );
+        let driver = self
+            .driver
+            .as_ref()
+            .ok_or_else(|| StoreError::Connection("disconnected".into()))?;
+        let rows = crate::common::read_rows(driver, &self.config.database, &q, &["sealed"]).await?;
+        if rows.len() != 1
+            || crate::common::col_string_opt(&rows[0], "sealed").as_deref() != Some(sealed.as_str())
+        {
+            return Err(StoreError::Invariant(
+                "conflicting or unsealed evidence membership; publish a new build".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Insert one extraction-run row (idempotent).

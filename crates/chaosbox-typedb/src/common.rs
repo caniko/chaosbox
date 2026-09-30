@@ -164,6 +164,16 @@ pub(crate) async fn read_rows(
         )
         .await
         .map_err(driver_error)?;
+    read_rows_in(&tx, query, columns).await
+}
+
+/// Read inside a caller-owned transaction (publication must validate the
+/// complete membership set in the same transaction as pointer activation).
+pub(crate) async fn read_rows_in(
+    tx: &typedb_driver::Transaction,
+    query: &str,
+    columns: &[&str],
+) -> Result<Vec<BTreeMap<String, Value>>, StoreError> {
     let answer = tx.query(query).await.map_err(driver_error)?;
     let rows: Vec<ConceptRow> = match answer {
         QueryAnswer::ConceptRowStream(_, stream) => {
@@ -212,13 +222,6 @@ pub(crate) fn col_int(row: &BTreeMap<String, Value>, col: &str) -> Result<i64, S
     row.get(col)
         .and_then(Value::get_integer)
         .ok_or_else(|| StoreError::Query(format!("missing integer column {col}")))
-}
-
-/// Required boolean column.
-pub(crate) fn col_bool(row: &BTreeMap<String, Value>, col: &str) -> Result<bool, StoreError> {
-    row.get(col)
-        .and_then(Value::get_boolean)
-        .ok_or_else(|| StoreError::Query(format!("missing boolean column {col}")))
 }
 
 /// Optional double column (absent when the `try {}` branch did not bind).

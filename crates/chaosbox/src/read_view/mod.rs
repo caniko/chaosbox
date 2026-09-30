@@ -195,6 +195,9 @@ impl ScopedReader {
                 .await
                 .map_err(|error| match error {
                     chaosbox_store::StoreError::QueryBudget => ReadError::Budget,
+                    chaosbox_store::StoreError::EvidenceClosureUnavailable => {
+                        ReadError::EvidenceScope
+                    }
                     _ => ReadError::Backend,
                 })?;
             validate_evidence(&view, &rows)?;
@@ -240,8 +243,24 @@ impl ScopedReader {
         name: &str,
         args: Value,
     ) -> Result<Value, ReadError> {
-        let started = tokio::time::Instant::now();
+        let deadline =
+            tokio::time::Instant::now() + Duration::from_millis(self.view.budgets.timeout_ms);
+        self.call_until(identity, name, args, deadline).await
+    }
+
+    // The transport captures this deadline when it accepts a request, before
+    // scheduling the task, and also applies it to response delivery.
+    async fn call_until(
+        &self,
+        identity: &RunIdentity,
+        name: &str,
+        args: Value,
+        deadline: tokio::time::Instant,
+    ) -> Result<Value, ReadError> {
         self.check(identity)?;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(ReadError::Deadline);
+        }
         self.calls
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 (n < self.view.budgets.max_calls).then(|| n + 1)
@@ -254,7 +273,6 @@ impl ScopedReader {
             return Err(ReadError::Denied);
         }
         let mut cancelled = self.revoker.0.subscribe();
-        let deadline = Duration::from_millis(self.view.budgets.timeout_ms);
         let work = async {
             let data = self.query(request).await?;
             let result = json!({
@@ -266,7 +284,7 @@ impl ScopedReader {
             });
             bounded_json(&result, self.view.budgets.max_response_bytes)?;
             self.check(identity)?;
-            if started.elapsed() >= deadline {
+            if tokio::time::Instant::now() >= deadline {
                 return Err(ReadError::Deadline);
             }
             Ok(result)
@@ -274,7 +292,7 @@ impl ScopedReader {
         tokio::select! {
             biased;
             _ = cancelled.wait_for(|revoked| *revoked) => Err(ReadError::Revoked),
-            result = tokio::time::timeout_at(started + deadline, work) => result.map_err(|_| ReadError::Deadline)?,
+            result = tokio::time::timeout_at(deadline, work) => result.map_err(|_| ReadError::Deadline)?,
         }
     }
 }

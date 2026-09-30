@@ -8,6 +8,9 @@ use chaosbox_typedb::reader::TypeDbReader;
 
 const ADMISSION_BYTES: u64 = 128 * 1024;
 
+#[cfg(target_os = "linux")]
+mod pipe;
+
 #[derive(PartialEq, Eq)]
 struct AdmissionFile {
     bytes: Vec<u8>,
@@ -101,10 +104,17 @@ pub(super) async fn serve(path: &Path) -> Result<(), ReadError> {
             }
         }
     };
+    #[cfg(target_os = "linux")]
+    let (input, output) = (
+        pipe::Pipe::stdio(0).map_err(|_| ReadError::Backend)?,
+        pipe::Pipe::stdio(1).map_err(|_| ReadError::Backend)?,
+    );
+    #[cfg(not(target_os = "linux"))]
+    let (input, output) = (tokio::io::stdin(), tokio::io::stdout());
     tokio::select! {
         biased;
         result = watch => result,
-        result = mcp::serve(reader, tokio::io::stdin(), tokio::io::stdout()) => result.map_err(|_| ReadError::Backend),
+        result = mcp::serve(reader, input, output) => result.map_err(|_| ReadError::Backend),
     }
 }
 

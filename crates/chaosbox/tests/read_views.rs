@@ -27,7 +27,7 @@ async fn cited_seed() -> chaosbox_store::ConformanceSeed {
         for rel in seed.reader.build_relationships(build, 10).await.unwrap() {
             seed.reader.attach_evidence(
                 &rel.rel_id,
-                vec![EvidenceRow {
+                &[EvidenceRow {
                     evidence_id: format!("ev:{snapshot}"),
                     class: "extracted".into(),
                     supports: true,
@@ -284,7 +284,7 @@ async fn foreign_evidence_blocks_even_relationship_existence() {
         let citation = rows[0].citation.as_mut().unwrap();
         citation.snapshot = snapshot.into();
         citation.file = file.into();
-        seed.reader.attach_evidence(&seed.rel1, rows);
+        seed.reader.attach_evidence(&seed.rel1, &rows);
         let mut view = view(&seed.builds.0, &["s1"]);
         view.excluded_paths.push("private".into());
         let identity = view.identity.clone();
