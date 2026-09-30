@@ -1,7 +1,10 @@
 //! The [`Store`] trait implementation: staging writes, read-side queries,
 //! and atomic publication.
 
-use chaosbox_core::{Candidate, Claim, Decision, Entity, Evidence, GraphBuild, Relation, SnapshotFile};
+use chaosbox_core::{
+    Candidate, Claim, Decision, Entity, Evidence, GraphBuild, InferenceRecord, Relation,
+    SnapshotFile,
+};
 use chaosbox_store::{Store, StoreError, StoreStats};
 use crate::common::decision_key;
 use crate::encode::double_lit;
@@ -63,23 +66,67 @@ impl Store for TypeDbStore {
         if let Some(p) = d.probability {
             double_lit(p).map_err(|e| StoreError::Invariant(e.to_string()))?;
         }
-        self.staging.put_decision(d.clone()).await?;
-        // Write-through: the decision is paid inference — persist it in a
-        // short transaction as produced, so a dead worker or a budget
-        // failure later in the run never loses completed work (resume
-        // reuses it through `find_decision`). Staged rows still flush
-        // idempotently at publish; readers pin builds, so a decision
-        // written before publication stays invisible to them.
+        if let Some(raw) = &d.raw_answer {
+            validate_raw_finite(raw)?;
+        }
+        // Durable-first: persist atomically before staging anything, so a
+        // failed write leaves no reusable local record. Then stage the
+        // durable winner (not the submitted row) so staging never holds a
+        // loser from a lost race. Readers are server-first, and the
+        // publish-time flush replays winners idempotently.
         self.ensure_connected().await?;
-        self.flush_decision(&d).await
+        self.flush_decision(&d).await?;
+        let key = decision_key(&d.candidate_id, &d.question_id);
+        let winner = self
+            .read_decision_row(&key)
+            .await?
+            .map(|(_, _, w)| w)
+            .ok_or_else(|| StoreError::Invariant("decision missing after flush".into()))?;
+        self.staging.put_decision(winner).await
+    }
+
+    async fn put_inference(&mut self, rec: InferenceRecord) -> Result<(), StoreError> {
+        validate_raw_finite(&rec.raw)?;
+        // Durable-first + winner staging: first-write-wins lives on the
+        // server. A failed flush stages nothing; a lost race stages the
+        // winner both racers converge on.
+        self.ensure_connected().await?;
+        self.flush_inference(&rec).await?;
+        let winner = self
+            .read_inference_row(&rec.reuse_key)
+            .await?
+            .ok_or_else(|| StoreError::Invariant("inference missing after flush".into()))?;
+        self.staging.put_inference(winner).await
+    }
+
+    async fn find_inference(&self, reuse_key: &str) -> Result<Option<InferenceRecord>, StoreError> {
+        // Authoritative first: the server is the first-write-wins winner
+        // across workers and restarts. Staging may hold a losing raw from a
+        // lost race (staged before the flush discovered the winner); reads
+        // must return the winner so concurrent racers converge and resume
+        // reuses paid work instead of diverging.
+        if self.driver.is_some() {
+            if let Some(rec) = self.read_inference_row(reuse_key).await? {
+                return Ok(Some(rec));
+            }
+        }
+        self.staging.find_inference(reuse_key).await
     }
 
     async fn put_evidence(&mut self, e: Evidence) -> Result<(), StoreError> {
-        self.staging.put_evidence(e.clone()).await?;
-        // Write-through alongside its decision (deterministic evidence id:
-        // re-assembly and the publish-time flush stay idempotent).
+        // Durable-first with pre-validation: the (snapshot, path) linkage is
+        // validated against staging before touching the server, so an
+        // unregistered file fails without a durable write. On success the
+        // winner is staged; on failure nothing is staged.
+        if !self.staging.has_file(&e.snapshot, &e.source_file_version) {
+            return Err(StoreError::Invariant(format!(
+                "evidence {} references unregistered file {} in snapshot {}",
+                e.id, e.source_file_version, e.snapshot
+            )));
+        }
         self.ensure_connected().await?;
-        self.flush_evidence(&e).await
+        self.flush_evidence(&e).await?;
+        self.staging.put_evidence(e).await
     }
 
     async fn put_claim(&mut self, c: Claim) -> Result<(), StoreError> {
@@ -91,18 +138,16 @@ impl Store for TypeDbStore {
         candidate_id: &str,
         question_id: &str,
     ) -> Result<Option<Decision>, StoreError> {
-        if let Some(d) = self
-            .staging
-            .find_decision(candidate_id, question_id)
-            .await?
-        {
-            return Ok(Some(d));
+        // Authoritative first, same as inferences: staging may hold a losing
+        // decision from a lost race; the server winner is what resume and
+        // concurrent readers must agree on.
+        if self.driver.is_some() {
+            let key = decision_key(candidate_id, question_id);
+            if let Some((_, _, d)) = self.read_decision_row(&key).await? {
+                return Ok(Some(d));
+            }
         }
-        if self.driver.is_none() {
-            return Ok(None);
-        }
-        let key = decision_key(candidate_id, question_id);
-        Ok(self.read_decision_row(&key).await?.map(|(_, _, d)| d))
+        self.staging.find_decision(candidate_id, question_id).await
     }
 
     async fn publish(
@@ -183,4 +228,38 @@ impl Store for TypeDbStore {
     fn stats(&self) -> StoreStats {
         self.staging.stats()
     }
+}
+
+/// Reject non-finite raw floats at the boundary: they have no `TypeQL` form
+/// and must never reach the flush.
+fn validate_raw_finite(raw: &chaosbox_core::RawAnswer) -> Result<(), StoreError> {
+    use chaosbox_core::RawAnswer;
+    let mut vals: Vec<f64> = Vec::new();
+    match raw {
+        RawAnswer::Noul { noul } => vals.push(*noul),
+        RawAnswer::Choice {
+            probabilities,
+            confidence,
+            ..
+        } => {
+            vals.push(*confidence);
+            vals.extend(probabilities.values().copied());
+        }
+        RawAnswer::Score {
+            score,
+            probabilities,
+            confidence,
+            results,
+            ..
+        } => {
+            vals.push(*score);
+            vals.push(*confidence);
+            vals.extend(probabilities.values().copied());
+            vals.extend(results.iter().copied());
+        }
+    }
+    for v in vals {
+        double_lit(v).map_err(|e| StoreError::Invariant(e.to_string()))?;
+    }
+    Ok(())
 }

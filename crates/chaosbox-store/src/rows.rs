@@ -1,7 +1,7 @@
 //! Typed `query_json` row shapes and the projections that build them
 //! from domain types.
 
-use chaosbox_core::{Entity, Relation};
+use chaosbox_core::{Entity, Relation, SourceSpan, coverage::BuildCoverage};
 use serde::{Deserialize, Serialize};
 
 /// Typed row for entity lookup.
@@ -21,6 +21,12 @@ pub struct EntityRow {
     pub name: String,
     /// Qualified name.
     pub qualified_name: String,
+    /// Exact occurrence location; absent in older projections.
+    #[serde(default)]
+    pub span: Option<SourceSpan>,
+    /// Compiler anchor/context when this is a compiler occurrence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler: Option<chaosbox_core::compiler::SymbolIdentity>,
 }
 
 /// Published build header row.
@@ -37,6 +43,9 @@ pub struct BuildRow {
     /// field default to an empty list rather than failing the decode.
     #[serde(default)]
     pub snapshots: Vec<String>,
+    /// Processing coverage of this immutable build; unknown for legacy builds.
+    #[serde(default)]
+    pub coverage: Option<BuildCoverage>,
 }
 
 /// Relationship row with endpoint ids.
@@ -70,6 +79,26 @@ pub struct EvidenceRow {
     pub supports: bool,
     /// Source-copied or template text.
     pub text: String,
+    /// Source identity and exact range, when retained by the backend.
+    #[serde(default)]
+    pub citation: Option<SourceCitation>,
+    /// Versioned parser provenance for direct facts; absent for model evidence.
+    #[serde(default)]
+    pub producer: Option<String>,
+}
+
+/// Immutable source citation. The hash uses Chaosbox's snapshot text hashing
+/// convention (`sha256_hex`), including its trailing separator.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceCitation {
+    /// Snapshot containing these source bytes.
+    pub snapshot: String,
+    /// Repository-relative file path.
+    pub file: String,
+    /// Content identity stored during capture, never synthesized by a reader.
+    pub sha256: String,
+    /// Exact range; legacy/model evidence may not have one.
+    pub span: Option<SourceSpan>,
 }
 
 /// Project one entity into its row form (canonical storage names).
@@ -82,6 +111,8 @@ pub(crate) fn entity_row(e: &Entity) -> EntityRow {
         file: e.file.clone(),
         name: e.name.clone(),
         qualified_name: e.qualified_name.clone(),
+        span: Some(e.span.clone()),
+        compiler: e.compiler.clone(),
     }
 }
 

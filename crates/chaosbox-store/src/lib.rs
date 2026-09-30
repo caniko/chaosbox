@@ -21,7 +21,7 @@ mod task;
 pub use conformance::{ConformanceSeed, check_conformance, conformance_seed};
 pub use memory_reader::MemoryReader;
 pub use queries::GraphQueries;
-pub use rows::{BuildRow, EndpointRef, EntityRow, EvidenceRow, RelRow};
+pub use rows::{BuildRow, EndpointRef, EntityRow, EvidenceRow, RelRow, SourceCitation};
 pub use store::{MemoryStore, StagedData, Store, StoreStats};
 pub use task::{Task, TaskState, claim_task, heartbeat_task, reclaim_task};
 
@@ -61,12 +61,50 @@ mod tests {
         )
     }
 
+    async fn check_evidence_linkage<S: Store>(s: &mut S) {
+        use chaosbox_core::{EvidenceClass, SourceSpan};
+        // File versions register before evidence may reference them.
+        let files = vec![SnapshotFile {
+            snapshot: "s1".into(),
+            path: "a.rs".into(),
+            sha256: "abc".into(),
+            bytes: 3,
+        }];
+        s.ensure_snapshot_files("s1", "r", &files).await.unwrap();
+        let ev = Evidence {
+            id: "ev1".into(),
+            class: EvidenceClass::Extracted,
+            supports: true,
+            text: "[structural] a".into(),
+            span: Some(SourceSpan::point("a.rs", 1, 1, 0)),
+            snapshot: "s1".into(),
+            source_file_version: "a.rs".into(),
+            producer: None,
+        };
+        s.put_evidence(ev).await.unwrap();
+        assert_eq!(s.stats().evidence, 1);
+        let bad = Evidence {
+            id: "ev2".into(),
+            class: EvidenceClass::Ambiguous,
+            supports: false,
+            text: "x".into(),
+            span: None,
+            snapshot: "s9".into(),
+            source_file_version: "missing.rs".into(),
+            producer: None,
+        };
+        assert!(
+            s.put_evidence(bad).await.is_err(),
+            "unregistered files never resolve"
+        );
+    }
+
     /// Shared write-path conformance over any [`Store`] impl: file linkage,
     /// decision idempotency + Failed-supersedure, and publication guards.
     /// Runs against [`MemoryStore`] now; a live-backend test seeds nothing
     /// extra and calls this against the `TypeDB` store once available.
     pub async fn check_write_conformance<S: Store>(s: &mut S) {
-        use chaosbox_core::{DecisionOutcome, EvidenceClass, RelationType, SourceSpan};
+        use chaosbox_core::{DecisionOutcome, EvidenceClass, RelationType};
         // Run + set identity registers before candidates may reference it.
         s.ensure_run("run:1", "r", "s1", "set:1", "catalog:1", "rubric-v1")
             .await
@@ -95,38 +133,7 @@ mod tests {
         s.put_candidate("set:1", &cand).await.unwrap();
         s.put_candidate("set:1", &cand).await.unwrap();
         assert_eq!(s.stats().candidates, 1);
-        // File versions register before evidence may reference them.
-        let files = vec![SnapshotFile {
-            snapshot: "s1".into(),
-            path: "a.rs".into(),
-            sha256: "abc".into(),
-            bytes: 3,
-        }];
-        s.ensure_snapshot_files("s1", "r", &files).await.unwrap();
-        let ev = Evidence {
-            id: "ev1".into(),
-            class: EvidenceClass::Extracted,
-            supports: true,
-            text: "[structural] a".into(),
-            span: Some(SourceSpan::point("a.rs", 1, 1, 0)),
-            snapshot: "s1".into(),
-            source_file_version: "a.rs".into(),
-        };
-        s.put_evidence(ev).await.unwrap();
-        assert_eq!(s.stats().evidence, 1);
-        let bad = Evidence {
-            id: "ev2".into(),
-            class: EvidenceClass::Ambiguous,
-            supports: false,
-            text: "x".into(),
-            span: None,
-            snapshot: "s9".into(),
-            source_file_version: "missing.rs".into(),
-        };
-        assert!(
-            s.put_evidence(bad).await.is_err(),
-            "unregistered files never resolve"
-        );
+        check_evidence_linkage(s).await;
         // Decisions: first write wins, except Failed supersedes once.
         let mk = |id: &str, outcome| Decision {
             id: id.into(),
@@ -139,6 +146,8 @@ mod tests {
             confidence: None,
             probability: None,
             cache_key: "test-cache-key".into(),
+            reuse_key: String::new(),
+            raw_answer: None,
         };
         s.put_decision(mk("d1", DecisionOutcome::Failed("down".into())))
             .await

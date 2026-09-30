@@ -202,6 +202,11 @@ pub(crate) fn col_string(row: &BTreeMap<String, Value>, col: &str) -> Result<Str
         .ok_or_else(|| StoreError::Query(format!("missing string column {col}")))
 }
 
+/// Optional string column (absent when the `try {}` branch did not bind).
+pub(crate) fn col_string_opt(row: &BTreeMap<String, Value>, col: &str) -> Option<String> {
+    row.get(col).and_then(Value::get_string).map(str::to_owned)
+}
+
 /// Required integer column.
 pub(crate) fn col_int(row: &BTreeMap<String, Value>, col: &str) -> Result<i64, StoreError> {
     row.get(col)

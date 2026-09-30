@@ -1,17 +1,15 @@
 //! File-type dispatch, span plumbing, and the per-language extractors.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::Path,
-};
+use std::path::Path;
 
-use chaosbox_core::{Entity, EntityKind, SourceSpan};
+use chaosbox_core::{Entity, EntityKind, SourceSpan, RelationType, coverage::FileCoverage};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 pub(crate) fn is_supported(path: &str) -> bool {
-    const EXTS: [&str; 12] = [
-        "rs", "py", "js", "ts", "jsx", "tsx", "mjs", "cjs", "nix", "md", "markdown", "txt",
+    const EXTS: [&str; 14] = [
+        "rs", "py", "js", "ts", "jsx", "tsx", "mts", "cts", "mjs", "cjs", "nix", "md", "markdown",
+        "txt",
     ];
     match path.rsplit('.').next() {
         // Case-insensitive like the extractor below; a lone ".md" still
@@ -53,8 +51,35 @@ pub fn report_unsupported(root: &Path) -> Vec<String> {
 pub struct Extraction {
     /// All entities found, in deterministic file order.
     pub entities: Vec<Entity>,
-    /// Explicit `(from_id, to_id, kind)` structural references.
+    /// Uncertified `(from_id, to_id, kind)` proposals, subject to decisions.
     pub explicit_refs: Vec<(String, String, String)>,
+    /// Certified syntax facts, independent of inference candidate caps.
+    #[serde(default)]
+    pub facts: Vec<StructuralFact>,
+    /// Per-file syntax coverage.
+    #[serde(default)]
+    pub coverage: Vec<FileCoverage>,
+    /// Optional context-bound compiler facts and processing accounting.
+    #[serde(default)]
+    pub compiler: Option<chaosbox_core::compiler::CompilerCoverage>,
+}
+
+/// One source-backed syntax observation. Only containment and declarations
+/// are certified by the current extraction contract (no name resolution).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StructuralFact {
+    /// Source entity id.
+    pub from: String,
+    /// Target declaration/module occurrence id.
+    pub to: String,
+    /// Certified relationship kind.
+    pub rel_type: RelationType,
+    /// Exact source range proving the declaration, or file/module point.
+    pub span: SourceSpan,
+    /// Verbatim contents of the range.
+    pub text: String,
+    /// Parser/grammar/contract version.
+    pub producer: String,
 }
 
 fn line_col(text: &str, byte: usize) -> (u32, u32) {
@@ -91,6 +116,9 @@ pub(crate) fn span_of(text: &str, file: &str, byte_start: usize, byte_end: usize
 /// Extract one file deterministically.
 #[must_use]
 pub fn extract_file(repo: &str, snapshot: &str, path: &str, text: &str) -> Extraction {
+    if let Some(extraction) = crate::syntax::extract(repo, snapshot, path, text) {
+        return extraction;
+    }
     let mut entities = Vec::new();
     let mut refs = Vec::new();
     let file_entity = Entity::new(
@@ -128,16 +156,6 @@ pub fn extract_file(repo: &str, snapshot: &str, path: &str, text: &str) -> Extra
         );
         refs.push((file_id, sym.id.clone(), "contains".into()));
         entities.push(sym);
-    } else if ext_lower == "nix" {
-        extract_nix(
-            repo,
-            snapshot,
-            path,
-            text,
-            &file_id,
-            &mut entities,
-            &mut refs,
-        );
     } else {
         extract_code(
             repo,
@@ -152,6 +170,14 @@ pub fn extract_file(repo: &str, snapshot: &str, path: &str, text: &str) -> Extra
     Extraction {
         entities,
         explicit_refs: refs,
+        facts: Vec::new(),
+        compiler: None,
+        coverage: vec![FileCoverage {
+            file: path.to_owned(),
+            producer: "legacy-regex-v1".into(),
+            status: chaosbox_core::coverage::SyntaxStatus::Heuristic,
+            facts: 0,
+        }],
     }
 }
 
@@ -242,144 +268,6 @@ fn extract_code(
             let _ = m;
         }
         if count > 1 {
-            refs.push((file_id.to_owned(), did.clone(), "references".into()));
-        }
-    }
-}
-
-/// Nix expressions: bindings and functions become definitions, relative
-/// `.nix` paths become imports, and interpolation/`inherit` occurrences
-/// become references to bindings defined in the same file.
-///
-/// Regex-based and parse-only (no Nix evaluation, no attribute-set or
-/// module-system semantics — no completeness claims), ported from
-/// graphify's `extractors/nix.py` into the chaosbox entity model:
-/// one definition per name (first site wins; a name may rebind in later
-/// scopes and the qualified name would collide), bounded reference dedup
-/// per (file, binding). Cross-file import resolution happens afterwards
-/// in [`extract_snapshot`].
-fn extract_nix(
-    repo: &str,
-    snapshot: &str,
-    path: &str,
-    text: &str,
-    file_id: &str,
-    entities: &mut Vec<Entity>,
-    refs: &mut Vec<(String, String, String)>,
-) {
-    // Bindings: `name = ...` at any indent (statement/attribute position).
-    // Line-bound (`[ \t]`, not `\s`) so a match can never swallow the next
-    // line. Keywords are excluded for graphify parity (`let x = ..` never
-    // matches anyway: the token after the ident is not `=`).
-    let binding_re = Regex::new(r"(?m)^[ \t]*([A-Za-z_][A-Za-z0-9_'-]*)[ \t]*=").unwrap();
-    // Relative import paths: `./x.nix`, `../lib/y.nix`. Graphify's
-    // look-around boundaries are enforced by hand below: the `regex` crate
-    // has no look-around.
-    let import_re = Regex::new(r"((?:\.\.?/)[A-Za-z0-9_./'-]+\.nix)").unwrap();
-    // Interpolation: `${name}`.
-    let interpolation_re = Regex::new(r"\$\{\s*([A-Za-z_][A-Za-z0-9_'-]*)").unwrap();
-    // Inherit lists: `inherit a b;` / `inherit (from) a b;`.
-    let inherit_re = Regex::new(r"(?m)\binherit(?:From)?\s+([^;\n}]+)").unwrap();
-    let ident_re = Regex::new(r"[A-Za-z_][A-Za-z0-9_'-]*").unwrap();
-
-    // Module record for code files (parity with `extract_code`).
-    let stem = Path::new(path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(path);
-    let mod_ent = Entity::new(
-        EntityKind::Module,
-        repo,
-        snapshot,
-        path,
-        stem,
-        &format!("{path}::{stem}"),
-        span_of(text, path, 0, 0),
-    );
-    refs.push((file_id.to_owned(), mod_ent.id.clone(), "contains".into()));
-
-    // Bindings and functions -> definitions. First site wins: the same
-    // name may bind in several scopes and the qualified name collides.
-    let mut defined: BTreeMap<String, String> = BTreeMap::new();
-    for cap in binding_re.captures_iter(text) {
-        let name = cap.get(1).unwrap();
-        if matches!(
-            name.as_str(),
-            "let" | "in" | "with" | "inherit" | "assert" | "rec"
-        ) {
-            continue;
-        }
-        if defined.contains_key(name.as_str()) {
-            continue;
-        }
-        let whole = cap.get(0).unwrap();
-        let qn = format!("{path}::{}", name.as_str());
-        let e = Entity::new(
-            EntityKind::Definition,
-            repo,
-            snapshot,
-            path,
-            name.as_str(),
-            &qn,
-            span_of(text, path, whole.start(), whole.end()),
-        );
-        refs.push((file_id.to_owned(), e.id.clone(), "defines".into()));
-        refs.push((mod_ent.id.clone(), e.id.clone(), "defines".into()));
-        defined.insert(name.as_str().to_owned(), e.id.clone());
-        entities.push(e);
-    }
-    entities.push(mod_ent);
-
-    // Relative imports (stubs; resolved to the real target file when the
-    // target is part of the snapshot — see `resolve_nix_imports`). The
-    // preceding/following character checks replicate graphify's
-    // `(?<![A-Za-z0-9_.])` / `(?![A-Za-z0-9_])` boundaries; a rejected
-    // boundary rescans from just past the rejected start, so it never hides
-    // a later valid match (what Python's finditer + look-around does).
-    let mut search = 0usize;
-    while let Some(m) = import_re.find(&text[search..]) {
-        let start = search + m.start();
-        let end = search + m.end();
-        let prev_ok = text[..start]
-            .chars()
-            .next_back()
-            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'));
-        let next_ok = text[end..]
-            .chars()
-            .next()
-            .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
-        if !(prev_ok && next_ok) {
-            search = start + 1;
-            continue;
-        }
-        search = end;
-        let target = m.as_str();
-        let e = Entity::new(
-            EntityKind::Import,
-            repo,
-            snapshot,
-            path,
-            target,
-            &format!("{path}::import::{target}"),
-            span_of(text, path, start, end),
-        );
-        refs.push((file_id.to_owned(), e.id.clone(), "imports".into()));
-        entities.push(e);
-    }
-
-    // Interpolation + inherit references: one bounded reference per
-    // (file, binding), only for bindings this file defines.
-    let mut referenced: BTreeSet<&str> = BTreeSet::new();
-    for cap in interpolation_re.captures_iter(text) {
-        referenced.insert(cap.get(1).unwrap().as_str());
-    }
-    for cap in inherit_re.captures_iter(text) {
-        for m in ident_re.find_iter(cap.get(1).unwrap().as_str()) {
-            referenced.insert(m.as_str());
-        }
-    }
-    for name in referenced {
-        if let Some(did) = defined.get(name) {
             refs.push((file_id.to_owned(), did.clone(), "references".into()));
         }
     }

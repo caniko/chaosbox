@@ -21,6 +21,22 @@ use thiserror::Error;
 
 /// Pinned reproducible model. Never a moving alias in production.
 pub const JEV_MODEL_PINNED: &str = "jev-1.13.0";
+/// Sole production inference endpoint. Redirects are never followed.
+pub const JEV_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
+/// Explicit offline fixture identity; never accepted by the HTTP client.
+pub const FIXTURE_MODEL: &str = "fixture-test";
+
+/// Require an approved decision identity and an exact returned match.
+/// Offline callers may explicitly request [`FIXTURE_MODEL`]; live callers
+/// always request [`JEV_MODEL_PINNED`]. Aliases and substitutions fail closed.
+pub fn validate_model_identity(requested: &str, returned: &str) -> Result<(), JevError> {
+    if !matches!(requested, JEV_MODEL_PINNED | FIXTURE_MODEL) || returned != requested {
+        return Err(JevError::Protocol(
+            "unapproved or mismatched model identity".into(),
+        ));
+    }
+    Ok(())
+}
 /// Documented ceiling: total tokens per request.
 pub const CTX_TOTAL_MAX: usize = 64_000;
 /// Documented ceiling: state plus longest-question tokens.
@@ -58,7 +74,7 @@ pub enum JevError {
 }
 
 /// One typed question. `type` selects the variant.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Question {
     /// Yes/no question; answer is a Noul probability.
@@ -86,7 +102,7 @@ pub enum Question {
 }
 
 /// Optional yes/no criteria text for a Noul question.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoulCriteria {
     /// Description of the `true` outcome.
     #[serde(default, rename = "true", skip_serializing_if = "Option::is_none")]
@@ -177,9 +193,9 @@ pub struct Usage {
 /// Endpoint + deadline + concurrency + spending/request budgets.
 #[derive(Clone, Debug)]
 pub struct JevPolicy {
-    /// Full `POST /v1/systemone` endpoint URL (explicit TLS host).
+    /// Must equal [`JEV_ENDPOINT`]; provider overrides are rejected.
     pub endpoint: String,
-    /// Pinned model identity.
+    /// Must equal [`JEV_MODEL_PINNED`]; aliases and fixture identities are rejected.
     pub model: String,
     /// Per-request deadline (also bounds cancellation).
     pub deadline: Duration,
@@ -200,7 +216,7 @@ pub struct JevPolicy {
 impl Default for JevPolicy {
     fn default() -> Self {
         Self {
-            endpoint: "https://api.typesafe.ai/v1/systemone".to_owned(),
+            endpoint: JEV_ENDPOINT.to_owned(),
             model: JEV_MODEL_PINNED.to_owned(),
             deadline: Duration::from_secs(60),
             max_questions_per_request: 16,
@@ -291,6 +307,148 @@ pub fn cache_key(
     )
 }
 
+/// Versioned relation-local reuse identity (issue #12).
+///
+/// The repo-wide [`cache_key`] covers the snapshot id (which rewrites every
+/// entity id on any edit) and the whole-catalog digest, so one edited file
+/// invalidates every cached decision. This key instead covers only what one
+/// decision actually reasoned over, in snapshot-independent terms:
+///
+/// * repository, relation type (canonical `snake_case`), and reason;
+/// * both endpoints as file + qualified name + kind + **file content hash**;
+/// * the bounded excerpt;
+/// * the canonical question semantics (question *values* sorted by their
+///   JSON encoding — transport-only map keys such as `rel_<candidate-id>`
+///   never enter);
+/// * the actual inference state is covered through the excerpt plus the
+///   canonical questions (the wire `state` also carries the transport-only
+///   `candidate` id, which is excluded here by construction);
+/// * model, rubric, and effective-policy digest.
+///
+/// Unchanged relations keep the same key across snapshots; any change to the
+/// relation's own evidence (endpoint file bytes, excerpt, questions) or
+/// consent (policy) changes the key.
+///
+/// Deliberately excludes: snapshot ids, entity ids, candidate ids, question
+/// map keys, and the whole-catalog digest. Callers must still resolve the
+/// `Decision` rebinding problem before switching lookups to this key (stored
+/// `candidate_id`/`id` point at the old snapshot's ids; evidence must be
+/// reassembled against the current entities, not reused byte-for-byte).
+/// The store secondary index and pipeline fallback are Slice 2.
+pub const REUSE_VERSION: &str = "reuse-v1";
+
+/// One endpoint of a reusable decision input, in snapshot-independent
+/// terms plus the content hash that authorizes reuse.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReuseEndpoint {
+    /// Repository-relative file path.
+    pub file: String,
+    /// Qualified name copied from source (never an id).
+    pub qualified: String,
+    /// Canonical entity kind name (`snake_case`, never `Debug`).
+    pub kind: String,
+    /// SHA-256 hex of the endpoint file's text at decision time.
+    pub file_hash: String,
+}
+
+/// Versioned decision input for relation-local reuse.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReuseInput {
+    /// Schema version; always [`REUSE_VERSION`] for writers.
+    pub version: String,
+    /// Owning repository name.
+    pub repo: String,
+    /// Canonical relation type name (`snake_case`).
+    pub rel_type: String,
+    /// Why the candidate was proposed.
+    pub reason: String,
+    /// Source endpoint (content-pinned).
+    pub from: ReuseEndpoint,
+    /// Target endpoint (content-pinned).
+    pub to: ReuseEndpoint,
+    /// Bounded source excerpt grounding the proposal.
+    pub excerpt: String,
+    /// Canonical question semantics: question values only, sorted by JSON
+    /// encoding so transport-only map keys never affect the key.
+    pub canonical_questions: Vec<Question>,
+    /// Model identity requested.
+    pub model: String,
+    /// Rubric version gating question semantics.
+    pub rubric_version: String,
+    /// Effective-policy digest (scope, privacy, inference).
+    pub policy_digest: String,
+}
+
+/// Canonical question semantics: the map *values* sorted by their JSON
+/// encoding. Transport-only keys (`rel_<candidate-id>`) are dropped, so two
+/// snapshots that ask the same semantic question under different candidate
+/// ids hash identically; any instruction/criteria change still flips the key.
+#[must_use]
+pub fn canonical_questions(ordered_questions: &BTreeMap<String, Question>) -> Vec<Question> {
+    let mut values: Vec<Question> = ordered_questions.values().cloned().collect();
+    values.sort_by_key(|q| serde_json::to_string(q).unwrap_or_default());
+    values
+}
+
+/// Hash a versioned [`ReuseInput`] unambiguously (single JSON document).
+/// Construct the input as a struct literal with `version: REUSE_VERSION`
+/// so no positional constructor can smuggle a transport id back in.
+#[must_use]
+pub fn reuse_key(input: &ReuseInput) -> String {
+    let doc = serde_json::to_string(input).unwrap_or_default();
+    format!("jev-reuse:{}", sha256_hex(&[&doc]))
+}
+
+/// Convert a validated [`Answer`] into its storable [`RawAnswer`] form
+/// (issue #12, Slice 2A). The raw answer is what persists; thresholds
+/// apply later through one shared materialization function.
+#[must_use]
+pub fn raw_from_answer(answer: &Answer) -> chaosbox_core::RawAnswer {
+    match answer {
+        Answer::Noul(n) => chaosbox_core::RawAnswer::Noul { noul: n.noul },
+        Answer::Choice(c) => chaosbox_core::RawAnswer::Choice {
+            choice: c.choice.clone(),
+            probabilities: c.probabilities.clone(),
+            confidence: c.confidence,
+        },
+        Answer::Score(s) => chaosbox_core::RawAnswer::Score {
+            score: s.score,
+            probabilities: s.probabilities.clone(),
+            confidence: s.confidence,
+            results: s.results.clone(),
+        },
+    }
+}
+
+/// Convert a stored [`RawAnswer`] back into a typed [`Answer`] for
+/// validation and rematerialization. Lossless with [`raw_from_answer`].
+#[must_use]
+pub fn answer_from_raw(raw: &chaosbox_core::RawAnswer) -> Answer {
+    match raw {
+        chaosbox_core::RawAnswer::Noul { noul } => Answer::Noul(NoulAnswer { noul: *noul }),
+        chaosbox_core::RawAnswer::Choice {
+            choice,
+            probabilities,
+            confidence,
+        } => Answer::Choice(ChoiceAnswer {
+            choice: choice.clone(),
+            probabilities: probabilities.clone(),
+            confidence: *confidence,
+        }),
+        chaosbox_core::RawAnswer::Score {
+            score,
+            probabilities,
+            confidence,
+            results,
+        } => Answer::Score(ScoreAnswer {
+            score: *score,
+            probabilities: probabilities.clone(),
+            confidence: *confidence,
+            results: results.clone(),
+        }),
+    }
+}
+
 /// Typed client. No OpenAI/Anthropic/Gemini/Ollama fallback anywhere.
 pub struct JevClient {
     http: reqwest::Client,
@@ -304,8 +462,20 @@ pub struct JevClient {
 impl JevClient {
     /// Build a client from an explicit policy (timeouts from its deadline).
     pub fn new(policy: JevPolicy) -> Result<Self, JevError> {
+        if policy.model != JEV_MODEL_PINNED || policy.endpoint != JEV_ENDPOINT {
+            return Err(JevError::Protocol(
+                "only the pinned Typesafe Jev model and endpoint are allowed".into(),
+            ));
+        }
+        Self::build(policy)
+    }
+
+    // Private transport constructor also used by this crate's loopback unit
+    // tests. No feature flag or public endpoint bypass exists.
+    fn build(policy: JevPolicy) -> Result<Self, JevError> {
         let http = reqwest::Client::builder()
             .timeout(policy.deadline)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| JevError::Transport(e.to_string()))?;
         Ok(Self {
@@ -507,12 +677,25 @@ async fn backoff(attempt: u32) {
     tokio::time::sleep(Duration::from_millis(ms.min(5_000))).await;
 }
 
-/// Validate: answer-id reconciliation, type match, finite/range, membership.
+/// Validate pinned Jev identity, answer ids, type, finite/range and membership.
 pub fn validate_response(
     resp: &SystemOneResponse,
     asked: &BTreeMap<String, Question>,
     valid_options: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<(), JevError> {
+    validate_response_for_model(resp, asked, valid_options, JEV_MODEL_PINNED)
+}
+
+/// Validate a graph decision with an explicit model identity. The sole offline
+/// exception is [`FIXTURE_MODEL`], which must be requested and returned exactly.
+/// The HTTP client never uses this exception.
+pub fn validate_response_for_model(
+    resp: &SystemOneResponse,
+    asked: &BTreeMap<String, Question>,
+    valid_options: &BTreeMap<String, BTreeSet<String>>,
+    requested: &str,
+) -> Result<(), JevError> {
+    validate_model_identity(requested, &resp.model)?;
     if resp.answers.len() != asked.len() {
         return Err(JevError::Protocol(format!(
             "answer count {} != asked {}",
@@ -570,7 +753,6 @@ pub fn validate_response(
             _ => return Err(JevError::Schema(format!("type mismatch for {id}"))),
         }
     }
-    // Returned model recorded by caller; pinned request model enforced at call site.
     Ok(())
 }
 

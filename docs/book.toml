@@ -12,3 +12,8 @@ site-url = "/chaosbox/"
 default-theme = "coal"
 preferred-dark-theme = "coal"
 git-repository-url = "https://github.com/caniko/chaosbox"
+
+# Shared reference documents keep their repository-relative links when included.
+[output.html.redirect]
+"COMPILER_EVIDENCE.html" = "compiler-evidence.html"
+"INDEXER_FEASIBILITY.html" = "indexer-feasibility.html"

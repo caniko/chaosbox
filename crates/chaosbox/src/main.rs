@@ -26,8 +26,10 @@ use chaosbox_typedb::{
 use clap::{Parser, Subcommand};
 
 mod backend_cmd;
+mod jev_cmd;
 mod mcp_server;
 mod pipeline_cmd;
+mod postgres_cmd;
 mod query_cmd;
 
 use backend_cmd::{
@@ -51,6 +53,31 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Jev-selected exact-source continuation with deterministic Rust rendering.
+    Checkpoint {
+        #[command(subcommand)]
+        command: chaosbox::continuation::cli::Command,
+    },
+    /// Operator-only read-only PostgreSQL catalog collection and publication.
+    Postgres {
+        #[command(subcommand)]
+        command: postgres_cmd::Command,
+    },
+    /// Operator-only typed Typesafe Jev evaluation (external inference).
+    Jev {
+        #[command(subcommand)]
+        command: jev_cmd::Command,
+    },
+    /// Capture and query a source-cited, version-bound workspace impact pilot.
+    Workspace {
+        #[command(subcommand)]
+        command: chaosbox::workspace::cli::Command,
+    },
+    /// Capture or inspect optional context-bound SCIP compiler evidence.
+    Compiler {
+        #[command(subcommand)]
+        command: chaosbox::compiler::Command,
+    },
     /// Extract, assess and retrieve selective session intelligence.
     Intelligence {
         #[command(subcommand)]
@@ -61,8 +88,8 @@ enum Command {
         path: PathBuf,
         #[arg(long, default_value = "demo")]
         repo: String,
-        /// Explicit source scope, repository-relative (Graphify `sourcePaths`
-        /// parity, repeatable). Empty means the whole tree. Non-empty
+        /// Explicit source scope, repository-relative and repeatable.
+        /// Empty means the whole tree. Non-empty
         /// restricts capture to those subtrees so a workspace root cannot
         /// silently pull sibling checkouts; scope is part of the snapshot
         /// id and therefore visible in `query status` as a fingerprint
@@ -87,6 +114,9 @@ enum Command {
     /// spends nothing).
     Run {
         path: PathBuf,
+        /// Optional artifact directory from `compiler capture`.
+        #[arg(long)]
+        compiler: Option<PathBuf>,
         #[arg(long, default_value = "demo")]
         repo: String,
         #[arg(long, default_value_t = 200)]
@@ -115,17 +145,12 @@ enum Command {
         /// decisions are recorded under the `fixture-test` model identity.
         #[arg(long, default_value_t = false, conflicts_with = "no_decisions")]
         fixture_decisions: bool,
-        /// Publish extracted entities with no new inference: no live Jev
-        /// requests, no fixture accept-all. Decisions an earlier run paid
-        /// for are republished from cache, so an entities-only refresh
-        /// keeps the active build's relations instead of replacing it with
-        /// a node-only one; uncached candidates are left for the next
-        /// decisions run to ask. When the cache cannot cover every current
-        /// candidate while the active build still publishes relations
-        /// (an ordinary source edit does exactly that), the run keeps the
-        /// active build and exits 4 with a `coverage:` line instead of
-        /// publishing an under-covered graph. Safe for real corpora before
-        /// Jev approval.
+        /// Publish entities and certified syntax facts without new inference.
+        /// Valid paid inferences are reused; uncached candidates stay pending.
+        /// Structural-only builds can refresh freely. A decision-bearing or
+        /// legacy active build is kept (exit 4, `coverage:` diagnostic) when
+        /// current candidates lack reusable decisions. No Jev requests or
+        /// fixture accept-all decisions are made.
         #[arg(long, default_value_t = false)]
         no_decisions: bool,
         /// Live-Jev spend guards (defaults = `JevPolicy::default`).
@@ -146,6 +171,9 @@ enum Command {
         /// Explicit private intelligence bundle, pinned once on startup.
         #[arg(long)]
         intelligence: Option<PathBuf>,
+        /// Explicit reviewed workspace artifact, pinned once on startup.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
     },
     /// Database readiness and migration reports (JSON contract v2).
     Db {
@@ -161,6 +189,33 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum QueryCmd {
+    /// Bounded lexical graph context, with source and relationship identities.
+    Context {
+        query: String,
+        #[arg(long)]
+        repo: String,
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+        #[arg(long, default_value_t = 20)]
+        max_nodes: usize,
+        #[arg(long, default_value_t = 12_000)]
+        max_chars: usize,
+    },
+    /// Deterministic statistics, degree hubs and weak connectivity groups.
+    Stats {
+        #[arg(long)]
+        repo: String,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
+    /// Read a build-bound weak connectivity group, with visible omissions.
+    Community {
+        id: String,
+        #[arg(long)]
+        repo: String,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
     /// Substring search over entity names (sorted, bounded).
     Search {
         query: String,
@@ -237,6 +292,42 @@ enum DbCmd {
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
+        Command::Checkpoint { command } => {
+            match Box::pin(chaosbox::continuation::cli::run(command)).await {
+                Ok(value) => println!("{value}"),
+                Err(error) => {
+                    eprintln!("checkpoint: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::Postgres { command } => {
+            if let Err(error) = Box::pin(postgres_cmd::run(command)).await {
+                eprintln!("postgres: {error}");
+                std::process::exit(1);
+            }
+        }
+        Command::Jev { command } => {
+            let (receipt, success) = jev_cmd::run(command).await;
+            println!("{receipt}");
+            if !success {
+                std::process::exit(1);
+            }
+        }
+        Command::Workspace { command } => match chaosbox::workspace::cli::run(command).await {
+            Ok(value) => println!("{value}"),
+            Err(error) => {
+                eprintln!("workspace: {error}");
+                std::process::exit(1);
+            }
+        },
+        Command::Compiler { command } => match chaosbox::compiler::run(command).await {
+            Ok(value) => println!("{value}"),
+            Err(error) => {
+                eprintln!("compiler: {error}");
+                std::process::exit(1);
+            }
+        },
         Command::Intelligence { command } => {
             match chaosbox::intelligence::cli::run(command).await {
                 Ok(value) => println!("{value}"),
@@ -300,6 +391,7 @@ async fn main() {
         }
         Command::Run {
             path,
+            compiler,
             repo,
             max_candidates,
             source_paths,
@@ -351,6 +443,7 @@ async fn main() {
                         max_retries,
                         None,
                         &spend,
+                        compiler.as_deref(),
                     )
                     .await
                 }
@@ -398,6 +491,7 @@ async fn main() {
                         max_retries,
                         expected_predecessor,
                         &spend,
+                        compiler.as_deref(),
                     )
                     .await
                 }
@@ -406,7 +500,10 @@ async fn main() {
             std::process::exit(code);
         }
         Command::Query { q } => std::process::exit(Box::pin(run_query(q)).await),
-        Command::Mcp { intelligence } => {
+        Command::Mcp {
+            intelligence,
+            workspace,
+        } => {
             let bundle = intelligence
                 .as_deref()
                 .map(chaosbox::intelligence::cli::load_bundle)
@@ -415,7 +512,15 @@ async fn main() {
                     eprintln!("intelligence bundle: {error}");
                     std::process::exit(1);
                 });
-            Box::pin(serve_mcp(bundle)).await;
+            let workspace = workspace
+                .as_deref()
+                .map(chaosbox::workspace::cli::load_workspace)
+                .transpose()
+                .unwrap_or_else(|error| {
+                    eprintln!("workspace artifact: {error}");
+                    std::process::exit(1);
+                });
+            Box::pin(serve_mcp(bundle, workspace)).await;
         }
         Command::Db { op } => match op {
             DbCmd::Check { json: _, repo } => {

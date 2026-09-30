@@ -2,7 +2,10 @@
 
 use std::collections::BTreeMap;
 
-use chaosbox_core::{Candidate, Claim, Decision, Entity, Evidence, GraphBuild, Relation, SnapshotFile};
+use chaosbox_core::{
+    Candidate, Claim, Decision, Entity, Evidence, GraphBuild, InferenceRecord, Relation,
+    SnapshotFile,
+};
 
 use crate::StoreError;
 
@@ -44,6 +47,15 @@ pub trait Store: Send + Sync {
     /// are unchanged; replaced when the cache key differs or a recorded
     /// `Failed` decision is retried).
     async fn put_decision(&mut self, d: Decision) -> Result<(), StoreError>;
+    /// Record a reusable inference keyed by its relation-local reuse key
+    /// (issue #12). First write wins: the same key always means the same
+    /// inputs, so the first successful inference is the reproducible one.
+    /// Failed attempts are never stored here (retries always re-ask).
+    async fn put_inference(&mut self, rec: InferenceRecord) -> Result<(), StoreError>;
+    /// Look up a reusable inference by reuse key for cross-snapshot reuse.
+    /// Returns `None` on a miss; legacy rows without raw data are misses
+    /// by construction (nothing stored under their key).
+    async fn find_inference(&self, reuse_key: &str) -> Result<Option<InferenceRecord>, StoreError>;
     /// Record evidence (idempotent per evidence id; the (snapshot, path)
     /// file version must be registered first).
     async fn put_evidence(&mut self, e: Evidence) -> Result<(), StoreError>;
@@ -81,6 +93,8 @@ pub struct MemoryStore {
     pub(crate) decisions: BTreeMap<String, Decision>,
     pub(crate) evidence: BTreeMap<String, Evidence>,
     pub(crate) claims: BTreeMap<String, Claim>,
+    /// Reusable inferences by relation-local reuse key (issue #12).
+    pub(crate) inferences: BTreeMap<String, InferenceRecord>,
     /// (snapshot, path) -> (sha256, bytes); evidence linkage validated here.
     pub(crate) files: BTreeMap<(String, String), (String, u64)>,
     /// run id -> (repo, snapshot id).
@@ -104,6 +118,8 @@ pub struct StagedData {
     pub candidates: Vec<(String, (String, Candidate))>,
     /// Decisions keyed by (candidate, question), in key order.
     pub decisions: Vec<Decision>,
+    /// Reusable inferences by reuse key, in key order.
+    pub inferences: Vec<InferenceRecord>,
     /// Evidence by id, in id order.
     pub evidence: Vec<Evidence>,
     /// Claims by id, in id order.
@@ -134,6 +150,7 @@ impl MemoryStore {
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
             decisions: self.decisions.values().cloned().collect(),
+            inferences: self.inferences.values().cloned().collect(),
             evidence: self.evidence.values().cloned().collect(),
             claims: self.claims.values().cloned().collect(),
             files: self
@@ -150,12 +167,22 @@ impl MemoryStore {
         Self::default()
     }
 
+    /// Whether a (snapshot, path) file version is registered in staging.
+    /// Used by durable-first backends to validate evidence before touching
+    /// the server, so a missing registration fails without a durable write.
+    #[must_use]
+    pub fn has_file(&self, snapshot_id: &str, path: &str) -> bool {
+        self.files
+            .contains_key(&(snapshot_id.to_owned(), path.to_owned()))
+    }
+
     /// Stored-record counts (decisions, evidence, claims, builds) for
     /// pipeline tests and operator diagnostics.
     #[must_use]
     pub fn stats(&self) -> StoreStats {
         StoreStats {
             decisions: self.decisions.len(),
+            inferences: self.inferences.len(),
             evidence: self.evidence.len(),
             claims: self.claims.len(),
             builds: self.builds.len(),
@@ -170,6 +197,8 @@ impl MemoryStore {
 pub struct StoreStats {
     /// Recorded decisions.
     pub decisions: usize,
+    /// Recorded reusable inferences.
+    pub inferences: usize,
     /// Recorded evidence rows.
     pub evidence: usize,
     /// Recorded claims.
@@ -229,6 +258,17 @@ impl Store for MemoryStore {
             self.decisions.insert(key, d);
         }
         Ok(())
+    }
+    async fn put_inference(&mut self, rec: InferenceRecord) -> Result<(), StoreError> {
+        // First write wins: the same reuse key always means the same
+        // inputs, so the first successful inference is the reproducible
+        // one. Later writes (model non-determinism, retries) never
+        // overwrite it.
+        self.inferences.entry(rec.reuse_key.clone()).or_insert(rec);
+        Ok(())
+    }
+    async fn find_inference(&self, reuse_key: &str) -> Result<Option<InferenceRecord>, StoreError> {
+        Ok(self.inferences.get(reuse_key).cloned())
     }
     async fn put_evidence(&mut self, e: Evidence) -> Result<(), StoreError> {
         if !self
@@ -308,6 +348,52 @@ impl Store for MemoryStore {
         expected_predecessor: Option<String>,
     ) -> Result<(), StoreError> {
         // Validate invariants before pointer swing.
+        if let Some(coverage) = &build.coverage {
+            // The no-decisions refresh gate trusts this distinction. Derive
+            // it from retained provenance, never solely from caller counts.
+            let structural = build
+                .edges
+                .values()
+                .filter(|edge| {
+                    !edge.evidence_ids.is_empty()
+                        && edge.evidence_ids.iter().all(|id| {
+                            self.evidence.get(id).is_some_and(|evidence| {
+                                evidence.producer.is_some()
+                                    && evidence.supports
+                                    && evidence.class == chaosbox_core::EvidenceClass::Extracted
+                            })
+                        })
+                })
+                .count();
+            let compiler = coverage
+                .compiler
+                .as_ref()
+                .map_or(0, chaosbox_core::compiler::CompilerCoverage::relations);
+            let catalog = build
+                .edges
+                .values()
+                .filter(|edge| {
+                    !edge.evidence_ids.is_empty()
+                        && edge.evidence_ids.iter().all(|id| {
+                            self.evidence.get(id).is_some_and(|evidence| {
+                                evidence.producer.as_deref() == Some("postgres-catalog-v1")
+                                    && evidence.supports
+                                    && evidence.class == chaosbox_core::EvidenceClass::Extracted
+                            })
+                        })
+                })
+                .count();
+            if coverage.catalog.as_ref().map_or(0, |c| c.relations) != catalog
+                || coverage.structural_relations + compiler + catalog != structural
+                || coverage.decision_relations != build.edges.len() - structural
+                || coverage.files.iter().map(|file| file.facts).sum::<usize>()
+                    != coverage.structural_relations
+            {
+                return Err(StoreError::Invariant(
+                    "build coverage disagrees with evidence provenance".into(),
+                ));
+            }
+        }
         for r in build.edges.values() {
             if !build.nodes.contains_key(&r.from) || !build.nodes.contains_key(&r.to) {
                 return Err(StoreError::Invariant(format!(

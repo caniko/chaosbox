@@ -10,6 +10,47 @@ use chaosbox_core::{Entity, EntityKind};
 use crate::Snapshot;
 use crate::extractors::span_of;
 
+/// Validate a portable exact input path without silently normalizing it.
+pub(crate) fn strict_relative(path: &str) -> Result<(), crate::ExtractError> {
+    if path.is_empty()
+        || path.contains(['\\', ':', '\0'])
+        || path
+            .split('/')
+            .any(|s| s.is_empty() || s == "." || s == "..")
+    {
+        return Err(crate::ExtractError::Scope(format!(
+            "invalid relative path {path:?}"
+        )));
+    }
+    Ok(())
+}
+
+/// Check every component of an explicit input for symlinks/nested checkouts.
+pub(crate) fn checked_path(
+    root: &Path,
+    path: &str,
+    require_file: bool,
+) -> Result<std::path::PathBuf, crate::ExtractError> {
+    strict_relative(path)?;
+    let mut full = root.to_path_buf();
+    for component in path.split('/') {
+        full.push(component);
+        let meta =
+            std::fs::symlink_metadata(&full).map_err(|e| crate::ExtractError::Io(e.to_string()))?;
+        if meta.is_symlink() || (meta.is_dir() && full.join(".git").exists()) {
+            return Err(crate::ExtractError::Scope(format!(
+                "input crosses symlink/repository boundary: {path}"
+            )));
+        }
+    }
+    if require_file && !full.is_file() {
+        return Err(crate::ExtractError::Scope(
+            "input is not a regular file".into(),
+        ));
+    }
+    Ok(full)
+}
+
 /// Lexically resolve `target` (a `./`/`../` relative path) against the
 /// directory of `from_file`. `None` when the path is absolute or escapes
 /// the repository root (an import must never point outside the snapshot).
@@ -38,7 +79,7 @@ fn resolve_relative_path(from_file: &str, target: &str) -> Option<String> {
 
 /// Resolve relative `.nix` imports against the snapshot's file set: an
 /// in-repo target replaces its import stub with an edge to the target's
-/// real `File` entity (graphify nix parity: imports land on the file node,
+/// real `File` entity (Nix imports land on the file node,
 /// never a duplicate stub). A missing or external target keeps the stub so
 /// the import stays visible instead of silently vanishing.
 pub(crate) fn resolve_nix_imports(

@@ -15,21 +15,39 @@ described in the new book chapters are not yet implemented.
 - Snapshot (content-addressed, repo-scoped), deterministic extraction for
   Rust/Python/JS-TS/Nix/Markdown/text (files, modules, symbols, definitions,
   imports, containment, explicit refs, headings, links, code mentions, spans).
-  Nix: bindings/functions as definitions, relative `.nix` imports resolved to
-  the target file when it is in the snapshot (stubs stay visible when not),
-  interpolation/`inherit` references to in-file bindings (regex-based,
-  parse-only; no Nix evaluation)
+  Rust/TypeScript/TSX use pinned tree-sitter grammars; Nix uses rnix. Certified
+  declaration and file/module containment facts publish without model decisions
+  or candidate slots. Syntax failures withhold direct facts with explicit
+  coverage. Imports/name matches remain proposals; see `STRUCTURAL_FACTS.md`
+  for the exact subset (no compiler resolution or Nix evaluation).
+- Optional SCIP protobuf ingestion: operator-only capture with source/configuration
+  receipts, exact occurrence ranges, package-qualified/global and scoped-local
+  anchors, explicit resolved references and implementation links. Compiler facts
+  persist without model decisions in both stores; schema v4 adds compiler identity.
+  Missing/ambiguous targets and omitted files are counted. Calls, typecheck success
+  and active-configuration membership are not inferred; see `COMPILER_EVIDENCE.md`.
+- Reviewed workspace-impact pilot: immutable private selected-file member builds,
+  cited cross-language links and constraints, strict lockfile/Git version checks,
+  and directed bounded impact queries with stale/missing-member reporting. The
+  TS consumer → Rust command → Nix package → Canix recipe exposes the consumer
+  pin mismatch; it is not general automatic workspace inference or calibrated
+  memory admission. See `WORKSPACE_IMPACT.md`.
 - Bounded candidate catalog (structural, lexical-import, co-occurrence; capped,
   never cartesian) with truthful truncation accounting: per-reason
   selected/omitted counts in `CandidateCatalog`, surfaced by `extract` and
   `run` output (cap never silently drops candidates)
 - Typed Jev `POST /v1/systemone` client: Noul/Choice/Score, pinned `jev-1.13.0`,
-  requested+returned model identities, 64k/32k enforcement (error, never silent
-  truncate), TLS endpoint, deadlines, concurrency/spend/request budgets, 429/529
-  retries honoring `retry-after`, no retry on 401/403/400/404/422, response size
+  exact requested+returned model enforcement, 64k/32k enforcement (error, never
+  silent truncate), sole approved TLS endpoint, redirects disabled, deadlines,
+  concurrency/spend/request budgets, 429/529 retries honoring `retry-after`,
+  no retry on 401/403/400/404/422, response size
   caps, answer-id reconciliation, finite/range + candidate-membership checks,
   attempt accounting, sanitized diagnostics, cache identity incl. all decision
   inputs (thresholds excluded — materialization identity)
+- Credential-free `jev capabilities` policy report and research preflight;
+  incompatible installed binaries fail before reserving an inference attempt.
+  Offline fixture decisions have their own explicit `fixture-test` identity;
+  the live client never accepts that identity.
 - Evidence classes EXTRACTED/INFERRED/AMBIGUOUS (confidence never upgrades);
   below-floor confidence abstains (recorded, never retried); responder faults
   become recorded `Failed` decisions with catch-and-continue (fault text never
@@ -96,6 +114,10 @@ described in the new book chapters are not yet implemented.
   consumers can detect a build that no longer matches its sources) alongside
   repo/build/generation/export caps; the in-memory and TypeDB backends fill
   it, readers whose projection predates the field report an empty list
+- Schema v3 retains per-file syntax coverage, direct/decision relation counts,
+  and parser provenance. Entity projections expose spans; relationship evidence
+  exposes snapshot/path/content hash/range. Structural-only builds refresh under
+  `--no-decisions`; decision-bearing and legacy builds retain the coverage guard.
 - Pilot safety: snapshot capture stays inside the repository boundary
   (outside symlinks, dangling links, nested checkouts, and link cycles
   excluded); batches with failed decisions refuse to publish so the last
@@ -138,10 +160,10 @@ described in the new book chapters are not yet implemented.
   summaries/labels/dedup/query-repair, arbitrary query escape hatches,
   single giant graph JSON storage, endpoint-to-endpoint multi-links
 
-The proposed session extension keeps that evidence boundary: generated
-continuation checkpoints are derived artifacts, not source labels, evidence or
-independent corroboration. Jev assesses bounded candidates under an explicit
-admission policy; it does not turn fluent summaries into facts.
+The proposed session extension keeps that evidence boundary: deterministically
+rendered, Jev-selected continuation checkpoints are derived artifacts, not source
+labels, evidence or independent corroboration. Jev assesses bounded candidates
+under an explicit admission policy; it does not turn fluent summaries into facts.
 
 ## Not yet implemented (explicit)
 
@@ -154,7 +176,7 @@ admission policy; it does not turn fluent summaries into facts.
   communities/hyperedges materialization. Hyperedges are **in scope** for the
   stats/communities work (issue #10), not deferred to the capability backlog;
   only the grammar expansion is out of scope there.
-- Stored build statistics in `status` (node/edge counts, extraction coverage,
+- Remaining build statistics in `status` (node/edge counts, candidate omissions,
   catalog/rubric/model provenance recorded at publish; needs schema work —
   tracked in the chaosbox issue tracker), bounded NL `query ask`, workspace
   aggregate build, stats/communities read surface

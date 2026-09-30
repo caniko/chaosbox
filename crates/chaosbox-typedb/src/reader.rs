@@ -16,14 +16,26 @@
 
 use std::collections::BTreeMap;
 
-use chaosbox_store::{BuildRow, EntityRow, EndpointRef, EvidenceRow, StoreError, GraphQueries, RelRow};
+use chaosbox_store::{
+    BuildRow, EntityRow, EndpointRef, EvidenceRow, StoreError, GraphQueries, RelRow, SourceCitation,
+};
 use typedb_driver::{Address, Addresses, Credentials, DriverOptions, DriverTlsConfig, TypeDBDriver};
 
-use crate::common::{TypeDbConfig, col_bool, col_int, col_string, driver_error, read_rows};
+use crate::common::{
+    TypeDbConfig, col_bool, col_int, col_string, col_string_opt, driver_error, read_rows,
+};
 use crate::encode::{int_lit, str_lit};
 
 /// Entity attribute columns selected by every member query.
-const ENTITY_COLS: &[&str] = &["id", "kind", "repo", "snap", "file", "name", "qn"];
+const ENTITY_COLS: &[&str] = &[
+    "id", "kind", "repo", "snap", "file", "name", "qn", "sf", "sl", "sc", "el", "ec", "bs", "be",
+    "compiler",
+];
+const ENTITY_SELECT: &str =
+    "$id, $kind, $repo, $snap, $file, $name, $qn, $sf, $sl, $sc, $el, $ec, $bs, $be, $compiler";
+// Optional for historical rows whose evidence range was not persisted.
+const SOURCE_SPAN: &str = "try { $e has span-id $spid; $sp isa source-span, has span-id $spid, has file $sf, has start-line $sl, has start-col $sc, has end-line $el, has end-col $ec, has byte-start $bs, has byte-end $be; };";
+const COMPILER_IDENTITY: &str = "try { $e has compiler-json $compiler; };";
 /// Relationship columns: header plus endpoint ids.
 const REL_COLS: &[&str] = &["r", "rt", "fid", "tid"];
 
@@ -39,7 +51,33 @@ fn row_to_entity(
         file: col_string(row, "file")?,
         name: col_string(row, "name")?,
         qualified_name: col_string(row, "qn")?,
+        span: row_span(row)?,
+        compiler: col_string_opt(row, "compiler")
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(|e| StoreError::Query(format!("invalid compiler identity: {e}")))?,
     })
+}
+
+fn row_span(
+    row: &BTreeMap<String, typedb_driver::concept::Value>,
+) -> Result<Option<chaosbox_core::SourceSpan>, StoreError> {
+    let Some(file) = col_string_opt(row, "sf") else {
+        return Ok(None);
+    };
+    let position = |key| {
+        u32::try_from(col_int(row, key)?)
+            .map_err(|_| StoreError::Query(format!("source position {key} out of range")))
+    };
+    Ok(Some(chaosbox_core::SourceSpan {
+        file,
+        start_line: position("sl")?,
+        start_col: position("sc")?,
+        end_line: position("el")?,
+        end_col: position("ec")?,
+        byte_start: position("bs")?,
+        byte_end: position("be")?,
+    }))
 }
 
 /// Project an attribute column map into a [`RelRow`].
@@ -146,7 +184,7 @@ impl TypeDbReader {
             .await
             .map_err(driver_error)?;
         match tx
-            .query("match $x isa active-pointer; select $x; limit 1;")
+            .query("match $x isa active-pointer; $g isa graph-build; try { $g has coverage-json $c; }; $e isa evidence; try { $e has producer $p; }; $n isa code-entity; try { $n has compiler-json $ci; }; select $x; limit 1;")
             .await
         {
             Ok(answer) => {
@@ -173,7 +211,7 @@ impl TypeDbReader {
         limit: Option<i64>,
     ) -> Result<Vec<EntityRow>, StoreError> {
         let mut q = format!(
-            "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; select $id, $kind, $repo, $snap, $file, $name, $qn; sort $qn;",
+            "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; {SOURCE_SPAN} {COMPILER_IDENTITY} select {ENTITY_SELECT}; sort $qn;",
             str_lit(build_id)
         );
         if let Some(n) = limit {
@@ -209,14 +247,14 @@ impl TypeDbReader {
 impl GraphQueries for TypeDbReader {
     async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, StoreError> {
         let q = format!(
-            "match $p isa active-pointer, has repo-name {}, has build-id $b; $g isa graph-build, has build-id $b, has generation $gen, has status $st; select $b, $gen, $st;",
+            "match $p isa active-pointer, has repo-name {}, has build-id $b; $g isa graph-build, has build-id $b, has generation $gen, has status $st; try {{ $g has coverage-json $coverage; }}; select $b, $gen, $st, $coverage;",
             str_lit(repo)
         );
         let rows = read_rows(
             self.driver()?,
             &self.config.database,
             &q,
-            &["b", "gen", "st"],
+            &["b", "gen", "st", "coverage"],
         )
         .await?;
         let Some(row) = rows.into_iter().next() else {
@@ -241,6 +279,12 @@ impl GraphQueries for TypeDbReader {
             generation: col_int(&row, "gen")?,
             status: col_string(&row, "st")?,
             snapshots,
+            coverage: col_string_opt(&row, "coverage")
+                .map(|json| {
+                    serde_json::from_str(&json)
+                        .map_err(|e| StoreError::Query(format!("invalid build coverage: {e}")))
+                })
+                .transpose()?,
         }))
     }
 
@@ -257,7 +301,7 @@ impl GraphQueries for TypeDbReader {
         let mut merged: BTreeMap<String, EntityRow> = BTreeMap::new();
         for col in ["name-fold", "qualified-name-fold"] {
             let q = format!(
-                "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has {col} $hit, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; $hit contains {}; select $id, $kind, $repo, $snap, $file, $name, $qn; sort $qn; limit {lim};",
+                "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has {col} $hit, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; $hit contains {}; {SOURCE_SPAN} {COMPILER_IDENTITY} select {ENTITY_SELECT}; sort $qn; limit {lim};",
                 str_lit(build_id),
                 str_lit(&needle)
             );
@@ -279,31 +323,13 @@ impl GraphQueries for TypeDbReader {
         build_id: &str,
         id: &str,
     ) -> Result<Option<EntityRow>, StoreError> {
-        // The id is known from the argument; select the remaining columns.
         let q = format!(
-            "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id {}, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; select $kind, $repo, $snap, $file, $name, $qn;",
+            "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id {}, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; {SOURCE_SPAN} {COMPILER_IDENTITY} select {ENTITY_SELECT};",
             str_lit(build_id),
             str_lit(id)
         );
-        let rows = read_rows(
-            self.driver()?,
-            &self.config.database,
-            &q,
-            &["kind", "repo", "snap", "file", "name", "qn"],
-        )
-        .await?;
-        let Some(row) = rows.into_iter().next() else {
-            return Ok(None);
-        };
-        Ok(Some(EntityRow {
-            entity_id: id.to_owned(),
-            kind: col_string(&row, "kind")?,
-            repo: col_string(&row, "repo")?,
-            snapshot: col_string(&row, "snap")?,
-            file: col_string(&row, "file")?,
-            name: col_string(&row, "name")?,
-            qualified_name: col_string(&row, "qn")?,
-        }))
+        let rows = read_rows(self.driver()?, &self.config.database, &q, ENTITY_COLS).await?;
+        rows.first().map(row_to_entity).transpose()
     }
 
     async fn neighbors_out(
@@ -350,7 +376,7 @@ impl GraphQueries for TypeDbReader {
         let mut out: BTreeMap<String, EvidenceRow> = BTreeMap::new();
         for link in ["supporting", "contradicting"] {
             let q = format!(
-                "match (build: $b, edge: $rel) isa edge-membership; $b isa graph-build, has build-id {}; $rel isa relationship, has rel-id {}; $c isa claim, has relationship-id {}; (claim: $c, evidence: $e) isa {link}; $e isa evidence, has evidence-id $id, has class $cl, has supports $s, has text $t; select $id, $cl, $s, $t;",
+                "match (build: $b, edge: $rel) isa edge-membership; $b isa graph-build, has build-id {}; $rel isa relationship, has rel-id {}; $c isa claim, has relationship-id {}; (claim: $c, evidence: $e) isa {link}; $e isa evidence, has evidence-id $id, has class $cl, has supports $s, has text $t; try {{ $e has producer $producer; }}; try {{ $e has file-version-id $fv; $v isa file-version, has file-version-id $fv, has snapshot-id $snap, has path $file, has sha256 $sha; }}; {SOURCE_SPAN} select $id, $cl, $s, $t, $producer, $snap, $file, $sha, $sf, $sl, $sc, $el, $ec, $bs, $be;",
                 str_lit(build_id),
                 str_lit(rel_id),
                 str_lit(rel_id)
@@ -359,7 +385,10 @@ impl GraphQueries for TypeDbReader {
                 self.driver()?,
                 &self.config.database,
                 &q,
-                &["id", "cl", "s", "t"],
+                &[
+                    "id", "cl", "s", "t", "producer", "snap", "file", "sha", "sf", "sl", "sc",
+                    "el", "ec", "bs", "be",
+                ],
             )
             .await?;
             for row in &rows {
@@ -368,6 +397,17 @@ impl GraphQueries for TypeDbReader {
                     class: col_string(row, "cl")?,
                     supports: col_bool(row, "s")?,
                     text: col_string(row, "t")?,
+                    producer: col_string_opt(row, "producer"),
+                    citation: if let Some(snapshot) = col_string_opt(row, "snap") {
+                        Some(SourceCitation {
+                            snapshot,
+                            file: col_string(row, "file")?,
+                            sha256: col_string(row, "sha")?,
+                            span: row_span(row)?,
+                        })
+                    } else {
+                        None
+                    },
                 };
                 out.insert(ev.evidence_id.clone(), ev);
             }

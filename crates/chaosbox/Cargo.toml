@@ -9,7 +9,7 @@ homepage.workspace = true
 documentation.workspace = true
 description = "Chaosbox orchestration library and CLI/MCP executable"
 readme = "../../README.md"
-include = ["examples/**/*.rs", "src/**/*.rs", "tests/**/*.rs"]
+include = ["examples/**/*.rs", "src/**/*.rs", "src/**/*.sql", "tests/**/*.rs"]
 
 [[bin]]
 name = "chaosbox"
@@ -33,9 +33,12 @@ tokio = { workspace = true }
 clap = { workspace = true }
 async-trait = { workspace = true }
 rusqlite = { workspace = true }
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
+scip = "=0.10.0"
+protobuf = "=3.7.2"
+url = "2"
 
 [lints]
 workspace = true

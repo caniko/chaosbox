@@ -87,6 +87,9 @@ async fn serve(
             if let Some(ra) = s.retry_after {
                 let _ = write!(resp, "retry-after: {ra}\r\n");
             }
+            if s.status == 307 {
+                let _ = write!(resp, "location: http://{addr}/redirect-target\r\n");
+            }
             resp.push_str("\r\n");
             resp.push_str(&s.body);
             if sock.write_all(resp.as_bytes()).await.is_err() {
@@ -149,6 +152,95 @@ fn use_test_key(name: &str) {
 }
 
 #[tokio::test]
+async fn returned_model_substitution_is_not_retried() {
+    let _guard = env_lock().lock().unwrap();
+    use_test_key("substitution");
+    let body = accept_body().replace(JEV_MODEL_PINNED, "other-model");
+    let (url, server) = serve(
+        vec![Script {
+            status: 200,
+            retry_after: None,
+            body,
+        }],
+        Arc::new(Mutex::new(Vec::new())),
+    )
+    .await;
+    let mut client = JevClient::build(test_policy(url)).unwrap();
+    let result = client
+        .evaluate(serde_json::json!({}), choice_questions(), &valid_options())
+        .await;
+    assert!(matches!(result, Err(JevError::Protocol(_))));
+    assert_eq!(client.sent_requests(), 1);
+    assert_eq!(client.spent_tokens(), 10);
+    assert_eq!(server.await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn redirect_is_not_followed_or_retried() {
+    let _guard = env_lock().lock().unwrap();
+    use_test_key("redirect");
+    let heads = Arc::new(Mutex::new(Vec::new()));
+    let (url, server) = serve(
+        vec![
+            Script {
+                status: 307,
+                retry_after: None,
+                body: String::new(),
+            },
+            Script {
+                status: 200,
+                retry_after: None,
+                body: accept_body(),
+            },
+        ],
+        heads.clone(),
+    )
+    .await;
+    let mut client = JevClient::build(test_policy(url)).unwrap();
+    let result = client
+        .evaluate(serde_json::json!({}), choice_questions(), &valid_options())
+        .await;
+    assert!(result.is_err());
+    assert_eq!(client.sent_requests(), 1);
+    assert_eq!(heads.lock().unwrap().len(), 1);
+    server.abort();
+}
+
+#[test]
+fn api_key_file_wins_then_env() {
+    // Single choke point (issue #8): file first, env second, ambient
+    // provider vars never consulted. Holds the shared env lock like every
+    // other credential test: the key environment is process-global.
+    let _guard = env_lock().lock().unwrap();
+    let old_file = std::env::var("CHAOSBOX_JEV_API_KEY_FILE").ok();
+    let old_env = std::env::var("TYPESAFE_API_KEY").ok();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("key");
+    std::fs::write(&file, "file-key\n").unwrap();
+    std::env::set_var("CHAOSBOX_JEV_API_KEY_FILE", &file);
+    std::env::set_var("TYPESAFE_API_KEY", "env-key");
+    assert_eq!(JevClient::api_key().as_deref(), Some("file-key"));
+    // Empty file falls through to env rather than authenticating empty.
+    std::fs::write(&file, "  \n").unwrap();
+    assert_eq!(JevClient::api_key().as_deref(), Some("env-key"));
+    // Missing file falls through to env the same way.
+    std::env::set_var("CHAOSBOX_JEV_API_KEY_FILE", dir.path().join("absent"));
+    assert_eq!(JevClient::api_key().as_deref(), Some("env-key"));
+    // Neither source means no key (fail fast at `run --live-jev`).
+    std::env::remove_var("CHAOSBOX_JEV_API_KEY_FILE");
+    std::env::remove_var("TYPESAFE_API_KEY");
+    assert_eq!(JevClient::api_key(), None);
+    match old_file {
+        Some(v) => std::env::set_var("CHAOSBOX_JEV_API_KEY_FILE", v),
+        None => std::env::remove_var("CHAOSBOX_JEV_API_KEY_FILE"),
+    }
+    match old_env {
+        Some(v) => std::env::set_var("TYPESAFE_API_KEY", v),
+        None => std::env::remove_var("TYPESAFE_API_KEY"),
+    }
+}
+
+#[tokio::test]
 async fn retry_after_honored_then_success_over_http() {
     let _guard = env_lock().lock().unwrap();
     use_test_key("retry");
@@ -169,7 +261,7 @@ async fn retry_after_honored_then_success_over_http() {
         heads.clone(),
     )
     .await;
-    let mut client = JevClient::new(test_policy(url)).unwrap();
+    let mut client = JevClient::build(test_policy(url)).unwrap();
     let resp = client
         .evaluate(
             serde_json::json!({"repo": "demo"}),
@@ -205,7 +297,7 @@ async fn auth_failure_never_retried() {
         heads,
     )
     .await;
-    let mut client = JevClient::new(test_policy(url)).unwrap();
+    let mut client = JevClient::build(test_policy(url)).unwrap();
     let err = client
         .evaluate(serde_json::json!({}), choice_questions(), &valid_options())
         .await
@@ -237,7 +329,7 @@ async fn out_of_scope_choice_rejected_over_http() {
         Arc::new(Mutex::new(Vec::new())),
     )
     .await;
-    let mut client = JevClient::new(test_policy(url)).unwrap();
+    let mut client = JevClient::build(test_policy(url)).unwrap();
     let err = client
         .evaluate(serde_json::json!({}), choice_questions(), &valid_options())
         .await
@@ -265,7 +357,7 @@ async fn missing_answer_is_protocol_error() {
         Arc::new(Mutex::new(Vec::new())),
     )
     .await;
-    let mut client = JevClient::new(test_policy(url)).unwrap();
+    let mut client = JevClient::build(test_policy(url)).unwrap();
     let err = client
         .evaluate(serde_json::json!({}), choice_questions(), &valid_options())
         .await
@@ -300,7 +392,7 @@ async fn malformed_probability_rejected_over_http() {
         Arc::new(Mutex::new(Vec::new())),
     )
     .await;
-    let mut client = JevClient::new(test_policy(url)).unwrap();
+    let mut client = JevClient::build(test_policy(url)).unwrap();
     let err = client
         .evaluate(serde_json::json!({}), questions, &BTreeMap::new())
         .await

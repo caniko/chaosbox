@@ -71,6 +71,8 @@ pub fn conformance_seed() -> ConformanceSeed {
             class: "extracted".into(),
             supports: true,
             text: "[structural] Alpha -> Beta".into(),
+            citation: None,
+            producer: None,
         }],
     );
     ConformanceSeed {

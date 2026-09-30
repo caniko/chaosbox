@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+pub mod compiler;
+pub mod coverage;
 pub mod intelligence;
 
 /// Hash `parts` with SHA-256, joined by `\0`, hex-encoded.
@@ -108,6 +110,9 @@ pub struct Entity {
     pub span: SourceSpan,
     /// Alternate labels observed in source.
     pub aliases: Vec<String>,
+    /// Optional compiler identity; syntax/legacy occurrences retain their ids.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compiler: Option<compiler::SymbolIdentity>,
 }
 
 impl Entity {
@@ -144,6 +149,7 @@ impl Entity {
             qualified_name: qualified_name.to_owned(),
             span,
             aliases: Vec::new(),
+            compiler: None,
         }
     }
 }
@@ -163,6 +169,8 @@ pub enum RelationType {
     References,
     /// A call from one symbol to another.
     Calls,
+    /// Explicit compiler-reported implementation (implementor -> interface).
+    Implements,
     /// A Markdown link target.
     LinksTo,
     /// A Markdown code mention of a symbol.
@@ -279,6 +287,10 @@ pub struct Evidence {
     pub snapshot: String,
     /// Repository-relative path of the source file version.
     pub source_file_version: String,
+    /// Parser/grammar/contract version for direct syntax evidence; absent for
+    /// decision evidence and legacy records.
+    #[serde(default)]
+    pub producer: Option<String>,
 }
 
 /// Content identity of one source file version. Both backends key
@@ -329,7 +341,10 @@ pub enum DecisionOutcome {
 /// One validated Jev decision over a candidate.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Decision {
-    /// Deterministic `dec:<hex>` identity (candidate + question + model).
+    /// Deterministic `dec:<hex>` identity (candidate + question + model +
+    /// reuse key + materialization digest). Binds the materialization to its
+    /// authoritative inference inputs and thresholds so policy/threshold
+    /// changes mint new rows instead of colliding.
     pub id: String,
     /// Candidate this decision judges.
     pub candidate_id: String,
@@ -348,20 +363,89 @@ pub struct Decision {
     /// Probability (Noul or winning option), if applicable.
     pub probability: Option<f64>,
     /// Cache identity under which this decision is valid (source,
-    /// preprocessing, catalog, questions, model, rubric). Reuse compares
-    /// this key; threshold-only changes keep it stable.
+    /// preprocessing, catalog, questions, model, rubric, policy, plus the
+    /// materialization thresholds). Reuse compares the relation-local key;
+    /// this audit key replaces the stored row when thresholds or policy
+    /// change so returned and persisted materializations agree.
     pub cache_key: String,
+    /// Relation-local reuse key (`jev-reuse:...`) authorizing cross-snapshot
+    /// reuse (issue #12). Empty for legacy rows written before reuse.
+    #[serde(default)]
+    pub reuse_key: String,
+    /// Validated raw model answer this decision was materialized from.
+    /// `None` for legacy rows and for `Failed` decisions (never reusable).
+    /// Threshold changes rematerialize from this instead of re-asking.
+    #[serde(default)]
+    pub raw_answer: Option<RawAnswer>,
+}
+
+/// Validated raw model answer, stored separately from the
+/// threshold-derived outcome so threshold changes rematerialize without
+/// re-asking (issue #12, Slice 2A).
+///
+/// Mirrors the `chaosbox-jev` `Answer` shape without depending on it
+/// (`chaosbox-jev` depends on this crate). Conversions live in
+/// `chaosbox-jev`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum RawAnswer {
+    /// Yes/no probability answer.
+    Noul {
+        /// Probability of yes, in [0,1].
+        noul: f64,
+    },
+    /// Single-choice answer.
+    Choice {
+        /// The selected option; always a member of the asked criteria.
+        choice: String,
+        /// Full option distribution.
+        probabilities: BTreeMap<String, f64>,
+        /// Model confidence in [0,1]; distinct from the distribution.
+        confidence: f64,
+    },
+    /// Scored answer.
+    Score {
+        /// Weighted value across levels.
+        score: f64,
+        /// Per-level distribution.
+        probabilities: BTreeMap<String, f64>,
+        /// Model confidence in [0,1]; distinct from the value.
+        confidence: f64,
+        /// Per-level results backing the weighted value.
+        #[serde(default)]
+        results: Vec<f64>,
+    },
+}
+
+/// One reusable inference (issue #12, Slice 2A).
+///
+/// The relation-local `reuse_key` authorizes reuse across snapshots;
+/// the raw answer plus model provenance is what gets rematerialized under
+/// current thresholds into a snapshot-bound [`Decision`]. Failed attempts
+/// are never stored here (retries always re-ask); successful negatives
+/// (`Rejected`/`Negative`/`Abstained`) are reusable and stored.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct InferenceRecord {
+    /// Relation-local reuse key (`jev-reuse:...`).
+    pub reuse_key: String,
+    /// Validated raw answer to rematerialize.
+    pub raw: RawAnswer,
+    /// Model identity requested.
+    pub model_requested: String,
+    /// Model identity returned by the provider.
+    pub model_returned: String,
 }
 
 /// Candidate catalog/preprocessing version. Bump when parsers, candidate
 /// construction, or question semantics change: the digest below feeds every
 /// decision cache key, so a bump conservatively re-asks all decisions.
-pub const CATALOG_VERSION: &str = "catalog-v1";
+pub const CATALOG_VERSION: &str = "catalog-v2";
 
 /// Catalog digest over the sorted candidate set: one record per candidate
 /// `(id, rel_type, from, to, reason)` plus [`CATALOG_VERSION`].
-/// Conservative: any catalog change invalidates every decision in the run
-/// (per-dependency precision is a documented follow-up).
+/// Feeds the run/set identity and the legacy repo-wide decision `cache_key`
+/// audit. Relation-local reuse (issue #12) is catalog-independent: an added
+/// candidate never invalidates unrelated inferences.
 #[must_use]
 pub fn catalog_digest(candidates: &[Candidate]) -> String {
     let mut records: Vec<String> = candidates
@@ -430,7 +514,7 @@ pub enum ValidationError {
 /// Effective ingestion + inference policy for one run (issue #8).
 ///
 /// The single choke point for "what may this run read, and where may its
-/// excerpts go": the source scope (Graphify `sourcePaths` parity, empty =
+/// excerpts go": the source scope (empty =
 /// whole tree), the privacy class (`local` = private fleet only,
 /// `private` = no external inference ever), and the explicit external
 /// inference grant (`none` = no provider, `typesafe-jev` = Typesafe Jev
@@ -559,6 +643,9 @@ pub struct GraphBuild {
     pub generation: u64,
     /// Previous build id, if any.
     pub predecessor: Option<String>,
+    /// Persisted processing accounting; unknown for legacy builds.
+    #[serde(default)]
+    pub coverage: Option<coverage::BuildCoverage>,
 }
 
 impl GraphBuild {
@@ -577,6 +664,7 @@ impl GraphBuild {
             edges: BTreeMap::new(),
             generation,
             predecessor: None,
+            coverage: None,
         }
     }
 

@@ -23,8 +23,9 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
     max_retries: Option<u32>,
     expected_predecessor: Option<String>,
     spend: &RunSpend,
+    compiler: Option<&Path>,
 ) -> i32 {
-    let (snap, ext, cat) =
+    let (snap, mut ext, cat) =
         match Pipeline::<S>::snapshot_extract(repo, path, max_candidates, effective_policy) {
             Ok(v) => v,
             Err(e) => {
@@ -32,6 +33,12 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
                 return 1;
             }
         };
+    if let Some(artifact) = compiler {
+        if let Err(error) = chaosbox::compiler::attach(artifact, path, &snap, &mut ext) {
+            eprintln!("compiler import: {error}");
+            return 1;
+        }
+    }
     let cands = &cat.candidates;
     // Truncation must be observable: report what the cap selected and
     // omitted before any decision is made. Scope is part of the snapshot
@@ -43,6 +50,15 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         cands.len(),
         cat.cap,
         serde_json::to_string(&cat.omitted).unwrap(),
+    );
+    eprintln!(
+        "structural: facts={} files={} parse_errors={}",
+        ext.facts.len(),
+        ext.coverage.len(),
+        ext.coverage
+            .iter()
+            .filter(|f| f.status == chaosbox_core::coverage::SyntaxStatus::ParseError)
+            .count()
     );
     eprintln!(
         "scope: {}",
@@ -94,13 +110,12 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         }
     }
     let decided = if no_decisions {
-        // No live inference and no fixture accept-all: republish the
-        // decisions an earlier run already paid for and skip the rest, so
-        // an entities-only refresh can never swing the active pointer to a
-        // build that silently drops published relations.
+        // Certified syntax facts publish independently. Reuse only validated
+        // model inferences; the gate below protects decision-bearing builds.
         let reused = match chaosbox::decide_cached(
             cands,
             &entities,
+            &snap,
             chaosbox_jev::JEV_MODEL_PINNED,
             &mat,
             effective_policy,
@@ -114,19 +129,11 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
                 return 1;
             }
         };
-        // Cache identity carries the repository snapshot, the whole
-        // catalog, and the effective policy, so an ordinary source edit (or
-        // a scope/consent change) leaves nothing reusable.
-        // Publishing that graph would swing the active pointer onto a build
-        // with fewer relations than the one consumers are querying today;
-        // keep it instead and report the pending work. Exit 4 means "kept
-        // the previous build, spent nothing", which callers defer on rather
-        // than retry with backoff. The one exception is a repository with
-        // no active build at all: there is nothing to keep, so the first
-        // capture-only publish goes ahead and bootstraps the query view
-        // without spending anything. An unreadable active build is neither:
-        // it fails outright (exit 1, no `coverage:` line) so the batch
-        // reports failure rather than a successful deferral.
+        // A structural-only build can refresh without model coverage. For
+        // decision-bearing or legacy builds retain the conservative exit-4
+        // guard when current proposals lack reusable inferences. Relation-local
+        // reuse survives unrelated edits, but never an endpoint/policy change.
+        // An unreadable active build fails outright (exit 1).
         let active = active_publishes_relations(&pipe.store, repo).await;
         if let Err(error) = &active {
             eprintln!(
@@ -179,6 +186,7 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         let pending = match chaosbox::uncached_decisions(
             cands,
             &entities,
+            &snap,
             chaosbox_jev::JEV_MODEL_PINNED,
             &mat,
             effective_policy,
@@ -216,6 +224,7 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         let decided = Pipeline::<S>::decide(
             cands,
             &entities,
+            &snap,
             &mut responder,
             chaosbox_jev::JEV_MODEL_PINNED,
             &mat,
@@ -245,12 +254,13 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         }
         let mut responder = FixtureResponder::new(true);
         // Fixture decisions must never masquerade as Jev model output.
-        responder.model = "fixture-test".into();
+        responder.model = chaosbox_jev::FIXTURE_MODEL.into();
         match Pipeline::<S>::decide(
             cands,
             &entities,
+            &snap,
             &mut responder,
-            "fixture-test",
+            chaosbox_jev::FIXTURE_MODEL,
             &mat,
             effective_policy,
             &mut pipe.store,
@@ -264,9 +274,7 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
             }
         }
     };
-    // Operator visibility: structural vs semantic coverage is a follow-up;
-    // today every candidate consumes the Jev budget, so report the outcome
-    // mix before publication (a failed batch refuses to publish below).
+    // Decision accounting is separate from the uncapped syntax facts above.
     let counts = chaosbox::summarize_outcomes(&decided);
     let n = |k: &str| counts.get(k).copied().unwrap_or(0);
     eprintln!(
@@ -278,6 +286,14 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         n("failed"),
         cands.len()
     );
+    if let Some(artifact) = compiler {
+        let valid = chaosbox::compiler::load_receipt(artifact)
+            .and_then(|receipt| receipt.verify(path).map_err(Into::into));
+        if let Err(error) = valid {
+            eprintln!("compiler inputs before publication: {error}");
+            return 1;
+        }
+    }
     match pipe
         .build_and_publish(repo, &snap, &ext, &decided, &mat, expected_predecessor)
         .await

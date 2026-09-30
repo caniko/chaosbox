@@ -275,9 +275,6 @@ pub fn assess(
     response: SystemOneResponse,
 ) -> Result<Assessment, String> {
     let (state, asked, cache_key) = questions(candidate, bundle)?;
-    if response.model != JEV_MODEL_PINNED {
-        return Err("Jev model identity mismatch".into());
-    }
     let options = asked
         .iter()
         .map(|(id, q)| {

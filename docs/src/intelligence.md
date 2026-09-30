@@ -45,12 +45,16 @@ repository snapshot / session records / tool results / user correction
 ```
 
 Rust owns identity, validation, scope, budget enforcement and publication. Jev
-adjudicates supplied candidates using the existing typed API. A generative model
-may propose a formulation or continuation checkpoint, but its prose is neither
-a source excerpt nor a verified fact.
+adjudicates supplied candidates using the existing typed API. Every
+Chaosbox-owned live inference uses the pinned Typesafe Jev model and endpoint;
+model aliases, endpoint overrides, returned-model substitutions and redirects
+are rejected. There is no general-purpose generation or fallback provider.
+Candidates use exact source spans or deterministic templates. Jev selects and
+classifies supplied records; Rust renders explanations and continuation packets
+from those selections, with citations and explicit unresolved states.
 
 Keep the existing code-extraction contract: source labels and evidence text are
-copied or deterministically constructed. Generated explanations belong to a
+copied or deterministically constructed. Rendered explanations belong to a
 separate derived-artifact category. Do not loosen that contract to make session
 summaries look like extracted code facts.
 

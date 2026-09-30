@@ -37,12 +37,10 @@
       self,
       harbor-db,
       harbor-rs,
-      harbor-meta,
       harbor-docs,
       treefmt-nix,
       nixpkgs,
       nixpkgs-typedb,
-      crane,
       ...
     }:
     let
@@ -63,7 +61,7 @@
           in
           f {
             inherit system pkgs toolchain;
-            craneLib = toolchain.craneLib;
+            inherit (toolchain) craneLib;
             # Temporary TypeDB packages (see nixpkgs-typedb input): the
             # same nixpkgs revision that carries the packaging PR, so the
             # service module and the binaries agree. Substituted from the
@@ -72,7 +70,7 @@
           }
         );
       treefmt =
-        system: pkgs:
+        _system: pkgs:
         (treefmt-nix.lib.evalModule pkgs {
           projectRootFile = "flake.nix";
           programs.nixfmt.enable = true;
@@ -88,13 +86,17 @@
       # cleanCargoSource alone strips them and breaks nix builds while
       # cargo works.
       workspaceSrc =
-        { pkgs, craneLib }:
+        {
+          pkgs,
+          craneLib,
+        }:
         pkgs.lib.cleanSourceWith {
           src = ./.;
           filter =
             path: type:
             craneLib.filterCargoSources path type
             || pkgs.lib.hasSuffix ".tql" (toString path)
+            || pkgs.lib.hasSuffix ".sql" (toString path)
             || pkgs.lib.hasPrefix (toString ./fixtures + "/") (toString path);
         };
     in
@@ -103,17 +105,25 @@
       nixosModules.default = self.nixosModules.chaosbox;
 
       packages = forAllSystems (
-        { pkgs, craneLib, ... }:
+        {
+          pkgs,
+          craneLib,
+          ...
+        }:
         let
           commonArgs = {
             src = workspaceSrc { inherit pkgs craneLib; };
             pname = "chaosbox";
             version = "0.1.0";
             strictDeps = true;
+            # Workspace provenance tests use disposable Git repositories.
             # `cargo test` execs pinned session tools through a node
             # interpreter; the build sandbox has no ambient node. Deployments
             # pin CHAOSBOX_NODE instead of relying on PATH.
-            nativeBuildInputs = [ pkgs.nodejs ];
+            nativeBuildInputs = [
+              pkgs.nodejs
+              pkgs.gitMinimal
+            ];
             cargoExtraArgs = "--locked -p chaosbox";
             meta = {
               description = "Chaosbox deterministic code-graph pipeline";
@@ -134,10 +144,17 @@
               # --set-default keeps an explicit CHAOSBOX_NODE (the canix
               # wrapper, or an operator override) authoritative. Declared here
               # rather than in `commonArgs`, which `buildDepsOnly` also
-              # consumes and in which no binary exists to wrap.
+              # consumes and in which no binary exists to wrap. Workspace
+              # freshness/revision checks also need Git at runtime.
               postInstall = ''
                 wrapProgram "$out/bin/chaosbox" \
-                  --set-default CHAOSBOX_NODE ${pkgs.lib.getExe' pkgs.nodejs "node"}
+                  --set-default CHAOSBOX_NODE ${pkgs.lib.getExe' pkgs.nodejs "node"} \
+                  --prefix PATH : ${
+                    pkgs.lib.makeBinPath [
+                      pkgs.gitMinimal
+                      pkgs.postgresql
+                    ]
+                  }
               '';
             }
           );
@@ -276,9 +293,12 @@
             pname = "chaosbox";
             version = "0.1.0";
             strictDeps = true;
-            # Same node dependency as the package build: the unit check runs
-            # `cargo test`, which execs pinned session tools.
-            nativeBuildInputs = [ pkgs.nodejs ];
+            # Same test dependencies as the package build: Node for session
+            # tools and Git for exact-revision workspace provenance fixtures.
+            nativeBuildInputs = [
+              pkgs.nodejs
+              pkgs.gitMinimal
+            ];
             cargoExtraArgs = "--locked --workspace";
           };
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;

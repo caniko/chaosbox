@@ -87,8 +87,18 @@ impl TypeDbStore {
             .ok()
             .and_then(|v| v.as_str().map(str::to_owned))
             .unwrap_or_else(|| format!("{:?}", e.kind));
+        let compiler = e
+            .compiler
+            .as_ref()
+            .map(|value| {
+                serde_json::to_string(value)
+                    .map(|json| format!(", has compiler-json {}", str_lit(&json)))
+            })
+            .transpose()
+            .map_err(|e| StoreError::Invariant(e.to_string()))?
+            .unwrap_or_default();
         let q = format!(
-            "insert $x isa code-entity, has entity-id {}, has kind {}, has repo-name {}, has snapshot-id {}, has file {}, has name {}, has name-fold {}, has qualified-name {}, has qualified-name-fold {}, has span-id {};",
+            "insert $x isa code-entity, has entity-id {}, has kind {}, has repo-name {}, has snapshot-id {}, has file {}, has name {}, has name-fold {}, has qualified-name {}, has qualified-name-fold {}, has span-id {}{compiler};",
             str_lit(&e.id),
             str_lit(&kind),
             str_lit(&e.repo),

@@ -1,12 +1,12 @@
 //! Deterministic source parsing and candidate generation.
 //!
 //! Supported (explicit, no complete-call-resolution claims):
-//! - Rust / Python / JavaScript+TypeScript: files, modules, symbols,
-//!   definitions, imports, containment, explicit textual references.
-//! - Nix: bindings/functions as definitions, relative `.nix` imports
-//!   (resolved to the target file when it is part of the snapshot),
-//!   interpolation/inherit references to in-file bindings (regex-based,
-//!   parse-only; no attribute-set or module-system evaluation).
+//! - Rust / TypeScript / TSX / MTS / CTS / Nix: parser-certified source
+//!   declarations and file/module containment, exact spans and syntax coverage.
+//!   Imports and lexical name matches remain uncertified decision proposals.
+//!   Nix relative `.nix` path proposals resolve to captured file targets;
+//!   no compiler, scope, attribute-set or module-system evaluation is claimed.
+//! - Python / JavaScript: heuristic definitions/imports/textual references.
 //! - Markdown: headings, links, code mentions, source spans.
 //! - Plain text: file/symbol records, lexical mentions.
 //!   Unsupported images/audio/video and office docs are reported, never
@@ -19,14 +19,17 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod candidates;
+pub mod compiler;
 mod extractors;
 mod paths;
+mod selection;
+mod syntax;
 
 #[cfg(test)]
 mod tests;
 
 pub use candidates::{CandidateCatalog, build_candidates};
-pub use extractors::{Extraction, extract_file, report_unsupported};
+pub use extractors::{Extraction, StructuralFact, extract_file, report_unsupported};
 
 use crate::extractors::is_supported;
 use crate::paths::resolve_nix_imports;
@@ -82,7 +85,7 @@ pub struct Snapshot {
     pub contents: BTreeMap<String, String>,
 }
 
-/// Validate explicit source scope entries (Graphify `sourcePaths` parity).
+/// Validate explicit repository-relative source scope entries.
 /// Returns the sorted, deduped scope. Rejects absolute paths, backslashes,
 /// empty entries, `.`/`..` segments, and empty segments (no trailing
 /// slashes after normalization), so a scope can never escape the corpus
@@ -138,7 +141,7 @@ impl Snapshot {
         Self::capture_scoped(repo, root, &[])
     }
 
-    /// Walk only `scope` subtrees of `root` (Graphify `sourcePaths` parity).
+    /// Walk only explicitly selected `scope` subtrees of `root`.
     ///
     /// An empty scope captures the whole tree exactly like [`Snapshot::capture`].
     /// A non-empty scope restricts capture to those repository-relative
@@ -158,6 +161,16 @@ impl Snapshot {
     // session's refactor. Allowed to keep CI unblocked.
     #[allow(clippy::too_many_lines)]
     pub fn capture_scoped(repo: &str, root: &Path, scope: &[String]) -> Result<Self, ExtractError> {
+        Self::capture_matching(repo, root, scope, is_supported)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    pub(crate) fn capture_matching(
+        repo: &str,
+        root: &Path,
+        scope: &[String],
+        include: fn(&str) -> bool,
+    ) -> Result<Self, ExtractError> {
         let scope = validate_scope(scope)?;
         // Resolve scope roots up front: every entry must exist, be a
         // directory, and not itself be a symlink or a nested repository.
@@ -254,7 +267,7 @@ impl Snapshot {
                 {
                     continue;
                 }
-                if is_supported(&rel) {
+                if include(&rel) {
                     // Overlapping scopes (e.g. `a` + `a/b`) visit one file
                     // twice: keep the first copy so the snapshot stays a set.
                     if contents.contains_key(&rel) {
@@ -320,6 +333,8 @@ impl Snapshot {
 pub fn extract_snapshot(snapshot: &Snapshot) -> Extraction {
     let mut entities = Vec::new();
     let mut refs = Vec::new();
+    let mut facts = Vec::new();
+    let mut coverage = Vec::new();
     let mut paths: Vec<&String> = snapshot.contents.keys().collect();
     paths.sort();
     for path in paths {
@@ -327,10 +342,15 @@ pub fn extract_snapshot(snapshot: &Snapshot) -> Extraction {
         let one = extract_file(&snapshot.repo, &snapshot.id, path, text);
         entities.extend(one.entities);
         refs.extend(one.explicit_refs);
+        facts.extend(one.facts);
+        coverage.extend(one.coverage);
     }
     resolve_nix_imports(snapshot, &mut entities, &mut refs);
     Extraction {
         entities,
         explicit_refs: refs,
+        facts,
+        coverage,
+        compiler: None,
     }
 }

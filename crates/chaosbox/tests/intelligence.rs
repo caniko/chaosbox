@@ -63,6 +63,40 @@ fn answer(candidate: &IntelligenceCandidate, bundle: &Bundle, novelty: &str) -> 
 }
 
 #[test]
+#[ignore = "opt-in local plugin contract pilot; requires Node 22.13+ and plugins/chaosbox-intelligence"]
+fn plugin_consumes_real_context_json() {
+    let c = candidate(
+        "m1",
+        "We must keep context responses as historical evidence with citations.",
+        "user",
+    );
+    let mut bundle = Bundle::new("private:can");
+    let response = answer(&c, &bundle, "novel");
+    assess(&c, &mut bundle, response).unwrap();
+    bundle.validate().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let bundle_path = dir.path().join("fixture-bundle.json");
+    std::fs::write(&bundle_path, serde_json::to_vec(&bundle).unwrap()).unwrap();
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let output = std::process::Command::new("node")
+        .arg(root.join("scripts/test-plugin-context.mjs"))
+        .arg(root.join("plugins/chaosbox-intelligence"))
+        .arg(env!("CARGO_BIN_EXE_chaosbox"))
+        .arg(bundle_path)
+        .arg(dir.path())
+        .arg(&bundle.records[0].id)
+        .arg(&bundle.records[0].statement)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    println!("{}", String::from_utf8_lossy(&output.stdout));
+}
+
+#[test]
 fn extraction_keeps_verbatim_lineage_and_excludes_summary_echoes() {
     let input = [
         serde_json::json!({"id":"u1","type":"user","text":"We must preserve the direnv approval boundary."}),

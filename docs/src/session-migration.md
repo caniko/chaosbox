@@ -65,30 +65,39 @@ accepted items to repository entities, while retaining time, scope, contrary
 evidence and unresolved questions. A high-value finding can then help a different
 session without importing the original conversation wholesale.
 
-For this migration, the requested continuation model is
-`muse-code/muse-spark-1.3-contributor` at `xhigh`, through the Muse Code subscription
-route. Verify the exact model and account entitlement; never silently substitute
-another provider or a pay-as-you-go credential. This is a campaign choice, not a
-replacement for Chaosbox's pinned Jev decision model.
+Continuation follows the same Jev-only policy as graph decisions, intelligence
+admission and research. Deterministic processing enumerates source records and
+coherent tool-call/result groups. Pinned Jev choices classify, select, prioritize
+and relate those supplied records; Rust assembles a fixed-schema packet and
+cited text through deterministic templates. No model generates checkpoint prose
+or invents a task, quotation or evidence reference. Ambiguous decisions retain
+the source and an explicit unresolved state. This replaces the earlier
+generative-model campaign choice. The bounded `checkpoint prepare` and
+`checkpoint assemble` commands implement source-selected rendering and
+persistent spending; see [Source-selected continuation](checkpoints.md).
+Automatic native transfer and the complete continuity/audit workflow remain
+separate implementation milestones.
 
 Checkpoint generation must:
 
 1. Preserve the latest user instructions, decisions and rationale, findings,
    unresolved work, approvals, execution state and relevant evidence references.
 2. Distinguish observed results from unsupported assistant success claims.
-3. Remove repetition and resolved chatter without losing unresolved facts.
+3. Select cited records and record omissions; unresolved instructions and facts
+   cannot be dropped by a low-confidence selection or a presentation budget.
 4. Keep recent user context and coherent tool-call/result boundaries available.
 5. Reference recoverable attachments without pretending they were interpreted.
-6. Record source, normalization, prompt/schema, model and effort identities.
+6. Record source, normalization, schema/template, Jev model/rubric and decision
+   receipt identities. Preserve quotations and structured result fields exactly.
 7. Validate both checkpoint and audit schemas with the same fail-closed predicate
    used to authorize publication. `pass: true` alone is not a valid audit.
 8. Stream bounded chunks, persist accepted progress, and avoid repeating work
    after a restart. Validate end-to-end continuity as well as local chunks.
 
-Incomplete responses, malformed JSON, transport termination and failed audits
+Incomplete decisions, malformed JSON, transport termination and failed audits
 retain the original history and remain explicit failures. An abstention on
 intelligence admission is not a failed checkpoint request; keep those outcomes
-separate. A generated checkpoint never counts as fresh corroborating evidence.
+separate. A rendered checkpoint never counts as fresh corroborating evidence.
 
 ## Operator surface
 

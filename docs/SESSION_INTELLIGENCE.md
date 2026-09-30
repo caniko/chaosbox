@@ -168,9 +168,10 @@ shared TypeDB graph automatically.
 
 Next: adopt the snapshot/reconciliation manifest, model visibility and session
 source references in TypeDB, publish through the existing generation-guarded
-transaction, and connect native session transfer/checkpoint generation. Spark
-Contributor/xhigh compaction remains a separate generative operation: its
-summary is a derived view, never new supporting evidence for itself.
+transaction, and connect native session transfer/checkpoint assembly. Continuation
+will use pinned Jev selections over supplied records and deterministic Rust
+templates with exact source references. It cannot invoke a general-purpose
+generation model; its rendered view never supplies new evidence for itself.
 
 Tests cover strict rejection, abstention, malformed answers, model substitution,
 duplicate consolidation, preserved contradictions, source/chronology rules,

@@ -15,8 +15,8 @@ use crate::encode::{int_lit, str_lit};
 use super::TypeDbStore;
 
 impl TypeDbStore {
-    /// Flush staged runs, sets, candidates, decisions, evidence, and claims
-    /// in dependency order (all idempotent; safe to retry after a crash).
+    /// Flush staged runs, sets, candidates, decisions, inferences, evidence,
+    /// and claims in dependency order (all idempotent; safe to retry).
     pub(super) async fn flush_chain(&self) -> Result<(), StoreError> {
         let staged = self.staging.export_staged();
         for (run_id, (repo, snapshot_id)) in &staged.runs {
@@ -29,6 +29,9 @@ impl TypeDbStore {
         }
         for (_, (set_id, cand)) in &staged.candidates {
             self.flush_candidate(set_id, cand).await?;
+        }
+        for rec in &staged.inferences {
+            self.flush_inference(rec).await?;
         }
         for d in &staged.decisions {
             self.flush_decision(d).await?;

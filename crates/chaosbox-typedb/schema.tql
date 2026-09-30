@@ -40,6 +40,7 @@ define
   attribute qualified-name value string;
   attribute qualified-name-fold value string;
   attribute aliases value string;
+  attribute compiler-json value string;
   attribute entity-id value string;
   attribute span-id value string;
   attribute file-version-id value string;
@@ -59,6 +60,10 @@ define
   attribute model-requested value string;
   attribute model-returned value string;
   attribute cache-key value string;
+  attribute reuse-key value string;
+  attribute raw-answer value string;
+  attribute producer value string;
+  attribute coverage-json value string;
   attribute input-tokens value integer;
   attribute http-status value integer;
   attribute error value string;
@@ -133,6 +138,7 @@ define
     owns qualified-name,
     owns qualified-name-fold,
     owns aliases,
+    owns compiler-json,
     owns span-id,
     plays relationship:from-entity,
     plays relationship:to-entity,
@@ -185,8 +191,16 @@ define
     owns model-requested,
     owns model-returned,
     owns cache-key,
+    owns reuse-key,
+    owns raw-answer,
     owns confidence,
     owns probability;
+
+  entity inference
+    owns reuse-key @key,
+    owns raw-answer,
+    owns model-requested,
+    owns model-returned;
 
   entity evidence
     owns evidence-id @key,
@@ -195,6 +209,7 @@ define
     owns text,
     owns span-id,
     owns file-version-id,
+    owns producer,
     plays supporting:evidence,
     plays contradicting:evidence;
 
@@ -213,6 +228,7 @@ define
     owns predecessor,
     owns status,
     owns created,
+    owns coverage-json,
     plays node-membership:build,
     plays edge-membership:build;
 
