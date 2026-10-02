@@ -354,6 +354,17 @@
                 node --experimental-strip-types --test plugin/test/*.test.mjs
                 touch "$out"
               '';
+          scratch-plugin =
+            pkgs.runCommand "chaosbox-scratch-plugin"
+              {
+                nativeBuildInputs = [ pkgs.nodejs ];
+              }
+              ''
+                cp -r ${./plugins} plugins
+                chmod -R u+w plugins
+                node --test plugins/chaosbox-scratch/test/*.test.mjs
+                touch $out
+              '';
           doc = craneLib.cargoDoc (commonArgs // { inherit cargoArtifacts; });
           docs = self.packages.${pkgs.stdenv.hostPlatform.system}.docs;
           docs-summary = harbor-docs.lib.mkSummaryCheck {
