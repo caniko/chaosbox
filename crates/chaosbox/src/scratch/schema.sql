@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS identity (id INTEGER PRIMARY KEY CHECK(id=1), scope TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT UNIQUE NOT NULL,
+    host TEXT NOT NULL, root TEXT NOT NULL, body TEXT NOT NULL, recorded_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS events_scope ON events(host,root,seq);
+CREATE TABLE IF NOT EXISTS sources (hash TEXT PRIMARY KEY, body TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS entries (
+    host TEXT NOT NULL, root TEXT NOT NULL, path TEXT NOT NULL, body TEXT NOT NULL,
+    PRIMARY KEY(host,root,path));
+CREATE TABLE IF NOT EXISTS invocations (
+    host TEXT NOT NULL, root TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL,
+    PRIMARY KEY(host,root,id));
+CREATE TABLE IF NOT EXISTS observers (
+    host TEXT NOT NULL, root TEXT NOT NULL, id TEXT NOT NULL, healthy INTEGER NOT NULL,
+    recorded_at INTEGER NOT NULL, detail TEXT NOT NULL, gaps INTEGER NOT NULL,
+    PRIMARY KEY(host,root,id));
+CREATE TABLE IF NOT EXISTS scratch_attempts (
+    key TEXT NOT NULL, attempt INTEGER NOT NULL, status TEXT NOT NULL,
+    reserved INTEGER NOT NULL, response TEXT, PRIMARY KEY(key,attempt));
+CREATE TABLE IF NOT EXISTS scratch_assessments (
+    id TEXT PRIMARY KEY, body TEXT NOT NULL);

@@ -53,6 +53,13 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Track scratch allocations, their purpose and unfinished work.
+    Scratch {
+        #[command(flatten)]
+        settings: chaosbox::scratch::cli::Settings,
+        #[command(subcommand)]
+        command: chaosbox::scratch::cli::Command,
+    },
     /// Durable session custody and Chaosbox-owned context reduction.
     Memory {
         #[command(subcommand)]
@@ -297,13 +304,24 @@ enum DbCmd {
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Command::Memory { command } => match Box::pin(chaosbox::compaction::cli::run(command)).await {
-            Ok(value) => println!("{value}"),
-            Err(error) => {
-                eprintln!("memory: {error}");
-                std::process::exit(2);
+        Command::Scratch { settings, command } => {
+            match chaosbox::scratch::cli::run(&settings, command).await {
+                Ok(value) => println!("{value}"),
+                Err(error) => {
+                    eprintln!("scratch: {error}");
+                    std::process::exit(2);
+                }
             }
-        },
+        }
+        Command::Memory { command } => {
+            match Box::pin(chaosbox::compaction::cli::run(command)).await {
+                Ok(value) => println!("{value}"),
+                Err(error) => {
+                    eprintln!("memory: {error}");
+                    std::process::exit(2);
+                }
+            }
+        }
         Command::Checkpoint { command } => {
             match Box::pin(chaosbox::continuation::cli::run(command)).await {
                 Ok(value) => println!("{value}"),
