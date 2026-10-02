@@ -12,7 +12,10 @@ nix_builds = [
   ".#checks.x86_64-linux.unit",
   ".#checks.x86_64-linux.lint",
   ".#checks.x86_64-linux.scratch-plugin",
+  ".#checks.x86_64-linux.federation-home",
+  ".#checks.x86_64-linux.intelligence-plugin",
   ".#checks.x86_64-linux.typedb-integration",
+  ".#checks.x86_64-linux.federation-ssh",
 ]
 
 [ci.nix_build]

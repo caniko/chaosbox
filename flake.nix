@@ -332,6 +332,14 @@
             cargoExtraArgs = "--locked --workspace";
           };
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+          federationTestTools = import ./nix/federation-test-tools.nix {
+            inherit
+              pkgs
+              craneLib
+              commonArgs
+              cargoArtifacts
+              ;
+          };
         in
         {
           fmt = (treefmt pkgs.stdenv.hostPlatform.system pkgs).check self;
@@ -405,12 +413,18 @@
                 echo "Home Manager federation renders and SSH remains query-key isolated" > "$out"
               '';
           typedb-integration = pkgs.callPackage ./nix/typedb-vm-test.nix {
+            inherit federationTestTools;
             harborDbModule = harbor-db.nixosModules.default;
             typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
             chaosboxModule = self.nixosModules.chaosbox;
             chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
             typedbPackage = typedbPkgs.typedb;
             typedbConsolePackage = typedbPkgs.typedb-console;
+          };
+          federation-ssh = pkgs.callPackage ./nix/federation-ssh-test.nix {
+            inherit federationTestTools;
+            homeManager = home-manager;
+            chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
           };
           # Full bootstrap lifecycle against the packaged server: empty
           # install, credential rotation, app auth, permissions, reboot,
