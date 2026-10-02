@@ -264,6 +264,7 @@
           default = harbor-rs.lib.mkDevShell {
             inherit pkgs cross;
             inherit (toolchain) craneLib;
+            packages = [ pkgs.cargo-nextest ];
           };
           # Live TypeDB work (db migrate, backend tests, test-typedb.sh):
           # server + Console from the temporary packages. Opt-in so the
