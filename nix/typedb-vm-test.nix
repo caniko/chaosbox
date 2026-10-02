@@ -21,35 +21,35 @@ in
 pkgs.testers.nixosTest {
   name = "chaosbox-typedb";
 
-  nodes.machine =
-    { ... }:
-    {
-      imports = [
-        harborDbModule
-        typedbModule
-        chaosboxModule
-      ];
-      system.stateVersion = "24.11";
-      virtualisation.memorySize = 4096;
-      virtualisation.cores = 4;
+  nodes.machine = { ... }: {
+    imports = [
+      harborDbModule
+      typedbModule
+      chaosboxModule
+    ];
+    system.stateVersion = "24.11";
+    virtualisation.memorySize = 4096;
+    virtualisation.cores = 4;
 
-      services.harbor-db.package = pkgs.hello;
-      services.typedb.package = typedbPackage;
-      services.chaosbox = {
-        enable = true;
-        package = chaosboxPackage;
-        repo = "test";
-        database = testDb;
-        passwordFile = pkgs.writeText "chaosbox-test-pw" testPassword;
-      };
-
-      environment.systemPackages = [
-        chaosboxPackage
-        typedbConsolePackage
-      ];
+    services.harbor-db.package = pkgs.hello;
+    services.typedb.package = typedbPackage;
+    services.chaosbox = {
+      enable = true;
+      package = chaosboxPackage;
+      repo = "test";
+      database = testDb;
+      passwordFile = pkgs.writeText "chaosbox-test-pw" testPassword;
     };
 
+    environment.systemPackages = [
+      chaosboxPackage
+      typedbConsolePackage
+    ];
+  };
+
   testScript = ''
+    import json
+
     machine.wait_for_unit("typedb.service")
     machine.wait_for_open_port(1729)
 
@@ -97,15 +97,33 @@ pkgs.testers.nixosTest {
     assert code == 0, f"status must succeed, got {code}: {out}"
     assert '"generation":2' in out.replace(" ", ""), f"re-run must publish generation 2: {out}"
 
-    # Deterministic-only publication: entities publish with no inference
-    # and no fixture decisions, so the build has nodes but no links.
+    # Deterministic-only publication retains certified syntax facts, with
+    # no new inference or fixture decisions. Verify the persisted graph
+    # instead of assuming that no decisions means no relationships.
     code, _out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox run demo-repo --repo test-nodec --no-decisions > /tmp/graph-nodec.json")
     assert code == 0, f"no-decisions run must succeed, got {code}"
     code, out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox query export --repo test-nodec")
     assert code == 0, f"export must succeed, got {code}: {out}"
-    compact = out.replace(" ", "")
-    assert '"nodes":[]' not in compact, f"entities-only build must have nodes: {out}"
-    assert '"links":[]' in compact, f"entities-only build must have no links: {out}"
+    graph = json.loads(out)
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    assert nodes, f"no-decisions build must have nodes: {out}"
+    facts = set()
+    for link in graph["links"]:
+        source, target = nodes[link["source"]], nodes[link["target"]]
+        assert source["kind"] == "file", f"syntax fact must originate from a file: {link}"
+        assert source["source_file"] == target["source_file"], f"syntax fact must stay in its file: {link}"
+        facts.add((link["rel_type"], target["source_file"], target["label"], target["kind"]))
+    expected = {
+        ("defines", "app.ts", "main", "definition"),
+        ("defines", "src/main.rs", "main", "definition"),
+        ("defines", "src/main.rs", "helper", "definition"),
+        ("contains", "app.ts", "app", "module"),
+        ("contains", "src/main.rs", "main", "module"),
+    }
+    assert facts == expected, f"exact certified syntax facts expected: {out}"
+    assert len(graph["links"]) == len(expected), f"duplicate syntax facts: {out}"
+    assert graph["coverage"]["structural_relations"] == len(expected), f"structural coverage mismatch: {out}"
+    assert graph["coverage"]["decision_relations"] == 0, f"no-decisions build published decision relations: {out}"
 
     # Idempotent re-apply stays green.
     code, _out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox db migrate --json --repo test")
