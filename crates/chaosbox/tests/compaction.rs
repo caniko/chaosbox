@@ -63,12 +63,10 @@ fn custody_replays_after_restart_and_outputs_are_recoverable() {
 fn refuses_unsafe_reductions_and_cross_scope_reads() {
     let dir = private_dir();
     let mut journal = Journal::open(dir.path(), "private:can").unwrap();
-    assert!(
-        journal
-            .capture(&capture(vec![json!({"id":"msg_x","type":"assistant",
+    assert!(journal
+        .capture(&capture(vec![json!({"id":"msg_x","type":"assistant",
         "time":{"created":1},"parts":[]})]))
-            .is_err()
-    );
+        .is_err());
     let receipt = journal.capture(&capture(records())).unwrap();
     assert!(journal.plan(&receipt.id, 512).is_err());
     assert!(Journal::open(dir.path(), "private:someone-else").is_err());
@@ -90,20 +88,16 @@ fn previous_compactions_never_become_evidence_and_variants_remain_archived() {
     request.records[1]["parts"][0]["text"] = json!("The next step is now blocked.");
     let after = journal.capture(&request).unwrap();
     assert_ne!(before.id, after.id);
-    assert!(
-        !journal
-            .plan(&after.id, 8000)
-            .unwrap()
-            .summary
-            .contains("Invented success")
-    );
-    assert!(
-        journal
-            .plan(&before.id, 8000)
-            .unwrap()
-            .summary
-            .contains("still pending")
-    );
+    assert!(!journal
+        .plan(&after.id, 8000)
+        .unwrap()
+        .summary
+        .contains("Invented success"));
+    assert!(journal
+        .plan(&before.id, 8000)
+        .unwrap()
+        .summary
+        .contains("still pending"));
 }
 
 #[cfg(unix)]
@@ -249,12 +243,10 @@ async fn admission_is_independent_of_pruning_and_receipts_are_anchor_bound() {
     let snapshot = journal.bundle().unwrap().records[0].evidence[0]
         .snapshot
         .clone();
-    assert!(
-        journal.evidence(&snapshot).unwrap()["source_jsonl"]
-            .as_str()
-            .unwrap()
-            .contains("Καθορισμένη")
-    );
+    assert!(journal.evidence(&snapshot).unwrap()["source_jsonl"]
+        .as_str()
+        .unwrap()
+        .contains("Καθορισμένη"));
 }
 
 #[tokio::test]
@@ -275,36 +267,30 @@ async fn failed_attempts_and_spending_survive_restart() {
     };
     let mut journal = Journal::open(dir.path(), "private:can").unwrap();
     let receipt = journal.capture(&source).unwrap();
-    assert!(
-        journal
-            .assess_pending(dir.path(), &mut responder, budget)
-            .await
-            .is_err()
-    );
+    assert!(journal
+        .assess_pending(dir.path(), &mut responder, budget)
+        .await
+        .is_err());
     assert!(journal.plan(&receipt.id, 8000).is_ok());
     drop(journal);
     let mut journal = Journal::open(dir.path(), "private:can").unwrap();
-    assert!(
-        journal
-            .assess_pending(dir.path(), &mut responder, budget)
-            .await
-            .unwrap_err()
-            .contains("--retry")
-    );
-    assert!(
-        journal
-            .assess_pending(
-                dir.path(),
-                &mut responder,
-                Budget {
-                    retry: true,
-                    ..budget
-                }
-            )
-            .await
-            .unwrap_err()
-            .contains("budget")
-    );
+    assert!(journal
+        .assess_pending(dir.path(), &mut responder, budget)
+        .await
+        .unwrap_err()
+        .contains("--retry"));
+    assert!(journal
+        .assess_pending(
+            dir.path(),
+            &mut responder,
+            Budget {
+                retry: true,
+                ..budget
+            }
+        )
+        .await
+        .unwrap_err()
+        .contains("budget"));
     assert_eq!(responder.calls, 1);
     assert_eq!(journal.pending().unwrap().len(), 1);
 }
@@ -316,24 +302,20 @@ fn bounded_native_output_requires_matching_pre_bounding_custody() {
     let mut request = capture(records());
     request.records[1]["parts"][1]["state"]["metadata"]["truncated"] = json!(true);
     let receipt = journal.capture(&request).unwrap();
-    assert!(
-        journal
-            .plan(&receipt.id, 8000)
-            .unwrap_err()
-            .contains("pre-bounding")
-    );
+    assert!(journal
+        .plan(&receipt.id, 8000)
+        .unwrap_err()
+        .contains("pre-bounding"));
     let tool = capture(vec![
         json!({"id":"msg_tool:call_test","type":"tool-result","messageID":"msg_tool","callID":"call_test",
         "tool":"shell","input":{"command":"cargo test"},"status":"completed","result":{"content":[{"type":"text","text":"complete result"}]}}),
     ]);
     journal.capture(&tool).unwrap();
-    assert!(
-        journal
-            .plan(&receipt.id, 8000)
-            .unwrap()
-            .summary
-            .contains("archive_hash")
-    );
+    assert!(journal
+        .plan(&receipt.id, 8000)
+        .unwrap()
+        .summary
+        .contains("archive_hash"));
     let mut wrong = tool;
     wrong.records[0]["input"] = json!({"command":"different command"});
     assert!(journal.capture(&wrong).is_err());
@@ -358,12 +340,10 @@ fn native_job_notifications_and_instruction_updates_remain_protected() {
     source.records[1]["parts"][1]["state"]["content"] =
         json!([{"type":"file","uri":"file:///ephemeral/image.png","mime":"image/png"}]);
     let id = journal.capture(&source).unwrap().id;
-    assert!(
-        journal
-            .plan(&id, 10000)
-            .unwrap_err()
-            .contains("attachment bytes")
-    );
+    assert!(journal
+        .plan(&id, 10000)
+        .unwrap_err()
+        .contains("attachment bytes"));
 }
 
 #[tokio::test]
@@ -459,11 +439,9 @@ async fn private_cross_session_memory_publishes_and_recovers_from_database() {
             .len(),
         1
     );
-    assert!(
-        published
-            .context("private:other", "chaosbox", "provenance", 5, 12000)
-            .is_err()
-    );
+    assert!(published
+        .context("private:other", "chaosbox", "provenance", 5, 12000)
+        .is_err());
     assert_eq!(
         published
             .context(&scope, "other-repo", "provenance", 5, 12000)

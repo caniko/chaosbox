@@ -78,7 +78,7 @@ async fn preflight_counts_uncached_then_cached_then_failed() {
     assert_eq!(pending, 0, "every decision cached: nothing to spend");
 
     // A recorded Failed outcome always re-asks, under an unchanged key.
-// Seed a fresh store with the reusable inferences for all but one
+    // Seed a fresh store with the reusable inferences for all but one
     // candidate (Failed stores no inference by construction): exactly the
     // missing one must come back pending.
     let mut retry_store = MemoryStore::default();

@@ -85,31 +85,25 @@ async fn private_session_knowledge_is_pinned_idempotent_and_predecessor_guarded(
         store.knowledge(scope).await.unwrap(),
         Some((id.clone(), first.clone()))
     );
-    assert!(
-        store
-            .knowledge("private:someone-else")
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(store
+        .knowledge("private:someone-else")
+        .await
+        .unwrap()
+        .is_none());
     let second=serde_json::json!({"scope":scope,"records":records,"assessments":["fixture-receipt"],"coverage":"second-generation"}).to_string();
-    assert!(
-        store
-            .publish_knowledge(scope, &second, &records, None)
-            .await
-            .is_err()
-    );
+    assert!(store
+        .publish_knowledge(scope, &second, &records, None)
+        .await
+        .is_err());
     let next = store
         .publish_knowledge(scope, &second, &records, Some(&id))
         .await
         .unwrap();
     assert_ne!(next, id);
-    assert!(
-        store
-            .publish_knowledge(scope, &first, &records, Some(&id))
-            .await
-            .is_err()
-    );
+    assert!(store
+        .publish_knowledge(scope, &first, &records, Some(&id))
+        .await
+        .is_err());
     assert_eq!(
         store.knowledge(scope).await.unwrap(),
         Some((next.clone(), second))
@@ -598,13 +592,11 @@ async fn assert_direct_readback(
             .span,
         Some(definition.span.clone())
     );
-    assert!(
-        reader
-            .evidence_for("build:other", &rel.id)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(reader
+        .evidence_for("build:other", &rel.id)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]
