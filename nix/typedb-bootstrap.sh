@@ -48,21 +48,21 @@ fail() {
 # Loopback only: the console session below disables TLS. Only IPv4
 # loopback forms are accepted (no bracketed IPv6 parsing).
 case "$TYPEDB_BOOTSTRAP_ADDR" in
-  127.0.0.1:* | localhost:*) ;;
-  *) fail "non-loopback address '$TYPEDB_BOOTSTRAP_ADDR' refused (TLS is disabled)" ;;
+127.0.0.1:* | localhost:*) ;;
+*) fail "non-loopback address '$TYPEDB_BOOTSTRAP_ADDR' refused (TLS is disabled)" ;;
 esac
 host="${TYPEDB_BOOTSTRAP_ADDR%:*}"
 port="${TYPEDB_BOOTSTRAP_ADDR##*:}"
 case "$port" in
-  '' | *[!0-9]*) fail "invalid port in '$TYPEDB_BOOTSTRAP_ADDR'" ;;
+'' | *[!0-9]*) fail "invalid port in '$TYPEDB_BOOTSTRAP_ADDR'" ;;
 esac
 
 # Bare console tokens: anything else could break command parsing.
 case "$TYPEDB_BOOTSTRAP_APP_USER" in
-  '' | *[!a-zA-Z0-9_-]*) fail "invalid application user '$TYPEDB_BOOTSTRAP_APP_USER'" ;;
+'' | *[!a-zA-Z0-9_-]*) fail "invalid application user '$TYPEDB_BOOTSTRAP_APP_USER'" ;;
 esac
 case "$TYPEDB_BOOTSTRAP_DATABASE" in
-  '' | *[!a-zA-Z0-9_-]*) fail "invalid database '$TYPEDB_BOOTSTRAP_DATABASE'" ;;
+'' | *[!a-zA-Z0-9_-]*) fail "invalid database '$TYPEDB_BOOTSTRAP_DATABASE'" ;;
 esac
 [ "$TYPEDB_BOOTSTRAP_APP_USER" != "admin" ] || fail "application user must not be 'admin'"
 
@@ -94,8 +94,8 @@ check_state_file() {
   [ -f "$file" ] || fail "$file is not a regular file"
   uid="$(stat -c %u "$file")"
   case " $owner_ok " in
-    *" $uid "*) ;;
-    *) fail "$file has unexpected owner" ;;
+  *" $uid "*) ;;
+  *) fail "$file has unexpected owner" ;;
   esac
 }
 
@@ -157,11 +157,11 @@ fi
 admin_pw_content="$(cat "$admin_pw")"
 app_pw_content="$(cat "$app_pw")"
 case "$admin_pw_content" in
-  *[!0-9a-f]* | "") fail "admin credential has invalid format" ;;
+*[!0-9a-f]* | "") fail "admin credential has invalid format" ;;
 esac
 [ "${#admin_pw_content}" -eq 64 ] || fail "admin credential has invalid format"
 case "$app_pw_content" in
-  *[!0-9a-f]* | "") fail "application credential has invalid format" ;;
+*[!0-9a-f]* | "") fail "application credential has invalid format" ;;
 esac
 [ "${#app_pw_content}" -eq 64 ] || fail "application credential has invalid format"
 
@@ -176,8 +176,8 @@ for _ in $(seq 1 60); do
   sleep 2
 done
 # shellcheck disable=SC2016 # $1/$2 are intentional positional params
-timeout 1 bash -c 'exec 3<>/dev/tcp/"$1"/"$2"' probe "$host" "$port" 2>/dev/null \
-  || fail "server unreachable at $TYPEDB_BOOTSTRAP_ADDR"
+timeout 1 bash -c 'exec 3<>/dev/tcp/"$1"/"$2"' probe "$host" "$port" 2>/dev/null ||
+  fail "server unreachable at $TYPEDB_BOOTSTRAP_ADDR"
 
 # Run the console with the password on stdin under a pty: the pinned
 # console offers no password-file option and its hidden-input prompt
@@ -260,15 +260,15 @@ run_secret_script() {
 # matching (grep -w) would confuse "app" with "app-old". Output comes
 # through a pty, so carriage returns are stripped before matching.
 user_exists() {
-  console_with_pw "$admin_pw_current" "user listing" --command "user list" 2>/dev/null \
-    || return 1
+  console_with_pw "$admin_pw_current" "user listing" --command "user list" 2>/dev/null ||
+    return 1
   tr -d '\r' <"$CONSOLE_OUT" | grep -v '^+ ' | grep -Fxq "$1"
 }
 
 if ! user_exists "$TYPEDB_BOOTSTRAP_APP_USER"; then
   # A retry that lost its response may have created the user already.
-  run_secret_script "user create $TYPEDB_BOOTSTRAP_APP_USER $app_pw_content" "application user creation" \
-    || user_exists "$TYPEDB_BOOTSTRAP_APP_USER"
+  run_secret_script "user create $TYPEDB_BOOTSTRAP_APP_USER $app_pw_content" "application user creation" ||
+    user_exists "$TYPEDB_BOOTSTRAP_APP_USER"
 fi
 
 # database create is idempotent: re-creating an existing database succeeds.
@@ -282,11 +282,11 @@ run_secret_script "user update-password $TYPEDB_BOOTSTRAP_APP_USER $app_pw_conte
   "application password converge"
 CONSOLE_USER="$TYPEDB_BOOTSTRAP_APP_USER"
 console_with_pw "$app_pw_content" "application credential verify" \
-  --command "server version" \
-  || fail "application credential did not take effect; re-run to converge again"
+  --command "server version" ||
+  fail "application credential did not take effect; re-run to converge again"
 CONSOLE_USER="admin"
 run_secret_script "user update-password admin $admin_pw_content" \
   "admin password converge"
 console_with_pw "$admin_pw_content" "admin credential verify" \
-  --command "server version" \
-  || fail "admin credential did not take effect; recover the admin password via console and re-run"
+  --command "server version" ||
+  fail "admin credential did not take effect; recover the admin password via console and re-run"

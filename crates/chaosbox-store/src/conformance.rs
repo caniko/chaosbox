@@ -133,12 +133,11 @@ pub async fn check_conformance<R: GraphQueries>(
     );
     // Escaped wildcards match literally, not as patterns (same on the live
     // backend, where backslash is the LIKE escape).
-    assert!(
-        r.search_entities(&builds.1, "%alp\\_ha%", 10)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(r
+        .search_entities(&builds.1, "%alp\\_ha%", 10)
+        .await
+        .unwrap()
+        .is_empty());
     // Lookup is scoped: a1 is invisible from the second build.
     assert_eq!(
         r.entity_by_id(&builds.0, a1)
@@ -149,12 +148,11 @@ pub async fn check_conformance<R: GraphQueries>(
         a1
     );
     assert!(r.entity_by_id(&builds.1, a1).await.unwrap().is_none());
-    assert!(
-        r.entity_by_id(&builds.0, "ent:missing")
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(r
+        .entity_by_id(&builds.0, "ent:missing")
+        .await
+        .unwrap()
+        .is_none());
     // Neighborhoods honor the type filter and the build scope; empty filter
     // matches nothing.
     let out: BTreeSet<_> = r
@@ -165,24 +163,21 @@ pub async fn check_conformance<R: GraphQueries>(
         .map(|x| x.rel_id)
         .collect();
     assert_eq!(out, BTreeSet::from([rel1.to_owned()]));
-    assert!(
-        r.neighbors_out(&builds.1, a1, vec!["calls".into()])
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        r.neighbors_out(&builds.0, a1, vec![])
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        r.neighbors_out(&builds.0, a1, vec!["references".into()])
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(r
+        .neighbors_out(&builds.1, a1, vec!["calls".into()])
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(r
+        .neighbors_out(&builds.0, a1, vec![])
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(r
+        .neighbors_out(&builds.0, a1, vec!["references".into()])
+        .await
+        .unwrap()
+        .is_empty());
     let inc: BTreeSet<_> = r
         .neighbors_in(&builds.0, b1, vec!["calls".into()])
         .await
@@ -200,12 +195,11 @@ pub async fn check_conformance<R: GraphQueries>(
         .map(|e| e.entity_id)
         .collect();
     assert_eq!(e1, BTreeSet::from([a1.to_owned(), b1.to_owned()]));
-    assert!(
-        r.build_entities("build:missing", 100)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(r
+        .build_entities("build:missing", 100)
+        .await
+        .unwrap()
+        .is_empty());
     let r1: BTreeSet<_> = r
         .build_relationships(&builds.0, 100)
         .await
@@ -220,10 +214,9 @@ pub async fn check_conformance<R: GraphQueries>(
     assert_eq!(ev[0].evidence_id, "ev1");
     assert!(ev[0].supports);
     assert!(r.evidence_for(&builds.1, rel1).await.unwrap().is_empty());
-    assert!(
-        r.evidence_for(&builds.0, "rel:missing")
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(r
+        .evidence_for(&builds.0, "rel:missing")
+        .await
+        .unwrap()
+        .is_empty());
 }
