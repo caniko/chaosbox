@@ -9,6 +9,7 @@
 
 mod common;
 pub mod encode;
+mod knowledge;
 pub mod reader;
 pub mod store;
 

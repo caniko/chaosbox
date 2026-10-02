@@ -1,4 +1,4 @@
-//! Read-only `TypeDB` [`GraphQueries`](chaosbox_store::GraphQueries) implementation.
+//! Read-only `TypeDB` graph queries and scoped private knowledge generations.
 //!
 //! Every read is scoped to one pinned build id through the membership
 //! relations: rows outside the build are invisible by construction. Read
@@ -165,6 +165,18 @@ impl TypeDbReader {
         self.driver
             .as_ref()
             .ok_or_else(|| StoreError::Connection("TypeDbReader disconnected".into()))
+    }
+
+    /// Read the current private knowledge generation in a read transaction.
+    /// Requires an existing database and an explicit prior `connect`.
+    pub async fn knowledge(&self, scope: &str) -> Result<Option<(String, String)>, StoreError> {
+        crate::knowledge::current(self.driver()?, &self.config.database, scope).await
+    }
+
+    /// Read one exact scoped generation without advancing its current pointer.
+    /// This reader never creates databases or applies schemas.
+    pub async fn knowledge_at(&self, scope: &str, id: &str) -> Result<Option<String>, StoreError> {
+        crate::knowledge::at(self.driver()?, &self.config.database, scope, id).await
     }
 
     /// Schema presence probe: true when the Chaosbox schema is applied

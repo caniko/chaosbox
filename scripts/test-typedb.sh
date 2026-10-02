@@ -8,6 +8,16 @@
 #   binaries are unavailable (honest pending, not a passing placeholder).
 set -euo pipefail
 
+case "${1:-}" in
+  "") FEDERATION_ONLY=0 ;;
+  --federation-only) FEDERATION_ONLY=1 ;;
+  *) echo "usage: $0 [--federation-only]" >&2; exit 2 ;;
+esac
+if [ "$#" -gt 1 ]; then
+  echo "usage: $0 [--federation-only]" >&2
+  exit 2
+fi
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/chaosbox-test-typedb.XXXXXX")"
 # Shut the disposable server down and wait for it before removing its
 # data: rm racing a still-flushing RocksDB fails the cleanup and would flip
@@ -44,8 +54,10 @@ fi
 echo "== typedb-server: $(typedb-server --version 2>&1 | head -n 1) =="
 echo "== typedb-console: $(typedb-console --version 2>&1 | head -n 1) =="
 
-echo "== mock Jev HTTP service gate (no credentials, loopback only) =="
-cargo test -p chaosbox-jev http_tests --offline
+if [ "$FEDERATION_ONLY" -eq 0 ]; then
+  echo "== mock Jev HTTP service gate (no credentials, loopback only) =="
+  cargo test -p chaosbox-jev http_tests --offline
+fi
 
 echo "== disposable server =="
 # The Nix-packaged server ships no bundled config.yml (the systemd unit
@@ -194,6 +206,12 @@ export CHAOSBOX_TYPEDB_DATABASE=test-typedb
 # a live test that cannot connect, authenticates badly, fails to migrate or
 # fails conformance must FAIL. It must never report those as a passing skip.
 export CHAOSBOX_REQUIRE_TYPEDB=1
+
+echo "== mandatory TypeDB federation gate (no skips, no inference) =="
+cargo test --locked -p chaosbox --test federation_typedb -- --ignored --exact federation_typedb_is_read_only_scoped_and_snapshot_bound
+if [ "$FEDERATION_ONLY" -eq 1 ]; then
+  exit 0
+fi
 
 echo "== pending before migration =="
 if chaosbox db check --json --repo test 2>/dev/null; then

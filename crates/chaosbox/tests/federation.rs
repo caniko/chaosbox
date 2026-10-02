@@ -7,84 +7,10 @@ use chaosbox::federation::{
     ContextRequest, ErrorCode, Federator, Grant, Identity, KnowledgeSource, Policy, Project,
     Provider, Reader, Reply, Request, SharingMode, Snapshot,
 };
-use chaosbox::intelligence::{Bundle, assess, extract, questions};
-use chaosbox_jev::{
-    Answer, ChoiceAnswer, JEV_MODEL_PINNED, NoulAnswer, Question, SystemOneResponse, Usage,
-};
-
-fn bundle(owner: &str, messages: &[(&str, &str, &str)]) -> Bundle {
-    related_bundle(owner, messages, None)
-}
-
-fn related_bundle(
-    owner: &str,
-    messages: &[(&str, &str, &str)],
-    relationship: Option<&str>,
-) -> Bundle {
-    let mut bundle = Bundle::new(&format!("private:{owner}"));
-    for (message, statement, repo) in messages {
-        let input = serde_json::json!({"id":message,"type":"user","text":statement});
-        let candidate = extract(
-            &input.to_string(),
-            "opencode",
-            "session",
-            &bundle.scope,
-            &[(*repo).into()],
-            20,
-        )
-        .unwrap()
-        .candidates
-        .remove(0);
-        let (_, asked, _) = questions(&candidate, &bundle).unwrap();
-        let novelty = relationship
-            .filter(|_| !bundle.records.is_empty())
-            .map_or_else(
-                || "novel".into(),
-                |operation| format!("{operation}:{}", bundle.records[0].id),
-            );
-        let answers = asked
-            .into_iter()
-            .map(|(name, question)| {
-                let answer = match question {
-                    Question::Noul { .. } => Answer::Noul(NoulAnswer { noul: 0.99 }),
-                    Question::Choice { criteria, .. } => {
-                        let choice = match name.as_str() {
-                            "kind" => "constraint",
-                            "utility" => "reusable",
-                            "novelty" => &novelty,
-                            _ => panic!("unknown question"),
-                        };
-                        Answer::Choice(ChoiceAnswer {
-                            choice: choice.into(),
-                            confidence: 0.99,
-                            probabilities: criteria
-                                .keys()
-                                .map(|key| (key.clone(), f64::from(key == choice)))
-                                .collect(),
-                        })
-                    }
-                    Question::Score { .. } => panic!("unknown question"),
-                };
-                (name, answer)
-            })
-            .collect();
-        assess(
-            &candidate,
-            &mut bundle,
-            SystemOneResponse {
-                model: JEV_MODEL_PINNED.into(),
-                answers,
-                usage: Usage {
-                    input_tokens: 1,
-                    output_tokens: 1,
-                },
-            },
-        )
-        .unwrap();
-    }
-    bundle.validate().unwrap();
-    bundle
-}
+use chaosbox::intelligence::Bundle;
+#[path = "support/federation.rs"]
+mod fixture;
+use fixture::{bundle, related_bundle};
 
 fn policy(owner: &str, mode: SharingMode, records: Vec<String>) -> Policy {
     Policy {
@@ -220,7 +146,7 @@ async fn evidence_is_snapshot_pinned_and_rechecks_current_grants() {
         panic!("context required")
     };
     let handle = packet.records[0].handle.clone();
-    source.advance(bundle(
+    let mut next = bundle(
         "dejana",
         &[
             (
@@ -230,7 +156,8 @@ async fn evidence_is_snapshot_pinned_and_rechecks_current_grants() {
             ),
             ("new", "We must keep new context bounded.", "local-a"),
         ],
-    ));
+    );
+    source.advance(next.clone());
     let evidence_request = Request::Evidence {
         handle: handle.clone(),
         max_chars: 12_000,
@@ -270,6 +197,17 @@ async fn evidence_is_snapshot_pinned_and_rechecks_current_grants() {
             .await
             .unwrap_err(),
         ErrorCode::SnapshotUnavailable
+    );
+    fixture::withhold(
+        &mut next,
+        "shared",
+        "We must preserve bounded context citations.",
+        "local-a",
+    );
+    source.advance(next);
+    assert_eq!(
+        reader.query("can", &evidence_request).await.unwrap_err(),
+        ErrorCode::Denied
     );
 }
 
