@@ -36,15 +36,13 @@ async fn readonly_catalog_retains_foreign_keys_and_quoted_receipts() {
         1
     );
     let evidence = store.export_staged().evidence;
-    assert!(
-        evidence.iter().any(|e| e.text.contains("FOREIGN KEY")
-            && e.producer.as_deref() == Some("postgres-catalog-v1"))
-    );
-    assert!(
-        evidence
-            .iter()
-            .all(|e| e.span.is_some() && e.snapshot == capture.snapshot())
-    );
+    assert!(evidence
+        .iter()
+        .any(|e| e.text.contains("FOREIGN KEY")
+            && e.producer.as_deref() == Some("postgres-catalog-v1")));
+    assert!(evidence
+        .iter()
+        .all(|e| e.span.is_some() && e.snapshot == capture.snapshot()));
     assert!(store.active("atlas-postgresql").is_some());
 }
 
