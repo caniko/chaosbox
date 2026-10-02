@@ -26,6 +26,7 @@ jobs:
           - ".#checks.x86_64-linux.unit"
           - ".#checks.x86_64-linux.lint"
           - ".#checks.x86_64-linux.scratch-plugin"
+          - ".#checks.x86_64-linux.typedb-integration"
     env:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:
@@ -49,6 +50,12 @@ jobs:
           git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
           git config --global --add url.https://github.com/.insteadOf git@github.com:
 
+      - name: Enable hosted KVM
+        run: |
+          test "${RUNNER_ENVIRONMENT:-}" = github-hosted
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
       - name: Build ${{ matrix.installable }}
         env:
           INSTALLABLE: ${{ matrix.installable }}

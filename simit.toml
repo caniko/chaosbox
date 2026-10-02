@@ -12,6 +12,7 @@ nix_builds = [
   ".#checks.x86_64-linux.unit",
   ".#checks.x86_64-linux.lint",
   ".#checks.x86_64-linux.scratch-plugin",
+  ".#checks.x86_64-linux.typedb-integration",
 ]
 
 [ci.nix_build]
@@ -19,5 +20,6 @@ timeout_minutes = 180
 max_parallel = 2
 max_jobs = 1
 cores = 2
+kvm = true
 capture_results = true
 artifact_retention_days = 30
