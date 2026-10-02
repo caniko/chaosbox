@@ -435,6 +435,7 @@ fn process(args: &[&str], input: &str) -> serde_json::Value {
         .env_remove("SSH_ORIGINAL_COMMAND")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     child

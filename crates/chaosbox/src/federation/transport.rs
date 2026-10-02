@@ -319,8 +319,10 @@ pub async fn serve(path: &Path, recipient: &str) -> Result<(), ErrorCode> {
         return Err(ErrorCode::InvalidResponse);
     }
     frame.push(b'\n');
-    tokio::io::stdout()
+    let mut stdout = tokio::io::stdout();
+    stdout
         .write_all(&frame)
         .await
-        .map_err(|_| ErrorCode::Unavailable)
+        .map_err(|_| ErrorCode::Unavailable)?;
+    stdout.flush().await.map_err(|_| ErrorCode::Unavailable)
 }

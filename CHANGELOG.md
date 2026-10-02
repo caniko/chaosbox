@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Flush one-shot federation responses before process shutdown so callers always
+  receive the complete JSON frame, including denial and invalid-request replies.
+
 ### Changed
 
 - The continuation design now requires Jev-selected records and deterministic
