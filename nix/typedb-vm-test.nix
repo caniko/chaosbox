@@ -21,35 +21,35 @@ in
 pkgs.testers.nixosTest {
   name = "chaosbox-typedb";
 
-  nodes.machine =
-    { ... }:
-    {
-      imports = [
-        harborDbModule
-        typedbModule
-        chaosboxModule
-      ];
-      system.stateVersion = "24.11";
-      virtualisation.memorySize = 4096;
-      virtualisation.cores = 4;
+  nodes.machine = { ... }: {
+    imports = [
+      harborDbModule
+      typedbModule
+      chaosboxModule
+    ];
+    system.stateVersion = "24.11";
+    virtualisation.memorySize = 4096;
+    virtualisation.cores = 4;
 
-      services.harbor-db.package = pkgs.hello;
-      services.typedb.package = typedbPackage;
-      services.chaosbox = {
-        enable = true;
-        package = chaosboxPackage;
-        repo = "test";
-        database = testDb;
-        passwordFile = pkgs.writeText "chaosbox-test-pw" testPassword;
-      };
-
-      environment.systemPackages = [
-        chaosboxPackage
-        typedbConsolePackage
-      ];
+    services.harbor-db.package = pkgs.hello;
+    services.typedb.package = typedbPackage;
+    services.chaosbox = {
+      enable = true;
+      package = chaosboxPackage;
+      repo = "test";
+      database = testDb;
+      passwordFile = pkgs.writeText "chaosbox-test-pw" testPassword;
     };
 
+    environment.systemPackages = [
+      chaosboxPackage
+      typedbConsolePackage
+    ];
+  };
+
   testScript = ''
+    import json
+
     machine.wait_for_unit("typedb.service")
     machine.wait_for_open_port(1729)
 
@@ -97,15 +97,32 @@ pkgs.testers.nixosTest {
     assert code == 0, f"status must succeed, got {code}: {out}"
     assert '"generation":2' in out.replace(" ", ""), f"re-run must publish generation 2: {out}"
 
-    # Deterministic-only publication: entities publish with no inference
-    # and no fixture decisions, so the build has nodes but no links.
+    # Deterministic-only publication retains syntax-backed declarations and
+    # module containment, but cannot publish inference decisions. Match the
+    # zero-model contract exercised by tests/structural.rs on the live backend.
     code, _out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox run demo-repo --repo test-nodec --no-decisions > /tmp/graph-nodec.json")
     assert code == 0, f"no-decisions run must succeed, got {code}"
     code, out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox query export --repo test-nodec")
     assert code == 0, f"export must succeed, got {code}: {out}"
-    compact = out.replace(" ", "")
-    assert '"nodes":[]' not in compact, f"entities-only build must have nodes: {out}"
-    assert '"links":[]' in compact, f"entities-only build must have no links: {out}"
+    graph = json.loads(out)
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    links = graph["links"]
+    assert nodes, f"deterministic build must have nodes: {out}"
+    assert len(links) == 5, f"fixture must retain all five syntax relations: {out}"
+    assert graph["coverage"]["structural_relations"] == len(links), out
+    assert graph["coverage"]["decision_relations"] == 0, out
+    assert all(link["rel_type"] in {"defines", "contains"} for link in links), out
+    for link in links:
+        source, target = nodes[link["source"]], nodes[link["target"]]
+        assert source["kind"] == "file", link
+        assert source["source_file"] == target["source_file"], link
+        if link["rel_type"] == "contains":
+            assert target["kind"] == "module", link
+    definitions = {
+        (nodes[link["target"]]["source_file"], nodes[link["target"]]["label"])
+        for link in links if link["rel_type"] == "defines"
+    }
+    assert definitions == {("src/main.rs", "main"), ("src/main.rs", "helper"), ("app.ts", "main")}, definitions
 
     # Idempotent re-apply stays green.
     code, _out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox db migrate --json --repo test")

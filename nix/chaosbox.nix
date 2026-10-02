@@ -20,7 +20,6 @@
 {
   config,
   lib,
-  pkgs,
   ...
 }:
 let
@@ -131,7 +130,7 @@ in
         backend = "typedb";
         credentials.typedb-password = cfg.passwordFile;
         runner = {
-          package = cfg.package;
+          inherit (cfg) package;
           executable = "bin/chaosbox";
           args = [
             "db"
@@ -152,7 +151,7 @@ in
         after = [ "typedb.service" ];
         requires = [ "typedb.service" ];
       };
-      runtimeUnits = cfg.runtimeUnits;
+      inherit (cfg) runtimeUnits;
       serviceConfig.ReadWritePaths = [ cfg.stateDir ];
     };
   };

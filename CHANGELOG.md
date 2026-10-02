@@ -29,6 +29,14 @@
 
 ### Added
 
+- Durable OpenCode scratch custody records allocation provenance, native purpose
+  evidence and explicit finalization holds. Bounded Jev assessments retain
+  source-backed obligations; Doty consumes read-only packets and requires an
+  explicit release before cleanup.
+- Signed same-user peer intelligence replication preserves source capsules,
+  causal history and persistent inference spending across restarts. Project
+  federation exposes recipient-authorized, snapshot-pinned read-only evidence
+  through SSH and portable Home Manager/NixOS modules.
 - Read-only graph statistics, bounded task context and deterministic connectivity
   components through CLI and MCP, with optional reviewed workspace artifacts.
 - PostgreSQL catalog capture and zero-model publication with private receipts,

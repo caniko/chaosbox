@@ -41,6 +41,24 @@ impl TypeDbStore {
             .transpose()
     }
 
+    /// Read one exact private knowledge generation without consulting its pointer.
+    /// The scope guard prevents historical build ids from crossing owner boundaries.
+    pub async fn knowledge_at(
+        &mut self,
+        scope: &str,
+        id: &str,
+    ) -> Result<Option<String>, StoreError> {
+        self.ensure_connected().await?;
+        let driver = self
+            .driver
+            .as_ref()
+            .ok_or_else(|| StoreError::Connection("not connected".into()))?;
+        let rows = read_rows(driver, &self.config.database, &format!(
+            "match $b isa session-knowledge-build, has memory-build-id {}, has memory-scope {}, has raw-envelope $body; select $body;",
+            str_lit(id), str_lit(scope)), &["body"]).await?;
+        rows.first().map(|r| col_string(r, "body")).transpose()
+    }
+
     /// Stage typed intelligence/evidence/lifecycle relationships, then atomically
     /// publish only if the pinned predecessor still owns this private scope.
     /// Exact retries reconcile an already-active generation without duplication.

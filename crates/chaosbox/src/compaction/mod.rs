@@ -4,6 +4,7 @@
 
 pub mod cli;
 mod planner;
+mod replica;
 mod worker;
 pub use worker::Budget;
 
@@ -67,7 +68,7 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
-pub(super) fn private_database(root: &Path, name: &str) -> Result<Connection, String> {
+pub(crate) fn private_database(root: &Path, name: &str) -> Result<Connection, String> {
     if !root.exists() {
         let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]

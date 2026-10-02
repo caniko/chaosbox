@@ -34,6 +34,9 @@ clap = { workspace = true }
 async-trait = { workspace = true }
 rusqlite = { workspace = true }
 tempfile = "3"
+ring = "0.17"
+hex = { workspace = true }
+fs2 = "0.4"
 
 [dev-dependencies]
 scip = "=0.10.0"

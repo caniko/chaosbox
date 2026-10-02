@@ -85,31 +85,34 @@ async fn private_session_knowledge_is_pinned_idempotent_and_predecessor_guarded(
         store.knowledge(scope).await.unwrap(),
         Some((id.clone(), first.clone()))
     );
-    assert!(
-        store
-            .knowledge("private:someone-else")
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(store
+        .knowledge("private:someone-else")
+        .await
+        .unwrap()
+        .is_none());
     let second=serde_json::json!({"scope":scope,"records":records,"assessments":["fixture-receipt"],"coverage":"second-generation"}).to_string();
-    assert!(
-        store
-            .publish_knowledge(scope, &second, &records, None)
-            .await
-            .is_err()
-    );
+    assert!(store
+        .publish_knowledge(scope, &second, &records, None)
+        .await
+        .is_err());
     let next = store
         .publish_knowledge(scope, &second, &records, Some(&id))
         .await
         .unwrap();
     assert_ne!(next, id);
-    assert!(
-        store
-            .publish_knowledge(scope, &first, &records, Some(&id))
-            .await
-            .is_err()
+    assert_eq!(
+        store.knowledge_at(scope, &id).await.unwrap(),
+        Some(first.clone())
     );
+    assert!(store
+        .knowledge_at("private:someone-else", &id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .publish_knowledge(scope, &first, &records, Some(&id))
+        .await
+        .is_err());
     assert_eq!(
         store.knowledge(scope).await.unwrap(),
         Some((next.clone(), second))
@@ -129,6 +132,87 @@ async fn private_session_knowledge_is_pinned_idempotent_and_predecessor_guarded(
     );
     let winner = a.or(b).unwrap();
     assert_eq!(store.knowledge(scope).await.unwrap().unwrap().0, winner);
+}
+
+#[tokio::test]
+async fn peer_ledger_is_isolated_paginated_collision_checked_and_atomically_published() {
+    use chaosbox_store::{ReplicaRow, ReplicaStore};
+    let db = test_db("t_peer_replica");
+    let Some(mut store) = connected_store(&db).await else {
+        return;
+    };
+    let user = "a".repeat(64);
+    let scope = "private:peer-test";
+    for id in ["1", "2", "3"] {
+        let row = ReplicaRow {
+            id: id.repeat(64),
+            user: user.clone(),
+            scope: scope.into(),
+            body: format!("event-{id}"),
+        };
+        store.replica_put(&row).await.unwrap();
+        store.replica_put(&row).await.unwrap();
+        let mut changed = row;
+        changed.body = "different bytes".into();
+        assert!(store.replica_put(&changed).await.is_err());
+    }
+    let page = store.replica_rows(&user, scope, "", 2).await.unwrap();
+    assert_eq!(page.len(), 2);
+    assert_eq!(
+        store
+            .replica_rows(&user, scope, &page[1].id, 2)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(store
+        .replica_rows(&"b".repeat(64), scope, "", 2)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .replica_rows(&user, "private:other", "", 2)
+        .await
+        .unwrap()
+        .is_empty());
+    let first = "4".repeat(64);
+    store
+        .replica_publish(&user, scope, &first, "first snapshot", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.replica_current(&user, scope).await.unwrap(),
+        Some((first.clone(), "first snapshot".into()))
+    );
+    assert!(store
+        .replica_publish(&user, scope, &first, "collision", Some(&first))
+        .await
+        .is_err());
+    let mut rival = TypeDbStore::new(config(&db));
+    let left_id = "5".repeat(64);
+    let right_id = "6".repeat(64);
+    let (left, right) = tokio::join!(
+        store.replica_publish(&user, scope, &left_id, "left", Some(&first)),
+        rival.replica_publish(&user, scope, &right_id, "right", Some(&first))
+    );
+    assert_ne!(left.is_ok(), right.is_ok(), "one predecessor race winner");
+    assert!(store
+        .replica_current(&"b".repeat(64), scope)
+        .await
+        .unwrap()
+        .is_none());
+    let current = store.replica_current(&user, scope).await.unwrap().unwrap();
+    assert_eq!(current.1, if left.is_ok() { "left" } else { "right" });
+    let mut restarted = TypeDbStore::new(config(&db));
+    assert_eq!(
+        restarted
+            .replica_current(&user, scope)
+            .await
+            .unwrap()
+            .unwrap(),
+        current
+    );
 }
 
 fn addr() -> String {
@@ -598,13 +682,11 @@ async fn assert_direct_readback(
             .span,
         Some(definition.span.clone())
     );
-    assert!(
-        reader
-            .evidence_for("build:other", &rel.id)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert!(reader
+        .evidence_for("build:other", &rel.id)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

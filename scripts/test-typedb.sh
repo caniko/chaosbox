@@ -96,9 +96,9 @@ require_config "^    data-directory: \"$WORK/data\"\$" \
   "disposable data directory not pointed at $WORK/data"
 require_config "^    directory: \"$WORK/logs\"\$" \
   "disposable log directory not pointed at $WORK/logs"
-require_config "^[[:space:]]*metrics:[[:space:]]*false( |\$)" \
+require_config '^[[:space:]]*metrics:[[:space:]]*false( |$)' \
   "diagnostics metrics reporting not disabled"
-require_config "^[[:space:]]*errors:[[:space:]]*false( |\$)" \
+require_config '^[[:space:]]*errors:[[:space:]]*false( |$)' \
   "diagnostics error reporting not disabled"
 if grep -Eq '^[[:space:]]*enabled:[[:space:]]*true( |$)' "$WORK/config.yml"; then
   echo "isolation failure: some subsystem left enabled (template drift in $SOURCE_CONFIG?)" >&2
@@ -214,6 +214,7 @@ chaosbox db check --json --repo test
 echo "== live TypeDB conformance (required: no skip is allowed here) =="
 cargo test -p chaosbox-typedb --test live
 cargo test -p chaosbox --test compaction -- --ignored
+cargo test -p chaosbox --test sync -- --ignored
 CHAOSBOX_TEST_BIN="$(command -v chaosbox)" node --test plugins/chaosbox-compaction/test/*.test.mjs
 cargo test -p chaosbox --test compiler -- --ignored
 

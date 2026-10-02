@@ -340,3 +340,22 @@ define
     relates member;
 
   entity file-version plays occurrence:file;
+
+  # Owner-isolated peer event ledger and immutable locally published read views.
+  attribute replica-id value string;
+  attribute replica-user value string;
+  attribute replica-key value string;
+  attribute replica-view-id value string;
+  entity replica-event
+    owns replica-id @key,
+    owns replica-user,
+    owns scope,
+    owns raw-envelope;
+  entity replica-view
+    owns replica-view-id @key,
+    owns replica-user,
+    owns scope,
+    owns raw-envelope;
+  entity replica-pointer
+    owns replica-key @key,
+    owns replica-view-id;

@@ -1,0 +1,7 @@
+{
+  "name": "chaosbox-intelligence",
+  "version": "0.1.0",
+  "description": "OpenCode V2 adapter for chaosbox selective session intelligence: read-only retrieval, selective injection, structured challenges, shadow-mode capture.",
+  "type": "module",
+  "main": "index.ts"
+}

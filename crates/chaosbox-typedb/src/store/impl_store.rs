@@ -99,10 +99,7 @@ impl Store for TypeDbStore {
         self.staging.put_inference(winner).await
     }
 
-    async fn find_inference(
-        &self,
-        reuse_key: &str,
-    ) -> Result<Option<InferenceRecord>, StoreError> {
+    async fn find_inference(&self, reuse_key: &str) -> Result<Option<InferenceRecord>, StoreError> {
         // Authoritative first: the server is the first-write-wins winner
         // across workers and restarts. Staging may hold a losing raw from a
         // lost race (staged before the flush discovered the winner); reads

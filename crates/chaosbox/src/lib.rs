@@ -21,9 +21,10 @@ use chaosbox_jev::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub mod compiler;
 pub mod compaction;
+pub mod compiler;
 pub mod continuation;
+pub mod federation;
 pub mod history;
 pub mod intelligence;
 mod lifecycle;
@@ -34,8 +35,10 @@ pub mod postgres;
 mod reader;
 mod responder;
 pub(crate) mod reuse;
+pub mod scratch;
 pub mod sessions;
 mod structural;
+pub mod sync;
 mod view;
 pub mod workspace;
 

@@ -10,6 +10,8 @@ Native Rust fork/rewrite of [Graphify](https://github.com/Graphify-Labs/graphify
 deterministic code-graph extraction, bounded Jev decisions, TypeDB-backed
 versioned graph builds, read-only CLI/MCP consumers.
 
+Deployment storage contracts are described in [Storage lifecycle integration](docs/storage-lifecycle.md).
+
 Pipeline: `source snapshot -> certified syntax facts + bounded candidates ->
 optional Jev decisions -> validated evidence/claims -> policy build ->
 atomic publication -> read-only consumers`.

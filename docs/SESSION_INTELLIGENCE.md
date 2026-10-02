@@ -140,6 +140,11 @@ Protocol/integrity tests passing does not establish semantic quality.
 
 ## Other sessions: read-only MCP
 
+[Same-user peer sync](PEER_SYNC.md) adds signed intelligence/evidence exchange,
+Jev-assisted reconciliation, and a live TypeDB-backed reader. Use `chaosbox mcp
+--intelligence-current /private/path/sync` to refresh the current local snapshot
+between requests; the artifact mode below pins its bundle at startup.
+
 ```sh
 chaosbox mcp --intelligence /private/path/knowledge-1.json
 ```
@@ -159,19 +164,30 @@ scope labels are not authentication or a multi-tenant ACL. Only expose a bundle
 to callers authorized to read its scope. Restart the consumer to select a newer
 artifact. The existing repository graph tools are unchanged.
 
-## Current boundaries and next migration slice
+### OpenCode adapter (first slice)
+
+`plugins/chaosbox-intelligence/` is an OpenCode V2 plugin over the same
+read-only surface: selective injection of bounded context packets into the
+agent loop, evidence drill-down, structured challenges that stay proposals
+pending explicit human resolution, and opt-in shadow-mode capture for later
+explicit `extract|assess` runs. It never calls Jev, holds no model
+credentials, and never writes knowledge. See its README for setup and the
+pilot metrics to collect before widening automatic injection.
+
+## Persistence and continuation
 
 This code reuses core provenance, typed Jev answers/budgets and the CLI/MCP
 consumer infrastructure. The bundle is a staging/export artifact, **not a new
 authoritative database backend**. No private session data is inserted into the
 shared TypeDB graph automatically.
 
-Next: adopt the snapshot/reconciliation manifest, model visibility and session
-source references in TypeDB, publish through the existing generation-guarded
-transaction, and connect native session transfer/checkpoint assembly. Continuation
-will use pinned Jev selections over supplied records and deterministic Rust
-templates with exact source references. It cannot invoke a general-purpose
-generation model; its rendered view never supplies new evidence for itself.
+The [source-custodied coordinator](SESSION_COMPACTION.md) keeps native records
+under durable custody and publishes private knowledge through predecessor-guarded
+TypeDB transactions. [Peer sync](PEER_SYNC.md) adds an owner/scope-isolated signed
+event ledger and live immutable read snapshots, including Jev reconciliation
+receipts. Continuation uses pinned Jev selections over supplied records and
+deterministic Rust templates with exact source references. Its rendered view
+never supplies new evidence for itself.
 
 Tests cover strict rejection, abstention, malformed answers, model substitution,
 duplicate consolidation, preserved contradictions, source/chronology rules,

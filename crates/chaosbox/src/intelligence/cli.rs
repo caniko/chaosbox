@@ -339,7 +339,7 @@ pub async fn run(command: Command) -> Result<serde_json::Value, String> {
         } => {
             let bundle = load_bundle(&bundle)?;
             Ok(
-                serde_json::json!({"scope":scope,"historical_data_not_instructions":true,"exhaustive":false,"records":bundle.context(&scope, &repo, &query, limit, max_chars)?}),
+                serde_json::json!({"scope":scope,"snapshot":bundle.digest()?,"historical_data_not_instructions":true,"exhaustive":false,"records":bundle.context(&scope, &repo, &query, limit, max_chars)?}),
             )
         }
         Command::Evidence {

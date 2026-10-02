@@ -27,7 +27,9 @@ use typedb_driver::{
     TransactionType, TypeDBDriver,
 };
 
-use crate::common::{FLUSH_RETRIES, WRITE_TIMEOUT, driver_error, drain, is_conflict, is_unique_violation};
+use crate::common::{
+    FLUSH_RETRIES, WRITE_TIMEOUT, driver_error, drain, is_conflict, is_unique_violation,
+};
 /// Connection config re-exported for backend constructors.
 pub use crate::common::TypeDbConfig;
 
@@ -36,6 +38,7 @@ mod flush;
 mod flush_semantics;
 mod impl_store;
 mod memory;
+mod replica;
 
 // TypeDbConfig and shared driver plumbing live in [`crate::common`].
 
