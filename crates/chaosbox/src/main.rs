@@ -54,6 +54,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Reason-gated local Nix additions and read-only operational intelligence.
+    Nix {
+        #[command(subcommand)]
+        command: chaosbox::nix::cli::Command,
+    },
     /// Project-scoped cross-user lazy query federation (read-only).
     Federation {
         /// Operator-owned client config; serve uses an owner-local provider config.
@@ -333,6 +338,22 @@ enum DbCmd {
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
+        Command::Nix { command } => match chaosbox::nix::cli::run(command).await {
+            Ok(value) => {
+                println!("{value}");
+                if value
+                    .get("outcome")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|s| s != "succeeded")
+                {
+                    std::process::exit(1);
+                }
+            }
+            Err(error) => {
+                eprintln!("nix: {error}");
+                std::process::exit(2);
+            }
+        },
         Command::Federation { config, command } => {
             match chaosbox::federation::cli::run(&config, command).await {
                 Ok(Some(value)) => println!("{value}"),

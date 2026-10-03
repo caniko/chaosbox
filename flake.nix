@@ -145,7 +145,9 @@
               pkgs.nodejs
               pkgs.gitMinimal
               pkgs.openssh
+              pkgs.nix
             ];
+            CHAOSBOX_TEST_NIX = pkgs.lib.getExe pkgs.nix;
             cargoExtraArgs = "--locked -p chaosbox";
             meta = {
               description = "Chaosbox deterministic code-graph pipeline";
@@ -181,6 +183,8 @@
               '';
               passthru.scratchPlugin = "${./plugins}/chaosbox-scratch/index.ts";
               passthru.scratchAssessmentVersion = 1;
+              passthru.nixOperationVersion = 1;
+              passthru.nixPlugin = "${./plugins}/chaosbox-nix/index.ts";
               passthru.federationVersion = 1;
               passthru.intelligencePlugin = "${./plugins}/chaosbox-intelligence/index.ts";
             }
@@ -293,11 +297,15 @@
           inherit (toolchain) craneLib;
         })
         // rec {
-          default = harbor-rs.lib.mkDevShell {
-            inherit pkgs cross;
-            inherit (toolchain) craneLib;
-            packages = [ pkgs.cargo-nextest ];
-          };
+          default =
+            (harbor-rs.lib.mkDevShell {
+              inherit pkgs cross;
+              inherit (toolchain) craneLib;
+              packages = [ pkgs.cargo-nextest ];
+            }).overrideAttrs
+              (_: {
+                CHAOSBOX_TEST_NIX = pkgs.lib.getExe pkgs.nix;
+              });
           # Live TypeDB work (db migrate, backend tests, test-typedb.sh):
           # server + Console from the temporary packages. Opt-in so the
           # default shell (and every CI gate using it) never builds them;
@@ -338,6 +346,7 @@
               pkgs.openssh
             ];
             cargoExtraArgs = "--locked --workspace";
+            CHAOSBOX_TEST_NIX = pkgs.lib.getExe pkgs.nix;
           };
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
           federationTestTools = import ./nix/federation-test-tools.nix {
@@ -359,6 +368,15 @@
             }
           );
           unit = craneLib.cargoTest (commonArgs // { inherit cargoArtifacts; });
+          nix-plugin =
+            pkgs.runCommand "chaosbox-nix-plugin"
+              {
+                nativeBuildInputs = [ pkgs.nodejs ];
+              }
+              ''
+                node --test ${./plugins/chaosbox-nix}/test/*.test.mjs
+                touch "$out"
+              '';
           intelligence-plugin =
             pkgs.runCommand "chaosbox-intelligence-plugin"
               {
@@ -368,6 +386,7 @@
                 cp -r ${./plugins/chaosbox-intelligence} plugin
                 chmod -R u+w plugin
                 node --experimental-strip-types --test plugin/test/*.test.mjs
+                node --test ${./plugins/chaosbox-nix}/test/*.test.mjs
                 touch "$out"
               '';
           scratch-plugin =
