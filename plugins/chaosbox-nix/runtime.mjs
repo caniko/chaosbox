@@ -34,7 +34,7 @@ export function runRead(binary, operation, input, signal) {
 }
 
 export function verify(packet, options) {
-  if (packet?.version !== 1 || packet.scope !== options.scope || packet.host !== options.host || packet.store !== "daemon") throw new Error("Nix evidence namespace/version mismatch");
+  if (packet?.version !== 1 || packet.scope !== options.scope || packet.host !== options.host || packet.store !== (options.store ?? "daemon")) throw new Error("Nix evidence namespace/version mismatch");
   return packet;
 }
 
@@ -59,6 +59,7 @@ export function injection(records, maxChars = 12000) {
 
 export function addition(binary, input, directory, context) {
   if (typeof binary !== "string" || !binary.startsWith("/") || typeof directory !== "string" || !directory.startsWith("/")) throw new Error("absolute facade and session directory required");
+  if (!/^\/[A-Za-z0-9/._+-]+$/.test(binary)) throw new Error("shell facade path must have a literal safe command spelling");
   if (typeof input.reason !== "string" || !input.reason.trim() || Buffer.byteLength(input.reason) > 4000 || input.reason.includes("\0")) throw new Error("nonblank reason of at most 4000 UTF-8 bytes required");
   if (typeof input.path !== "string" || !input.path || input.path.includes("\0")) throw new Error("input path required");
   if (input.mode !== undefined && !["nar", "flat"].includes(input.mode)) throw new Error("unsupported addressing mode");
@@ -66,7 +67,9 @@ export function addition(binary, input, directory, context) {
   const id = `opencode:${createHash("sha256").update(JSON.stringify([context.sessionID, context.messageID, context.id])).digest("hex")}`;
   const argv = [binary, "nix", "add", "--reason", input.reason, "--repo", directory, "--id", id, "--session", context.sessionID, "--message", context.messageID, "--tool-call", context.id, "--mode", input.mode ?? "nar", "--", resolve(directory, input.path)];
   const quote = value => `'${value.replaceAll("'", "'\\''")}'`;
-  return { command: argv.map(quote).join(" "), workdir: directory, timeout: 260000, background: false };
+  // Native permissions match source-shaped resources. Keep the fixed command
+  // prefix literal, while every caller/native value remains shell-quoted.
+  return { command: `${binary} nix add ${argv.slice(3).map(quote).join(" ")}`, workdir: directory, timeout: 260000, background: false };
 }
 
 export async function runAddition(leaf, binary, input, directory, context) {
@@ -74,5 +77,8 @@ export async function runAddition(leaf, binary, input, directory, context) {
   if (!leaf || leaf.id !== "shell" || typeof leaf.execute !== "function") throw new Error("native OpenCode shell leaf unavailable; mutation refused");
   // Do not spawn directly: the native leaf validates directories, checks parsed
   // command resources with permission.assert, and owns interruption/job cleanup.
-  return leaf.execute(request, context);
+  const result = await leaf.execute(request, context);
+  // The facade tool returns model evidence, not the native shell's machine
+  // output schema. Returning its undeclared `output` would fail Core settlement.
+  return { content: result.content, metadata: result.metadata };
 }

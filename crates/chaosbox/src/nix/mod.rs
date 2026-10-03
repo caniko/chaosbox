@@ -281,14 +281,22 @@ impl Ledger {
         tx.commit().map_err(err)?;
         Ok(None)
     }
-    fn settle(&self, id: &str, receipt: &Value) -> Result<(), String> {
+    fn settle(&self, id: &str, receipt: &Value) -> Result<Value, String> {
         self.db
             .execute(
-                "INSERT INTO settlements VALUES (?1,?2)",
+                "INSERT OR IGNORE INTO settlements VALUES (?1,?2)",
                 params![id, serde_json::to_string(receipt).map_err(err)?],
             )
             .map_err(err)?;
-        Ok(())
+        // An exact retry can reconcile observed execution while this runner
+        // enriches metadata. All callers replay the first committed settlement.
+        let stored: String = self
+            .db
+            .query_row("SELECT receipt FROM settlements WHERE id=?1", [id], |row| {
+                row.get(0)
+            })
+            .map_err(err)?;
+        serde_json::from_str(&stored).map_err(err)
     }
     fn executed(&self, id: &str, receipt: &Value) -> Result<(), String> {
         self.db
@@ -588,8 +596,7 @@ pub async fn add(settings: &Settings, request: Invocation) -> Result<Value, Stri
             }
         }
     }
-    ledger.settle(&request.id, &receipt)?;
-    Ok(receipt)
+    ledger.settle(&request.id, &receipt)
 }
 
 fn valid_store_path(path: &str) -> bool {
