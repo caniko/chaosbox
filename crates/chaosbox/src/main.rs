@@ -31,6 +31,7 @@ mod mcp_server;
 mod pipeline_cmd;
 mod postgres_cmd;
 mod query_cmd;
+mod reader_cmd;
 
 use backend_cmd::{
     AnyReader, Backend, RunSpend, active_publishes_relations, backend, consumer_err,
@@ -208,6 +209,12 @@ enum Command {
         /// Explicit reviewed workspace artifact, pinned once on startup.
         #[arg(long)]
         workspace: Option<PathBuf>,
+    },
+    /// Trusted host connector entrypoint: one admitted run-bound MCP connection.
+    Reader {
+        /// Private connector-owned admission JSON; never worker configuration.
+        #[arg(long)]
+        admission: PathBuf,
     },
     /// Database readiness and migration reports (JSON contract v2).
     Db {
@@ -575,6 +582,15 @@ async fn main() {
             std::process::exit(code);
         }
         Command::Query { q } => std::process::exit(Box::pin(run_query(q)).await),
+        Command::Reader { admission } => {
+            if let Err(error) = Box::pin(reader_cmd::serve(&admission)).await {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"blocked":true, "code":error.code(), "message":error.to_string()})
+                );
+                std::process::exit(1);
+            }
+        }
         Command::Mcp {
             intelligence,
             intelligence_current,

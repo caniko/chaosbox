@@ -15,7 +15,7 @@ use crate::rows::{BuildRow, EntityRow, EvidenceRow, RelRow, entity_row, rel_row}
 pub struct MemoryReader {
     builds: BTreeMap<String, GraphBuild>,
     active: BTreeMap<String, String>,
-    evidence: BTreeMap<String, Vec<EvidenceRow>>,
+    evidence: BTreeMap<(String, String), Vec<EvidenceRow>>,
 }
 
 impl MemoryReader {
@@ -28,44 +28,11 @@ impl MemoryReader {
     /// Snapshot the actual published store, including source-linked claims.
     #[must_use]
     pub fn from_store(store: &crate::MemoryStore) -> Self {
-        let mut reader = Self {
+        Self {
             builds: store.builds.clone(),
             active: store.active.clone(),
-            evidence: BTreeMap::new(),
-        };
-        for claim in store.claims.values() {
-            for id in claim.supporting.iter().chain(&claim.contradicting) {
-                let Some(e) = store.evidence.get(id) else {
-                    continue;
-                };
-                let citation = store
-                    .files
-                    .get(&(e.snapshot.clone(), e.source_file_version.clone()))
-                    .map(|(sha256, _)| crate::rows::SourceCitation {
-                        snapshot: e.snapshot.clone(),
-                        file: e.source_file_version.clone(),
-                        sha256: sha256.clone(),
-                        span: e.span.clone(),
-                    });
-                reader
-                    .evidence
-                    .entry(claim.relation_id.clone())
-                    .or_default()
-                    .push(EvidenceRow {
-                        evidence_id: e.id.clone(),
-                        class: chaosbox_core::evidence_class_name(e.class),
-                        supports: e.supports,
-                        text: e.text.clone(),
-                        citation,
-                        producer: e.producer.clone(),
-                    });
-            }
+            evidence: store.sealed.clone(),
         }
-        for rows in reader.evidence.values_mut() {
-            rows.sort_by(|a, b| a.evidence_id.cmp(&b.evidence_id));
-            rows.dedup_by(|a, b| a.evidence_id == b.evidence_id);
-        }
-        reader
     }
 
     /// Insert a build (indexed by its id).
@@ -79,8 +46,15 @@ impl MemoryReader {
     }
 
     /// Attach evidence rows to a relationship id.
-    pub fn attach_evidence(&mut self, rel_id: &str, rows: Vec<EvidenceRow>) {
-        self.evidence.insert(rel_id.to_owned(), rows);
+    pub fn attach_evidence(&mut self, rel_id: &str, rows: &[EvidenceRow]) {
+        for build in self
+            .builds
+            .values()
+            .filter(|b| b.edges.contains_key(rel_id))
+        {
+            self.evidence
+                .insert((build.id.clone(), rel_id.to_owned()), rows.to_owned());
+        }
     }
 
     /// Member entities of one build, ordered by qualified name.
@@ -120,10 +94,21 @@ fn unescape_like(like: &str) -> String {
 #[async_trait::async_trait]
 impl GraphQueries for MemoryReader {
     async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, StoreError> {
+        match self.active.get(repo) {
+            Some(id) => self.published_build(repo, id).await,
+            None => Ok(None),
+        }
+    }
+
+    async fn published_build(
+        &self,
+        repo: &str,
+        build_id: &str,
+    ) -> Result<Option<BuildRow>, StoreError> {
         Ok(self
-            .active
-            .get(repo)
-            .and_then(|id| self.builds.get(id))
+            .builds
+            .get(build_id)
+            .filter(|b| b.repo == repo)
             .map(|b| {
                 let mut snapshots = b.snapshot_ids.clone();
                 snapshots.sort();
@@ -228,6 +213,15 @@ impl GraphQueries for MemoryReader {
         build_id: &str,
         rel_id: &str,
     ) -> Result<Vec<EvidenceRow>, StoreError> {
+        self.evidence_for_limited(build_id, rel_id, i64::MAX).await
+    }
+
+    async fn evidence_for_limited(
+        &self,
+        build_id: &str,
+        rel_id: &str,
+        limit: i64,
+    ) -> Result<Vec<EvidenceRow>, StoreError> {
         if self
             .builds
             .get(build_id)
@@ -235,6 +229,17 @@ impl GraphQueries for MemoryReader {
         {
             return Ok(Vec::new());
         }
-        Ok(self.evidence.get(rel_id).cloned().unwrap_or_default())
+        let mut rows: Vec<_> = self
+            .evidence
+            .get(&(build_id.to_owned(), rel_id.to_owned()))
+            .ok_or(StoreError::EvidenceClosureUnavailable)?
+            .iter()
+            .collect();
+        rows.sort_by(|a, b| a.evidence_id.cmp(&b.evidence_id));
+        Ok(rows
+            .into_iter()
+            .take(usize::try_from(limit.max(0)).unwrap_or(usize::MAX))
+            .cloned()
+            .collect())
     }
 }

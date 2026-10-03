@@ -304,17 +304,21 @@ impl TypeDbStore {
 
     /// Insert one claim with its supporting/contradicting links.
     pub(super) async fn flush_claim(&self, c: &Claim) -> Result<(), StoreError> {
+        let json = serde_json::to_string(c).map_err(|e| StoreError::Invariant(e.to_string()))?;
         let q = format!(
-            "insert $x isa claim, has claim-id {}, has relationship-id {}, has accepted {};",
+            "insert $x isa claim, has claim-id {}, has relationship-id {}, has accepted {}, has claim-json {};",
             str_lit(&c.id),
             str_lit(&c.relation_id),
-            bool_lit(c.accepted)
+            bool_lit(c.accepted),
+            str_lit(&json),
         );
         self.insert_ignoring_duplicates(&q).await?;
+        self.check_claim_payload(c).await?;
         for ev_id in &c.supporting {
             let q = format!(
-                "match $c isa claim, has claim-id {}; $e isa evidence, has evidence-id {}; insert (claim: $c, evidence: $e) isa supporting, has supporting-id {};",
+                "match $c isa claim, has claim-id {}, has claim-json {}; $e isa evidence, has evidence-id {}; insert (claim: $c, evidence: $e) isa supporting, has supporting-id {};",
                 str_lit(&c.id),
+                str_lit(&json),
                 str_lit(ev_id),
                 str_lit(&link_id("sup", &c.id, ev_id))
             );
@@ -322,8 +326,9 @@ impl TypeDbStore {
         }
         for ev_id in &c.contradicting {
             let q = format!(
-                "match $c isa claim, has claim-id {}; $e isa evidence, has evidence-id {}; insert (claim: $c, evidence: $e) isa contradicting, has contradicting-id {};",
+                "match $c isa claim, has claim-id {}, has claim-json {}; $e isa evidence, has evidence-id {}; insert (claim: $c, evidence: $e) isa contradicting, has contradicting-id {};",
                 str_lit(&c.id),
+                str_lit(&json),
                 str_lit(ev_id),
                 str_lit(&link_id("con", &c.id, ev_id))
             );
@@ -333,7 +338,11 @@ impl TypeDbStore {
     }
 
     /// Insert one build row plus its staged node/edge memberships.
-    pub(super) async fn flush_build_rows(&self, build: &GraphBuild) -> Result<(), StoreError> {
+    pub(super) async fn flush_build_rows(
+        &self,
+        build: &GraphBuild,
+        digest: &str,
+    ) -> Result<(), StoreError> {
         self.flush_repository(&build.repo).await?;
         for snapshot_id in &build.snapshot_ids {
             self.flush_snapshot(&build.repo, snapshot_id).await?;
@@ -341,11 +350,12 @@ impl TypeDbStore {
         let generation = i64::try_from(build.generation)
             .map_err(|_| StoreError::Invariant("generation overflows i64".into()))?;
         let mut owns = format!(
-            "has build-id {}, has repo-name {}, has generation {}, has status \"staging\", has created {}",
+            "has build-id {}, has repo-name {}, has generation {}, has status \"staging\", has created {}, has publication-digest {}",
             str_lit(&build.id),
             str_lit(&build.repo),
             int_lit(generation),
-            int_lit(now_millis())
+            int_lit(now_millis()),
+            str_lit(digest),
         );
         for snapshot_id in &build.snapshot_ids {
             owns.push_str(", has snapshot-id ");
@@ -363,17 +373,18 @@ impl TypeDbStore {
         }
         self.insert_ignoring_duplicates(&format!("insert $b isa graph-build, {owns};"))
             .await?;
+        self.check_build_digest(build, digest).await?;
         let mut nodes: Vec<&Entity> = build.nodes.values().collect();
         nodes.sort_by(|a, b| a.id.cmp(&b.id));
         for e in nodes {
             self.flush_entity(e).await?;
-            self.flush_node_membership(&build.id, &e.id).await?;
+            self.flush_node_membership(&build.id, &e.id, digest).await?;
         }
         let mut edges: Vec<&Relation> = build.edges.values().collect();
         edges.sort_by(|a, b| a.id.cmp(&b.id));
         for r in edges {
             self.flush_relationship(r).await?;
-            self.flush_edge_membership(&build.id, &r.id).await?;
+            self.flush_edge_membership(&build.id, &r.id, digest).await?;
         }
         Ok(())
     }
