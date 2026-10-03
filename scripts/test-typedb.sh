@@ -208,7 +208,7 @@ export CHAOSBOX_TYPEDB_DATABASE=test-typedb
 export CHAOSBOX_REQUIRE_TYPEDB=1
 
 echo "== mandatory TypeDB federation gate (no skips, no inference) =="
-cargo test --locked -p chaosbox --test federation_typedb -- --ignored --exact federation_typedb_is_read_only_scoped_and_snapshot_bound
+bash "$(dirname "${BASH_SOURCE[0]}")/test-typedb-federation.sh" "$WORK/federation-test.log"
 if [ "$FEDERATION_ONLY" -eq 1 ]; then
   exit 0
 fi

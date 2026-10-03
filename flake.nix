@@ -208,7 +208,15 @@
               chaosbox
               pkgs.nodejs
             ];
-            text = builtins.readFile ./scripts/test-typedb.sh;
+            # The source runner finds its helper beside itself; the packaged
+            # runner lives in bin/, so bind that helper to its immutable path.
+            text =
+              builtins.replaceStrings
+                [
+                  ''"$(dirname "''${BASH_SOURCE[0]}")/test-typedb-federation.sh"''
+                ]
+                [ "${./scripts/test-typedb-federation.sh}" ]
+                (builtins.readFile ./scripts/test-typedb.sh);
           };
           # Local TypeDB bootstrap for single-host pilots: generates
           # credentials once, converges passwords over the loopback

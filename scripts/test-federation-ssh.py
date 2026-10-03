@@ -8,7 +8,9 @@ from pathlib import Path
 import pwd
 import selectors
 import shutil
+import signal
 import subprocess
+import time
 
 PROJECT = "git:github.com/caniko/chaosbox"
 OWNERS = ("can", "dejana")
@@ -76,6 +78,33 @@ def install(root, fixtures):
             path.chmod(0o700 if path.is_dir() else 0o600)
 
 
+def read_one_shot(process, timeout=15):
+    deadline = time.monotonic() + timeout
+    output = bytearray()
+    os.set_blocking(process.stdout.fileno(), False)
+    with selectors.DefaultSelector() as selector:
+        selector.register(process.stdout, selectors.EVENT_READ)
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not selector.select(timeout=remaining):
+                raise subprocess.TimeoutExpired(process.args, timeout, output=bytes(output))
+            try:
+                chunk = os.read(process.stdout.fileno(), 8192)
+            except BlockingIOError:
+                continue
+            if not chunk:
+                break
+            output.extend(chunk)
+            assert len(output) <= 256 * 1024, "one-shot response exceeded its byte budget"
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise subprocess.TimeoutExpired(process.args, timeout, output=bytes(output))
+    assert process.wait(timeout=remaining) == 0, "one-shot endpoint did not exit successfully"
+    assert output.endswith(b"\n") and output.count(b"\n") == 1, "endpoint must serve exactly one complete frame"
+    response = json.loads(output)
+    assert response["result"]["status"] == "ok", response
+
+
 def one_shot(root):
     frame = {"version": 1, "request": {
         "operation": "context", "project": PROJECT, "query": "context citations",
@@ -86,22 +115,20 @@ def one_shot(root):
     process = subprocess.Popen(
         ["runuser", "-u", "can", "--", *ssh(root, "can")],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-        text=True,
+        text=True, start_new_session=True,
     )
     try:
         process.stdin.write((json.dumps(frame) + "\n") * 2)
         process.stdin.flush()
-        with selectors.DefaultSelector() as selector:
-            selector.register(process.stdout, selectors.EVENT_READ)
-            assert selector.select(timeout=15), "one-shot reply was not flushed"
-            response = json.loads(process.stdout.readline())
-        assert response["result"]["status"] == "ok", response
-        assert process.wait(timeout=15) == 0, "one-shot endpoint did not exit successfully"
-        assert process.stdout.read() == "", "endpoint served more than one frame"
+        read_one_shot(process)
     finally:
-        if process.poll() is None:
-            process.kill()
-            process.wait()
+        # A timed-out runuser/SSH descendant may still hold the pipe open even
+        # after its parent exits. Reap the isolated process group as well.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait(timeout=5)
         process.stdin.close()
         process.stdout.close()
 
