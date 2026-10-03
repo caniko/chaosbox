@@ -16,6 +16,7 @@
 - [Source-selected continuation](checkpoints.md)
 - [Source-custodied compaction](session-compaction.md)
 - [Scratch provenance and finalization](scratch-ledger.md)
+- [Nix operation provenance](nix-operations.md)
 - [Compiler indexer feasibility](indexer-feasibility.md)
 - [Reviewed workspace impact pilot](workspace-impact.md)
 - [Source baseline](baseline.md)
