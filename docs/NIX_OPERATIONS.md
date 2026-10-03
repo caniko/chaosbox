@@ -43,8 +43,10 @@ Observed execution is committed before optional metadata capture; settlement is
 separate and append-only. A failed final write preserves the returned path and
 actual outcome, and an exact retry reconciles those facts without running Nix.
 Exact settled retries return the original receipt, even if the input has since
-changed. Conflicting identity
-reuse fails; an unsettled intent is exposed as unresolved and never rerun.
+changed. Reconciliation can settle observed execution while its original runner
+captures optional metadata; every caller returns the first committed settlement,
+whose coverage describes the evidence available then. Conflicting identity reuse
+fails; an intent without observed execution is unresolved and never rerun.
 
 Receipts retain the required reason, executable and argv, actual exit outcome,
 bounded stdout/stderr with full-stream hashes and omitted byte counts, returned

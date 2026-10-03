@@ -4,14 +4,14 @@ import { injection, queryTerms, runAddition, runRead, verify } from "./runtime.m
 export default Plugin.define({
   id: "chaosbox-nix",
   async setup(ctx) {
-    const options = ctx.options as { chaosboxBin: string; scope: string; host: string };
+    const options = ctx.options as { chaosboxBin: string; scope: string; host: string; store?: string };
     const capability = await runRead(options.chaosboxBin, "capabilities");
     if (capability.version !== 1 || !capability.queries?.includes("context") || !capability.queries?.includes("evidence")) throw new Error("incompatible Chaosbox Nix operation contract");
     const read = async (operation: string, input: unknown, signal?: AbortSignal) => verify(await runRead(options.chaosboxBin, operation, input, signal), options);
     await ctx.tool.transform(editor => {
       editor.namespace({ name: "chaosbox", description: "Source-backed operational intelligence and cleanup inspection" });
       editor.add({
-        name: "nix_add", options: { namespace: "chaosbox", permission: "shell" },
+        name: "nix_add", options: { namespace: "chaosbox", permission: "shell", codemode: false },
         description: "Add one local file/directory to the local Nix store with a mandatory reason and durable execution evidence. Native shell authorization is checked at execution; no arbitrary Nix flags, remote stores or GC roots. Identity comes from the native tool call and exact retries never repeat the mutation.",
         input: { type: "object", properties: { path: { type: "string", minLength: 1, maxLength: 4096 }, reason: { type: "string", minLength: 1, maxLength: 4000 }, mode: { type: "string", enum: ["nar", "flat"] } }, required: ["path", "reason"], additionalProperties: false },
         execute: async (input, context) => {

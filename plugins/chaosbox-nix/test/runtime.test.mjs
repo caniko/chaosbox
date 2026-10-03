@@ -14,6 +14,7 @@ const native = { sessionID: "ses_fixture", messageID: "msg_fixture", id: "call_f
 test("addition keeps hostile native text as literal argv and uses native call identity", () => {
   const input = { path: "--flag; $(touch ./unwanted)", reason: "literal ' reason; $(touch ./unwanted)\n--store ssh://other" };
   const spec = addition("/operator/chaosbox", input, "/checkout", native);
+  assert.ok(spec.command.startsWith("/operator/chaosbox nix add "));
   const capture = spawnSync("sh", ["-c", `set -- ${spec.command}; printf '%s\\0' "$@"`], { encoding: "utf8" });
   assert.equal(capture.status, 0);
   const argv = capture.stdout.split("\0");
@@ -34,6 +35,11 @@ test("mutation requires native shell leaf and forwards denial without invoking a
   assert.equal(requests, 0);
   await assert.rejects(runAddition(denied, "/operator/chaosbox", input, "/checkout", native), /permission denied/);
   assert.equal(requests, 1);
+});
+test("native shell machine output does not escape its declared schema", async () => {
+  const leaf = { id: "shell", execute: async () => ({ output: { exit: 0, output: "receipt" }, content: [{ type: "text", text: "receipt" }], metadata: { exit: 0 } }) };
+  const result = await runAddition(leaf, "/operator/chaosbox", { path: "./input", reason: "needed" }, "/checkout", native);
+  assert.deepEqual(result, { content: [{ type: "text", text: "receipt" }], metadata: { exit: 0 } });
 });
 test("injection omits oversized records explicitly without truncating their reasons", () => {
   const long = { id: "big", reason: "x".repeat(4000) };

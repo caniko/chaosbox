@@ -188,6 +188,44 @@ fn fresh_cli_process_recovers_a_prior_sessions_reason_and_native_evidence() {
 }
 
 #[tokio::test]
+async fn retry_during_metadata_capture_replays_one_canonical_settlement() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join("input"), "canonical concurrent receipt").unwrap();
+    let mut config = settings(temp.path());
+    let native = config.nix.clone();
+    config.nix = temp.path().join("nix-wrapper");
+    fs::write(&config.nix, format!("#!/bin/sh\nif [ \"$1\" = path-info ]; then\n  touch metadata-started\n  while [ ! -e release-metadata ]; do sleep 0.01; done\nelse\n  echo add >> launched\nfi\nexec '{}' \"$@\"\n", native.display())).unwrap();
+    fs::set_permissions(&config.nix, fs::Permissions::from_mode(0o700)).unwrap();
+    let request = invocation(
+        temp.path(),
+        "one canonical receipt under concurrent retry",
+        "metadata-retry",
+    );
+    let first = tokio::spawn({
+        let config = config.clone();
+        let request = request.clone();
+        async move { chaosbox::nix::add(&config, request).await }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !temp.path().join("metadata-started").exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let replay = chaosbox::nix::add(&config, request.clone()).await.unwrap();
+    assert_eq!(replay["outcome"], "succeeded");
+    fs::write(temp.path().join("release-metadata"), "").unwrap();
+    assert_eq!(first.await.unwrap().unwrap(), replay);
+    assert_eq!(chaosbox::nix::add(&config, request).await.unwrap(), replay);
+    assert_eq!(
+        fs::read_to_string(temp.path().join("launched")).unwrap(),
+        "add\n"
+    );
+}
+
+#[tokio::test]
 async fn flat_addition_preserves_literal_reason_and_real_content_metadata() {
     let temp = tempfile::tempdir().unwrap();
     fs::write(temp.path().join("input"), "exact bytes").unwrap();
