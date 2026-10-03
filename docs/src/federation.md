@@ -78,7 +78,10 @@ A selected-record grant looks like this. Omitting `mode` means `selected`:
 `CHAOSBOX_TYPEDB_*` connection and password-file settings belong to the provider
 process. Provision a separate usable backend identity/credential for each owner;
 an installed CLI or Unix account alone is not a provisioned provider. Federation
-does not provision database users or migrate schemas.
+uses `TypeDbReader` and read transactions for both current and historical
+knowledge. A missing database is unavailable and stays absent. Federation does
+not provision database users or migrate schemas; publisher creation and migration
+remain separate operator operations.
 
 Reviewed bundle artifacts work without a database:
 
@@ -384,15 +387,27 @@ Native gates (the adapter suite uses Node 24+):
 cargo test -p chaosbox --test federation --locked
 cargo test -p chaosbox --locked
 node --test plugins/chaosbox-intelligence/test/*.test.mjs
+python3 scripts/test-federation-gates.py -v
 canix repo eval .#checks.x86_64-linux.federation-home.drvPath
+bash scripts/test-typedb.sh --federation-only
 ```
 
 The federation tests cover eligibility-before-ranking, selected defaults,
 unauthorized projects/callers, grant revocation, exact historical drill-down,
 receipt-context isolation, local-first plus peer queries, shared budgets,
 provenance grouping, peer failure, deadlines and actual CLI/MCP wire contracts.
-The TypeDB live knowledge-generation test also checks exact historical reads
-and rejection of a foreign scope; run that disposable-backend gate in CI.
+The federation-only command provisions an isolated TypeDB server and explicitly
+runs `federation_typedb` with `CHAOSBOX_REQUIRE_TYPEDB=1`. It verifies that current
+and historical reads cannot create missing databases, that foreign scopes are
+invisible, that exact historical evidence resolves without advancing the current
+pointer, and that revoked or withheld records remain denied. The native test is
+ignored in ordinary unit runs, which do not provision a server. The local runner
+also requires exactly one passed test with no failures or skips; an unmatched
+test-name filter cannot report a successful gate.
+
+The `typedb-integration` NixOS gate runs the same compiled regression against the
+packaged TypeDB server and requires one passed test with no skips. Connection,
+authentication, schema and assertion failures fail this mandatory hosted gate.
 
 The `federation-home` check evaluates standalone and integrated Home Manager,
 selected defaults, revocation, rejected routes/grants, and NixOS key installation,
@@ -401,3 +416,22 @@ The script verifies effective key isolation and local-first behavior during a
 loopback peer outage. Canix's `tests/chaosbox-federation.nix` evaluates the real
 Atlas adapters with a supplied candidate input and reciprocal project grants,
 including each owner's separate credential-file wrapper and MCP registration.
+
+The `federation-ssh` NixOS gate creates two disposable accounts with separate query
+keys, enrolled host trust, different local repository mappings and reciprocal
+`all_admitted` grants. It activates the real Home Manager module and installs its
+generated recipient-bound forced commands through the NixOS adapter. The gate
+checks successful local-plus-peer retrieval in both directions, original
+attribution and evidence, exact historical reads, rejected caller/project/command
+changes, grant revocation, withheld-record denial, one flushed response followed
+by exit while stdin remains open, and local results during an SSH outage. It also
+checks that reads preserve the authoritative bundle bytes and historical artifacts.
+Its driver regressions cover zero/ignored tests, partial or unterminated frames,
+extra frames and stalled exits. One deadline bounds the entire SSH response read
+and process exit, including a partial frame that never reaches a newline.
+
+`simit.toml` declares the package, unit, strict lint, scratch-plugin,
+federation-home, intelligence-plugin, typedb-integration and federation-ssh
+installables in the generated hosted Nix matrix. A completed green matrix
+qualifies that immutable producer source; enrollment and consumer activation need
+their own source/pin and runtime receipts.

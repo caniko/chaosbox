@@ -145,7 +145,9 @@
               pkgs.nodejs
               pkgs.gitMinimal
               pkgs.openssh
+              pkgs.nix
             ];
+            CHAOSBOX_TEST_NIX = pkgs.lib.getExe pkgs.nix;
             cargoExtraArgs = "--locked -p chaosbox";
             meta = {
               description = "Chaosbox deterministic code-graph pipeline";
@@ -181,6 +183,8 @@
               '';
               passthru.scratchPlugin = "${./plugins}/chaosbox-scratch/index.ts";
               passthru.scratchAssessmentVersion = 1;
+              passthru.nixOperationVersion = 1;
+              passthru.nixPlugin = "${./plugins}/chaosbox-nix/index.ts";
               passthru.federationVersion = 1;
               passthru.intelligencePlugin = "${./plugins}/chaosbox-intelligence/index.ts";
             }
@@ -208,7 +212,15 @@
               chaosbox
               pkgs.nodejs
             ];
-            text = builtins.readFile ./scripts/test-typedb.sh;
+            # The source runner finds its helper beside itself; the packaged
+            # runner lives in bin/, so bind that helper to its immutable path.
+            text =
+              builtins.replaceStrings
+                [
+                  ''"$(dirname "''${BASH_SOURCE[0]}")/test-typedb-federation.sh"''
+                ]
+                [ "${./scripts/test-typedb-federation.sh}" ]
+                (builtins.readFile ./scripts/test-typedb.sh);
           };
           # Local TypeDB bootstrap for single-host pilots: generates
           # credentials once, converges passwords over the loopback
@@ -285,11 +297,15 @@
           inherit (toolchain) craneLib;
         })
         // rec {
-          default = harbor-rs.lib.mkDevShell {
-            inherit pkgs cross;
-            inherit (toolchain) craneLib;
-            packages = [ pkgs.cargo-nextest ];
-          };
+          default =
+            (harbor-rs.lib.mkDevShell {
+              inherit pkgs cross;
+              inherit (toolchain) craneLib;
+              packages = [ pkgs.cargo-nextest ];
+            }).overrideAttrs
+              (_: {
+                CHAOSBOX_TEST_NIX = pkgs.lib.getExe pkgs.nix;
+              });
           # Live TypeDB work (db migrate, backend tests, test-typedb.sh):
           # server + Console from the temporary packages. Opt-in so the
           # default shell (and every CI gate using it) never builds them;
@@ -330,8 +346,17 @@
               pkgs.openssh
             ];
             cargoExtraArgs = "--locked --workspace";
+            CHAOSBOX_TEST_NIX = pkgs.lib.getExe pkgs.nix;
           };
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+          federationTestTools = import ./nix/federation-test-tools.nix {
+            inherit
+              pkgs
+              craneLib
+              commonArgs
+              cargoArtifacts
+              ;
+          };
         in
         {
           fmt = (treefmt pkgs.stdenv.hostPlatform.system pkgs).check self;
@@ -343,6 +368,15 @@
             }
           );
           unit = craneLib.cargoTest (commonArgs // { inherit cargoArtifacts; });
+          nix-plugin =
+            pkgs.runCommand "chaosbox-nix-plugin"
+              {
+                nativeBuildInputs = [ pkgs.nodejs ];
+              }
+              ''
+                node --test ${./plugins/chaosbox-nix}/test/*.test.mjs
+                touch "$out"
+              '';
           intelligence-plugin =
             pkgs.runCommand "chaosbox-intelligence-plugin"
               {
@@ -352,6 +386,7 @@
                 cp -r ${./plugins/chaosbox-intelligence} plugin
                 chmod -R u+w plugin
                 node --experimental-strip-types --test plugin/test/*.test.mjs
+                node --test ${./plugins/chaosbox-nix}/test/*.test.mjs
                 touch "$out"
               '';
           scratch-plugin =
@@ -405,12 +440,18 @@
                 echo "Home Manager federation renders and SSH remains query-key isolated" > "$out"
               '';
           typedb-integration = pkgs.callPackage ./nix/typedb-vm-test.nix {
+            inherit federationTestTools;
             harborDbModule = harbor-db.nixosModules.default;
             typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
             chaosboxModule = self.nixosModules.chaosbox;
             chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
             typedbPackage = typedbPkgs.typedb;
             typedbConsolePackage = typedbPkgs.typedb-console;
+          };
+          federation-ssh = pkgs.callPackage ./nix/federation-ssh-test.nix {
+            inherit federationTestTools;
+            homeManager = home-manager;
+            chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
           };
           # Full bootstrap lifecycle against the packaged server: empty
           # install, credential rotation, app auth, permissions, reboot,

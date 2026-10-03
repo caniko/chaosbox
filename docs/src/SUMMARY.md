@@ -10,11 +10,13 @@
 # Implementation and historical reference
 
 - [Capability reference](capability.md)
+- [Run-bound graph read views](read-views.md)
 - [Optional compiler evidence](compiler-evidence.md)
 - [PostgreSQL catalog evidence](postgresql.md)
 - [Source-selected continuation](checkpoints.md)
 - [Source-custodied compaction](session-compaction.md)
 - [Scratch provenance and finalization](scratch-ledger.md)
+- [Nix operation provenance](nix-operations.md)
 - [Compiler indexer feasibility](indexer-feasibility.md)
 - [Reviewed workspace impact pilot](workspace-impact.md)
 - [Source baseline](baseline.md)

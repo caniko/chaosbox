@@ -4,9 +4,7 @@ use chaosbox_store::StoreError;
 use futures::TryStreamExt;
 use typedb_driver::{TransactionOptions, TransactionType};
 use crate::{
-    common::{
-        col_string, drain, driver_error, is_conflict, is_unique_violation, read_rows, WRITE_TIMEOUT,
-    },
+    common::{drain, driver_error, is_conflict, is_unique_violation, WRITE_TIMEOUT},
     encode::{str_lit, int_lit},
 };
 use super::TypeDbStore;
@@ -35,10 +33,7 @@ impl TypeDbStore {
             .driver
             .as_ref()
             .ok_or_else(|| StoreError::Connection("not connected".into()))?;
-        let rows = read_rows(driver, &self.config.database, &format!("match $p isa session-knowledge-pointer, has memory-scope {}, has memory-build-id $id; $b isa session-knowledge-build, has memory-build-id $id, has memory-scope {}, has raw-envelope $body; select $id, $body;", str_lit(scope), str_lit(scope)), &["id","body"]).await?;
-        rows.first()
-            .map(|r| Ok((col_string(r, "id")?, col_string(r, "body")?)))
-            .transpose()
+        crate::knowledge::current(driver, &self.config.database, scope).await
     }
 
     /// Read one exact private knowledge generation without consulting its pointer.
@@ -53,10 +48,7 @@ impl TypeDbStore {
             .driver
             .as_ref()
             .ok_or_else(|| StoreError::Connection("not connected".into()))?;
-        let rows = read_rows(driver, &self.config.database, &format!(
-            "match $b isa session-knowledge-build, has memory-build-id {}, has memory-scope {}, has raw-envelope $body; select $body;",
-            str_lit(id), str_lit(scope)), &["body"]).await?;
-        rows.first().map(|r| col_string(r, "body")).transpose()
+        crate::knowledge::at(driver, &self.config.database, scope, id).await
     }
 
     /// Stage typed intelligence/evidence/lifecycle relationships, then atomically

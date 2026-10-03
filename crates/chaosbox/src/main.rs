@@ -31,6 +31,7 @@ mod mcp_server;
 mod pipeline_cmd;
 mod postgres_cmd;
 mod query_cmd;
+mod reader_cmd;
 
 use backend_cmd::{
     AnyReader, Backend, RunSpend, active_publishes_relations, backend, consumer_err,
@@ -53,6 +54,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Reason-gated local Nix additions and read-only operational intelligence.
+    Nix {
+        #[command(subcommand)]
+        command: chaosbox::nix::cli::Command,
+    },
     /// Project-scoped cross-user lazy query federation (read-only).
     Federation {
         /// Operator-owned client config; serve uses an owner-local provider config.
@@ -209,6 +215,12 @@ enum Command {
         #[arg(long)]
         workspace: Option<PathBuf>,
     },
+    /// Trusted host connector entrypoint: one admitted run-bound MCP connection.
+    Reader {
+        /// Private connector-owned admission JSON; never worker configuration.
+        #[arg(long)]
+        admission: PathBuf,
+    },
     /// Database readiness and migration reports (JSON contract v2).
     Db {
         #[command(subcommand)]
@@ -326,6 +338,22 @@ enum DbCmd {
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
+        Command::Nix { command } => match chaosbox::nix::cli::run(command).await {
+            Ok(value) => {
+                println!("{value}");
+                if value
+                    .get("outcome")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|s| s != "succeeded")
+                {
+                    std::process::exit(1);
+                }
+            }
+            Err(error) => {
+                eprintln!("nix: {error}");
+                std::process::exit(2);
+            }
+        },
         Command::Federation { config, command } => {
             match chaosbox::federation::cli::run(&config, command).await {
                 Ok(Some(value)) => println!("{value}"),
@@ -575,6 +603,15 @@ async fn main() {
             std::process::exit(code);
         }
         Command::Query { q } => std::process::exit(Box::pin(run_query(q)).await),
+        Command::Reader { admission } => {
+            if let Err(error) = Box::pin(reader_cmd::serve(&admission)).await {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({"blocked":true, "code":error.code(), "message":error.to_string()})
+                );
+                std::process::exit(1);
+            }
+        }
         Command::Mcp {
             intelligence,
             intelligence_current,
