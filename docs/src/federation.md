@@ -387,6 +387,7 @@ Native gates (the adapter suite uses Node 24+):
 cargo test -p chaosbox --test federation --locked
 cargo test -p chaosbox --locked
 node --test plugins/chaosbox-intelligence/test/*.test.mjs
+python3 scripts/test-federation-gates.py -v
 canix repo eval .#checks.x86_64-linux.federation-home.drvPath
 bash scripts/test-typedb.sh --federation-only
 ```
@@ -400,7 +401,9 @@ runs `federation_typedb` with `CHAOSBOX_REQUIRE_TYPEDB=1`. It verifies that curr
 and historical reads cannot create missing databases, that foreign scopes are
 invisible, that exact historical evidence resolves without advancing the current
 pointer, and that revoked or withheld records remain denied. The native test is
-ignored in ordinary unit runs, which do not provision a server.
+ignored in ordinary unit runs, which do not provision a server. The local runner
+also requires exactly one passed test with no failures or skips; an unmatched
+test-name filter cannot report a successful gate.
 
 The `typedb-integration` NixOS gate runs the same compiled regression against the
 packaged TypeDB server and requires one passed test with no skips. Connection,
@@ -423,6 +426,9 @@ attribution and evidence, exact historical reads, rejected caller/project/comman
 changes, grant revocation, withheld-record denial, one flushed response followed
 by exit while stdin remains open, and local results during an SSH outage. It also
 checks that reads preserve the authoritative bundle bytes and historical artifacts.
+Its driver regressions cover zero/ignored tests, partial or unterminated frames,
+extra frames and stalled exits. One deadline bounds the entire SSH response read
+and process exit, including a partial frame that never reaches a newline.
 
 `simit.toml` declares the package, unit, strict lint, scratch-plugin,
 federation-home, intelligence-plugin, typedb-integration and federation-ssh

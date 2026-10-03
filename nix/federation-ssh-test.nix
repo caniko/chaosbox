@@ -121,6 +121,11 @@ pkgs.testers.nixosTest {
     ];
   };
   testScript = ''
+    machine.succeed(
+        "python3 ${../scripts/test-federation-gates.py} "
+        "--ssh-gate ${../scripts/test-federation-ssh.py} "
+        "--typedb-gate ${../scripts/test-typedb-federation.sh} -v"
+    )
     machine.wait_for_unit("sshd.service")
     machine.wait_for_open_port(2222)
     for owner in ("can", "dejana"):

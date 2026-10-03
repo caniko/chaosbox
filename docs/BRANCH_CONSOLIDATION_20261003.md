@@ -21,7 +21,7 @@ the affected source were inspected for the remaining semantic changes.
 | `session-verifier` | `4d45dc00fecdf0c7e9a5156a76fc25aeab79cd78` | Ancestor of baseline; later verifier contracts retained. |
 | `origin/session-intelligence` | `7ee9412d42d0a45c329bf30a29f15c1c2a8c64c4` | Ancestor of baseline; later evidence/custody/uncertainty changes retained. |
 | `origin/typedb-bootstrap` | `6bd7df2718d908570dde32b7040a5dc59ffff655` | Included in the audited newer local bootstrap tip above. |
-| `qualify/federation-readonly-20261003` | `47b40e01b7d367fdc1095d4ba3d0feb911403160` | Baseline contains the first three qualification commits. The additional exact CLI diagnostic assertion and active follow-up gate edits require their owner's finalized commit before this stream can be declared consolidated. |
+| `qualify/federation-readonly-20261003` | `928fdbfa82bfa5ad25d1d6aea057d761bd77d37e` | Owner finalized the follow-up. Incorporate its exact CLI diagnostic assertion (`47b40e01`) and executed-test/deadline/helper-binding repairs (`928fdbfa`), preserving the reader smoke gate added by the merge. Fourteen driver regressions, shell syntax, Nix parsing and scoped treefmt passed. |
 
 Reader merge verification: workspace native tests, strict workspace/all-target
 Clippy, scoped pinned treefmt and Nix parsing passed. Ordinary tests do not
@@ -30,5 +30,5 @@ tests are not live-server evidence. Exact-source package/VM/consumer qualificati
 and final fleet readiness remain separate gates.
 
 Branch references and existing worktrees are retained. An absorbed branch is
-accounted for here without manufacturing an empty merge commit. Concurrent
-federation-gate edits are preserved for their owner to finalize.
+accounted for here without manufacturing an empty merge commit. The finalized
+federation follow-up was compared against its committed source before inclusion.
