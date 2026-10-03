@@ -13,6 +13,7 @@
   chaosboxPackage,
   typedbPackage,
   typedbConsolePackage,
+  federationTestTools,
 }:
 let
   testPassword = "password";
@@ -61,6 +62,14 @@ pkgs.testers.nixosTest {
         "CHAOSBOX_TYPEDB_DATABASE=${testDb} "
     )
     machine.succeed("printf '%s' '${testPassword}' > /etc/chaosbox-test-pw && chmod 600 /etc/chaosbox-test-pw")
+    # Execute the exact native regression with an authenticated live server.
+    # A missing server/credential/schema is an error; zero tests cannot pass.
+    code, out = machine.execute(
+        f"{ENV}CHAOSBOX_REQUIRE_TYPEDB=1 ${federationTestTools}/bin/federation-typedb "
+        "--ignored --exact federation_typedb_is_read_only_scoped_and_snapshot_bound"
+    )
+    assert code == 0, f"mandatory TypeDB federation regression failed: {out}"
+    assert "1 passed; 0 failed; 0 ignored" in out, f"live regression did not execute: {out}"
     machine.succeed("mkdir -p /tmp/cbtest && cp -r ${../fixtures/demo-repo} /tmp/cbtest/demo-repo && chmod -R u+rw /tmp/cbtest")
 
     # Pending before any migration has applied.
@@ -97,32 +106,44 @@ pkgs.testers.nixosTest {
     assert code == 0, f"status must succeed, got {code}: {out}"
     assert '"generation":2' in out.replace(" ", ""), f"re-run must publish generation 2: {out}"
 
-    # Deterministic-only publication retains syntax-backed declarations and
-    # module containment, but cannot publish inference decisions. Match the
-    # zero-model contract exercised by tests/structural.rs on the live backend.
+    # Deterministic-only publication retains certified syntax facts, with
+    # no new inference or fixture decisions. Verify the exact persisted facts,
+    # including their kinds, file scopes, coverage and duplicate count.
     code, _out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox run demo-repo --repo test-nodec --no-decisions > /tmp/graph-nodec.json")
     assert code == 0, f"no-decisions run must succeed, got {code}"
     code, out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox query export --repo test-nodec")
     assert code == 0, f"export must succeed, got {code}: {out}"
     graph = json.loads(out)
     nodes = {node["id"]: node for node in graph["nodes"]}
-    links = graph["links"]
-    assert nodes, f"deterministic build must have nodes: {out}"
-    assert len(links) == 5, f"fixture must retain all five syntax relations: {out}"
-    assert graph["coverage"]["structural_relations"] == len(links), out
-    assert graph["coverage"]["decision_relations"] == 0, out
-    assert all(link["rel_type"] in {"defines", "contains"} for link in links), out
-    for link in links:
+    assert nodes, f"no-decisions build must have nodes: {out}"
+    facts = set()
+    for link in graph["links"]:
         source, target = nodes[link["source"]], nodes[link["target"]]
-        assert source["kind"] == "file", link
-        assert source["source_file"] == target["source_file"], link
-        if link["rel_type"] == "contains":
-            assert target["kind"] == "module", link
-    definitions = {
-        (nodes[link["target"]]["source_file"], nodes[link["target"]]["label"])
-        for link in links if link["rel_type"] == "defines"
+        assert source["kind"] == "file", f"syntax fact must originate from a file: {link}"
+        assert source["source_file"] == target["source_file"], f"syntax fact must stay in its file: {link}"
+        facts.add((link["rel_type"], target["source_file"], target["label"], target["kind"]))
+    expected = {
+        ("defines", "app.ts", "main", "definition"),
+        ("defines", "src/main.rs", "main", "definition"),
+        ("defines", "src/main.rs", "helper", "definition"),
+        ("contains", "app.ts", "app", "module"),
+        ("contains", "src/main.rs", "main", "module"),
     }
-    assert definitions == {("src/main.rs", "main"), ("src/main.rs", "helper"), ("app.ts", "main")}, definitions
+    assert facts == expected, f"exact certified syntax facts expected: {out}"
+    assert len(graph["links"]) == len(expected), f"duplicate syntax facts: {out}"
+    assert graph["coverage"]["structural_relations"] == len(expected), f"structural coverage mismatch: {out}"
+    assert graph["coverage"]["decision_relations"] == 0, f"no-decisions build published decision relations: {out}"
+
+    # Run the reader acceptance against this packaged server and CLI. The
+    # existing smoke gate exercises historical pinning, a newer publication,
+    # revocation, call exhaustion and expiry with observable transport output.
+    machine.succeed("mkdir -p /tmp/cbtest/reader/syntax")
+    machine.succeed("printf 'export function before() {}\\nexport const value = 1;\\n' > /tmp/cbtest/reader/syntax/app.ts")
+    machine.succeed(f"{ENV} chaosbox run /tmp/cbtest/reader/syntax --repo syntax --no-decisions --max-candidates 0")
+    machine.succeed("printf 'export function after() {}\\nexport const value = 2;\\n' > /tmp/cbtest/reader/syntax/app.ts")
+    machine.succeed(f"{ENV} chaosbox run /tmp/cbtest/reader/syntax --repo syntax --no-decisions --max-candidates 0")
+    machine.succeed(f"{ENV} chaosbox query status --repo syntax > /tmp/cbtest/reader/status.json")
+    machine.succeed(f"{ENV} ${pkgs.python3}/bin/python3 ${../scripts/tests/read_view_smoke.py} /tmp/cbtest/reader")
 
     # Idempotent re-apply stays green.
     code, _out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox db migrate --json --repo test")

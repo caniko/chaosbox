@@ -32,6 +32,7 @@ mod materialization;
 pub mod navigation;
 mod pipeline;
 pub mod postgres;
+pub mod read_view;
 mod reader;
 mod responder;
 pub(crate) mod reuse;

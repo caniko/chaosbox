@@ -66,8 +66,12 @@ impl TypeDbStore {
         let Some(row) = rows.into_iter().next() else {
             return Ok(None);
         };
-        let gen = col_int(&row, "gen")?;
-        Ok(Some((col_string(&row, "b")?, gen, col_string(&row, "st")?)))
+        let generation = col_int(&row, "gen")?;
+        Ok(Some((
+            col_string(&row, "b")?,
+            generation,
+            col_string(&row, "st")?,
+        )))
     }
 
     /// Guarded pointer swing in ONE write transaction: re-validate the
@@ -76,11 +80,14 @@ impl TypeDbStore {
     /// this commit fail with an isolation conflict.
     pub(super) async fn swing(
         &self,
-        repo: &str,
-        build_id: &str,
+        build: &chaosbox_core::GraphBuild,
         expected: Option<(String, i64)>,
-        generation: i64,
+        digest: &str,
     ) -> Result<(), StoreError> {
+        let repo = build.repo.as_str();
+        let build_id = build.id.as_str();
+        let generation = i64::try_from(build.generation)
+            .map_err(|_| StoreError::Invariant("generation overflows i64".into()))?;
         let driver = self.driver.as_ref().expect("connected before publish");
         let tx = driver
             .transaction_with_options(
@@ -95,18 +102,20 @@ impl TypeDbStore {
         // generation the new build exceeds.
         let guard = match &expected {
             None => format!(
-                "match not {{ $p isa active-pointer, has repo-name {}; }}; $b isa graph-build, has build-id {}, has status \"staging\"; select $b;",
+                "match not {{ $p isa active-pointer, has repo-name {}; }}; $b isa graph-build, has build-id {}, has status \"staging\", has publication-digest {}; select $b;",
                 str_lit(repo),
-                str_lit(build_id)
+                str_lit(build_id),
+                str_lit(digest),
             ),
             Some((pred, pred_gen)) => format!(
-                "match $p isa active-pointer, has repo-name {}, has build-id {}; $c isa graph-build, has build-id {}, has generation {}; $b isa graph-build, has build-id {}, has generation {}, has status \"staging\"; select $b;",
+                "match $p isa active-pointer, has repo-name {}, has build-id {}; $c isa graph-build, has build-id {}, has generation {}; $b isa graph-build, has build-id {}, has generation {}, has status \"staging\", has publication-digest {}; select $b;",
                 str_lit(repo),
                 str_lit(pred),
                 str_lit(pred),
                 int_lit(*pred_gen),
                 str_lit(build_id),
-                int_lit(generation)
+                int_lit(generation),
+                str_lit(digest),
             ),
         };
         let guard_rows: Vec<ConceptRow> = match tx.query(&guard).await.map_err(driver_error)? {
@@ -124,6 +133,7 @@ impl TypeDbStore {
                 "concurrent publisher moved the pointer; build staged but not activated".into(),
             ));
         }
+        self.check_memberships(&tx, build, digest).await?;
         if expected.is_none() {
             let q = format!(
                 "insert $p isa active-pointer, has repo-name {}, has build-id {}, has updated {};",

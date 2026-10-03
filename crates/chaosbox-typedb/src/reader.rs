@@ -1,4 +1,4 @@
-//! Read-only `TypeDB` [`GraphQueries`](chaosbox_store::GraphQueries) implementation.
+//! Read-only `TypeDB` graph queries and scoped private knowledge generations.
 //!
 //! Every read is scoped to one pinned build id through the membership
 //! relations: rows outside the build are invisible by construction. Read
@@ -16,14 +16,10 @@
 
 use std::collections::BTreeMap;
 
-use chaosbox_store::{
-    BuildRow, EntityRow, EndpointRef, EvidenceRow, StoreError, GraphQueries, RelRow, SourceCitation,
-};
+use chaosbox_store::{BuildRow, EntityRow, EndpointRef, EvidenceRow, StoreError, GraphQueries, RelRow};
 use typedb_driver::{Address, Addresses, Credentials, DriverOptions, DriverTlsConfig, TypeDBDriver};
 
-use crate::common::{
-    TypeDbConfig, col_bool, col_int, col_string, col_string_opt, driver_error, read_rows,
-};
+use crate::common::{TypeDbConfig, col_int, col_string, col_string_opt, driver_error, read_rows};
 use crate::encode::{int_lit, str_lit};
 
 /// Entity attribute columns selected by every member query.
@@ -167,6 +163,18 @@ impl TypeDbReader {
             .ok_or_else(|| StoreError::Connection("TypeDbReader disconnected".into()))
     }
 
+    /// Read the current private knowledge generation in a read transaction.
+    /// Requires an existing database and an explicit prior `connect`.
+    pub async fn knowledge(&self, scope: &str) -> Result<Option<(String, String)>, StoreError> {
+        crate::knowledge::current(self.driver()?, &self.config.database, scope).await
+    }
+
+    /// Read one exact scoped generation without advancing its current pointer.
+    /// This reader never creates databases or applies schemas.
+    pub async fn knowledge_at(&self, scope: &str, id: &str) -> Result<Option<String>, StoreError> {
+        crate::knowledge::at(self.driver()?, &self.config.database, scope, id).await
+    }
+
     /// Schema presence probe: true when the Chaosbox schema is applied
     /// (the marker query executes, rows or not), false when the schema
     /// types are unknown (`INF2`: migrations have not applied). Connection
@@ -184,7 +192,7 @@ impl TypeDbReader {
             .await
             .map_err(driver_error)?;
         match tx
-            .query("match $x isa active-pointer; $g isa graph-build; try { $g has coverage-json $c; }; $e isa evidence; try { $e has producer $p; }; $n isa code-entity; try { $n has compiler-json $ci; }; try { $m isa session-knowledge-pointer; $m has memory-scope $ms; }; select $x; limit 1;")
+            .query("match $x isa active-pointer; $g isa graph-build; try { $g has coverage-json $c; }; $e isa evidence; try { $e has producer $p; }; $n isa code-entity; try { $n has compiler-json $ci; }; try { $m isa session-knowledge-pointer; $m has memory-scope $ms; }; $em isa edge-membership; try { $em has sealed-evidence-json $sealed; }; select $x; limit 1;")
             .await
         {
             Ok(answer) => {
@@ -241,19 +249,12 @@ impl TypeDbReader {
         let rows = read_rows(self.driver()?, &self.config.database, &q, REL_COLS).await?;
         rows.iter().map(row_to_rel).collect()
     }
-}
 
-#[async_trait::async_trait]
-impl GraphQueries for TypeDbReader {
-    async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, StoreError> {
-        let q = format!(
-            "match $p isa active-pointer, has repo-name {}, has build-id $b; $g isa graph-build, has build-id $b, has generation $gen, has status $st; try {{ $g has coverage-json $coverage; }}; select $b, $gen, $st, $coverage;",
-            str_lit(repo)
-        );
+    async fn build_header(&self, query: &str) -> Result<Option<BuildRow>, StoreError> {
         let rows = read_rows(
             self.driver()?,
             &self.config.database,
-            &q,
+            query,
             &["b", "gen", "st", "coverage"],
         )
         .await?;
@@ -286,6 +287,28 @@ impl GraphQueries for TypeDbReader {
                 })
                 .transpose()?,
         }))
+    }
+}
+
+#[async_trait::async_trait]
+impl GraphQueries for TypeDbReader {
+    async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, StoreError> {
+        self.build_header(&format!(
+            "match $p isa active-pointer, has repo-name {repo}, has build-id $b; $g isa graph-build, has build-id $b, has repo-name {repo}, has generation $gen, has status $st; $st == \"active\"; try {{ $g has coverage-json $coverage; }}; select $b, $gen, $st, $coverage;",
+            repo = str_lit(repo),
+        )).await
+    }
+
+    async fn published_build(
+        &self,
+        repo: &str,
+        build_id: &str,
+    ) -> Result<Option<BuildRow>, StoreError> {
+        self.build_header(&format!(
+            "match $g isa graph-build, has build-id {build}, has build-id $b, has repo-name {repo}, has generation $gen, has status $st, has publication-digest $digest; $st == \"active\"; try {{ $g has coverage-json $coverage; }}; select $b, $gen, $st, $coverage;",
+            build = str_lit(build_id),
+            repo = str_lit(repo),
+        )).await
     }
 
     async fn search_entities(
@@ -371,50 +394,49 @@ impl GraphQueries for TypeDbReader {
         build_id: &str,
         rel_id: &str,
     ) -> Result<Vec<EvidenceRow>, StoreError> {
-        // Claims about this relationship, gated on its membership in the
-        // pinned build; supporting and contradicting links union below.
-        let mut out: BTreeMap<String, EvidenceRow> = BTreeMap::new();
-        for link in ["supporting", "contradicting"] {
-            let q = format!(
-                "match (build: $b, edge: $rel) isa edge-membership; $b isa graph-build, has build-id {}; $rel isa relationship, has rel-id {}; $c isa claim, has relationship-id {}; (claim: $c, evidence: $e) isa {link}; $e isa evidence, has evidence-id $id, has class $cl, has supports $s, has text $t; try {{ $e has producer $producer; }}; try {{ $e has file-version-id $fv; $v isa file-version, has file-version-id $fv, has snapshot-id $snap, has path $file, has sha256 $sha; }}; {SOURCE_SPAN} select $id, $cl, $s, $t, $producer, $snap, $file, $sha, $sf, $sl, $sc, $el, $ec, $bs, $be;",
-                str_lit(build_id),
-                str_lit(rel_id),
-                str_lit(rel_id)
-            );
-            let rows = read_rows(
-                self.driver()?,
-                &self.config.database,
-                &q,
-                &[
-                    "id", "cl", "s", "t", "producer", "snap", "file", "sha", "sf", "sl", "sc",
-                    "el", "ec", "bs", "be",
-                ],
-            )
-            .await?;
-            for row in &rows {
-                let ev = EvidenceRow {
-                    evidence_id: col_string(row, "id")?,
-                    class: col_string(row, "cl")?,
-                    supports: col_bool(row, "s")?,
-                    text: col_string(row, "t")?,
-                    producer: col_string_opt(row, "producer"),
-                    citation: if let Some(snapshot) = col_string_opt(row, "snap") {
-                        Some(SourceCitation {
-                            snapshot,
-                            file: col_string(row, "file")?,
-                            sha256: col_string(row, "sha")?,
-                            span: row_span(row)?,
-                        })
-                    } else {
-                        None
-                    },
-                };
-                out.insert(ev.evidence_id.clone(), ev);
-            }
+        self.evidence_for_limited(build_id, rel_id, i64::MAX).await
+    }
+
+    async fn evidence_for_limited(
+        &self,
+        build_id: &str,
+        rel_id: &str,
+        limit: i64,
+    ) -> Result<Vec<EvidenceRow>, StoreError> {
+        if limit <= 0 {
+            return Ok(Vec::new());
         }
-        let mut v: Vec<EvidenceRow> = out.into_values().collect();
-        v.sort_by(|a, b| a.evidence_id.cmp(&b.evidence_id));
-        Ok(v)
+        // Publication stores the complete evidence closure on this exact
+        // build membership. Never re-join mutable claims, including on recovery.
+        let q = format!(
+            "match $m isa edge-membership (build: $b, edge: $rel); $b isa graph-build, has build-id {}, has status \"active\"; $rel isa relationship, has rel-id {}; try {{ $m has sealed-evidence-json $sealed; }}; select $sealed; limit 2;",
+            str_lit(build_id),
+            str_lit(rel_id),
+        );
+        let rows = read_rows(self.driver()?, &self.config.database, &q, &["sealed"]).await?;
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        if rows.len() != 1 {
+            return Err(StoreError::EvidenceClosureUnavailable);
+        }
+        let json =
+            col_string_opt(&rows[0], "sealed").ok_or(StoreError::EvidenceClosureUnavailable)?;
+        if json.len() > chaosbox_store::SEALED_EVIDENCE_BYTES_MAX {
+            return Err(StoreError::QueryBudget);
+        }
+        let mut evidence: Vec<EvidenceRow> =
+            serde_json::from_str(&json).map_err(|_| StoreError::EvidenceClosureUnavailable)?;
+        // Reject duplicate ids rather than making missing references disappear
+        // through LIMIT/deduplication. Sealed packets are canonical at publication.
+        if evidence
+            .windows(2)
+            .any(|w| w[0].evidence_id >= w[1].evidence_id)
+        {
+            return Err(StoreError::EvidenceClosureUnavailable);
+        }
+        evidence.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        Ok(evidence)
     }
 }
 
