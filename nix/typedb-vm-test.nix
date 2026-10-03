@@ -134,6 +134,17 @@ pkgs.testers.nixosTest {
     assert graph["coverage"]["structural_relations"] == len(expected), f"structural coverage mismatch: {out}"
     assert graph["coverage"]["decision_relations"] == 0, f"no-decisions build published decision relations: {out}"
 
+    # Run the reader acceptance against this packaged server and CLI. The
+    # existing smoke gate exercises historical pinning, a newer publication,
+    # revocation, call exhaustion and expiry with observable transport output.
+    machine.succeed("mkdir -p /tmp/cbtest/reader/syntax")
+    machine.succeed("printf 'export function before() {}\\nexport const value = 1;\\n' > /tmp/cbtest/reader/syntax/app.ts")
+    machine.succeed(f"{ENV} chaosbox run /tmp/cbtest/reader/syntax --repo syntax --no-decisions --max-candidates 0")
+    machine.succeed("printf 'export function after() {}\\nexport const value = 2;\\n' > /tmp/cbtest/reader/syntax/app.ts")
+    machine.succeed(f"{ENV} chaosbox run /tmp/cbtest/reader/syntax --repo syntax --no-decisions --max-candidates 0")
+    machine.succeed(f"{ENV} chaosbox query status --repo syntax > /tmp/cbtest/reader/status.json")
+    machine.succeed(f"{ENV} ${pkgs.python3}/bin/python3 ${../scripts/tests/read_view_smoke.py} /tmp/cbtest/reader")
+
     # Idempotent re-apply stays green.
     code, _out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox db migrate --json --repo test")
     assert code == 0, f"re-apply must stay green, got {code}"
