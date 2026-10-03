@@ -54,22 +54,44 @@ class RustTestCount(unittest.TestCase):
 
 
 class OneShotDeadline(unittest.TestCase):
-    def invoke(self, body, timeout=0.3):
+    def invoke(self, body, timeout=0.3, startup_delay=0):
         process = subprocess.Popen(
-            [sys.executable, "-u", "-c", f"import sys,time,os\n{body}"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            [sys.executable, "-u", "-c",
+             f"import sys,time,os\ntime.sleep({startup_delay!r})\n"
+             "sys.stdout.write('ready\\n'); sys.stdout.flush()\n"
+             f"sys.stdin.read(1)\n{body}"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True,
         )
+        # Interpreter startup under QEMU is outside the reader's contract.
+        # Bound readiness separately, then start the unchanged reader deadline.
+        startup_watchdog = threading.Timer(5, lambda: process.kill() if process.poll() is None else None)
+        startup_watchdog.start()
+        try:
+            self.assertEqual(process.stdout.readline(), "ready\n")
+        except BaseException:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=2)
+            process.stdin.close()
+            process.stdout.close()
+            raise
+        finally:
+            startup_watchdog.cancel()
         # Also bound a future regression to a blocking pipe read.
         watchdog = threading.Timer(2, lambda: process.kill() if process.poll() is None else None)
         watchdog.start()
         started = time.monotonic()
         try:
+            process.stdin.write("\n")
+            process.stdin.flush()
             return READ_ONE_SHOT(process, timeout=timeout)
         finally:
             watchdog.cancel()
             if process.poll() is None:
                 process.kill()
             process.wait(timeout=2)
+            process.stdin.close()
             process.stdout.close()
             self.assertLess(time.monotonic() - started, 1.5, "read escaped its deadline")
 
@@ -79,7 +101,10 @@ class OneShotDeadline(unittest.TestCase):
 
     def test_fragmented_complete_frame_passes(self):
         self.invoke("sys.stdout.write('{'); sys.stdout.flush(); time.sleep(0.02); "
-                    f"sys.stdout.write({REPLY[1:]!r})")
+                     f"sys.stdout.write({REPLY[1:]!r})")
+
+    def test_slow_interpreter_startup_is_outside_reader_deadline(self):
+        self.invoke(f"sys.stdout.write({REPLY!r})", startup_delay=0.5)
 
     def test_complete_frame_with_open_pipe_times_out(self):
         with self.assertRaises(subprocess.TimeoutExpired):
