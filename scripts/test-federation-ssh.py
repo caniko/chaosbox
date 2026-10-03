@@ -167,7 +167,8 @@ def verify_connected(root, fixtures):
         assert current.read_bytes() == next_bytes, "history read changed the current source"
         unknown = dict(handle, snapshot="0" * 64)
         result = evidence(root, owner, unknown)
-        assert result.returncode != 0 and "snapshot_unavailable" in result.stderr, result
+        assert (result.returncode != 0 and result.stdout == ""
+                and result.stderr == "federation snapshot unavailable\n"), result
 
         revoked = copy.deepcopy(original_policy)
         revoked["policy"]["grants"] = []
