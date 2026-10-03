@@ -106,32 +106,33 @@ pkgs.testers.nixosTest {
     assert code == 0, f"status must succeed, got {code}: {out}"
     assert '"generation":2' in out.replace(" ", ""), f"re-run must publish generation 2: {out}"
 
-    # Deterministic-only publication retains syntax-backed declarations and
-    # module containment, but cannot publish inference decisions. Match the
-    # zero-model contract exercised by tests/structural.rs on the live backend.
+    # Deterministic-only publication retains certified syntax facts, with
+    # no new inference or fixture decisions. Verify the exact persisted facts,
+    # including their kinds, file scopes, coverage and duplicate count.
     code, _out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox run demo-repo --repo test-nodec --no-decisions > /tmp/graph-nodec.json")
     assert code == 0, f"no-decisions run must succeed, got {code}"
     code, out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox query export --repo test-nodec")
     assert code == 0, f"export must succeed, got {code}: {out}"
     graph = json.loads(out)
     nodes = {node["id"]: node for node in graph["nodes"]}
-    links = graph["links"]
-    assert nodes, f"deterministic build must have nodes: {out}"
-    assert len(links) == 5, f"fixture must retain all five syntax relations: {out}"
-    assert graph["coverage"]["structural_relations"] == len(links), out
-    assert graph["coverage"]["decision_relations"] == 0, out
-    assert all(link["rel_type"] in {"defines", "contains"} for link in links), out
-    for link in links:
+    assert nodes, f"no-decisions build must have nodes: {out}"
+    facts = set()
+    for link in graph["links"]:
         source, target = nodes[link["source"]], nodes[link["target"]]
-        assert source["kind"] == "file", link
-        assert source["source_file"] == target["source_file"], link
-        if link["rel_type"] == "contains":
-            assert target["kind"] == "module", link
-    definitions = {
-        (nodes[link["target"]]["source_file"], nodes[link["target"]]["label"])
-        for link in links if link["rel_type"] == "defines"
+        assert source["kind"] == "file", f"syntax fact must originate from a file: {link}"
+        assert source["source_file"] == target["source_file"], f"syntax fact must stay in its file: {link}"
+        facts.add((link["rel_type"], target["source_file"], target["label"], target["kind"]))
+    expected = {
+        ("defines", "app.ts", "main", "definition"),
+        ("defines", "src/main.rs", "main", "definition"),
+        ("defines", "src/main.rs", "helper", "definition"),
+        ("contains", "app.ts", "app", "module"),
+        ("contains", "src/main.rs", "main", "module"),
     }
-    assert definitions == {("src/main.rs", "main"), ("src/main.rs", "helper"), ("app.ts", "main")}, definitions
+    assert facts == expected, f"exact certified syntax facts expected: {out}"
+    assert len(graph["links"]) == len(expected), f"duplicate syntax facts: {out}"
+    assert graph["coverage"]["structural_relations"] == len(expected), f"structural coverage mismatch: {out}"
+    assert graph["coverage"]["decision_relations"] == 0, f"no-decisions build published decision relations: {out}"
 
     # Idempotent re-apply stays green.
     code, _out = machine.execute(f"cd /tmp/cbtest && {ENV} chaosbox db migrate --json --repo test")
