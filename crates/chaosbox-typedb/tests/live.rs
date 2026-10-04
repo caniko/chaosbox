@@ -692,7 +692,10 @@ async fn assert_sealed_recovery(
         .await
         .unwrap();
     let next = GraphBuild::new(&build.repo, vec!["s1".into()], 2);
-    store.publish(next, Some(build.id.clone())).await.unwrap();
+    store
+        .publish(next.clone(), Some(build.id.clone()))
+        .await
+        .unwrap();
     let mut recovered = TypeDbReader::new(config(db));
     recovered.connect().await.unwrap();
     let rows = recovered.evidence_for(&build.id, &rel.id).await.unwrap();
@@ -702,6 +705,14 @@ async fn assert_sealed_recovery(
         "historical evidence changed after publication"
     );
     assert_eq!(rows[0].evidence_id, "ev:direct");
+    assert!(
+        recovered
+            .published_build(&build.repo, &build.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .evidence_sealed
+    );
     // Model a legacy membership after additive migration: no expected
     // references survived, so completeness cannot be established from links.
     let driver = live_driver(db).await;
@@ -714,7 +725,46 @@ async fn assert_sealed_recovery(
         chaosbox_typedb::encode::str_lit(&build.id)
     );
     tx.query(query).await.unwrap();
+    for id in [&build.id, &next.id] {
+        tx.query(format!(
+            "match $b isa graph-build, has build-id {}; $b has publication-digest $digest; delete has $digest of $b;",
+            chaosbox_typedb::encode::str_lit(id)
+        )).await.unwrap();
+    }
     tx.commit().await.unwrap();
+    let legacy = recovered
+        .published_build(&build.repo, &build.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!legacy.evidence_sealed);
+    assert_eq!(legacy.generation, 1);
+    assert!(
+        !recovered
+            .active_build(&build.repo)
+            .await
+            .unwrap()
+            .unwrap()
+            .evidence_sealed
+    );
+    assert!(!recovered
+        .build_entities(&build.id, 100)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        recovered
+            .build_relationships(&build.id, 100)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(recovered
+        .published_build("foreign", &build.id)
+        .await
+        .unwrap()
+        .is_none());
     assert!(matches!(
         recovered.evidence_for(&build.id, &rel.id).await,
         Err(chaosbox_store::StoreError::EvidenceClosureUnavailable)

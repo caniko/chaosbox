@@ -16,6 +16,8 @@ pub trait GraphQueries: Send + Sync {
     async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, StoreError>;
     /// Published build owned by `repo`, including historical builds. Missing,
     /// foreign, and unpublished builds return `None` without exposing members.
+    /// Legacy publications remain available for operator membership diffs;
+    /// run-bound callers must also require the header's `evidence_sealed` flag.
     async fn published_build(
         &self,
         repo: &str,

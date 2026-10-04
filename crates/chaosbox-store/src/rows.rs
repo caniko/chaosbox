@@ -47,6 +47,10 @@ pub struct BuildRow {
     /// Processing coverage of this immutable build; unknown for legacy builds.
     #[serde(default)]
     pub coverage: Option<BuildCoverage>,
+    /// Publication sealed its complete evidence closure. Legacy headers remain
+    /// available for operator diffs, but cannot authorize run-bound readers.
+    #[serde(default)]
+    pub evidence_sealed: bool,
 }
 
 /// Relationship row with endpoint ids.

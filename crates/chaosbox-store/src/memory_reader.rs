@@ -118,6 +118,10 @@ impl GraphQueries for MemoryReader {
                     status: "active".to_owned(),
                     snapshots,
                     coverage: b.coverage.clone(),
+                    evidence_sealed: b
+                        .edges
+                        .keys()
+                        .all(|rel| self.evidence.contains_key(&(b.id.clone(), rel.clone()))),
                 }
             }))
     }
