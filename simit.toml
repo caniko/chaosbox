@@ -7,22 +7,20 @@ with_docs = true
 provider = "actions"
 platform = "github"
 publish_crates = true
-nix_builds = [
-  ".#packages.x86_64-linux.chaosbox",
-  ".#checks.x86_64-linux.unit",
-  ".#checks.x86_64-linux.lint",
-  ".#checks.x86_64-linux.scratch-plugin",
-  ".#checks.x86_64-linux.federation-home",
-  ".#checks.x86_64-linux.intelligence-plugin",
-  ".#checks.x86_64-linux.typedb-integration",
-  ".#checks.x86_64-linux.federation-ssh",
-]
+nix_builds = [".#packages.x86_64-linux.chaosbox", ".#checks.x86_64-linux.unit", ".#checks.x86_64-linux.lint", ".#checks.x86_64-linux.scratch-plugin", ".#checks.x86_64-linux.federation-home", ".#checks.x86_64-linux.intelligence-plugin", ".#checks.x86_64-linux.typedb-integration", ".#checks.x86_64-linux.federation-ssh"]
+workspace_strategy = "aggregate"
+publish_strategy = "coordinated"
 
 [ci.nix_build]
+kvm = true
+capture_results = true
 timeout_minutes = 180
 max_parallel = 2
 max_jobs = 1
 cores = 2
-kvm = true
-capture_results = true
 artifact_retention_days = 30
+
+[[ci.required_gates]]
+id = "package-inventory"
+timeout_minutes = 30
+run = 'set -euo pipefail; for crate in chaosbox-core chaosbox-extract chaosbox-jev chaosbox-store chaosbox-typedb chaosbox; do nix develop -c cargo package -p "$crate" --allow-dirty --list; done'
