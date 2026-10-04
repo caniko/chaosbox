@@ -16,7 +16,7 @@
 let
   dummySecret = ../fixtures/eval-test-password;
   eval = import "${pkgs.path}/nixos/lib/eval-config.nix" {
-    system = pkgs.system;
+    inherit (pkgs) system;
     modules = [
       harborDbModule
       typedbModule

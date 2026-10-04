@@ -53,6 +53,34 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Project-scoped cross-user lazy query federation (read-only).
+    Federation {
+        /// Operator-owned client config; serve uses an owner-local provider config.
+        #[arg(long)]
+        config: PathBuf,
+        #[command(subcommand)]
+        command: chaosbox::federation::cli::Command,
+    },
+    /// Track scratch allocations, their purpose and unfinished work.
+    Scratch {
+        #[command(flatten)]
+        settings: chaosbox::scratch::cli::Settings,
+        #[command(subcommand)]
+        command: chaosbox::scratch::cli::Command,
+    },
+    /// Same-user peer replication and Jev-assisted intelligence reconciliation.
+    Sync {
+        /// Operator-owned sync identity/settings directory.
+        #[arg(long, global = true)]
+        directory: Option<PathBuf>,
+        #[command(subcommand)]
+        command: chaosbox::sync::cli::Command,
+    },
+    /// Durable session custody and Chaosbox-owned context reduction.
+    Memory {
+        #[command(subcommand)]
+        command: chaosbox::compaction::cli::Command,
+    },
     /// Jev-selected exact-source continuation with deterministic Rust rendering.
     Checkpoint {
         #[command(subcommand)]
@@ -171,6 +199,12 @@ enum Command {
         /// Explicit private intelligence bundle, pinned once on startup.
         #[arg(long)]
         intelligence: Option<PathBuf>,
+        /// Live synchronized intelligence; pins one local snapshot per request.
+        #[arg(long, conflicts_with = "intelligence")]
+        intelligence_current: Option<PathBuf>,
+        /// Operator-owned project federation config; providers retain their own scopes.
+        #[arg(long, conflicts_with_all = ["intelligence", "intelligence_current"])]
+        intelligence_federation: Option<PathBuf>,
         /// Explicit reviewed workspace artifact, pinned once on startup.
         #[arg(long)]
         workspace: Option<PathBuf>,
@@ -292,6 +326,47 @@ enum DbCmd {
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
+        Command::Federation { config, command } => {
+            match chaosbox::federation::cli::run(&config, command).await {
+                Ok(Some(value)) => println!("{value}"),
+                Ok(None) => (),
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::Scratch { settings, command } => {
+            match chaosbox::scratch::cli::run(&settings, command).await {
+                Ok(value) => println!("{value}"),
+                Err(error) => {
+                    eprintln!("scratch: {error}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        Command::Sync { directory, command } => {
+            match Box::pin(chaosbox::sync::cli::run(directory, command)).await {
+                Ok(value) => {
+                    if !value.is_null() {
+                        println!("{value}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("sync: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::Memory { command } => {
+            match Box::pin(chaosbox::compaction::cli::run(command)).await {
+                Ok(value) => println!("{value}"),
+                Err(error) => {
+                    eprintln!("memory: {error}");
+                    std::process::exit(2);
+                }
+            }
+        }
         Command::Checkpoint { command } => {
             match Box::pin(chaosbox::continuation::cli::run(command)).await {
                 Ok(value) => println!("{value}"),
@@ -502,6 +577,8 @@ async fn main() {
         Command::Query { q } => std::process::exit(Box::pin(run_query(q)).await),
         Command::Mcp {
             intelligence,
+            intelligence_current,
+            intelligence_federation,
             workspace,
         } => {
             let bundle = intelligence
@@ -520,7 +597,23 @@ async fn main() {
                     eprintln!("workspace artifact: {error}");
                     std::process::exit(1);
                 });
-            Box::pin(serve_mcp(bundle, workspace)).await;
+            let current = intelligence_current
+                .as_deref()
+                .map(chaosbox::sync::cli::current_reader)
+                .transpose()
+                .unwrap_or_else(|error| {
+                    eprintln!("current intelligence: {error}");
+                    std::process::exit(1);
+                });
+            let federation = intelligence_federation
+                .as_deref()
+                .map(|path| chaosbox::federation::ClientConfig::load(path)?.reader())
+                .transpose()
+                .unwrap_or_else(|error| {
+                    eprintln!("intelligence federation: {error}");
+                    std::process::exit(1);
+                });
+            Box::pin(serve_mcp(bundle, workspace, current, federation)).await;
         }
         Command::Db { op } => match op {
             DbCmd::Check { json: _, repo } => {

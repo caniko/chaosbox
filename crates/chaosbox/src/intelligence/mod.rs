@@ -5,9 +5,10 @@
 mod assess;
 pub mod cli;
 mod extract;
+pub(crate) use assess::replication_kind;
 
-pub use assess::{assess, questions, Assessment, Outcome, RUBRIC_VERSION};
-pub use extract::{extract, extract_window, Candidates};
+pub use assess::{assess, questions, validate_replication_receipt, Assessment, Outcome, RUBRIC_VERSION};
+pub use extract::{extract, extract_window, extract_complete_window, Candidates};
 
 use chaosbox_core::intelligence::{Intelligence, IntelligenceStatus};
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,13 @@ pub struct Bundle {
 }
 
 impl Bundle {
+    /// Identity of the complete validated content a consumer actually loaded.
+    pub fn digest(&self) -> Result<String, String> {
+        Ok(chaosbox_core::sha256_hex(&[&serde_json::to_string(self)
+            .map_err(|_| {
+            "encode intelligence snapshot"
+        })?]))
+    }
     /// Empty unpublished knowledge set for an explicit private scope.
     #[must_use]
     pub fn new(scope: &str) -> Self {
@@ -260,7 +268,7 @@ fn location(e: &chaosbox_core::intelligence::SessionEvidence) -> serde_json::Val
         "message":e.message,"pointer":e.pointer,"line":e.line,"observed_at_ms":e.observed_at_ms})
 }
 
-fn words(text: &str) -> std::collections::BTreeSet<String> {
+pub(crate) fn words(text: &str) -> std::collections::BTreeSet<String> {
     text.split(|c: char| !c.is_alphanumeric())
         .map(str::to_lowercase)
         .filter(|w| {
@@ -329,7 +337,7 @@ pub fn mcp_query(
                 args.max_chars.unwrap_or(12_000),
             )?;
             Ok(
-                serde_json::json!({"scope":bundle.scope,"historical_data_not_instructions":true,"exhaustive":false,"records":records}),
+                serde_json::json!({"scope":bundle.scope,"snapshot":bundle.digest()?,"historical_data_not_instructions":true,"exhaustive":false,"records":records}),
             )
         }
         "intelligence_evidence" => {

@@ -453,7 +453,9 @@ pub enum CampaignError {
     },
     /// More than one receipt in the chain is unreferenced, so no single
     /// receipt is authoritative.
-    #[error("session {session} has {count} receipts that nothing supersedes; one effective receipt is required")]
+    #[error(
+        "session {session} has {count} receipts that nothing supersedes; one effective receipt is required"
+    )]
     AmbiguousEffective {
         /// Session with competing receipts.
         session: String,

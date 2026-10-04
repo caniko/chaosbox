@@ -27,6 +27,25 @@ pub struct TypeDbConfig {
     pub database: String,
 }
 
+impl TypeDbConfig {
+    /// Operator environment configuration; the password is read from a file,
+    /// never accepted as a command argument or printed in diagnostics.
+    pub fn from_env() -> Result<Self, String> {
+        let path = std::env::var("CHAOSBOX_TYPEDB_PASSWORD_FILE")
+            .map_err(|_| "CHAOSBOX_TYPEDB_PASSWORD_FILE unset")?;
+        let password =
+            std::fs::read_to_string(path).map_err(|e| format!("read password file: {e}"))?;
+        Ok(Self {
+            address: std::env::var("CHAOSBOX_TYPEDB_ADDR")
+                .unwrap_or_else(|_| "127.0.0.1:1729".into()),
+            username: std::env::var("CHAOSBOX_TYPEDB_USER").unwrap_or_else(|_| "admin".into()),
+            password: password.trim().into(),
+            database: std::env::var("CHAOSBOX_TYPEDB_DATABASE")
+                .unwrap_or_else(|_| "chaosbox".into()),
+        })
+    }
+}
+
 /// Bounded transaction lifetimes: staging writes are small, the pointer
 /// swing must not hang a publisher forever.
 pub(crate) const WRITE_TIMEOUT: Duration = Duration::from_secs(30);

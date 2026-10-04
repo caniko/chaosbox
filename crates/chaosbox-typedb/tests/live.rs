@@ -33,6 +33,188 @@ use chaosbox_store::{GraphQueries, Store, check_conformance};
 use chaosbox_typedb::reader::TypeDbReader;
 use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
 
+#[tokio::test]
+async fn private_session_knowledge_is_pinned_idempotent_and_predecessor_guarded() {
+    use chaosbox_core::intelligence::{
+        Intelligence, IntelligenceKind, IntelligenceStatus, SessionEvidence,
+    };
+    let db = test_db("t_session_memory");
+    let Some(mut store) = connected_store(&db).await else {
+        return;
+    };
+    let scope = "private:test-owner";
+    let item = Intelligence {
+        id: "intel:fixture".into(),
+        scope: scope.into(),
+        repositories: vec!["test-repo".into()],
+        statement: "Preserve explicit operator-selected private scope.".into(),
+        kind: IntelligenceKind::Constraint,
+        status: IntelligenceStatus::Admitted,
+        interpretation_class: EvidenceClass::Inferred,
+        evidence: vec![SessionEvidence {
+            source: "opencode".into(),
+            snapshot: "a".repeat(64),
+            session: "ses_native".into(),
+            message: "msg_native".into(),
+            pointer: "/text".into(),
+            line: 1,
+            quote: "Preserve explicit operator-selected private scope.".into(),
+            speaker: "user".into(),
+            observed_at_ms: Some(1),
+        }],
+        contradicts: vec![],
+        supersedes: None,
+        assessments: vec!["fixture-receipt".into()],
+    };
+    let first =
+        serde_json::json!({"scope":scope,"records":[item],"assessments":["fixture-receipt"]})
+            .to_string();
+    let records = vec![item];
+    let id = store
+        .publish_knowledge(scope, &first, &records, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .publish_knowledge(scope, &first, &records, None)
+            .await
+            .unwrap(),
+        id
+    );
+    assert_eq!(
+        store.knowledge(scope).await.unwrap(),
+        Some((id.clone(), first.clone()))
+    );
+    assert!(store
+        .knowledge("private:someone-else")
+        .await
+        .unwrap()
+        .is_none());
+    let second=serde_json::json!({"scope":scope,"records":records,"assessments":["fixture-receipt"],"coverage":"second-generation"}).to_string();
+    assert!(store
+        .publish_knowledge(scope, &second, &records, None)
+        .await
+        .is_err());
+    let next = store
+        .publish_knowledge(scope, &second, &records, Some(&id))
+        .await
+        .unwrap();
+    assert_ne!(next, id);
+    assert_eq!(
+        store.knowledge_at(scope, &id).await.unwrap(),
+        Some(first.clone())
+    );
+    assert!(store
+        .knowledge_at("private:someone-else", &id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .publish_knowledge(scope, &first, &records, Some(&id))
+        .await
+        .is_err());
+    assert_eq!(
+        store.knowledge(scope).await.unwrap(),
+        Some((next.clone(), second))
+    );
+    let mut rival = TypeDbStore::new(config(&db));
+    let left = serde_json::json!({"scope":scope,"records":records,"generation":"left"}).to_string();
+    let right =
+        serde_json::json!({"scope":scope,"records":records,"generation":"right"}).to_string();
+    let (a, b) = tokio::join!(
+        store.publish_knowledge(scope, &left, &records, Some(&next)),
+        rival.publish_knowledge(scope, &right, &records, Some(&next))
+    );
+    assert_ne!(
+        a.is_ok(),
+        b.is_ok(),
+        "exactly one scope publisher may advance the predecessor"
+    );
+    let winner = a.or(b).unwrap();
+    assert_eq!(store.knowledge(scope).await.unwrap().unwrap().0, winner);
+}
+
+#[tokio::test]
+async fn peer_ledger_is_isolated_paginated_collision_checked_and_atomically_published() {
+    use chaosbox_store::{ReplicaRow, ReplicaStore};
+    let db = test_db("t_peer_replica");
+    let Some(mut store) = connected_store(&db).await else {
+        return;
+    };
+    let user = "a".repeat(64);
+    let scope = "private:peer-test";
+    for id in ["1", "2", "3"] {
+        let row = ReplicaRow {
+            id: id.repeat(64),
+            user: user.clone(),
+            scope: scope.into(),
+            body: format!("event-{id}"),
+        };
+        store.replica_put(&row).await.unwrap();
+        store.replica_put(&row).await.unwrap();
+        let mut changed = row;
+        changed.body = "different bytes".into();
+        assert!(store.replica_put(&changed).await.is_err());
+    }
+    let page = store.replica_rows(&user, scope, "", 2).await.unwrap();
+    assert_eq!(page.len(), 2);
+    assert_eq!(
+        store
+            .replica_rows(&user, scope, &page[1].id, 2)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(store
+        .replica_rows(&"b".repeat(64), scope, "", 2)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .replica_rows(&user, "private:other", "", 2)
+        .await
+        .unwrap()
+        .is_empty());
+    let first = "4".repeat(64);
+    store
+        .replica_publish(&user, scope, &first, "first snapshot", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.replica_current(&user, scope).await.unwrap(),
+        Some((first.clone(), "first snapshot".into()))
+    );
+    assert!(store
+        .replica_publish(&user, scope, &first, "collision", Some(&first))
+        .await
+        .is_err());
+    let mut rival = TypeDbStore::new(config(&db));
+    let left_id = "5".repeat(64);
+    let right_id = "6".repeat(64);
+    let (left, right) = tokio::join!(
+        store.replica_publish(&user, scope, &left_id, "left", Some(&first)),
+        rival.replica_publish(&user, scope, &right_id, "right", Some(&first))
+    );
+    assert_ne!(left.is_ok(), right.is_ok(), "one predecessor race winner");
+    assert!(store
+        .replica_current(&"b".repeat(64), scope)
+        .await
+        .unwrap()
+        .is_none());
+    let current = store.replica_current(&user, scope).await.unwrap().unwrap();
+    assert_eq!(current.1, if left.is_ok() { "left" } else { "right" });
+    let mut restarted = TypeDbStore::new(config(&db));
+    assert_eq!(
+        restarted
+            .replica_current(&user, scope)
+            .await
+            .unwrap()
+            .unwrap(),
+        current
+    );
+}
+
 fn addr() -> String {
     // The CLI contract is authoritative; `TYPEDB_ADDR` stays as the
     // legacy alias so an existing invocation keeps pointing at its server.

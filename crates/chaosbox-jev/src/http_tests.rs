@@ -79,11 +79,11 @@ async fn serve(
                 }
             }
             let mut resp = format!(
-                    "HTTP/1.1 {} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n",
-                    s.status,
-                    reason(s.status),
-                    s.body.len()
-                );
+                "HTTP/1.1 {} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n",
+                s.status,
+                reason(s.status),
+                s.body.len()
+            );
             if let Some(ra) = s.retry_after {
                 let _ = write!(resp, "retry-after: {ra}\r\n");
             }

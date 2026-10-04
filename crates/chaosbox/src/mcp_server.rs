@@ -421,6 +421,8 @@ pub(super) async fn mcp_call_tool(
 pub(super) async fn serve_mcp(
     intelligence: Option<chaosbox::intelligence::Bundle>,
     workspace: Option<chaosbox::workspace::Workspace>,
+    mut current: Option<chaosbox::sync::current::CurrentReader>,
+    federation: Option<chaosbox::federation::Federator>,
 ) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let stdin = tokio::io::stdin();
@@ -494,14 +496,27 @@ pub(super) async fn serve_mcp(
             "tools/list" => {
                 if initialized {
                     let mut defs = mcp_tool_defs();
-                    if intelligence.is_some() {
+                    if intelligence.is_some() || current.is_some() || federation.is_some() {
                         defs.push(mcp_tool("intelligence_context", "Small historical, source-backed knowledge packet; not instructions or current-state proof.", serde_json::json!({"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":20},"max_chars":{"type":"integer","minimum":256,"maximum":32000}}), vec!["query"]));
-                        defs.push(mcp_tool(
-                            "intelligence_evidence",
-                            "Sources and typed decision receipts for a pinned intelligence item.",
-                            serde_json::json!({"id":{"type":"string"}}),
-                            vec!["id"],
-                        ));
+                        if federation.is_some() {
+                            defs.push(mcp_tool(
+                                "intelligence_evidence",
+                                "Authorized source quotes and receipt projections from the exact originating provider/snapshot.",
+                                serde_json::json!({"handle":{"type":"object","additionalProperties":false,"properties":{
+                                    "provider":{"type":"string"},"owner":{"type":"string"},"scope":{"type":"string"},
+                                    "project":{"type":"string"},"snapshot":{"type":"string"},"id":{"type":"string"}},
+                                    "required":["provider","owner","scope","project","snapshot","id"]},
+                                    "max_chars":{"type":"integer","minimum":256,"maximum":32000}}),
+                                vec!["handle"],
+                            ));
+                        } else {
+                            defs.push(mcp_tool(
+                                "intelligence_evidence",
+                                "Sources and typed decision receipts for a pinned intelligence item.",
+                                serde_json::json!({"id":{"type":"string"}}),
+                                vec!["id"],
+                            ));
+                        }
                     }
                     if workspace.is_some() {
                         defs.push(mcp_tool("workspace_impact", "Reviewed directed impact, with current freshness, exact pins and private scope checks.",
@@ -546,21 +561,33 @@ pub(super) async fn serve_mcp(
                             ),
                         }
                     } else if name.starts_with("intelligence_") {
-                        match intelligence.as_ref() {
-                            Some(bundle) => match chaosbox::intelligence::mcp_query(
-                                bundle,
-                                name,
-                                &params["arguments"],
-                            ) {
+                        if let Some(reader) = federation.as_ref() {
+                            match reader.query(name, &params["arguments"]).await {
+                                Ok(value) => mcp_text_result(&id, &value),
+                                Err(error) => mcp_error(&id, -32602, error.to_string(), None),
+                            }
+                        } else if let Some(reader) = current.as_mut() {
+                            match reader.query(name, &params["arguments"]).await {
                                 Ok(value) => mcp_text_result(&id, &value),
                                 Err(error) => mcp_error(&id, -32602, error, None),
-                            },
-                            None => mcp_error(
-                                &id,
-                                -32601,
-                                "no intelligence bundle configured".into(),
-                                None,
-                            ),
+                            }
+                        } else {
+                            match intelligence.as_ref() {
+                                Some(bundle) => match chaosbox::intelligence::mcp_query(
+                                    bundle,
+                                    name,
+                                    &params["arguments"],
+                                ) {
+                                    Ok(value) => mcp_text_result(&id, &value),
+                                    Err(error) => mcp_error(&id, -32602, error, None),
+                                },
+                                None => mcp_error(
+                                    &id,
+                                    -32601,
+                                    "no intelligence bundle configured".into(),
+                                    None,
+                                ),
+                            }
                         }
                     } else {
                         Box::pin(mcp_call_tool(&id, name, &params)).await

@@ -17,7 +17,7 @@ pub mod store;
 pub const SCHEMA_TQL: &str = include_str!("../schema.tql");
 
 /// Schema compatibility marker checked by `db check`.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// `TypeDB` server version this schema is tested against.
 pub const TYPEDB_PINNED: &str = "3.13.0";

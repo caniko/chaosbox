@@ -1,0 +1,21 @@
+{
+  // Example only: copy the "plugins" entry into your opencode.jsonc.
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": [
+    {
+      "package": "./plugins/chaosbox-intelligence",
+      "options": {
+        "bundle": "/private/path/knowledge-1.json",
+        "scope": "private:can",
+        "repo": "canix",
+        "chaosboxBin": "chaosbox",
+        "limit": 5,
+        "maxChars": 12000,
+        "inject": true,
+        "minQueryChars": 16,
+        "timeoutMs": 15000,
+        "shadowDir": "/private/path/chaosbox-shadow"
+      }
+    }
+  ]
+}

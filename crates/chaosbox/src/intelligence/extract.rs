@@ -57,10 +57,64 @@ pub fn extract_window(
     skip: usize,
     max: usize,
 ) -> Result<Candidates, String> {
+    extract_policy(
+        input,
+        source,
+        session,
+        scope,
+        repositories,
+        WindowPolicy {
+            skip,
+            max,
+            all_lines: false,
+        },
+    )
+}
+
+#[derive(Clone, Copy)]
+struct WindowPolicy {
+    skip: usize,
+    max: usize,
+    all_lines: bool,
+}
+
+/// Live custody extraction scans every bounded source line, independent of
+/// English keywords. Oversize context remains explicit unassessed coverage.
+pub fn extract_complete_window(
+    input: &str,
+    source: &str,
+    session: &str,
+    scope: &str,
+    repositories: &[String],
+    skip: usize,
+    max: usize,
+) -> Result<Candidates, String> {
+    extract_policy(
+        input,
+        source,
+        session,
+        scope,
+        repositories,
+        WindowPolicy {
+            skip,
+            max,
+            all_lines: true,
+        },
+    )
+}
+
+fn extract_policy(
+    input: &str,
+    source: &str,
+    session: &str,
+    scope: &str,
+    repositories: &[String],
+    policy: WindowPolicy,
+) -> Result<Candidates, String> {
     if [source, session, scope].iter().any(|v| v.trim().is_empty())
         || repositories.is_empty()
         || repositories.iter().any(|r| r.trim().is_empty())
-        || !(1..=200).contains(&max)
+        || !(1..=200).contains(&policy.max)
     {
         return Err(
             "source, session, scope, repositories and max-candidates 1..200 are required".into(),
@@ -99,7 +153,18 @@ pub fn extract_window(
         for (pointer, speaker, text) in source_texts(record, kind) {
             let lines: Vec<_> = text.lines().collect();
             for (i, quote) in lines.iter().enumerate() {
-                if !eligible(quote) {
+                if policy.all_lines && !(24..=1200).contains(&quote.len()) {
+                    if !quote.trim().is_empty() {
+                        result.omitted += 1;
+                    }
+                    continue;
+                }
+                let selected = if policy.all_lines {
+                    !quote.trim().is_empty()
+                } else {
+                    eligible(quote)
+                };
+                if !selected {
                     continue;
                 }
                 let context = lines[i.saturating_sub(2)..(i + 3).min(lines.len())].join("\n");
@@ -107,11 +172,11 @@ pub fn extract_window(
                     result.omitted += 1;
                     continue;
                 }
-                if result.skipped < skip {
+                if result.skipped < policy.skip {
                     result.skipped += 1;
                     continue;
                 }
-                if result.candidates.len() == max {
+                if result.candidates.len() == policy.max {
                     result.omitted += 1;
                     result.has_more = true;
                     continue;
@@ -222,6 +287,10 @@ fn evidence_window(
                 .and_then(|i| record.get("content")?.get(i))
                 .filter(|part| part.get("type").and_then(Value::as_str) == Some("tool"));
             let (text, mut partial) = clipped(text, 1600);
+            partial |= tool
+                .and_then(|t| t.pointer("/state/metadata/truncated"))
+                .and_then(Value::as_bool)
+                == Some(true);
             partial |= kind == "shell"
                 && record.pointer("/output/truncated").and_then(Value::as_bool) == Some(true);
             let operation = tool

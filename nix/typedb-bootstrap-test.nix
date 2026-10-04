@@ -45,114 +45,112 @@ in
 pkgs.testers.nixosTest {
   name = "typedb-bootstrap";
 
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ typedbModule ];
-      system.stateVersion = "24.11";
-      virtualisation.memorySize = 4096;
-      virtualisation.cores = 4;
+  nodes.machine = { ... }: {
+    imports = [ typedbModule ];
+    system.stateVersion = "24.11";
+    virtualisation.memorySize = 4096;
+    virtualisation.cores = 4;
 
-      services.typedb = {
-        enable = true;
-        package = typedbPackage;
-        listenHost = "127.0.0.1";
-        listenPort = 1729;
-        httpListenHost = "127.0.0.1";
-        httpListenPort = 8000;
-        openFirewall = false;
-        diagnosticsReporting = false;
-        diagnosticsMonitoring = false;
+    services.typedb = {
+      enable = true;
+      package = typedbPackage;
+      listenHost = "127.0.0.1";
+      listenPort = 1729;
+      httpListenHost = "127.0.0.1";
+      httpListenPort = 8000;
+      openFirewall = false;
+      diagnosticsReporting = false;
+      diagnosticsMonitoring = false;
+    };
+
+    users.users.testuser = {
+      isNormalUser = true;
+      description = "Unrelated local user for permission checks";
+    };
+
+    environment.systemPackages = [
+      bootstrapPackage
+      chaosboxPackage
+      typedbConsolePackage
+    ];
+
+    # Atlas-equivalent service wiring under test: bootstrap runs as a
+    # hardened root oneshot after the server, migration follows with the
+    # application credential loaded from the auth directory. Unit names
+    # are test-local; ordering, sandboxing, and credential flow mirror
+    # root/hosts/atlas/server/ai/chaosbox.nix. RemainAfterExit is a
+    # test-only affordance so readiness is observable.
+    systemd.services.typedb-bootstrap = {
+      description = "TypeDB credential provisioning (test)";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "typedb.service" ];
+      requires = [ "typedb.service" ];
+      environment = {
+        TYPEDB_BOOTSTRAP_AUTH_DIR = authDir;
+        TYPEDB_BOOTSTRAP_ADDR = "127.0.0.1:1729";
+        TYPEDB_BOOTSTRAP_CONSOLE_BIN = "${typedbConsolePackage}/bin/typedb-console";
+        TYPEDB_BOOTSTRAP_APP_USER = appUser;
+        TYPEDB_BOOTSTRAP_DATABASE = testDb;
+        TYPEDB_BOOTSTRAP_APP_OWNER = "testuser";
       };
-
-      users.users.testuser = {
-        isNormalUser = true;
-        description = "Unrelated local user for permission checks";
-      };
-
-      environment.systemPackages = [
-        bootstrapPackage
-        chaosboxPackage
-        typedbConsolePackage
-      ];
-
-      # Atlas-equivalent service wiring under test: bootstrap runs as a
-      # hardened root oneshot after the server, migration follows with the
-      # application credential loaded from the auth directory. Unit names
-      # are test-local; ordering, sandboxing, and credential flow mirror
-      # root/hosts/atlas/server/ai/chaosbox.nix. RemainAfterExit is a
-      # test-only affordance so readiness is observable.
-      systemd.services.typedb-bootstrap = {
-        description = "TypeDB credential provisioning (test)";
-        wantedBy = [ "multi-user.target" ];
-        after = [ "typedb.service" ];
-        requires = [ "typedb.service" ];
-        environment = {
-          TYPEDB_BOOTSTRAP_AUTH_DIR = authDir;
-          TYPEDB_BOOTSTRAP_ADDR = "127.0.0.1:1729";
-          TYPEDB_BOOTSTRAP_CONSOLE_BIN = "${typedbConsolePackage}/bin/typedb-console";
-          TYPEDB_BOOTSTRAP_APP_USER = appUser;
-          TYPEDB_BOOTSTRAP_DATABASE = testDb;
-          TYPEDB_BOOTSTRAP_APP_OWNER = "testuser";
-        };
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          TimeoutStartSec = "5min";
-          ExecStart = "${bootstrapPackage}/bin/typedb-bootstrap";
-          # Created before sandbox setup: ReadWritePaths below requires
-          # an existing source, and nothing else provides this directory.
-          StateDirectory = "typedb-auth";
-          NoNewPrivileges = true;
-          PrivateTmp = true;
-          ProtectHome = true;
-          ProtectSystem = "strict";
-          ReadWritePaths = [ authDir ];
-          RestrictAddressFamilies = [
-            "AF_UNIX"
-            "AF_INET"
-            "AF_INET6"
-          ];
-        };
-      };
-
-      systemd.services.chaosbox-migrate-boot = {
-        description = "Chaosbox schema migration (test)";
-        wantedBy = [ "multi-user.target" ];
-        after = [
-          "typedb.service"
-          "typedb-bootstrap.service"
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "5min";
+        ExecStart = "${bootstrapPackage}/bin/typedb-bootstrap";
+        # Created before sandbox setup: ReadWritePaths below requires
+        # an existing source, and nothing else provides this directory.
+        StateDirectory = "typedb-auth";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectHome = true;
+        ProtectSystem = "strict";
+        ReadWritePaths = [ authDir ];
+        RestrictAddressFamilies = [
+          "AF_UNIX"
+          "AF_INET"
+          "AF_INET6"
         ];
-        requires = [
-          "typedb.service"
-          "typedb-bootstrap.service"
-        ];
-        environment = {
-          CHAOSBOX_DB_BACKEND = "typedb";
-          CHAOSBOX_TYPEDB_ADDR = "127.0.0.1:1729";
-          CHAOSBOX_TYPEDB_USER = appUser;
-          CHAOSBOX_TYPEDB_DATABASE = testDb;
-          CHAOSBOX_TYPEDB_PASSWORD_FILE = "%d/typedb-password";
-        };
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          TimeoutStartSec = "5min";
-          WorkingDirectory = "/tmp";
-          ExecStart = "${chaosboxPackage}/bin/chaosbox db migrate --json --repo testboot";
-          LoadCredential = "typedb-password:${authDir}/app-password";
-          NoNewPrivileges = true;
-          PrivateTmp = true;
-          ProtectHome = true;
-          ProtectSystem = "strict";
-          RestrictAddressFamilies = [
-            "AF_UNIX"
-            "AF_INET"
-            "AF_INET6"
-          ];
-        };
       };
     };
+
+    systemd.services.chaosbox-migrate-boot = {
+      description = "Chaosbox schema migration (test)";
+      wantedBy = [ "multi-user.target" ];
+      after = [
+        "typedb.service"
+        "typedb-bootstrap.service"
+      ];
+      requires = [
+        "typedb.service"
+        "typedb-bootstrap.service"
+      ];
+      environment = {
+        CHAOSBOX_DB_BACKEND = "typedb";
+        CHAOSBOX_TYPEDB_ADDR = "127.0.0.1:1729";
+        CHAOSBOX_TYPEDB_USER = appUser;
+        CHAOSBOX_TYPEDB_DATABASE = testDb;
+        CHAOSBOX_TYPEDB_PASSWORD_FILE = "%d/typedb-password";
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "5min";
+        WorkingDirectory = "/tmp";
+        ExecStart = "${chaosboxPackage}/bin/chaosbox db migrate --json --repo testboot";
+        LoadCredential = "typedb-password:${authDir}/app-password";
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectHome = true;
+        ProtectSystem = "strict";
+        RestrictAddressFamilies = [
+          "AF_UNIX"
+          "AF_INET"
+          "AF_INET6"
+        ];
+      };
+    };
+  };
 
   testScript = ''
     machine.wait_for_unit("typedb.service")
