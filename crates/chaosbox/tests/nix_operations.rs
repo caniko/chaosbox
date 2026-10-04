@@ -2,6 +2,80 @@
 use std::{fs, path::Path};
 use chaosbox::nix::{AddMode, Invocation, Ledger, Settings};
 
+#[tokio::test]
+async fn rejected_execution_write_settles_the_native_receipt_without_reexecution() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join("input"),
+        "survive first receipt write failure",
+    )
+    .unwrap();
+    let mut config = settings(temp.path());
+    drop(Ledger::open(&config).unwrap());
+    let database = rusqlite::Connection::open(config.work.join("nix.sqlite")).unwrap();
+    database.execute_batch("CREATE TRIGGER fail_execution BEFORE INSERT ON executions BEGIN SELECT RAISE(ABORT, 'fixture execution write failure'); END;").unwrap();
+    let request = invocation(
+        temp.path(),
+        "retain execution evidence",
+        "execution-write-failure",
+    );
+    let receipt = chaosbox::nix::add(&config, request.clone()).await.unwrap();
+    assert_eq!(receipt["outcome"], "succeeded");
+    assert!(receipt["objects"][0]["path"].is_string());
+    assert!(
+        receipt["journal_warning"]
+            .as_str()
+            .unwrap()
+            .contains("fixture execution")
+    );
+    let evidence = Ledger::read(&config)
+        .unwrap()
+        .evidence("fixture", &request.id)
+        .unwrap();
+    assert_eq!(evidence["settled"], true);
+    assert_eq!(evidence["receipt"], receipt);
+    fs::remove_file(&request.path).unwrap();
+    config.nix = "/no-such-executable".into();
+    assert_eq!(chaosbox::nix::add(&config, request).await.unwrap(), receipt);
+}
+
+#[tokio::test]
+async fn total_receipt_write_failure_reports_observed_evidence_and_blocks_reexecution() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join("input"),
+        "retain evidence when both tables reject writes",
+    )
+    .unwrap();
+    let config = settings(temp.path());
+    drop(Ledger::open(&config).unwrap());
+    let database = rusqlite::Connection::open(config.work.join("nix.sqlite")).unwrap();
+    database.execute_batch("CREATE TRIGGER fail_execution BEFORE INSERT ON executions BEGIN SELECT RAISE(ABORT, 'fixture execution write failure'); END; CREATE TRIGGER fail_settlement BEFORE INSERT ON settlements BEGIN SELECT RAISE(ABORT, 'fixture settlement write failure'); END;").unwrap();
+    let request = invocation(
+        temp.path(),
+        "report unpersisted outcome",
+        "all-writes-failed",
+    );
+    let error = chaosbox::nix::add(&config, request.clone())
+        .await
+        .unwrap_err();
+    let receipt: serde_json::Value =
+        serde_json::from_str(error.split_once("observed_receipt=").unwrap().1).unwrap();
+    assert_eq!(receipt["outcome"], "succeeded");
+    assert!(
+        receipt["objects"][0]["path"]
+            .as_str()
+            .unwrap()
+            .starts_with("/nix/store/")
+    );
+    assert!(
+        chaosbox::nix::add(&config, request)
+            .await
+            .unwrap_err()
+            .contains("operation unresolved")
+    );
+}
+
 fn settings(root: &Path) -> Settings {
     Settings {
         work: root.join("ledger"),
@@ -56,10 +130,12 @@ async fn real_addition_has_durable_offline_evidence_and_exact_retry() {
     let request = invocation(temp.path(), "qualify a source candidate", "first");
     let receipt = chaosbox::nix::add(&config, request.clone()).await.unwrap();
     assert_eq!(receipt["outcome"], "succeeded", "{receipt}");
-    assert!(receipt["objects"][0]["narHash"]
-        .as_str()
-        .unwrap()
-        .starts_with("sha256-"));
+    assert!(
+        receipt["objects"][0]["narHash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256-")
+    );
     let path = receipt["objects"][0]["path"].as_str().unwrap();
     let ledger = Ledger::read(&config).unwrap();
     let packet = ledger.context("fixture", "source candidate", 5).unwrap();
@@ -89,10 +165,12 @@ async fn real_addition_has_durable_offline_evidence_and_exact_retry() {
     );
     let mut conflict = request;
     conflict.reason = "different intent".into();
-    assert!(chaosbox::nix::add(&config, conflict)
-        .await
-        .unwrap_err()
-        .contains("identity"));
+    assert!(
+        chaosbox::nix::add(&config, conflict)
+            .await
+            .unwrap_err()
+            .contains("identity")
+    );
 }
 
 #[tokio::test]
@@ -108,10 +186,12 @@ async fn failed_final_settlement_preserves_execution_and_retry_reconciles_withou
         "recover actual execution",
         "settlement-failure",
     );
-    assert!(chaosbox::nix::add(&config, request.clone())
-        .await
-        .unwrap_err()
-        .contains("fixture receipt"));
+    assert!(
+        chaosbox::nix::add(&config, request.clone())
+            .await
+            .unwrap_err()
+            .contains("fixture receipt")
+    );
     let evidence = Ledger::read(&config)
         .unwrap()
         .evidence("fixture", &request.id)
@@ -386,19 +466,23 @@ async fn timed_out_or_cancelled_runner_retains_unknown_execution_for_inspection(
     assert_eq!(receipt["outcome"], "unresolved");
     assert!(receipt["error"].as_str().unwrap().contains("timed out"));
     let request = invocation(temp.path(), "interrupted caller", "cancelled");
-    assert!(tokio::time::timeout(
-        std::time::Duration::from_millis(50),
-        chaosbox::nix::add(&config, request.clone())
-    )
-    .await
-    .is_err());
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            chaosbox::nix::add(&config, request.clone())
+        )
+        .await
+        .is_err()
+    );
     let packet = Ledger::read(&config)
         .unwrap()
         .evidence("fixture", "cancelled")
         .unwrap();
     assert!(packet["receipt"].is_null());
-    assert!(chaosbox::nix::add(&config, request)
-        .await
-        .unwrap_err()
-        .contains("unresolved"));
+    assert!(
+        chaosbox::nix::add(&config, request)
+            .await
+            .unwrap_err()
+            .contains("unresolved")
+    );
 }
