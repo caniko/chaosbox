@@ -751,9 +751,7 @@ async fn legacy_headers_allow_operator_diffs_but_not_run_bound_admission() {
         delay: std::time::Duration::ZERO,
         legacy: true,
     };
-    let operator = chaosbox::GraphReader::pinned(handle, "conf")
-        .await
-        .unwrap();
+    let operator = chaosbox::GraphReader::pinned(handle, "conf").await.unwrap();
     let diff = operator
         .diff("conf", &seed.builds.0, &seed.builds.1)
         .await
