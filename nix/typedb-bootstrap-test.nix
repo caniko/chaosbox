@@ -31,12 +31,37 @@ let
     + "TYPEDB_BOOTSTRAP_DATABASE=${testDb} "
     + "TYPEDB_BOOTSTRAP_APP_OWNER=testuser ";
   evilEnv = builtins.replaceStrings [ authDir ] [ evilDir ] bootEnv;
-  # Test-only console helper: passwords travel via argv here, visible to
-  # root in the disposable test VM. The product under test never does
-  # this (pty stdin); the VM asserts the product's observable behavior.
-  consoleFor =
-    user: pwFile:
-    "${typedbConsolePackage}/bin/typedb-console --address 127.0.0.1:1729 --tls-disabled --username ${user} --password $(cat ${pwFile})";
+  # The pinned console authenticates through a hidden terminal prompt.
+  # Test authentication exercises that boundary without putting secrets in argv.
+  authConsole = pkgs.writeScriptBin "typedb-console-auth" ''
+    #!${pkgs.python3.withPackages (ps: [ ps.pexpect ])}/bin/python3
+    import os
+    import pathlib
+    import sys
+    import pexpect
+
+    user, password_file = sys.argv[1:3]
+    password = pathlib.Path(password_file).read_text().strip()
+    child = pexpect.spawn(
+        "${typedbConsolePackage}/bin/typedb-console",
+        ["--address", "127.0.0.1:1729", "--tls-disabled", "--username", user, *sys.argv[3:]],
+        encoding="utf-8", timeout=60, echo=False,
+    )
+    child.expect(r"(?i)password[^\r\n]*: ")
+    for pid in (child.pid, os.getpid()):
+        if password.encode() in pathlib.Path(f"/proc/{pid}/cmdline").read_bytes():
+            child.close(force=True)
+            raise RuntimeError("credential exposed through argv")
+    child.sendline(password)
+    child.expect(pexpect.EOF)
+    output = child.before
+    child.close()
+    if password in output:
+        raise RuntimeError("credential echoed by the console")
+    sys.stdout.write(output)
+    sys.exit(child.exitstatus if child.exitstatus is not None else 1)
+  '';
+  consoleFor = user: pwFile: "${authConsole}/bin/typedb-console-auth ${user} ${pwFile}";
   migrateEnv =
     "CHAOSBOX_DB_BACKEND=typedb CHAOSBOX_TYPEDB_ADDR=127.0.0.1:1729 "
     + "CHAOSBOX_TYPEDB_USER=${appUser} CHAOSBOX_TYPEDB_PASSWORD_FILE=${authDir}/app-password "
@@ -173,7 +198,7 @@ pkgs.testers.nixosTest {
     assert code != 0, "unrelated listing of the auth dir must fail"
     code, _out = machine.execute("su testuser -c 'cat ${authDir}/admin-password'")
     assert code != 0, "operator must not read the admin secret"
-    machine.succeed("su testuser -c 'cat ${authDir}/app-password'")
+    machine.succeed("su testuser -c 'test -r ${authDir}/app-password'")
 
     # Bootstrap default no longer authenticates; application does. Only
     # admins may list users, so existence is asserted from the admin side
@@ -237,6 +262,18 @@ pkgs.testers.nixosTest {
     assert code == 0, f"re-run must succeed, got {code}: {out}"
     code, after = machine.execute("sha256sum ${authDir}/admin-password ${authDir}/app-password")
     assert code == 0 and before == after, f"re-run must preserve files:\n{before}\n{after}"
+
+    # Two simultaneous recovery runs must serialize regeneration and rotation,
+    # leaving a credential that actually authenticates, not just matching files.
+    machine.succeed(": > ${authDir}/app-password")
+    code, out = machine.execute(
+        "${bootEnv} typedb-bootstrap > /tmp/bootstrap-a.log 2>&1 & first=$!; "
+        + "${bootEnv} typedb-bootstrap > /tmp/bootstrap-b.log 2>&1 & second=$!; "
+        + "wait $first && wait $second"
+    )
+    assert code == 0, f"concurrent recovery must succeed, got {code}: {out}"
+    code, out = machine.execute("${consoleFor appUser "${authDir}/app-password"} --command 'server version'")
+    assert code == 0, f"concurrent recovery must retain working credentials: {out}"
 
     # Partial loss recovers: an emptied application file regenerates and
     # re-converges while the stored admin credential still authenticates.
