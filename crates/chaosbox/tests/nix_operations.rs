@@ -22,12 +22,10 @@ async fn rejected_execution_write_settles_the_native_receipt_without_reexecution
     let receipt = chaosbox::nix::add(&config, request.clone()).await.unwrap();
     assert_eq!(receipt["outcome"], "succeeded");
     assert!(receipt["objects"][0]["path"].is_string());
-    assert!(
-        receipt["journal_warning"]
-            .as_str()
-            .unwrap()
-            .contains("fixture execution")
-    );
+    assert!(receipt["journal_warning"]
+        .as_str()
+        .unwrap()
+        .contains("fixture execution"));
     let evidence = Ledger::read(&config)
         .unwrap()
         .evidence("fixture", &request.id)
@@ -62,18 +60,14 @@ async fn total_receipt_write_failure_reports_observed_evidence_and_blocks_reexec
     let receipt: serde_json::Value =
         serde_json::from_str(error.split_once("observed_receipt=").unwrap().1).unwrap();
     assert_eq!(receipt["outcome"], "succeeded");
-    assert!(
-        receipt["objects"][0]["path"]
-            .as_str()
-            .unwrap()
-            .starts_with("/nix/store/")
-    );
-    assert!(
-        chaosbox::nix::add(&config, request)
-            .await
-            .unwrap_err()
-            .contains("operation unresolved")
-    );
+    assert!(receipt["objects"][0]["path"]
+        .as_str()
+        .unwrap()
+        .starts_with("/nix/store/"));
+    assert!(chaosbox::nix::add(&config, request)
+        .await
+        .unwrap_err()
+        .contains("operation unresolved"));
 }
 
 fn settings(root: &Path) -> Settings {
@@ -130,12 +124,10 @@ async fn real_addition_has_durable_offline_evidence_and_exact_retry() {
     let request = invocation(temp.path(), "qualify a source candidate", "first");
     let receipt = chaosbox::nix::add(&config, request.clone()).await.unwrap();
     assert_eq!(receipt["outcome"], "succeeded", "{receipt}");
-    assert!(
-        receipt["objects"][0]["narHash"]
-            .as_str()
-            .unwrap()
-            .starts_with("sha256-")
-    );
+    assert!(receipt["objects"][0]["narHash"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256-"));
     let path = receipt["objects"][0]["path"].as_str().unwrap();
     let ledger = Ledger::read(&config).unwrap();
     let packet = ledger.context("fixture", "source candidate", 5).unwrap();
@@ -165,12 +157,10 @@ async fn real_addition_has_durable_offline_evidence_and_exact_retry() {
     );
     let mut conflict = request;
     conflict.reason = "different intent".into();
-    assert!(
-        chaosbox::nix::add(&config, conflict)
-            .await
-            .unwrap_err()
-            .contains("identity")
-    );
+    assert!(chaosbox::nix::add(&config, conflict)
+        .await
+        .unwrap_err()
+        .contains("identity"));
 }
 
 #[tokio::test]
@@ -186,12 +176,10 @@ async fn failed_final_settlement_preserves_execution_and_retry_reconciles_withou
         "recover actual execution",
         "settlement-failure",
     );
-    assert!(
-        chaosbox::nix::add(&config, request.clone())
-            .await
-            .unwrap_err()
-            .contains("fixture receipt")
-    );
+    assert!(chaosbox::nix::add(&config, request.clone())
+        .await
+        .unwrap_err()
+        .contains("fixture receipt"));
     let evidence = Ledger::read(&config)
         .unwrap()
         .evidence("fixture", &request.id)
@@ -466,23 +454,19 @@ async fn timed_out_or_cancelled_runner_retains_unknown_execution_for_inspection(
     assert_eq!(receipt["outcome"], "unresolved");
     assert!(receipt["error"].as_str().unwrap().contains("timed out"));
     let request = invocation(temp.path(), "interrupted caller", "cancelled");
-    assert!(
-        tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            chaosbox::nix::add(&config, request.clone())
-        )
-        .await
-        .is_err()
-    );
+    assert!(tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        chaosbox::nix::add(&config, request.clone())
+    )
+    .await
+    .is_err());
     let packet = Ledger::read(&config)
         .unwrap()
         .evidence("fixture", "cancelled")
         .unwrap();
     assert!(packet["receipt"].is_null());
-    assert!(
-        chaosbox::nix::add(&config, request)
-            .await
-            .unwrap_err()
-            .contains("unresolved")
-    );
+    assert!(chaosbox::nix::add(&config, request)
+        .await
+        .unwrap_err()
+        .contains("unresolved"));
 }
