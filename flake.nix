@@ -18,6 +18,11 @@
     nixpkgs-typedb.url = "git+https://github.com/NixOS/nixpkgs.git?rev=26996c2a9def51106563a8983abe3617c76b2db7";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
+    # Evaluation/runtime qualification of the portable Home Manager module.
+    home-manager = {
+      url = "github:nix-community/home-manager/0560d64401a6d5370732a69d08bc4a6b135962d9";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     harbor-meta.follows = "harbor-rs/harbor-meta";
     # github:caniko/harbor-docs redirects to the renamed harbor-projects repo.
     harbor-docs = {
@@ -39,6 +44,7 @@
       harbor-rs,
       harbor-docs,
       treefmt-nix,
+      home-manager,
       nixpkgs,
       nixpkgs-typedb,
       ...
@@ -97,12 +103,27 @@
             craneLib.filterCargoSources path type
             || pkgs.lib.hasSuffix ".tql" (toString path)
             || pkgs.lib.hasSuffix ".sql" (toString path)
+            || pkgs.lib.hasPrefix (toString ./plugins + "/") (toString path)
             || pkgs.lib.hasPrefix (toString ./fixtures + "/") (toString path);
         };
     in
     {
       nixosModules.chaosbox = import ./nix/chaosbox.nix;
       nixosModules.default = self.nixosModules.chaosbox;
+      nixosModules.federation = import ./nix/federation-nixos.nix;
+      homeModules.federation =
+        {
+          lib,
+          pkgs,
+          ...
+        }:
+        {
+          imports = [ ./nix/federation-home.nix ];
+          programs.chaosbox.federation.package =
+            lib.mkOptionDefault
+              self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
+        };
+      homeManagerModules.federation = self.homeModules.federation;
 
       packages = forAllSystems (
         {
@@ -123,6 +144,7 @@
             nativeBuildInputs = [
               pkgs.nodejs
               pkgs.gitMinimal
+              pkgs.openssh
             ];
             cargoExtraArgs = "--locked -p chaosbox";
             meta = {
@@ -153,9 +175,14 @@
                     pkgs.lib.makeBinPath [
                       pkgs.gitMinimal
                       pkgs.postgresql
+                      pkgs.openssh
                     ]
                   }
               '';
+              passthru.scratchPlugin = "${./plugins}/chaosbox-scratch/index.ts";
+              passthru.scratchAssessmentVersion = 1;
+              passthru.federationVersion = 1;
+              passthru.intelligencePlugin = "${./plugins}/chaosbox-intelligence/index.ts";
             }
           );
           docs = harbor-docs.lib.mkDocs {
@@ -179,6 +206,7 @@
             name = "chaosbox-test-typedb";
             runtimeInputs = [
               chaosbox
+              pkgs.nodejs
             ];
             text = builtins.readFile ./scripts/test-typedb.sh;
           };
@@ -260,6 +288,7 @@
           default = harbor-rs.lib.mkDevShell {
             inherit pkgs cross;
             inherit (toolchain) craneLib;
+            packages = [ pkgs.cargo-nextest ];
           };
           # Live TypeDB work (db migrate, backend tests, test-typedb.sh):
           # server + Console from the temporary packages. Opt-in so the
@@ -294,10 +323,11 @@
             version = "0.1.0";
             strictDeps = true;
             # Same test dependencies as the package build: Node for session
-            # tools and Git for exact-revision workspace provenance fixtures.
+            # tools, Git for provenance fixtures, SSH for bounded transport tests.
             nativeBuildInputs = [
               pkgs.nodejs
               pkgs.gitMinimal
+              pkgs.openssh
             ];
             cargoExtraArgs = "--locked --workspace";
           };
@@ -313,6 +343,28 @@
             }
           );
           unit = craneLib.cargoTest (commonArgs // { inherit cargoArtifacts; });
+          intelligence-plugin =
+            pkgs.runCommand "chaosbox-intelligence-plugin"
+              {
+                nativeBuildInputs = [ pkgs.nodejs ];
+              }
+              ''
+                cp -r ${./plugins/chaosbox-intelligence} plugin
+                chmod -R u+w plugin
+                node --experimental-strip-types --test plugin/test/*.test.mjs
+                touch "$out"
+              '';
+          scratch-plugin =
+            pkgs.runCommand "chaosbox-scratch-plugin"
+              {
+                nativeBuildInputs = [ pkgs.nodejs ];
+              }
+              ''
+                cp -r ${./plugins} plugins
+                chmod -R u+w plugins
+                node --test plugins/chaosbox-scratch/test/*.test.mjs
+                touch $out
+              '';
           doc = craneLib.cargoDoc (commonArgs // { inherit cargoArtifacts; });
           docs = self.packages.${pkgs.stdenv.hostPlatform.system}.docs;
           docs-summary = harbor-docs.lib.mkSummaryCheck {
@@ -327,6 +379,31 @@
             chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
             typedbPackage = typedbPkgs.typedb;
           };
+          federation-home =
+            let
+              test = import ./nix/federation-home-test.nix {
+                inherit pkgs;
+                homeManager = home-manager;
+              };
+              evaluation = pkgs.writeText "chaosbox-federation-evaluation.json" (
+                builtins.toJSON {
+                  inherit (test) sshConfig provider client;
+                }
+              );
+            in
+            pkgs.runCommand "chaosbox-federation-home"
+              {
+                nativeBuildInputs = [
+                  pkgs.openssh
+                  pkgs.python3
+                ];
+              }
+              ''
+                python3 ${./scripts/test-federation-home.py} \
+                  --evaluation ${evaluation} \
+                  --chaosbox ${pkgs.lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox}
+                echo "Home Manager federation renders and SSH remains query-key isolated" > "$out"
+              '';
           typedb-integration = pkgs.callPackage ./nix/typedb-vm-test.nix {
             harborDbModule = harbor-db.nixosModules.default;
             typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";

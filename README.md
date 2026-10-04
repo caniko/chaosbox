@@ -10,7 +10,7 @@ Native Rust fork/rewrite of [Graphify](https://github.com/Graphify-Labs/graphify
 deterministic code-graph extraction, bounded Jev decisions, TypeDB-backed
 versioned graph builds, read-only CLI/MCP consumers.
 
-Deployment storage contracts are described in [Storage lifecycle integration](docs/src/storage-lifecycle.md).
+Deployment storage contracts are described in [Storage lifecycle integration](docs/storage-lifecycle.md).
 
 Pipeline: `source snapshot -> certified syntax facts + bounded candidates ->
 optional Jev decisions -> validated evidence/claims -> policy build ->
@@ -29,6 +29,11 @@ shared budgets, abstentions and migration from the earlier generative pilot.
 access; research checks it before reserving a new inference attempt.
 
 ## Direction: selective intelligence across code and sessions
+
+The [source-custodied compaction coordinator](docs/SESSION_COMPACTION.md)
+preserves native OpenCode evidence before context reduction, assembles
+source-backed checkpoints, and defers intelligence assessment and private
+TypeDB publication through a restartable journal.
 
 Chaosbox should connect repository structure with the decisions, findings and
 constraints discovered while working on it. Extract at meaningful evidence
