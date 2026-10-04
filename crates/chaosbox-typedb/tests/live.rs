@@ -713,6 +713,16 @@ async fn assert_sealed_recovery(
             .unwrap()
             .evidence_sealed
     );
+    assert_legacy_membership_headers(db, build, &next, rel, &recovered).await;
+}
+
+async fn assert_legacy_membership_headers(
+    db: &str,
+    build: &GraphBuild,
+    next: &GraphBuild,
+    rel: &Relation,
+    recovered: &TypeDbReader,
+) {
     // Model a legacy membership after additive migration: no expected
     // references survived, so completeness cannot be established from links.
     let driver = live_driver(db).await;
