@@ -13,6 +13,7 @@
   chaosboxPackage,
   typedbPackage,
   typedbConsolePackage,
+  federationTestTools,
 }:
 let
   testPassword = "password";
@@ -61,6 +62,14 @@ pkgs.testers.nixosTest {
         "CHAOSBOX_TYPEDB_DATABASE=${testDb} "
     )
     machine.succeed("printf '%s' '${testPassword}' > /etc/chaosbox-test-pw && chmod 600 /etc/chaosbox-test-pw")
+    # Execute the exact native regression with an authenticated live server.
+    # A missing server/credential/schema is an error; zero tests cannot pass.
+    code, out = machine.execute(
+        f"{ENV}CHAOSBOX_REQUIRE_TYPEDB=1 ${federationTestTools}/bin/federation-typedb "
+        "--ignored --exact federation_typedb_is_read_only_scoped_and_snapshot_bound"
+    )
+    assert code == 0, f"mandatory TypeDB federation regression failed: {out}"
+    assert "1 passed; 0 failed; 0 ignored" in out, f"live regression did not execute: {out}"
     machine.succeed("mkdir -p /tmp/cbtest && cp -r ${../fixtures/demo-repo} /tmp/cbtest/demo-repo && chmod -R u+rw /tmp/cbtest")
 
     # Pending before any migration has applied.

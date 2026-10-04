@@ -1,6 +1,6 @@
 //! Owner-local source adapters. No peer credentials, inference or mutation.
 use std::path::{Path, PathBuf};
-use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
+use chaosbox_typedb::{reader::TypeDbReader, store::TypeDbConfig};
 use serde::{Deserialize, Serialize};
 use crate::intelligence::{Bundle, cli::load_bundle};
 use super::ErrorCode;
@@ -70,9 +70,11 @@ impl KnowledgeSource for Backend {
                     .map_err(|_| ErrorCode::Unavailable)?
             }
             Self::Typedb => {
-                let mut store =
-                    TypeDbStore::new(TypeDbConfig::from_env().map_err(|_| ErrorCode::Unavailable)?);
-                match store
+                let mut reader = TypeDbReader::new(
+                    TypeDbConfig::from_env().map_err(|_| ErrorCode::Unavailable)?,
+                );
+                reader.connect().await.map_err(|_| ErrorCode::Unavailable)?;
+                match reader
                     .knowledge(scope)
                     .await
                     .map_err(|_| ErrorCode::Unavailable)?
@@ -109,9 +111,11 @@ impl KnowledgeSource for Backend {
                 Ok(Some(snapshot))
             }
             Self::Typedb => {
-                let mut store =
-                    TypeDbStore::new(TypeDbConfig::from_env().map_err(|_| ErrorCode::Unavailable)?);
-                store
+                let mut reader = TypeDbReader::new(
+                    TypeDbConfig::from_env().map_err(|_| ErrorCode::Unavailable)?,
+                );
+                reader.connect().await.map_err(|_| ErrorCode::Unavailable)?;
+                reader
                     .knowledge_at(scope, id)
                     .await
                     .map_err(|_| ErrorCode::Unavailable)?

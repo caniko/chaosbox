@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Federation TypeDB reads use the read-only reader for current and historical
+  knowledge. Querying a missing database no longer creates it.
 - Flush one-shot federation responses before process shutdown so callers always
   receive the complete JSON frame, including denial and invalid-request replies.
 
@@ -34,6 +36,9 @@
 
 ### Added
 
+- Mandatory server-present TypeDB federation regressions and a disposable
+  reciprocal SSH gate exercising Home Manager-generated query-only endpoints,
+  exact history, attribution, revocation, withholding and outage behavior.
 - Durable OpenCode scratch custody records allocation provenance, native purpose
   evidence and explicit finalization holds. Bounded Jev assessments retain
   source-backed obligations; Doty consumes read-only packets and requires an
