@@ -25,34 +25,30 @@
     };
   };
 
-  outputs =
-    {
-      self,
-      harbor-db,
-      harbor-rs,
-      harbor-meta,
-      treefmt-nix,
-      nixpkgs,
-      nixpkgs-typedb,
-      crane,
-      ...
-    }:
-    let
-      systems = [ "x86_64-linux" ];
-      forAllSystems =
-        f:
-        nixpkgs.lib.genAttrs systems (
-          system:
-          let
-            pkgs = import nixpkgs {
-              inherit system;
-              overlays = [ (import harbor-rs.inputs.rust-overlay) ];
-            };
-            toolchain = harbor-rs.lib.mkToolchain {
-              inherit pkgs;
-              toolchainProfile = "stable";
-            };
-          in
+  outputs = {
+    self,
+    harbor-db,
+    harbor-rs,
+    harbor-meta,
+    treefmt-nix,
+    nixpkgs,
+    nixpkgs-typedb,
+    crane,
+    ...
+  }: let
+    systems = ["x86_64-linux"];
+    forAllSystems = f:
+      nixpkgs.lib.genAttrs systems (
+        system: let
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [(import harbor-rs.inputs.rust-overlay)];
+          };
+          toolchain = harbor-rs.lib.mkToolchain {
+            inherit pkgs;
+            toolchainProfile = "stable";
+          };
+        in
           f {
             inherit system pkgs toolchain;
             craneLib = toolchain.craneLib;
@@ -60,145 +56,144 @@
             # same nixpkgs revision that carries the packaging PR, so the
             # service module and the binaries agree. Substituted from the
             # fleet cache, never built here.
-            typedbPkgs = import nixpkgs-typedb { inherit system; };
+            typedbPkgs = import nixpkgs-typedb {inherit system;};
           }
-        );
-      treefmt =
-        system: pkgs:
-        (treefmt-nix.lib.evalModule pkgs {
-          projectRootFile = "flake.nix";
-          programs.nixfmt.enable = true;
-          programs.rustfmt.enable = true;
-          # Match Cargo.toml (edition 2021): treefmt defaults to 2024, whose
-          # overflow rules disagree with `cargo fmt` on the same toolchain,
-          # making the two gates unsatisfiable simultaneously.
-          programs.rustfmt.edition = "2021";
-          programs.taplo.enable = true;
-        }).config.build;
-      # Cargo source plus the non-Cargo trees Rust embeds (TypeQL schema
-      # via include_str!, the Gel SDL assets the gel crate packages, or
-      # files read at test time (fixtures/)). cleanCargoSource alone strips
-      # them and breaks nix builds while cargo works.
-      workspaceSrc =
-        { pkgs, craneLib }:
-        pkgs.lib.cleanSourceWith {
-          src = ./.;
-          filter =
-            path: type:
-            craneLib.filterCargoSources path type
-            || pkgs.lib.hasSuffix ".tql" (toString path)
-            || pkgs.lib.hasPrefix (toString ./dbschema + "/") (toString path)
-            || pkgs.lib.hasPrefix (toString ./fixtures + "/") (toString path);
+      );
+    treefmt = system: pkgs:
+      (treefmt-nix.lib.evalModule pkgs {
+        projectRootFile = "flake.nix";
+        programs.nixfmt.enable = true;
+        programs.rustfmt.enable = true;
+        # Match Cargo.toml (edition 2021): treefmt defaults to 2024, whose
+        # overflow rules disagree with `cargo fmt` on the same toolchain,
+        # making the two gates unsatisfiable simultaneously.
+        programs.rustfmt.edition = "2021";
+        programs.taplo.enable = true;
+      }).config.build;
+    # Cargo source plus the non-Cargo trees Rust embeds (TypeQL schema
+    # via include_str!, the Gel SDL assets the gel crate packages, or
+    # files read at test time (fixtures/)). cleanCargoSource alone strips
+    # them and breaks nix builds while cargo works.
+    workspaceSrc = {
+      pkgs,
+      craneLib,
+    }:
+      pkgs.lib.cleanSourceWith {
+        src = ./.;
+        filter = path: type:
+          craneLib.filterCargoSources path type
+          || pkgs.lib.hasSuffix ".tql" (toString path)
+          || pkgs.lib.hasPrefix (toString ./dbschema + "/") (toString path)
+          || pkgs.lib.hasPrefix (toString ./fixtures + "/") (toString path);
+      };
+  in {
+    nixosModules.chaosbox = import ./nix/chaosbox.nix;
+    nixosModules.default = self.nixosModules.chaosbox;
+
+    packages = forAllSystems (
+      {
+        pkgs,
+        craneLib,
+        ...
+      }: let
+        commonArgs = {
+          src = workspaceSrc {inherit pkgs craneLib;};
+          pname = "chaosbox";
+          version = "0.1.0";
+          strictDeps = true;
+          cargoExtraArgs = "--locked -p chaosbox";
+          meta = {
+            description = "Chaosbox deterministic code-graph pipeline";
+            homepage = "https://github.com/caniko/chaosbox";
+            license = pkgs.lib.licenses.mit;
+            mainProgram = "chaosbox";
+          };
         };
-    in
-    {
-      nixosModules.chaosbox = import ./nix/chaosbox.nix;
-      nixosModules.default = self.nixosModules.chaosbox;
-
-      packages = forAllSystems (
-        { pkgs, craneLib, ... }:
-        let
-          commonArgs = {
-            src = workspaceSrc { inherit pkgs craneLib; };
-            pname = "chaosbox";
-            version = "0.1.0";
-            strictDeps = true;
-            cargoExtraArgs = "--locked -p chaosbox";
-            meta = {
-              description = "Chaosbox deterministic code-graph pipeline";
-              homepage = "https://github.com/caniko/chaosbox";
-              license = pkgs.lib.licenses.mit;
-              mainProgram = "chaosbox";
-            };
-          };
-          cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-          chaosbox = craneLib.buildPackage (commonArgs // { inherit cargoArtifacts; });
-          db-check = pkgs.writeShellApplication {
-            name = "chaosbox-db-check";
-            text = ''exec ${pkgs.lib.getExe chaosbox} db check --json "$@"'';
-          };
-          db-migrate = pkgs.writeShellApplication {
-            name = "chaosbox-db-migrate";
-            # Migration runs through the driver inside chaosbox (no CLI
-            # tooling needed); connection arrives via environment + the
-            # credential file at runtime, never ambient PATH.
-            runtimeInputs = [ chaosbox ];
-            text = ''exec ${pkgs.lib.getExe chaosbox} db migrate --json "$@"'';
-          };
-          test-typedb = pkgs.writeShellApplication {
-            name = "chaosbox-test-typedb";
-            runtimeInputs = [
-              chaosbox
-            ];
-            text = builtins.readFile ./scripts/test-typedb.sh;
-          };
-          # Local TypeDB bootstrap for single-host pilots: generates
-          # credentials once, converges passwords over the admin socket,
-          # ensures the application user + database. Tested by the
-          # typedb-bootstrap check below; consumed by host modules.
-          typedb-bootstrap = pkgs.writeShellApplication {
-            name = "typedb-bootstrap";
-            runtimeInputs = [
-              pkgs.bash
-              pkgs.coreutils
-              pkgs.gnugrep
-              pkgs.openssl
-            ];
-            text = builtins.readFile ./nix/typedb-bootstrap.sh;
-          };
-        in
-        {
-          inherit
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+        chaosbox = craneLib.buildPackage (commonArgs // {inherit cargoArtifacts;});
+        db-check = pkgs.writeShellApplication {
+          name = "chaosbox-db-check";
+          text = ''exec ${pkgs.lib.getExe chaosbox} db check --json "$@"'';
+        };
+        db-migrate = pkgs.writeShellApplication {
+          name = "chaosbox-db-migrate";
+          # Migration runs through the driver inside chaosbox (no CLI
+          # tooling needed); connection arrives via environment + the
+          # credential file at runtime, never ambient PATH.
+          runtimeInputs = [chaosbox];
+          text = ''exec ${pkgs.lib.getExe chaosbox} db migrate --json "$@"'';
+        };
+        test-typedb = pkgs.writeShellApplication {
+          name = "chaosbox-test-typedb";
+          runtimeInputs = [
             chaosbox
-            db-check
-            db-migrate
-            test-typedb
-            typedb-bootstrap
-            ;
-          default = chaosbox;
-        }
-      );
+          ];
+          text = builtins.readFile ./scripts/test-typedb.sh;
+        };
+        # Local TypeDB bootstrap for single-host pilots: generates
+        # credentials once, converges passwords over the admin socket,
+        # ensures the application user + database. Tested by the
+        # typedb-bootstrap check below; consumed by host modules.
+        typedb-bootstrap = pkgs.writeShellApplication {
+          name = "typedb-bootstrap";
+          runtimeInputs = [
+            pkgs.bash
+            pkgs.coreutils
+            pkgs.gnugrep
+            pkgs.openssl
+            pkgs.util-linux
+          ];
+          text = builtins.readFile ./nix/typedb-bootstrap.sh;
+        };
+      in {
+        inherit
+          chaosbox
+          db-check
+          db-migrate
+          test-typedb
+          typedb-bootstrap
+          ;
+        default = chaosbox;
+      }
+    );
 
-      apps = forAllSystems (
-        { pkgs, ... }:
-        let
-          P = self.packages.${pkgs.stdenv.hostPlatform.system};
-        in
-        {
-          default = {
-            type = "app";
-            program = "${pkgs.lib.getExe P.chaosbox}";
-          };
-          chaosbox = {
-            type = "app";
-            program = "${pkgs.lib.getExe P.chaosbox}";
-          };
-          db-check = {
-            type = "app";
-            program = "${pkgs.lib.getExe P.db-check}";
-          };
-          db-migrate = {
-            type = "app";
-            program = "${pkgs.lib.getExe P.db-migrate}";
-          };
-          test-typedb = {
-            type = "app";
-            program = "${pkgs.lib.getExe P.test-typedb}";
-          };
-        }
-      );
+    apps = forAllSystems (
+      {pkgs, ...}: let
+        P = self.packages.${pkgs.stdenv.hostPlatform.system};
+      in {
+        default = {
+          type = "app";
+          program = "${pkgs.lib.getExe P.chaosbox}";
+        };
+        chaosbox = {
+          type = "app";
+          program = "${pkgs.lib.getExe P.chaosbox}";
+        };
+        db-check = {
+          type = "app";
+          program = "${pkgs.lib.getExe P.db-check}";
+        };
+        db-migrate = {
+          type = "app";
+          program = "${pkgs.lib.getExe P.db-migrate}";
+        };
+        test-typedb = {
+          type = "app";
+          program = "${pkgs.lib.getExe P.test-typedb}";
+        };
+      }
+    );
 
-      devShells = forAllSystems (
-        {
-          pkgs,
-          toolchain,
-          system,
-          typedbPkgs,
-          ...
-        }:
-        let
-          cross = harbor-rs.lib.mkCross { inherit pkgs system; };
-        in
+    devShells = forAllSystems (
+      {
+        pkgs,
+        toolchain,
+        system,
+        typedbPkgs,
+        ...
+      }: let
+        cross = harbor-rs.lib.mkCross {inherit pkgs system;};
+      in
         (harbor-rs.lib.mkDevShells {
           inherit pkgs cross;
           inherit (toolchain) craneLib;
@@ -223,88 +218,85 @@
           # Simit-generated CI builds docs via `.#docs`; same shell.
           docs = default;
         }
-      );
+    );
 
-      formatter = forAllSystems (args: (treefmt args.system args.pkgs).wrapper);
+    formatter = forAllSystems (args: (treefmt args.system args.pkgs).wrapper);
 
-      checks = forAllSystems (
-        {
-          pkgs,
-          craneLib,
-          typedbPkgs,
-          ...
-        }:
-        let
-          src = workspaceSrc { inherit pkgs craneLib; };
-          commonArgs = {
-            inherit src;
-            pname = "chaosbox";
-            version = "0.1.0";
-            strictDeps = true;
-            cargoExtraArgs = "--locked --workspace";
+    checks = forAllSystems (
+      {
+        pkgs,
+        craneLib,
+        typedbPkgs,
+        ...
+      }: let
+        src = workspaceSrc {inherit pkgs craneLib;};
+        commonArgs = {
+          inherit src;
+          pname = "chaosbox";
+          version = "0.1.0";
+          strictDeps = true;
+          cargoExtraArgs = "--locked --workspace";
+        };
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+      in {
+        fmt = (treefmt pkgs.stdenv.hostPlatform.system pkgs).check self;
+        lint = craneLib.cargoClippy (
+          commonArgs
+          // {
+            inherit cargoArtifacts;
+            cargoClippyExtraArgs = "-- --deny warnings";
+          }
+        );
+        unit = craneLib.cargoTest (commonArgs // {inherit cargoArtifacts;});
+        doc = craneLib.cargoDoc (commonArgs // {inherit cargoArtifacts;});
+        packaging = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
+        deployment-eval = pkgs.callPackage ./nix/deployment-eval.nix {
+          harborDbModule = harbor-db.nixosModules.default;
+          typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
+          chaosboxModule = self.nixosModules.chaosbox;
+          chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
+          typedbPackage = typedbPkgs.typedb;
+        };
+        typedb-integration = pkgs.callPackage ./nix/typedb-vm-test.nix {
+          harborDbModule = harbor-db.nixosModules.default;
+          typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
+          chaosboxModule = self.nixosModules.chaosbox;
+          chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
+          typedbPackage = typedbPkgs.typedb;
+          typedbConsolePackage = typedbPkgs.typedb-console;
+        };
+        # Full bootstrap lifecycle against the packaged server: empty
+        # install, credential rotation, app auth, permissions, reboot,
+        # interruption recovery, mismatch handling, non-default names.
+        typedb-bootstrap-test = pkgs.callPackage ./nix/typedb-bootstrap-test.nix {
+          typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
+          bootstrapPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.typedb-bootstrap;
+          chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
+          typedbPackage = typedbPkgs.typedb;
+          typedbConsolePackage = typedbPkgs.typedb-console;
+        };
+        # Fail if flake inputs ever point at the retired Codeberg/Codefloe
+        # mirrors again (fleet migrated to github.com/caniko/*).
+        host-pinning = let
+          flakeInputs = pkgs.lib.fileset.toSource {
+            root = ./.;
+            fileset = pkgs.lib.fileset.unions [
+              ./flake.nix
+              ./flake.lock
+            ];
           };
-          cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+          # Split across literals so this file never matches its own pattern.
+          staleHosts = "cod" + "eberg|cod" + "efloe";
         in
-        {
-          fmt = (treefmt pkgs.stdenv.hostPlatform.system pkgs).check self;
-          lint = craneLib.cargoClippy (
-            commonArgs
-            // {
-              inherit cargoArtifacts;
-              cargoClippyExtraArgs = "-- --deny warnings";
-            }
-          );
-          unit = craneLib.cargoTest (commonArgs // { inherit cargoArtifacts; });
-          doc = craneLib.cargoDoc (commonArgs // { inherit cargoArtifacts; });
-          packaging = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
-          deployment-eval = pkgs.callPackage ./nix/deployment-eval.nix {
-            harborDbModule = harbor-db.nixosModules.default;
-            typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
-            chaosboxModule = self.nixosModules.chaosbox;
-            chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
-            typedbPackage = typedbPkgs.typedb;
-          };
-          typedb-integration = pkgs.callPackage ./nix/typedb-vm-test.nix {
-            harborDbModule = harbor-db.nixosModules.default;
-            typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
-            chaosboxModule = self.nixosModules.chaosbox;
-            chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
-            typedbPackage = typedbPkgs.typedb;
-            typedbConsolePackage = typedbPkgs.typedb-console;
-          };
-          # Full bootstrap lifecycle against the packaged server: empty
-          # install, credential rotation, app auth, permissions, reboot,
-          # interruption recovery, mismatch handling, non-default names.
-          typedb-bootstrap-test = pkgs.callPackage ./nix/typedb-bootstrap-test.nix {
-            typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
-            bootstrapPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.typedb-bootstrap;
-            chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
-            typedbPackage = typedbPkgs.typedb;
-            typedbConsolePackage = typedbPkgs.typedb-console;
-          };
-          # Fail if flake inputs ever point at the retired Codeberg/Codefloe
-          # mirrors again (fleet migrated to github.com/caniko/*).
-          host-pinning =
-            let
-              flakeInputs = pkgs.lib.fileset.toSource {
-                root = ./.;
-                fileset = pkgs.lib.fileset.unions [
-                  ./flake.nix
-                  ./flake.lock
-                ];
-              };
-              # Split across literals so this file never matches its own pattern.
-              staleHosts = "cod" + "eberg|cod" + "efloe";
-            in
-            pkgs.runCommand "chaosbox-host-pinning" { } ''
-              if ${pkgs.lib.getExe pkgs.ripgrep} -q "${staleHosts}" ${flakeInputs}; then
-                echo "ERROR: retired forge host in flake inputs:" >&2
-                ${pkgs.lib.getExe pkgs.ripgrep} -n "${staleHosts}" ${flakeInputs} >&2 || true
-                exit 1
-              fi
-              touch $out
-            '';
-        }
-      );
-    };
+          pkgs.runCommand "chaosbox-host-pinning" {} ''
+            if ${pkgs.lib.getExe pkgs.ripgrep} -q "${staleHosts}" ${flakeInputs}; then
+              echo "ERROR: retired forge host in flake inputs:" >&2
+              ${pkgs.lib.getExe pkgs.ripgrep} -n "${staleHosts}" ${flakeInputs} >&2 || true
+              exit 1
+            fi
+            touch $out
+          '';
+      }
+    );
+  };
 }

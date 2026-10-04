@@ -33,6 +33,11 @@ generate_into() {
 
 mkdir -p "$auth_dir"
 chmod 0711 "$auth_dir"
+# Keep the anchor permanently: every provisioner holds the same inode through
+# generation, user/database creation and both admin-socket password resets.
+exec 9>"$auth_dir/.bootstrap.lock"
+chmod 0600 "$auth_dir/.bootstrap.lock"
+flock --exclusive 9
 [ -s "$admin_pw" ] || generate_into "$admin_pw"
 chmod 400 "$admin_pw"
 [ -s "$app_pw" ] || generate_into "$app_pw"
