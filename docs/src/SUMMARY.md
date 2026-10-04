@@ -1,6 +1,7 @@
 # Summary
 
 - [Chaosbox](index.md)
+- [Storage lifecycle integration](storage-lifecycle.md)
 - [Selective intelligence](intelligence.md)
 - [First delivery: session migration](session-migration.md)
 - [Session verification contract](session-verification.md)
