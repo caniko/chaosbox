@@ -255,7 +255,7 @@ impl TypeDbReader {
             self.driver()?,
             &self.config.database,
             query,
-            &["b", "gen", "st", "coverage"],
+            &["b", "gen", "st", "coverage", "digest"],
         )
         .await?;
         let Some(row) = rows.into_iter().next() else {
@@ -279,6 +279,7 @@ impl TypeDbReader {
             build_id,
             generation: col_int(&row, "gen")?,
             status: col_string(&row, "st")?,
+            evidence_sealed: col_string_opt(&row, "digest").is_some(),
             snapshots,
             coverage: col_string_opt(&row, "coverage")
                 .map(|json| {
@@ -294,7 +295,7 @@ impl TypeDbReader {
 impl GraphQueries for TypeDbReader {
     async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, StoreError> {
         self.build_header(&format!(
-            "match $p isa active-pointer, has repo-name {repo}, has build-id $b; $g isa graph-build, has build-id $b, has repo-name {repo}, has generation $gen, has status $st; $st == \"active\"; try {{ $g has coverage-json $coverage; }}; select $b, $gen, $st, $coverage;",
+            "match $p isa active-pointer, has repo-name {repo}, has build-id $b; $g isa graph-build, has build-id $b, has repo-name {repo}, has generation $gen, has status $st; $st == \"active\"; try {{ $g has coverage-json $coverage; }}; try {{ $g has publication-digest $digest; }}; select $b, $gen, $st, $coverage, $digest;",
             repo = str_lit(repo),
         )).await
     }
@@ -305,7 +306,7 @@ impl GraphQueries for TypeDbReader {
         build_id: &str,
     ) -> Result<Option<BuildRow>, StoreError> {
         self.build_header(&format!(
-            "match $g isa graph-build, has build-id {build}, has build-id $b, has repo-name {repo}, has generation $gen, has status $st, has publication-digest $digest; $st == \"active\"; try {{ $g has coverage-json $coverage; }}; select $b, $gen, $st, $coverage;",
+            "match $g isa graph-build, has build-id {build}, has build-id $b, has repo-name {repo}, has generation $gen, has status $st; $st == \"active\"; try {{ $g has coverage-json $coverage; }}; try {{ $g has publication-digest $digest; }}; select $b, $gen, $st, $coverage, $digest;",
             build = str_lit(build_id),
             repo = str_lit(repo),
         )).await

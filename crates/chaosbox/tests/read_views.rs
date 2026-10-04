@@ -628,23 +628,33 @@ async fn expiry_is_checked_again_before_serving_a_connection() {
     assert_eq!(client.read(&mut buf).await.unwrap(), 0);
 }
 
-struct SlowHeader(chaosbox_store::MemoryReader);
+struct HeaderOverride {
+    reader: chaosbox_store::MemoryReader,
+    delay: std::time::Duration,
+    legacy: bool,
+}
 
 #[async_trait::async_trait]
-impl GraphQueries for SlowHeader {
+impl GraphQueries for HeaderOverride {
     async fn active_build(
         &self,
         repo: &str,
     ) -> Result<Option<chaosbox_store::BuildRow>, chaosbox_store::StoreError> {
-        self.0.active_build(repo).await
+        self.reader.active_build(repo).await
     }
     async fn published_build(
         &self,
         repo: &str,
         build: &str,
     ) -> Result<Option<chaosbox_store::BuildRow>, chaosbox_store::StoreError> {
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-        self.0.published_build(repo, build).await
+        tokio::time::sleep(self.delay).await;
+        let mut header = self.reader.published_build(repo, build).await?;
+        if self.legacy {
+            if let Some(header) = &mut header {
+                header.evidence_sealed = false;
+            }
+        }
+        Ok(header)
     }
     async fn search_entities(
         &self,
@@ -652,14 +662,14 @@ impl GraphQueries for SlowHeader {
         like: &str,
         limit: i64,
     ) -> Result<Vec<chaosbox_store::EntityRow>, chaosbox_store::StoreError> {
-        self.0.search_entities(build, like, limit).await
+        self.reader.search_entities(build, like, limit).await
     }
     async fn entity_by_id(
         &self,
         build: &str,
         id: &str,
     ) -> Result<Option<chaosbox_store::EntityRow>, chaosbox_store::StoreError> {
-        self.0.entity_by_id(build, id).await
+        self.reader.entity_by_id(build, id).await
     }
     async fn neighbors_out(
         &self,
@@ -667,7 +677,7 @@ impl GraphQueries for SlowHeader {
         id: &str,
         rel: Vec<String>,
     ) -> Result<Vec<chaosbox_store::RelRow>, chaosbox_store::StoreError> {
-        self.0.neighbors_out(build, id, rel).await
+        self.reader.neighbors_out(build, id, rel).await
     }
     async fn neighbors_in(
         &self,
@@ -675,28 +685,28 @@ impl GraphQueries for SlowHeader {
         id: &str,
         rel: Vec<String>,
     ) -> Result<Vec<chaosbox_store::RelRow>, chaosbox_store::StoreError> {
-        self.0.neighbors_in(build, id, rel).await
+        self.reader.neighbors_in(build, id, rel).await
     }
     async fn build_entities(
         &self,
         build: &str,
         limit: i64,
     ) -> Result<Vec<chaosbox_store::EntityRow>, chaosbox_store::StoreError> {
-        self.0.build_entities(build, limit).await
+        self.reader.build_entities(build, limit).await
     }
     async fn build_relationships(
         &self,
         build: &str,
         limit: i64,
     ) -> Result<Vec<chaosbox_store::RelRow>, chaosbox_store::StoreError> {
-        self.0.build_relationships(build, limit).await
+        self.reader.build_relationships(build, limit).await
     }
     async fn evidence_for(
         &self,
         build: &str,
         rel: &str,
     ) -> Result<Vec<EvidenceRow>, chaosbox_store::StoreError> {
-        self.0.evidence_for(build, rel).await
+        self.reader.evidence_for(build, rel).await
     }
     async fn evidence_for_limited(
         &self,
@@ -704,7 +714,7 @@ impl GraphQueries for SlowHeader {
         rel: &str,
         limit: i64,
     ) -> Result<Vec<EvidenceRow>, chaosbox_store::StoreError> {
-        self.0.evidence_for_limited(build, rel, limit).await
+        self.reader.evidence_for_limited(build, rel, limit).await
     }
 }
 
@@ -716,11 +726,48 @@ async fn whole_admission_deadline_bounds_backend_work() {
     let identity = grant.identity.clone();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(1),
-        ScopedReader::admit(SlowHeader(seed.reader), grant, &identity),
+        ScopedReader::admit(
+            HeaderOverride {
+                reader: seed.reader,
+                delay: std::time::Duration::from_secs(60),
+                legacy: false,
+            },
+            grant,
+            &identity,
+        ),
     )
     .await
     .unwrap();
     assert_eq!(result.err().unwrap().code(), "deadline_exceeded");
+}
+
+#[tokio::test]
+async fn legacy_headers_allow_operator_diffs_but_not_run_bound_admission() {
+    let seed = cited_seed().await;
+    let grant = view(&seed.builds.0, &["s1"]);
+    let identity = grant.identity.clone();
+    let handle = HeaderOverride {
+        reader: seed.reader,
+        delay: std::time::Duration::ZERO,
+        legacy: true,
+    };
+    let operator = chaosbox::GraphReader::pinned(handle, "conf").await.unwrap();
+    let diff = operator
+        .diff("conf", &seed.builds.0, &seed.builds.1)
+        .await
+        .unwrap();
+    assert_eq!(diff["from_build"], seed.builds.0);
+    let seed = cited_seed().await;
+    let handle = HeaderOverride {
+        reader: seed.reader,
+        delay: std::time::Duration::ZERO,
+        legacy: true,
+    };
+    let error = ScopedReader::admit(handle, grant, &identity)
+        .await
+        .err()
+        .unwrap();
+    assert_eq!(error.code(), "version_unavailable");
 }
 
 #[test]

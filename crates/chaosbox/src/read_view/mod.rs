@@ -131,6 +131,7 @@ impl ScopedReader {
             .ok_or(ReadError::VersionUnavailable)?;
         if header.build_id != view.build_id
             || header.status != "active"
+            || !header.evidence_sealed
             || header
                 .snapshots
                 .into_iter()

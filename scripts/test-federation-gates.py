@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 import os
 import runpy
+import socket
 import subprocess
 import sys
 import tempfile
@@ -54,46 +55,43 @@ class RustTestCount(unittest.TestCase):
 
 
 class OneShotDeadline(unittest.TestCase):
-    def invoke(self, body, timeout=0.3, startup_delay=0):
-        process = subprocess.Popen(
-            [sys.executable, "-u", "-c",
-             f"import sys,time,os\ntime.sleep({startup_delay!r})\n"
-             "sys.stdout.write('ready\\n'); sys.stdout.flush()\n"
-             f"sys.stdin.read(1)\n{body}"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, text=True,
-        )
-        # Interpreter startup under QEMU is outside the reader's contract.
-        # Bound readiness separately, then start the unchanged reader deadline.
-        startup_watchdog = threading.Timer(5, lambda: process.kill() if process.poll() is None else None)
-        startup_watchdog.start()
-        try:
-            self.assertEqual(process.stdout.readline(), "ready\n")
-        except BaseException:
-            if process.poll() is None:
-                process.kill()
-            process.wait(timeout=2)
-            process.stdin.close()
-            process.stdout.close()
-            raise
-        finally:
-            startup_watchdog.cancel()
-        # Also bound a future regression to a blocking pipe read.
-        watchdog = threading.Timer(2, lambda: process.kill() if process.poll() is None else None)
-        watchdog.start()
-        started = time.monotonic()
-        try:
-            process.stdin.write("\n")
-            process.stdin.flush()
-            return READ_ONE_SHOT(process, timeout=timeout)
-        finally:
-            watchdog.cancel()
-            if process.poll() is None:
-                process.kill()
-            process.wait(timeout=2)
-            process.stdin.close()
-            process.stdout.close()
-            self.assertLess(time.monotonic() - started, 1.5, "read escaped its deadline")
+    def invoke(self, body, timeout=0.3):
+        # Interpreter startup in the VM has its own bound. Start the unchanged
+        # protocol deadline only once the child is ready to execute the fixture.
+        ready, child_ready = socket.socketpair()
+        with ready, child_ready:
+            descriptor = child_ready.fileno()
+            process = subprocess.Popen(
+                [sys.executable, "-u", "-c",
+                 "import sys,time,os,socket\n"
+                 f"ready = socket.socket(fileno={descriptor})\n"
+                 "ready.sendall(b'R')\n"
+                 "assert ready.recv(1) == b'G'\n"
+                 "ready.close()\n" + body],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                pass_fds=(descriptor,),
+            )
+            child_ready.close()
+            watchdog = None
+            started = None
+            try:
+                ready.settimeout(5)
+                self.assertEqual(ready.recv(1), b"R", "fixture did not become ready")
+                # Also bound a future regression to a blocking pipe read.
+                watchdog = threading.Timer(2, lambda: process.kill() if process.poll() is None else None)
+                watchdog.start()
+                started = time.monotonic()
+                ready.sendall(b"G")
+                return READ_ONE_SHOT(process, timeout=timeout)
+            finally:
+                if watchdog is not None:
+                    watchdog.cancel()
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=2)
+                process.stdout.close()
+                if started is not None:
+                    self.assertLess(time.monotonic() - started, 1.5, "read escaped its deadline")
 
     def test_partial_frame_cannot_escape_the_deadline(self):
         with self.assertRaises(subprocess.TimeoutExpired):
@@ -101,10 +99,7 @@ class OneShotDeadline(unittest.TestCase):
 
     def test_fragmented_complete_frame_passes(self):
         self.invoke("sys.stdout.write('{'); sys.stdout.flush(); time.sleep(0.02); "
-                     f"sys.stdout.write({REPLY[1:]!r})")
-
-    def test_slow_interpreter_startup_is_outside_reader_deadline(self):
-        self.invoke(f"sys.stdout.write({REPLY!r})", startup_delay=0.5)
+                    f"sys.stdout.write({REPLY[1:]!r})")
 
     def test_complete_frame_with_open_pipe_times_out(self):
         with self.assertRaises(subprocess.TimeoutExpired):
