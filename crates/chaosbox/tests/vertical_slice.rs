@@ -7,10 +7,14 @@ use std::{collections::BTreeMap, path::PathBuf};
 use chaosbox::{export_json, search, FixtureResponder, Materialization, Pipeline};
 use chaosbox_core::diff_builds;
 use chaosbox_extract::Snapshot;
-use chaosbox_gel::{MemoryStore, Store as _};
+use chaosbox_store::{MemoryStore, Store as _};
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/demo-repo")
+}
+
+fn test_policy() -> chaosbox_core::EffectivePolicy {
+    chaosbox_core::EffectivePolicy::new(&[], "local", "typesafe-jev").unwrap()
 }
 
 #[tokio::test]
@@ -20,15 +24,24 @@ fn fixture_root() -> PathBuf {
 async fn vertical_slice_publish_query_incremental() {
     let root = fixture_root();
     assert!(root.exists(), "fixture repo missing at {root:?}");
+    let policy = test_policy();
 
-    // 1-2. snapshot + deterministic extraction/candidates
-    let (snap, ext, cands) = Pipeline::<MemoryStore>::snapshot_extract("demo", &root, 200).unwrap();
+    // 1-2. snapshot + deterministic extraction/candidates (with truncation
+    // accounting: selected/omitted by reason are part of the contract).
+    let (snap, ext, cat) =
+        Pipeline::<MemoryStore>::snapshot_extract("demo", &root, 200, &policy).unwrap();
     assert!(
         ext.entities.len() > 10,
         "expected entities, got {}",
         ext.entities.len()
     );
-    assert!(!cands.is_empty(), "expected candidates");
+    assert!(!cat.candidates.is_empty(), "expected candidates");
+    assert_eq!(cat.cap, 200);
+    assert_eq!(
+        cat.selected.values().sum::<u64>(),
+        u64::try_from(cat.candidates.len()).expect("candidate count fits in u64"),
+    );
+    let cands = &cat.candidates;
 
     // 3. real Rust Jev adapter path against a local protocol fixture
     // (typed request/response validation, no creds, no network).
@@ -41,7 +54,7 @@ async fn vertical_slice_publish_query_incremental() {
         .await
         .unwrap();
     // Deterministic run/set identity over the candidate catalog.
-    let catalog = chaosbox_core::catalog_digest(&cands);
+    let catalog = chaosbox_core::catalog_digest(cands);
     let run_id = chaosbox_core::deterministic_id("run", &["demo", &snap.id]);
     let set_id = chaosbox_core::deterministic_id("set", &[&run_id, &catalog, &mat.rubric_version]);
     pipe.store
@@ -55,7 +68,7 @@ async fn vertical_slice_publish_query_incremental() {
         )
         .await
         .unwrap();
-    for cand in &cands {
+    for cand in cands {
         pipe.store.put_candidate(&set_id, cand).await.unwrap();
     }
     assert_eq!(pipe.store.stats().candidates, cands.len());
@@ -67,11 +80,13 @@ async fn vertical_slice_publish_query_incremental() {
         .collect();
     let mut responder = FixtureResponder::new(true);
     let decided = Pipeline::<MemoryStore>::decide(
-        &cands,
+        cands,
         &entities,
+        &snap,
         &mut responder,
         chaosbox_jev::JEV_MODEL_PINNED,
         &mat,
+        &policy,
         &mut pipe.store,
     )
     .await
@@ -113,8 +128,9 @@ async fn vertical_slice_publish_query_incremental() {
     copy_dir(&root, tmp_root);
     std::fs::remove_file(tmp_root.join("greeter.py")).unwrap();
     std::fs::write(tmp_root.join("notes.txt"), "changed notes about hello\n").unwrap();
-    let (snap2, ext2, cands2) =
-        Pipeline::<MemoryStore>::snapshot_extract("demo", tmp_root, 200).unwrap();
+    let (snap2, ext2, cat2) =
+        Pipeline::<MemoryStore>::snapshot_extract("demo", tmp_root, 200, &policy).unwrap();
+    let cands2 = &cat2.candidates;
     assert_ne!(snap.id, snap2.id, "changed sources => new snapshot");
     pipe.store
         .ensure_snapshot_files(&snap2.id, "demo", &snap2.snapshot_files())
@@ -127,11 +143,13 @@ async fn vertical_slice_publish_query_incremental() {
         .collect();
     let mut responder2 = FixtureResponder::new(true);
     let decided2 = Pipeline::<MemoryStore>::decide(
-        &cands2,
+        cands2,
         &entities2,
+        &snap2,
         &mut responder2,
         chaosbox_jev::JEV_MODEL_PINNED,
         &mat,
+        &policy,
         &mut pipe.store,
     )
     .await

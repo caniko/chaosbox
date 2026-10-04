@@ -9,7 +9,7 @@ homepage.workspace = true
 documentation.workspace = true
 description = "Chaosbox domain types, identifiers, evidence contracts, validation and graph logic"
 readme = "../../README.md"
-include = ["/crates/chaosbox-core/src/**/*.rs", "/../../README.md"]
+include = ["src/**/*.rs"]
 
 [dependencies]
 serde = { workspace = true }

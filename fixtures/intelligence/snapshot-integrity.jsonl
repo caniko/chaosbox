@@ -1,0 +1,1 @@
+{"id":"u1","type":"user","time":{"created":1000},"text":"For the OpenCode history migration, never overwrite the original SQLite snapshots because they are the only lossless rollback source."}

@@ -1,201 +1,50 @@
 //! `chaosbox` CLI + read-only MCP server.
 //!
 //! Consumers (CLI queries, MCP tools) share one query implementation in the
-//! library, served Gel-backed through [`chaosbox::GelReader`]. MCP is
-//! read-only: no mutation, ingestion, annotations, arbitrary EdgeQL/SQL,
+//! library, served TypeDB-backed through [`chaosbox::GraphReader`]. MCP is
+//! read-only: no mutation, ingestion, annotations, arbitrary SQL,
 //! migrations, or model configuration tools. The read-only server never loads
 //! Jev credentials. Indexing/administration are operator commands.
 
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    sync::atomic::Ordering,
 };
 
 use chaosbox::{
-    all_relation_types, GelReader, LifecycleReport, Materialization, Pipeline, chain_publication,
+    all_relation_types, GraphReader, LifecycleReport, Materialization, Pipeline, chain_publication,
     EXPORT_EDGE_CAP, EXPORT_NODE_CAP,
 };
 use chaosbox::{FixtureResponder, LiveResponder, PipelineError};
 use chaosbox_extract::Snapshot;
-use chaosbox_gel::{GelHandle, GelQueries as _, MemoryStore};
+use chaosbox_store::{GraphQueries as _, MemoryStore};
 use chaosbox_typedb::{
     reader::TypeDbReader,
     store::{TypeDbConfig, TypeDbStore},
 };
 use clap::{Parser, Subcommand};
 
-/// Storage backend selection: `CHAOSBOX_DB_BACKEND=typedb` routes every
-/// consumer and lifecycle command at the `TypeDB` backend; anything else keeps
-/// the Gel path. The default flips to `TypeDB` at cutover.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Backend {
-    Gel,
-    Typedb,
-}
+mod backend_cmd;
+mod jev_cmd;
+mod mcp_server;
+mod pipeline_cmd;
+mod postgres_cmd;
+mod query_cmd;
 
-/// Resolve the backend from the environment.
-fn backend() -> Backend {
-    if std::env::var("CHAOSBOX_DB_BACKEND").as_deref() == Ok("typedb") {
-        Backend::Typedb
-    } else {
-        Backend::Gel
-    }
-}
-
-/// `TypeDB` connection from the environment. The password arrives via a
-/// credential file (never a value, flag, or log); only the file path
-/// appears in diagnostics.
-fn typedb_config_from_env() -> Result<TypeDbConfig, String> {
-    let password_file = std::env::var("CHAOSBOX_TYPEDB_PASSWORD_FILE")
-        .map_err(|_| "CHAOSBOX_TYPEDB_PASSWORD_FILE unset".to_owned())?;
-    let password =
-        std::fs::read_to_string(&password_file).map_err(|e| format!("read password file: {e}"))?;
-    Ok(TypeDbConfig {
-        address: std::env::var("CHAOSBOX_TYPEDB_ADDR").unwrap_or_else(|_| "127.0.0.1:1729".into()),
-        username: std::env::var("CHAOSBOX_TYPEDB_USER").unwrap_or_else(|_| "admin".into()),
-        password: password.trim().to_owned(),
-        database: std::env::var("CHAOSBOX_TYPEDB_DATABASE").unwrap_or_else(|_| "chaosbox".into()),
-    })
-}
-
-/// Live publication chain for one repo: (expected predecessor, starting
-/// generation) for a fresh process. Missing database or no active build
-/// means a fresh chain; anything else is a hard error, never a guess.
-async fn typedb_publication_chain(
-    config: &TypeDbConfig,
-    repo: &str,
-) -> Result<(Option<String>, u64), String> {
-    let mut reader = TypeDbReader::new(config.clone());
-    Box::pin(reader.connect())
-        .await
-        .map_err(|e| format!("typedb connect: {e}"))?;
-    let active = Box::pin(reader.active_build(repo))
-        .await
-        .map_err(|e| format!("typedb active build: {e}"))?;
-    chain_publication(active.map(|b| (b.build_id, b.generation)))
-        .map_err(|e| format!("publication chain: {e}"))
-}
-
-/// Backend-erased consumer reader: every query arm below works unchanged
-/// against either backend. Credentials stay behind `connect`; MCP callers
-/// only see the closed read surface.
-enum AnyReader {
-    Gel(GelReader<GelHandle>),
-    Typedb(GelReader<TypeDbReader>),
-}
-
-impl AnyReader {
-    /// Connect and pin the active build for `repo` on the selected backend.
-    async fn connect(repo: &str) -> Result<Self, PipelineError> {
-        match backend() {
-            Backend::Gel => Ok(Self::Gel(Box::pin(GelReader::connect(repo)).await?)),
-            Backend::Typedb => {
-                let config = typedb_config_from_env().map_err(PipelineError::Consumer)?;
-                let mut handle = TypeDbReader::new(config);
-                Box::pin(handle.connect())
-                    .await
-                    .map_err(|e| PipelineError::Consumer(format!("typedb connect: {e}")))?;
-                Ok(Self::Typedb(GelReader::pinned(handle, repo).await?))
-            }
-        }
-    }
-
-    /// Pinned active build id for status responses.
-    fn build_id(&self) -> &str {
-        match self {
-            Self::Gel(r) => &r.build_id,
-            Self::Typedb(r) => &r.build_id,
-        }
-    }
-
-    /// Pinned generation for status responses.
-    fn generation(&self) -> i64 {
-        match self {
-            Self::Gel(r) => r.generation,
-            Self::Typedb(r) => r.generation,
-        }
-    }
-
-    async fn search(
-        &self,
-        query: &str,
-        limit: i64,
-    ) -> Result<Vec<chaosbox_gel::EntityRow>, PipelineError> {
-        match self {
-            Self::Gel(r) => r.search(query, limit).await,
-            Self::Typedb(r) => r.search(query, limit).await,
-        }
-    }
-
-    async fn lookup(&self, id: &str) -> Result<Option<chaosbox_gel::EntityRow>, PipelineError> {
-        match self {
-            Self::Gel(r) => r.lookup(id).await,
-            Self::Typedb(r) => r.lookup(id).await,
-        }
-    }
-
-    async fn neighbors(
-        &self,
-        id: &str,
-        filter: Option<Vec<String>>,
-    ) -> Result<(Vec<chaosbox_gel::RelRow>, Vec<chaosbox_gel::RelRow>), PipelineError> {
-        match self {
-            Self::Gel(r) => r.neighbors(id, filter).await,
-            Self::Typedb(r) => r.neighbors(id, filter).await,
-        }
-    }
-
-    async fn path(
-        &self,
-        from: &str,
-        to: &str,
-        max_hops: usize,
-    ) -> Result<Option<Vec<String>>, PipelineError> {
-        match self {
-            Self::Gel(r) => r.path(from, to, max_hops).await,
-            Self::Typedb(r) => r.path(from, to, max_hops).await,
-        }
-    }
-
-    async fn export(&self) -> Result<serde_json::Value, PipelineError> {
-        match self {
-            Self::Gel(r) => r.export().await,
-            Self::Typedb(r) => r.export().await,
-        }
-    }
-
-    async fn evidence(&self, rel_id: &str) -> Result<serde_json::Value, PipelineError> {
-        match self {
-            Self::Gel(r) => r.evidence(rel_id).await,
-            Self::Typedb(r) => r.evidence(rel_id).await,
-        }
-    }
-
-    async fn diff(
-        &self,
-        repo: &str,
-        from_build: &str,
-        to_build: &str,
-    ) -> Result<serde_json::Value, PipelineError> {
-        match self {
-            Self::Gel(r) => r.diff(repo, from_build, to_build).await,
-            Self::Typedb(r) => r.diff(repo, from_build, to_build).await,
-        }
-    }
-
-    async fn explain(&self, id: &str) -> Result<serde_json::Value, PipelineError> {
-        match self {
-            Self::Gel(r) => r.explain(id).await,
-            Self::Typedb(r) => r.explain(id).await,
-        }
-    }
-}
+use backend_cmd::{
+    AnyReader, Backend, RunSpend, active_publishes_relations, backend, consumer_err,
+    db_check_typedb, run_migrate_typedb, typedb_config_from_env, typedb_publication_chain,
+};
+use mcp_server::serve_mcp;
+use pipeline_cmd::run_pipeline_with;
+use query_cmd::run_query;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "chaosbox",
     version,
-    about = "Chaosbox deterministic code-graph pipeline (Gel-backed)"
+    about = "Chaosbox deterministic code-graph pipeline"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -204,11 +53,77 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Project-scoped cross-user lazy query federation (read-only).
+    Federation {
+        /// Operator-owned client config; serve uses an owner-local provider config.
+        #[arg(long)]
+        config: PathBuf,
+        #[command(subcommand)]
+        command: chaosbox::federation::cli::Command,
+    },
+    /// Track scratch allocations, their purpose and unfinished work.
+    Scratch {
+        #[command(flatten)]
+        settings: chaosbox::scratch::cli::Settings,
+        #[command(subcommand)]
+        command: chaosbox::scratch::cli::Command,
+    },
+    /// Same-user peer replication and Jev-assisted intelligence reconciliation.
+    Sync {
+        /// Operator-owned sync identity/settings directory.
+        #[arg(long, global = true)]
+        directory: Option<PathBuf>,
+        #[command(subcommand)]
+        command: chaosbox::sync::cli::Command,
+    },
+    /// Durable session custody and Chaosbox-owned context reduction.
+    Memory {
+        #[command(subcommand)]
+        command: chaosbox::compaction::cli::Command,
+    },
+    /// Jev-selected exact-source continuation with deterministic Rust rendering.
+    Checkpoint {
+        #[command(subcommand)]
+        command: chaosbox::continuation::cli::Command,
+    },
+    /// Operator-only read-only PostgreSQL catalog collection and publication.
+    Postgres {
+        #[command(subcommand)]
+        command: postgres_cmd::Command,
+    },
+    /// Operator-only typed Typesafe Jev evaluation (external inference).
+    Jev {
+        #[command(subcommand)]
+        command: jev_cmd::Command,
+    },
+    /// Capture and query a source-cited, version-bound workspace impact pilot.
+    Workspace {
+        #[command(subcommand)]
+        command: chaosbox::workspace::cli::Command,
+    },
+    /// Capture or inspect optional context-bound SCIP compiler evidence.
+    Compiler {
+        #[command(subcommand)]
+        command: chaosbox::compiler::Command,
+    },
+    /// Extract, assess and retrieve selective session intelligence.
+    Intelligence {
+        #[command(subcommand)]
+        command: chaosbox::intelligence::cli::Command,
+    },
     /// Snapshot a fixture repository.
     Snapshot {
         path: PathBuf,
         #[arg(long, default_value = "demo")]
         repo: String,
+        /// Explicit source scope, repository-relative and repeatable.
+        /// Empty means the whole tree. Non-empty
+        /// restricts capture to those subtrees so a workspace root cannot
+        /// silently pull sibling checkouts; scope is part of the snapshot
+        /// id and therefore visible in `query status` as a fingerprint
+        /// change.
+        #[arg(long = "source-paths")]
+        source_paths: Vec<String>,
     },
     /// Extract deterministic facts + candidates.
     Extract {
@@ -217,16 +132,38 @@ enum Command {
         repo: String,
         #[arg(long, default_value_t = 200)]
         max_candidates: usize,
+        /// Explicit source scope (see `snapshot --source-paths`).
+        #[arg(long = "source-paths")]
+        source_paths: Vec<String>,
     },
     /// Run the full pipeline (live Jev decisions by default; fixture
     /// decisions only with --fixture-decisions, for disposable/test graphs;
-    /// entities-only with --no-decisions, no inference of any kind).
+    /// entities-only with --no-decisions, which reuses cached decisions and
+    /// spends nothing).
     Run {
         path: PathBuf,
+        /// Optional artifact directory from `compiler capture`.
+        #[arg(long)]
+        compiler: Option<PathBuf>,
         #[arg(long, default_value = "demo")]
         repo: String,
         #[arg(long, default_value_t = 200)]
         max_candidates: usize,
+        /// Explicit source scope (see `snapshot --source-paths`).
+        #[arg(long = "source-paths")]
+        source_paths: Vec<String>,
+        /// Privacy class for this run: `local` (private fleet only) or
+        /// `private` (no external inference ever). Unknown values fail
+        /// closed. Part of the decision cache identity.
+        #[arg(long, default_value = "local")]
+        privacy: String,
+        /// External inference grant for this run: `none` (no provider) or
+        /// `typesafe-jev` (Typesafe Jev for this repository alone).
+        /// Granting a provider never relaxes a privacy classification.
+        /// Part of the decision cache identity; `run --live-jev` additionally
+        /// requires `local` + `typesafe-jev` together.
+        #[arg(long, default_value = "none")]
+        inference: String,
         /// Use the live Jev API (needs `CHAOSBOX_JEV_API_KEY_FILE`) instead of
         /// the deterministic fixture. Real inference, real spend.
         #[arg(long, default_value_t = false, conflicts_with = "no_decisions")]
@@ -236,9 +173,12 @@ enum Command {
         /// decisions are recorded under the `fixture-test` model identity.
         #[arg(long, default_value_t = false, conflicts_with = "no_decisions")]
         fixture_decisions: bool,
-        /// Publish extracted entities with no semantic decisions: no live
-        /// inference, no fixture accept-all. The graph has nodes but no
-        /// relations or claims; safe for real corpora before Jev approval.
+        /// Publish entities and certified syntax facts without new inference.
+        /// Valid paid inferences are reused; uncached candidates stay pending.
+        /// Structural-only builds can refresh freely. A decision-bearing or
+        /// legacy active build is kept (exit 4, `coverage:` diagnostic) when
+        /// current candidates lack reusable decisions. No Jev requests or
+        /// fixture accept-all decisions are made.
         #[arg(long, default_value_t = false)]
         no_decisions: bool,
         /// Live-Jev spend guards (defaults = `JevPolicy::default`).
@@ -249,22 +189,67 @@ enum Command {
         #[arg(long)]
         max_retries: Option<u32>,
     },
-    /// Query helpers (read-only; Gel-backed, shared with MCP).
+    /// Query helpers (read-only; TypeDB-backed, shared with MCP).
     Query {
         #[command(subcommand)]
         q: QueryCmd,
     },
     /// Serve read-only MCP over stdio (no Jev credentials loaded).
-    Mcp,
-    /// Lifecycle contract v1.
+    Mcp {
+        /// Explicit private intelligence bundle, pinned once on startup.
+        #[arg(long)]
+        intelligence: Option<PathBuf>,
+        /// Live synchronized intelligence; pins one local snapshot per request.
+        #[arg(long, conflicts_with = "intelligence")]
+        intelligence_current: Option<PathBuf>,
+        /// Operator-owned project federation config; providers retain their own scopes.
+        #[arg(long, conflicts_with_all = ["intelligence", "intelligence_current"])]
+        intelligence_federation: Option<PathBuf>,
+        /// Explicit reviewed workspace artifact, pinned once on startup.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
+    },
+    /// Database readiness and migration reports (JSON contract v2).
     Db {
         #[command(subcommand)]
         op: DbCmd,
+    },
+    /// Inspect and verify a session-migration campaign.
+    Sessions {
+        #[command(subcommand)]
+        command: chaosbox::sessions::cli::Command,
     },
 }
 
 #[derive(Debug, Subcommand)]
 enum QueryCmd {
+    /// Bounded lexical graph context, with source and relationship identities.
+    Context {
+        query: String,
+        #[arg(long)]
+        repo: String,
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+        #[arg(long, default_value_t = 20)]
+        max_nodes: usize,
+        #[arg(long, default_value_t = 12_000)]
+        max_chars: usize,
+    },
+    /// Deterministic statistics, degree hubs and weak connectivity groups.
+    Stats {
+        #[arg(long)]
+        repo: String,
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+    },
+    /// Read a build-bound weak connectivity group, with visible omissions.
+    Community {
+        id: String,
+        #[arg(long)]
+        repo: String,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
     /// Substring search over entity names (sorted, bounded).
     Search {
         query: String,
@@ -318,15 +303,15 @@ enum QueryCmd {
 enum DbCmd {
     /// Read-only readiness check. Exit 0 only when ready.
     Check {
-        /// Emit the versioned JSON envelope (contract v1; always on).
+        /// Emit the versioned JSON envelope (contract v2; always on).
         #[arg(long, default_value_t = true)]
         json: bool,
         #[arg(long, default_value = "demo")]
         repo: String,
     },
-    /// Apply committed migrations idempotently via pinned Gel tooling.
+    /// Apply the packaged `TypeDB` schema idempotently through the driver.
     Migrate {
-        /// Emit the versioned JSON envelope (contract v1; always on).
+        /// Emit the versioned JSON envelope (contract v2; always on).
         #[arg(long, default_value_t = true)]
         json: bool,
         #[arg(long, default_value = "demo")]
@@ -341,8 +326,110 @@ enum DbCmd {
 async fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Command::Snapshot { path, repo } => match Snapshot::capture(&repo, &path) {
-            Ok(s) => println!(r#"{{"snapshot":"{}","files":{}}}"#, s.id, s.files.len()),
+        Command::Federation { config, command } => {
+            match chaosbox::federation::cli::run(&config, command).await {
+                Ok(Some(value)) => println!("{value}"),
+                Ok(None) => (),
+                Err(error) => {
+                    eprintln!("{error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::Scratch { settings, command } => {
+            match chaosbox::scratch::cli::run(&settings, command).await {
+                Ok(value) => println!("{value}"),
+                Err(error) => {
+                    eprintln!("scratch: {error}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        Command::Sync { directory, command } => {
+            match Box::pin(chaosbox::sync::cli::run(directory, command)).await {
+                Ok(value) => {
+                    if !value.is_null() {
+                        println!("{value}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("sync: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::Memory { command } => {
+            match Box::pin(chaosbox::compaction::cli::run(command)).await {
+                Ok(value) => println!("{value}"),
+                Err(error) => {
+                    eprintln!("memory: {error}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        Command::Checkpoint { command } => {
+            match Box::pin(chaosbox::continuation::cli::run(command)).await {
+                Ok(value) => println!("{value}"),
+                Err(error) => {
+                    eprintln!("checkpoint: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::Postgres { command } => {
+            if let Err(error) = Box::pin(postgres_cmd::run(command)).await {
+                eprintln!("postgres: {error}");
+                std::process::exit(1);
+            }
+        }
+        Command::Jev { command } => {
+            let (receipt, success) = jev_cmd::run(command).await;
+            println!("{receipt}");
+            if !success {
+                std::process::exit(1);
+            }
+        }
+        Command::Workspace { command } => match chaosbox::workspace::cli::run(command).await {
+            Ok(value) => println!("{value}"),
+            Err(error) => {
+                eprintln!("workspace: {error}");
+                std::process::exit(1);
+            }
+        },
+        Command::Compiler { command } => match chaosbox::compiler::run(command).await {
+            Ok(value) => println!("{value}"),
+            Err(error) => {
+                eprintln!("compiler: {error}");
+                std::process::exit(1);
+            }
+        },
+        Command::Intelligence { command } => {
+            match chaosbox::intelligence::cli::run(command).await {
+                Ok(value) => println!("{value}"),
+                Err(error) => {
+                    eprintln!("intelligence: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::Sessions { command } => match chaosbox::sessions::cli::run(command) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("sessions: {error}");
+                std::process::exit(1);
+            }
+        },
+        Command::Snapshot {
+            path,
+            repo,
+            source_paths,
+        } => match Snapshot::capture_scoped(&repo, &path, &source_paths) {
+            Ok(s) => println!(
+                r#"{{"snapshot":"{}","files":{},"scope":{}}}"#,
+                s.id,
+                s.files.len(),
+                serde_json::to_string(&s.scope).unwrap(),
+            ),
             Err(e) => {
                 eprintln!("snapshot failed: {e}");
                 std::process::exit(1);
@@ -352,22 +439,39 @@ async fn main() {
             path,
             repo,
             max_candidates,
-        } => match Pipeline::<MemoryStore>::snapshot_extract(&repo, &path, max_candidates) {
-            Ok((snap, ext, cands)) => println!(
-                r#"{{"snapshot":"{}","entities":{},"candidates":{}}}"#,
-                snap.id,
-                ext.entities.len(),
-                cands.len()
-            ),
-            Err(e) => {
-                eprintln!("extract failed: {e}");
-                std::process::exit(1);
+            source_paths,
+        } => {
+            let policy = match chaosbox_core::EffectivePolicy::new(&source_paths, "local", "none") {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("extract failed: {e}");
+                    std::process::exit(1);
+                }
+            };
+            match Pipeline::<MemoryStore>::snapshot_extract(&repo, &path, max_candidates, &policy) {
+                Ok((snap, ext, cat)) => println!(
+                    r#"{{"snapshot":"{}","entities":{},"candidates":{},"selected":{},"omitted":{},"scope":{}}}"#,
+                    snap.id,
+                    ext.entities.len(),
+                    cat.candidates.len(),
+                    cat.selected.values().sum::<u64>(),
+                    serde_json::to_string(&cat.omitted).unwrap(),
+                    serde_json::to_string(&snap.scope).unwrap(),
+                ),
+                Err(e) => {
+                    eprintln!("extract failed: {e}");
+                    std::process::exit(1);
+                }
             }
-        },
+        }
         Command::Run {
             path,
+            compiler,
             repo,
             max_candidates,
+            source_paths,
+            privacy,
+            inference,
             live_jev,
             fixture_decisions,
             no_decisions,
@@ -375,13 +479,37 @@ async fn main() {
             max_input_tokens,
             max_retries,
         } => {
+            let policy =
+                match chaosbox_core::EffectivePolicy::new(&source_paths, &privacy, &inference) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        eprintln!("run failed: {e}");
+                        std::process::exit(1);
+                    }
+                };
+            // Live spend of this run. Every exit prints it exactly once (via
+            // `usage`), so a batching caller can debit what this repository
+            // dispatched even when the run dies before it publishes.
+            let spend = RunSpend::default();
+            let usage = || {
+                if live_jev {
+                    // Stable parseable spend line: `canix chaosbox sync`
+                    // budgets a whole batch against what this run dispatched.
+                    eprintln!(
+                        "usage: requests={} input_tokens={}",
+                        spend.requests.load(Ordering::Relaxed),
+                        spend.tokens.load(Ordering::Relaxed)
+                    );
+                }
+            };
             let code = match backend() {
-                Backend::Gel => {
+                Backend::Memory => {
                     run_pipeline_with(
                         Pipeline::<MemoryStore>::new(),
                         &path,
                         &repo,
                         max_candidates,
+                        &policy,
                         live_jev,
                         fixture_decisions,
                         no_decisions,
@@ -389,6 +517,8 @@ async fn main() {
                         max_input_tokens,
                         max_retries,
                         None,
+                        &spend,
+                        compiler.as_deref(),
                     )
                     .await
                 }
@@ -397,12 +527,14 @@ async fn main() {
                         Ok(c) => c,
                         Err(e) => {
                             eprintln!("typedb config: {e}");
+                            usage();
                             std::process::exit(1);
                         }
                     };
                     let mut store = TypeDbStore::new(config.clone());
                     if let Err(e) = Box::pin(store.migrate()).await {
                         eprintln!("typedb migrate: {e}");
+                        usage();
                         std::process::exit(1);
                     }
                     // Fresh processes start at generation zero: chain off the
@@ -413,6 +545,7 @@ async fn main() {
                             Ok(v) => v,
                             Err(e) => {
                                 eprintln!("typedb publication chain: {e}");
+                                usage();
                                 std::process::exit(1);
                             }
                         };
@@ -424,6 +557,7 @@ async fn main() {
                         &path,
                         &repo,
                         max_candidates,
+                        &policy,
                         live_jev,
                         fixture_decisions,
                         no_decisions,
@@ -431,23 +565,61 @@ async fn main() {
                         max_input_tokens,
                         max_retries,
                         expected_predecessor,
+                        &spend,
+                        compiler.as_deref(),
                     )
                     .await
                 }
             };
+            usage();
             std::process::exit(code);
         }
         Command::Query { q } => std::process::exit(Box::pin(run_query(q)).await),
-        Command::Mcp => Box::pin(serve_mcp()).await,
+        Command::Mcp {
+            intelligence,
+            intelligence_current,
+            intelligence_federation,
+            workspace,
+        } => {
+            let bundle = intelligence
+                .as_deref()
+                .map(chaosbox::intelligence::cli::load_bundle)
+                .transpose()
+                .unwrap_or_else(|error| {
+                    eprintln!("intelligence bundle: {error}");
+                    std::process::exit(1);
+                });
+            let workspace = workspace
+                .as_deref()
+                .map(chaosbox::workspace::cli::load_workspace)
+                .transpose()
+                .unwrap_or_else(|error| {
+                    eprintln!("workspace artifact: {error}");
+                    std::process::exit(1);
+                });
+            let current = intelligence_current
+                .as_deref()
+                .map(chaosbox::sync::cli::current_reader)
+                .transpose()
+                .unwrap_or_else(|error| {
+                    eprintln!("current intelligence: {error}");
+                    std::process::exit(1);
+                });
+            let federation = intelligence_federation
+                .as_deref()
+                .map(|path| chaosbox::federation::ClientConfig::load(path)?.reader())
+                .transpose()
+                .unwrap_or_else(|error| {
+                    eprintln!("intelligence federation: {error}");
+                    std::process::exit(1);
+                });
+            Box::pin(serve_mcp(bundle, workspace, current, federation)).await;
+        }
         Command::Db { op } => match op {
             DbCmd::Check { json: _, repo } => {
                 // Read-only: never init/migrate/repair. Exit 0 when ready,
-                // 2 when pending, 1 otherwise (harbor-db contract v1; the
-                // TypeDB path reports contract v2, same exit mapping).
-                let report = match backend() {
-                    Backend::Gel => Box::pin(db_check_gel(&repo)).await,
-                    Backend::Typedb => Box::pin(db_check_typedb(&repo)).await,
-                };
+                // 2 when pending, 1 otherwise (harbor-db contract v2).
+                let report = Box::pin(db_check_typedb(&repo)).await;
                 println!("{}", serde_json::to_string(&report).unwrap());
                 if report.status == "ready" {
                     std::process::exit(0);
@@ -457,14 +629,11 @@ async fn main() {
                 }
             }
             DbCmd::Migrate { json: _, repo: _ } => {
-                // Idempotent committed migrations; the TypeDB path applies
-                // the packaged schema through the driver (no CLI tooling).
-                // run_migrate verifies schema readiness itself; the arm only
-                // maps the verdict to the exit code.
-                let result = match backend() {
-                    Backend::Gel => Box::pin(run_migrate()).await,
-                    Backend::Typedb => Box::pin(run_migrate_typedb()).await,
-                };
+                // Idempotent packaged-schema application through the driver
+                // (no CLI tooling). run_migrate_typedb verifies schema
+                // readiness itself; the arm only maps the verdict to the
+                // exit code.
+                let result = Box::pin(run_migrate_typedb()).await;
                 match result {
                     Ok(report) => {
                         println!("{}", serde_json::to_string(&report).unwrap());
@@ -482,881 +651,5 @@ async fn main() {
     }
 }
 
-/// Gel-backed readiness: connectivity + probe + active build for the repo.
-async fn db_check_gel(repo: &str) -> LifecycleReport {
-    let handle = match Box::pin(chaosbox_gel::GelHandle::connect()).await {
-        Ok(h) => h,
-        Err(e) => return LifecycleReport::error("db check", &format!("gel connect: {e}")),
-    };
-    if let Err(e) = Box::pin(handle.probe()).await {
-        return LifecycleReport::error("db check", &format!("gel probe: {e}"));
-    }
-    match Box::pin(handle.active_build(repo)).await {
-        Err(e) => match Box::pin(handle.schema_present()).await {
-            // No marker type: committed migrations have not applied yet.
-            // This is the normal pre-migration state, not a failure.
-            Ok(false) => LifecycleReport::pending("db check", "migrations not applied"),
-            Ok(true) => LifecycleReport::error("db check", &format!("active build: {e}")),
-            Err(probe) => LifecycleReport::error(
-                "db check",
-                &format!("active build: {e}; schema probe: {probe}"),
-            ),
-        },
-        Ok(None) => LifecycleReport::pending("db check", "no active build for repo"),
-        Ok(Some(b)) => LifecycleReport::check_ready(serde_json::json!({
-            "repo": repo, "active_build": b.build_id, "generation": b.generation,
-            "status": b.status, "schema_assets": "packaged",
-        })),
-    }
-}
-
-/// TypeDB-backed readiness: connectivity + schema probe + active build.
-/// Reports contract v2; exit mapping matches the Gel arm above.
-async fn db_check_typedb(repo: &str) -> LifecycleReport {
-    let config = match typedb_config_from_env() {
-        Ok(c) => c,
-        Err(e) => return LifecycleReport::error_typedb("db check", &e),
-    };
-    let mut reader = TypeDbReader::new(config);
-    if let Err(e) = Box::pin(reader.connect()).await {
-        // A missing database is the normal pre-migration state, not a
-        // failure; anything else is an operational error.
-        if e.to_string().contains("not found") {
-            return LifecycleReport::pending_typedb("db check", "database not present");
-        }
-        return LifecycleReport::error_typedb("db check", &format!("typedb connect: {e}"));
-    }
-    match Box::pin(reader.probe()).await {
-        Err(e) => LifecycleReport::error_typedb("db check", &format!("probe: {e}")),
-        // No marker type: the packaged schema has not applied yet.
-        Ok(false) => LifecycleReport::pending_typedb("db check", "migrations not applied"),
-        Ok(true) => match Box::pin(reader.active_build(repo)).await {
-            Err(e) => LifecycleReport::error_typedb("db check", &format!("active build: {e}")),
-            Ok(None) => LifecycleReport::pending_typedb("db check", "no active build for repo"),
-            Ok(Some(b)) => LifecycleReport::check_ready_typedb(serde_json::json!({
-                "repo": repo, "active_build": b.build_id, "generation": b.generation,
-                "status": b.status, "schema_assets": "packaged",
-            })),
-        },
-    }
-}
-
-/// `TypeDB` migration: ensure the database and apply the packaged schema
-/// idempotently through the driver, then verify schema readiness itself.
-async fn run_migrate_typedb() -> Result<LifecycleReport, String> {
-    let config = typedb_config_from_env()?;
-    let mut store = TypeDbStore::new(config);
-    Box::pin(store.migrate())
-        .await
-        .map_err(|e| format!("typedb migrate: {e}"))?;
-    Ok(LifecycleReport {
-        contract_version: 2,
-        backend: "typedb".into(),
-        operation: "db migrate".into(),
-        status: "ready".into(),
-        schema_version: chaosbox_typedb::SCHEMA_VERSION,
-        gel_pinned: chaosbox_typedb::TYPEDB_PINNED.into(),
-        detail: serde_json::json!({"applied": true}),
-    })
-}
-
-fn consumer_err(op: &str, e: impl std::fmt::Display) -> i32 {
-    let report = LifecycleReport::error(op, &e.to_string());
-    println!("{}", serde_json::to_string(&report).unwrap());
-    eprintln!("{op} failed: {e}");
-    1
-}
-
-// Long CLI/dispatch functions; splitting them apart is the owning
-// session's refactor. Allowed to keep CI unblocked.
-#[allow(clippy::too_many_lines)]
-async fn run_query(q: QueryCmd) -> i32 {
-    match q {
-        QueryCmd::Search { query, repo, limit } => {
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
-                Ok(r) => r,
-                Err(e) => return consumer_err("query search", e),
-            };
-            match reader.search(&query, limit).await {
-                Ok(rows) => {
-                    println!("{}", serde_json::to_string(&rows).unwrap());
-                    0
-                }
-                Err(e) => consumer_err("query search", e),
-            }
-        }
-        QueryCmd::Lookup { id, repo } => {
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
-                Ok(r) => r,
-                Err(e) => return consumer_err("query lookup", e),
-            };
-            match reader.lookup(&id).await {
-                Ok(row) => {
-                    println!("{}", serde_json::to_string(&row).unwrap());
-                    0
-                }
-                Err(e) => consumer_err("query lookup", e),
-            }
-        }
-        QueryCmd::Neighbors { id, repo, rel } => {
-            // Validate the filter before touching Gel: typos must fail loudly.
-            let filter = match chaosbox::validate_rel_filter(rel.map(|r| vec![r])) {
-                Ok(f) => f,
-                Err(e) => return consumer_err("query neighbors", e),
-            };
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
-                Ok(r) => r,
-                Err(e) => return consumer_err("query neighbors", e),
-            };
-            match reader.neighbors(&id, filter).await {
-                Ok((out, inc)) => {
-                    println!(
-                        "{}",
-                        serde_json::to_string(&serde_json::json!({
-                            "id": id, "outgoing": out, "incoming": inc,
-                        }))
-                        .unwrap()
-                    );
-                    0
-                }
-                Err(e) => consumer_err("query neighbors", e),
-            }
-        }
-        QueryCmd::Path {
-            from,
-            to,
-            repo,
-            max_hops,
-        } => {
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
-                Ok(r) => r,
-                Err(e) => return consumer_err("query path", e),
-            };
-            match reader.path(&from, &to, max_hops).await {
-                // Successful negative (no path) is a null result, exit 0.
-                Ok(path) => {
-                    println!(
-                        "{}",
-                        serde_json::to_string(&serde_json::json!({
-                            "from": from, "to": to, "path": path,
-                        }))
-                        .unwrap()
-                    );
-                    0
-                }
-                Err(e) => consumer_err("query path", e),
-            }
-        }
-        QueryCmd::Export { repo } => {
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
-                Ok(r) => r,
-                Err(e) => return consumer_err("query export", e),
-            };
-            match reader.export().await {
-                Ok(v) => {
-                    println!("{}", serde_json::to_string(&v).unwrap());
-                    0
-                }
-                Err(e) => consumer_err("query export", e),
-            }
-        }
-        QueryCmd::Explain { id, repo } => {
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
-                Ok(r) => r,
-                Err(e) => return consumer_err("query explain", e),
-            };
-            match reader.lookup(&id).await {
-                Ok(None) => {
-                    println!("null");
-                    0
-                }
-                Ok(Some(e)) => {
-                    let (out, inc) = match reader.neighbors(&id, None).await {
-                        Ok(n) => n,
-                        Err(e) => return consumer_err("query explain", e),
-                    };
-                    println!(
-                        "{}",
-                        serde_json::to_string(&serde_json::json!({
-                            "id": e.entity_id, "kind": e.kind, "file": e.file,
-                            "qualified_name": e.qualified_name,
-                            "outgoing": out.len(), "incoming": inc.len(),
-                        }))
-                        .unwrap()
-                    );
-                    0
-                }
-                Err(e) => consumer_err("query explain", e),
-            }
-        }
-        QueryCmd::Status { repo } => {
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
-                Ok(r) => r,
-                Err(e) => return consumer_err("query status", e),
-            };
-            println!(
-                "{}",
-                serde_json::to_string(&serde_json::json!({
-                    "repo": repo, "build_id": reader.build_id(),
-                    "generation": reader.generation(),
-                    "export_caps": {"nodes": EXPORT_NODE_CAP, "edges": EXPORT_EDGE_CAP},
-                }))
-                .unwrap()
-            );
-            0
-        }
-    }
-}
-
-// Long CLI/dispatch functions; splitting them apart is the owning
-// session's refactor. Allowed to keep CI unblocked.
-#[allow(clippy::too_many_lines)]
-#[allow(clippy::too_many_arguments)]
-async fn run_pipeline_with<S: chaosbox_gel::Store + Default>(
-    mut pipe: Pipeline<S>,
-    path: &Path,
-    repo: &str,
-    max_candidates: usize,
-    live_jev: bool,
-    fixture_decisions: bool,
-    no_decisions: bool,
-    max_requests: Option<u32>,
-    max_input_tokens: Option<u64>,
-    max_retries: Option<u32>,
-    expected_predecessor: Option<String>,
-) -> i32 {
-    let (snap, ext, cands) = match Pipeline::<S>::snapshot_extract(repo, path, max_candidates) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("extract: {e}");
-            return 1;
-        }
-    };
-    let entities: BTreeMap<_, _> = ext
-        .entities
-        .iter()
-        .map(|e| (e.id.clone(), e.clone()))
-        .collect();
-    let mat = Materialization::default();
-    // Register file content identities before any evidence references them.
-    if let Err(e) = pipe
-        .store
-        .ensure_snapshot_files(&snap.id, repo, &snap.snapshot_files())
-        .await
-    {
-        eprintln!("snapshot files: {e}");
-        return 1;
-    }
-    // Mint deterministic run/set identity and register the candidate catalog
-    // before any decision references it.
-    let catalog = chaosbox_core::catalog_digest(&cands);
-    let run_id = chaosbox_core::deterministic_id("run", &[repo, &snap.id]);
-    let set_id = chaosbox_core::deterministic_id("set", &[&run_id, &catalog, &mat.rubric_version]);
-    if let Err(e) = pipe
-        .store
-        .ensure_run(
-            &run_id,
-            repo,
-            &snap.id,
-            &set_id,
-            &catalog,
-            &mat.rubric_version,
-        )
-        .await
-    {
-        eprintln!("run identity: {e}");
-        return 1;
-    }
-    for cand in &cands {
-        if let Err(e) = pipe.store.put_candidate(&set_id, cand).await {
-            eprintln!("candidate: {e}");
-            return 1;
-        }
-    }
-    let decided = if no_decisions {
-        // Entities-only publication: no live inference, no fixture
-        // accept-all. The build carries nodes but no relations or claims.
-        Vec::new()
-    } else if live_jev {
-        // Fail fast without credentials: otherwise every decision degrades
-        // to Failed and the run exits 0 with an empty graph.
-        if chaosbox_jev::JevClient::api_key().is_none() {
-            eprintln!("live-jev needs CHAOSBOX_JEV_API_KEY_FILE or TYPESAFE_API_KEY");
-            return 1;
-        }
-        let mut policy = chaosbox_jev::JevPolicy::default();
-        if let Some(n) = max_requests {
-            policy.max_requests = n;
-        }
-        if let Some(n) = max_input_tokens {
-            policy.max_input_tokens = n;
-        }
-        if let Some(n) = max_retries {
-            policy.max_retries = n;
-        }
-        let client = match chaosbox_jev::JevClient::new(policy) {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("jev client: {e}");
-                return 1;
-            }
-        };
-        let mut responder = LiveResponder::new(client);
-        match Pipeline::<S>::decide(
-            &cands,
-            &entities,
-            &mut responder,
-            chaosbox_jev::JEV_MODEL_PINNED,
-            &mat,
-            &mut pipe.store,
-        )
-        .await
-        {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("decide: {e}");
-                return 1;
-            }
-        }
-    } else {
-        if !fixture_decisions {
-            eprintln!(
-                "refusing to publish fixture decisions without --fixture-decisions (fixture graphs are disposable/test-only); pass --live-jev for real decisions"
-            );
-            return 1;
-        }
-        let mut responder = FixtureResponder::new(true);
-        // Fixture decisions must never masquerade as Jev model output.
-        responder.model = "fixture-test".into();
-        match Pipeline::<S>::decide(
-            &cands,
-            &entities,
-            &mut responder,
-            "fixture-test",
-            &mat,
-            &mut pipe.store,
-        )
-        .await
-        {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("decide: {e}");
-                return 1;
-            }
-        }
-    };
-    match pipe
-        .build_and_publish(repo, &snap, &ext, &decided, &mat, expected_predecessor)
-        .await
-    {
-        Ok(build) => {
-            let v = chaosbox::export_json(&build);
-            println!("{}", serde_json::to_string(&v).unwrap());
-            0
-        }
-        Err(e) => {
-            eprintln!("publish: {e}");
-            1
-        }
-    }
-}
-
-async fn run_migrate() -> Result<LifecycleReport, String> {
-    let creds = std::env::var("CHAOSBOX_GEL_CREDENTIALS_FILE")
-        .map_err(|_| "CHAOSBOX_GEL_CREDENTIALS_FILE unset".to_owned())?;
-    // Pinned binary under Nix (`db-migrate` app); ambient `gel` only for
-    // cargo-run development. Never log secret values; only reference the file.
-    // GEL_CREDENTIALS_FILE is a documented Gel connection parameter. No
-    // --non-interactive flag: Gel CLI 7.x has none and applies without
-    // prompting when stdin is not a TTY.
-    let gel_bin = std::env::var("CHAOSBOX_GEL_BIN").unwrap_or_else(|_| "gel".to_owned());
-    let out = tokio::process::Command::new(gel_bin)
-        .args(["--credentials-file", &creds, "migration", "apply"])
-        .env("GEL_CREDENTIALS_FILE", &creds)
-        .output()
-        .await
-        .map_err(|e| format!("gel CLI: {e}"))?;
-    if out.status.success() {
-        // Schema-level verification only: server reachable, authenticated,
-        // committed schema present. Active builds are published by pipelines
-        // AFTER migration, so a fresh database legitimately has none;
-        // deployment distinguishes schema readiness (migrate exit 0) from
-        // application readiness (check exit 0 only with an active build).
-        // Reuses the same connection the CLI just proved.
-        std::env::set_var("GEL_CREDENTIALS_FILE", &creds);
-        match Box::pin(chaosbox_gel::GelHandle::connect()).await {
-            Err(e) => Err(format!("post-apply connect: {e}")),
-            Ok(handle) => match Box::pin(handle.schema_present()).await {
-                Err(e) => Err(format!("post-apply schema probe: {e}")),
-                Ok(false) => Err("post-apply schema probe: marker type absent".into()),
-                Ok(true) => Ok(chaosbox::LifecycleReport {
-                    contract_version: 1,
-                    backend: "gel".into(),
-                    operation: "db migrate".into(),
-                    status: "ready".into(),
-                    schema_version: chaosbox_gel::SCHEMA_VERSION,
-                    gel_pinned: chaosbox_gel::GEL_PINNED.into(),
-                    detail: serde_json::json!({"applied": true}),
-                }),
-            },
-        }
-    } else {
-        Err(format!(
-            "gel migration apply failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-                .chars()
-                .take(300)
-                .collect::<String>()
-        ))
-    }
-}
-
-// ---- Read-only MCP (JSON-RPC over stdio, full handshake) ----
-
-/// MCP protocol version served here.
-const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
-/// Older protocol versions still accepted from clients.
-const MCP_PROTOCOL_FALLBACKS: &[&str] = &["2024-11-05", "2025-03-26"];
-/// Tools per `tools/list` page.
-const MCP_PAGE_SIZE: usize = 5;
-
-fn mcp_tool_defs() -> Vec<serde_json::Value> {
-    vec![
-        mcp_tool(
-            "search",
-            "Substring search over entity names (sorted, bounded).",
-            serde_json::json!({"query": {"type": "string"}, "limit": {"type": "integer", "default": 20}}),
-            vec!["query"],
-        ),
-        mcp_tool(
-            "lookup",
-            "Typed entity lookup by id.",
-            serde_json::json!({"id": {"type": "string"}}),
-            vec!["id"],
-        ),
-        mcp_tool(
-            "neighbors",
-            "Incoming/outgoing neighborhoods with optional relation filter.",
-            serde_json::json!({"id": {"type": "string"}, "rel": {"type": "string"}}),
-            vec!["id"],
-        ),
-        mcp_tool(
-            "path",
-            "Bounded path between two entities (null when absent).",
-            serde_json::json!({"from": {"type": "string"}, "to": {"type": "string"},
-                "max_hops": {"type": "integer", "default": 4}}),
-            vec!["from", "to"],
-        ),
-        mcp_tool(
-            "evidence",
-            "Claim evidence and source locations for a relationship.",
-            serde_json::json!({"rel": {"type": "string"}}),
-            vec!["rel"],
-        ),
-        mcp_tool(
-            "status",
-            "Active-build status, coverage, and generation.",
-            serde_json::json!({}),
-            Vec::<&str>::new(),
-        ),
-        mcp_tool(
-            "diff",
-            "Node/edge id diff between two builds of one repo.",
-            serde_json::json!({"from_build": {"type": "string"}, "to_build": {"type": "string"}}),
-            vec!["from_build", "to_build"],
-        ),
-        mcp_tool(
-            "export",
-            "Deterministic export of the pinned active build.",
-            serde_json::json!({}),
-            Vec::<&str>::new(),
-        ),
-        mcp_tool(
-            "explain",
-            "Source-backed entity explanation (no generated prose).",
-            serde_json::json!({"id": {"type": "string"}}),
-            vec!["id"],
-        ),
-    ]
-}
-
-// properties/required move into the schema json! below, which the
-// pass-by-value lint cannot see through (macro boundary false positive).
-#[allow(clippy::needless_pass_by_value)]
-fn mcp_tool(
-    name: &str,
-    description: &str,
-    properties: serde_json::Value,
-    required: Vec<&str>,
-) -> serde_json::Value {
-    let mut schema = serde_json::json!({
-        "type": "object",
-        "properties": properties,
-        "required": required,
-    });
-    // Every tool accepts an optional repo; the pinned active build serves reads.
-    if let Some(props) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
-        props.insert(
-            "repo".to_owned(),
-            serde_json::json!({"type": "string", "default": "demo"}),
-        );
-    }
-    serde_json::json!({
-        "name": name, "description": description,
-        "inputSchema": schema,
-        "annotations": {"readOnlyHint": true},
-    })
-}
-
-fn mcp_text_result(id: &serde_json::Value, payload: &serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "jsonrpc": "2.0", "id": id,
-        "result": {"content": [{"type": "text", "text": serde_json::to_string(payload).unwrap_or_default()}]},
-    })
-}
-
-// message moves into the error json! below (macro boundary false positive
-// for the pass-by-value lint, same as mcp_tool above).
-#[allow(clippy::needless_pass_by_value)]
-fn mcp_error(
-    id: &serde_json::Value,
-    code: i64,
-    message: String,
-    data: Option<serde_json::Value>,
-) -> serde_json::Value {
-    let mut error = serde_json::json!({"code": code, "message": message});
-    if let Some(d) = data {
-        error["data"] = d;
-    }
-    serde_json::json!({"jsonrpc": "2.0", "id": id, "error": error})
-}
-
-/// Validate tool arguments against required fields (types are checked per tool).
-fn mcp_args(
-    name: &str,
-    params: &serde_json::Value,
-) -> Result<serde_json::Map<String, serde_json::Value>, serde_json::Value> {
-    let args = params.get("arguments").unwrap_or(&serde_json::Value::Null);
-    let map = args.as_object().cloned().unwrap_or_default();
-    let required: &[&str] = match name {
-        "search" => &["query"],
-        "lookup" | "neighbors" | "explain" => &["id"],
-        "path" => &["from", "to"],
-        "evidence" => &["rel"],
-        "diff" => &["from_build", "to_build"],
-        _ => &[],
-    };
-    for key in required {
-        if map
-            .get(*key)
-            .and_then(|v| v.as_str())
-            .is_none_or(str::is_empty)
-        {
-            return Err(
-                serde_json::json!({"code": -32602, "message": format!("missing required argument: {key}")}),
-            );
-        }
-    }
-    Ok(map)
-}
-
-// Long CLI/dispatch functions; splitting them apart is the owning
-// session's refactor. Allowed to keep CI unblocked.
-#[allow(clippy::too_many_lines)]
-async fn mcp_call_tool(
-    id: &serde_json::Value,
-    name: &str,
-    params: &serde_json::Value,
-) -> serde_json::Value {
-    let args = match mcp_args(name, params) {
-        Ok(a) => a,
-        Err(e) => {
-            let code = e["code"].as_i64().unwrap_or(-32602);
-            let msg = e["message"].as_str().unwrap_or("invalid params").to_owned();
-            return mcp_error(id, code, msg, None);
-        }
-    };
-    // Closed read-only tool set: reject unknown (write/mutation) tools before
-    // touching Gel or credentials of any kind.
-    if !matches!(
-        name,
-        "search"
-            | "lookup"
-            | "neighbors"
-            | "path"
-            | "evidence"
-            | "status"
-            | "diff"
-            | "export"
-            | "explain"
-    ) {
-        return mcp_error(
-            id,
-            -32601,
-            format!("read-only MCP: no such tool (rejected): {name}"),
-            None,
-        );
-    }
-    let repo = args.get("repo").and_then(|r| r.as_str()).unwrap_or("demo");
-    let reader = match Box::pin(AnyReader::connect(repo)).await {
-        Ok(r) => r,
-        Err(e) => {
-            let report = LifecycleReport::error(&format!("mcp {name}"), &e.to_string());
-            return mcp_error(
-                id,
-                -32603,
-                e.to_string(),
-                Some(serde_json::to_value(&report).unwrap()),
-            );
-        }
-    };
-    let payload: Result<serde_json::Value, String> =
-        match name {
-            "search" => {
-                let q = args["query"].as_str().unwrap_or_default();
-                let limit = args
-                    .get("limit")
-                    .and_then(serde_json::Value::as_i64)
-                    .unwrap_or(20);
-                reader
-                    .search(q, limit)
-                    .await
-                    .map(|rows| serde_json::to_value(&rows).unwrap())
-                    .map_err(|e| e.to_string())
-            }
-            "lookup" => {
-                let eid = args["id"].as_str().unwrap_or_default();
-                reader
-                    .lookup(eid)
-                    .await
-                    .map(|row| serde_json::to_value(&row).unwrap())
-                    .map_err(|e| e.to_string())
-            }
-            "neighbors" => {
-                let eid = args["id"].as_str().unwrap_or_default();
-                let raw = args
-                    .get("rel")
-                    .and_then(|r| r.as_str())
-                    .map(|r| vec![r.to_owned()]);
-                let filter = match chaosbox::validate_rel_filter(raw) {
-                    Ok(f) => f,
-                    Err(e) => return mcp_error(id, -32602, e.to_string(), None),
-                };
-                reader.neighbors(eid, filter).await
-                .map(|(out, inc)| serde_json::json!({"id": eid, "outgoing": out, "incoming": inc}))
-                .map_err(|e| e.to_string())
-            }
-            "path" => {
-                let from = args["from"].as_str().unwrap_or_default();
-                let to = args["to"].as_str().unwrap_or_default();
-                let hops = usize::try_from(
-                    args.get("max_hops")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(4),
-                )
-                .expect("hop count fits in usize");
-                reader
-                    .path(from, to, hops)
-                    .await
-                    .map(|path| serde_json::json!({"from": from, "to": to, "path": path}))
-                    .map_err(|e| e.to_string())
-            }
-            "evidence" => {
-                let rel = args["rel"].as_str().unwrap_or_default();
-                reader.evidence(rel).await.map_err(|e| e.to_string())
-            }
-            "status" => Ok(serde_json::json!({
-                "repo": repo, "build_id": reader.build_id(), "generation": reader.generation(),
-            })),
-            "diff" => {
-                let from = args["from_build"].as_str().unwrap_or_default();
-                let to = args["to_build"].as_str().unwrap_or_default();
-                reader.diff(repo, from, to).await.map_err(|e| e.to_string())
-            }
-            "export" => reader.export().await.map_err(|e| e.to_string()),
-            "explain" => {
-                let eid = args["id"].as_str().unwrap_or_default();
-                reader.explain(eid).await.map_err(|e| e.to_string())
-            }
-            _ => {
-                return mcp_error(
-                    id,
-                    -32601,
-                    format!("read-only MCP: no such tool (rejected): {name}"),
-                    None,
-                );
-            }
-        };
-    match payload {
-        Ok(v) => mcp_text_result(id, &v),
-        Err(e) => mcp_error(id, -32603, e, None),
-    }
-}
-
-/// Read-only MCP over stdio: full handshake, paginated tools, validated calls.
-/// Never loads Jev credentials; never accepts prose as evidence.
-// Long CLI/dispatch functions; splitting them apart is the owning
-// session's refactor. Allowed to keep CI unblocked.
-#[allow(clippy::too_many_lines)]
-async fn serve_mcp() {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    let stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
-    let mut lines = BufReader::new(stdin).lines();
-    let mut initialized = false;
-    while let Ok(Some(line)) = lines.next_line().await {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let req: serde_json::Value = if let Ok(v) = serde_json::from_str(&line) {
-            v
-        } else {
-            let resp = mcp_error(
-                &serde_json::Value::Null,
-                -32700,
-                "parse error".to_owned(),
-                None,
-            );
-            let _ = stdout
-                .write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes())
-                .await;
-            continue;
-        };
-        if req.is_array() {
-            let resp = mcp_error(
-                &serde_json::Value::Null,
-                -32600,
-                "batch requests not supported".to_owned(),
-                None,
-            );
-            let _ = stdout
-                .write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes())
-                .await;
-            continue;
-        }
-        // Notifications carry no id and get no response.
-        let id = match req.get("id") {
-            Some(i) => i.clone(),
-            None => continue,
-        };
-        let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
-        let params = req
-            .get("params")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
-        let resp = match method {
-            "initialize" => {
-                let requested = params
-                    .get("protocolVersion")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let version = if requested == MCP_PROTOCOL_VERSION
-                    || MCP_PROTOCOL_FALLBACKS.contains(&requested)
-                {
-                    requested.to_owned()
-                } else {
-                    MCP_PROTOCOL_VERSION.to_owned()
-                };
-                initialized = true;
-                serde_json::json!({
-                    "jsonrpc": "2.0", "id": id, "result": {
-                        "protocolVersion": version,
-                        "capabilities": {"tools": {"listChanged": false}},
-                        "serverInfo": {"name": "chaosbox", "version": env!("CARGO_PKG_VERSION")},
-                    },
-                })
-            }
-            "notifications/initialized" => continue,
-            "ping" => serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {}}),
-            "tools/list" => {
-                if initialized {
-                    let defs = mcp_tool_defs();
-                    let cursor = params
-                        .get("cursor")
-                        .and_then(|c| c.as_str())
-                        .and_then(|c| c.parse::<usize>().ok())
-                        .unwrap_or(0);
-                    let page: Vec<_> = defs.into_iter().skip(cursor).take(MCP_PAGE_SIZE).collect();
-                    let next = if page.len() == MCP_PAGE_SIZE {
-                        Some((cursor + MCP_PAGE_SIZE).to_string())
-                    } else {
-                        None
-                    };
-                    let mut result = serde_json::json!({"tools": page});
-                    if let Some(n) = next {
-                        result["nextCursor"] = serde_json::Value::String(n);
-                    }
-                    serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result})
-                } else {
-                    mcp_error(&id, -32600, "server not initialized".to_owned(), None)
-                }
-            }
-            "tools/call" => {
-                if initialized {
-                    let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                    Box::pin(mcp_call_tool(&id, name, &params)).await
-                } else {
-                    mcp_error(&id, -32600, "server not initialized".to_owned(), None)
-                }
-            }
-            _ => mcp_error(
-                &id,
-                -32601,
-                format!("unknown method (rejected): {method}"),
-                None,
-            ),
-        };
-        let _ = stdout
-            .write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes())
-            .await;
-    }
-    let _ = all_relation_types;
-}
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tool_defs_are_read_only_with_schemas() {
-        let defs = mcp_tool_defs();
-        assert_eq!(defs.len(), 9);
-        for d in &defs {
-            assert_eq!(d["annotations"]["readOnlyHint"], true);
-            assert!(d["inputSchema"]["properties"].is_object(), "{d}");
-            assert!(d.get("_required").is_none(), "no internal fields leak: {d}");
-        }
-    }
-
-    #[test]
-    fn missing_args_rejected_before_gel() {
-        let err = mcp_args("search", &serde_json::json!({})).unwrap_err();
-        assert_eq!(err["code"], -32602);
-    }
-
-    #[tokio::test]
-    async fn unknown_tools_rejected_without_gel() {
-        // No Gel needed: the closed tool set rejects first.
-        for name in ["migrate", "evaluate", "db", "edgeql", "ingest", "annotate"] {
-            let resp = Box::pin(mcp_call_tool(
-                &serde_json::json!(1),
-                name,
-                &serde_json::json!({"name": name}),
-            ))
-            .await;
-            assert_eq!(resp["error"]["code"], -32601, "{name}: {resp}");
-        }
-    }
-
-    #[tokio::test]
-    async fn calls_require_initialization_shape() {
-        // Malformed (non-object) params fail arg validation, not Gel.
-        let resp = Box::pin(mcp_call_tool(
-            &serde_json::json!(1),
-            "search",
-            &serde_json::json!({"arguments": "not-an-object"}),
-        ))
-        .await;
-        assert_eq!(resp["error"]["code"], -32602, "{resp}");
-    }
-}
+mod mcp_tests;

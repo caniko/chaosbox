@@ -20,7 +20,6 @@
 {
   config,
   lib,
-  pkgs,
   ...
 }:
 let
@@ -81,7 +80,7 @@ in
     passwordFile = mkOption {
       type = types.nullOr types.path;
       default = null;
-      description = "File holding the TypeDB application password, delivered as CHAOSBOX_TYPEDB_PASSWORD_FILE. Provision via age/sops; never store a value here.";
+      description = "File holding the TypeDB application password, delivered as CHAOSBOX_TYPEDB_PASSWORD_FILE. Provision via age/sops or the typedb-bootstrap package output; never store a value here.";
     };
 
     runtimeUnits = mkOption {
@@ -131,7 +130,7 @@ in
         backend = "typedb";
         credentials.typedb-password = cfg.passwordFile;
         runner = {
-          package = cfg.package;
+          inherit (cfg) package;
           executable = "bin/chaosbox";
           args = [
             "db"
@@ -152,7 +151,7 @@ in
         after = [ "typedb.service" ];
         requires = [ "typedb.service" ];
       };
-      runtimeUnits = cfg.runtimeUnits;
+      inherit (cfg) runtimeUnits;
       serviceConfig.ReadWritePaths = [ cfg.stateDir ];
     };
   };

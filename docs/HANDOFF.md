@@ -34,8 +34,9 @@
 - NixOS VM test realization (needs substituted binaries from the review
   run, then KVM run here; CI runs it under emulation).
 - Live-Jev smoke: key absent in this session.
-- Cutover: flip `CHAOSBOX_DB_BACKEND` default after validation; remove Gel
-  runtime wiring (crate stays as conformance reference).
+- Cutover: flip `CHAOSBOX_DB_BACKEND` default after validation — DONE
+  (2026-09-23): Gel runtime wiring removed entirely, `chaosbox-gel` deleted,
+  shared abstractions relocated to `chaosbox-store`.
 
 ## Exact next commands
 
@@ -48,7 +49,8 @@ nix flake show         # eval only (policy)
 
 ## Prior rounds
 
- Kept below for continuity; the Gel path above is superseded.
+ Kept below for continuity; the Gel path above is superseded (removed
+ 2026-09-23; shared abstractions now live in `chaosbox-store`).
 
 ### Container-free gel-integration (2026-09-19)
 

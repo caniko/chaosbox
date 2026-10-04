@@ -2,41 +2,419 @@
 //! supersedure, predecessor guards, and concurrent-publication races against
 //! a real server.
 //!
-//! Requires a reachable `TypeDB` server: address from `TYPEDB_ADDR`
-//! (default `127.0.0.1:1729`). Without one the tests report a skip and pass;
-//! a skip is NOT conformance evidence (see the execution ledger). The named
-//! CI gate runs these with a server present.
+//! Server address comes from `CHAOSBOX_TYPEDB_ADDR` (legacy alias
+//! `TYPEDB_ADDR`, default `127.0.0.1:1729`); username from
+//! `CHAOSBOX_TYPEDB_USER`/`TYPEDB_USERNAME` (default `admin`); password from
+//! `CHAOSBOX_TYPEDB_PASSWORD_FILE` or `TYPEDB_PASSWORD` — and never from a
+//! default, because the driver reports an absent server and rejected
+//! credentials as the same connection error: only the operator knows which
+//! was intended, so a usable secret must be configured explicitly.
+//!
+//! Eligibility is classified before the server is touched, so nothing that
+//! fails later can be reclassified as a skip afterwards. Exactly two cases
+//! skip, and neither can be mistaken for a pass: nothing is listening at the
+//! address, or a server is reachable but no password was ever configured
+//! (authentication is the only thing that could have run). Every other
+//! outcome — configured credentials the server rejects, a configured secret
+//! that cannot be read, a failed migration, a failed conformance check — is
+//! a failure, because turning it green would pass off a masked error as
+//! evidence. Under `CHAOSBOX_REQUIRE_TYPEDB` (set by
+//! `scripts/test-typedb.sh`) nothing skips at all: a missing server, absent
+//! credentials, a failed migration or a conformance failure all fail. A skip
+//! is NOT conformance evidence (see the execution ledger); the named gate
+//! runs these with a server present.
 
 use chaosbox_core::{
     Candidate, Claim, Decision, DecisionOutcome, Entity, EntityKind, Evidence, EvidenceClass,
-    GraphBuild, Relation, RelationScope, RelationType, SnapshotFile, SourceSpan,
+    GraphBuild, InferenceRecord, RawAnswer, Relation, RelationScope, RelationType, SnapshotFile,
+    SourceSpan,
 };
-use chaosbox_gel::{Store, check_conformance};
+use chaosbox_store::{GraphQueries, Store, check_conformance};
 use chaosbox_typedb::reader::TypeDbReader;
 use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
 
+#[tokio::test]
+async fn private_session_knowledge_is_pinned_idempotent_and_predecessor_guarded() {
+    use chaosbox_core::intelligence::{
+        Intelligence, IntelligenceKind, IntelligenceStatus, SessionEvidence,
+    };
+    let db = test_db("t_session_memory");
+    let Some(mut store) = connected_store(&db).await else {
+        return;
+    };
+    let scope = "private:test-owner";
+    let item = Intelligence {
+        id: "intel:fixture".into(),
+        scope: scope.into(),
+        repositories: vec!["test-repo".into()],
+        statement: "Preserve explicit operator-selected private scope.".into(),
+        kind: IntelligenceKind::Constraint,
+        status: IntelligenceStatus::Admitted,
+        interpretation_class: EvidenceClass::Inferred,
+        evidence: vec![SessionEvidence {
+            source: "opencode".into(),
+            snapshot: "a".repeat(64),
+            session: "ses_native".into(),
+            message: "msg_native".into(),
+            pointer: "/text".into(),
+            line: 1,
+            quote: "Preserve explicit operator-selected private scope.".into(),
+            speaker: "user".into(),
+            observed_at_ms: Some(1),
+        }],
+        contradicts: vec![],
+        supersedes: None,
+        assessments: vec!["fixture-receipt".into()],
+    };
+    let first =
+        serde_json::json!({"scope":scope,"records":[item],"assessments":["fixture-receipt"]})
+            .to_string();
+    let records = vec![item];
+    let id = store
+        .publish_knowledge(scope, &first, &records, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .publish_knowledge(scope, &first, &records, None)
+            .await
+            .unwrap(),
+        id
+    );
+    assert_eq!(
+        store.knowledge(scope).await.unwrap(),
+        Some((id.clone(), first.clone()))
+    );
+    assert!(store
+        .knowledge("private:someone-else")
+        .await
+        .unwrap()
+        .is_none());
+    let second=serde_json::json!({"scope":scope,"records":records,"assessments":["fixture-receipt"],"coverage":"second-generation"}).to_string();
+    assert!(store
+        .publish_knowledge(scope, &second, &records, None)
+        .await
+        .is_err());
+    let next = store
+        .publish_knowledge(scope, &second, &records, Some(&id))
+        .await
+        .unwrap();
+    assert_ne!(next, id);
+    assert_eq!(
+        store.knowledge_at(scope, &id).await.unwrap(),
+        Some(first.clone())
+    );
+    assert!(store
+        .knowledge_at("private:someone-else", &id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .publish_knowledge(scope, &first, &records, Some(&id))
+        .await
+        .is_err());
+    assert_eq!(
+        store.knowledge(scope).await.unwrap(),
+        Some((next.clone(), second))
+    );
+    let mut rival = TypeDbStore::new(config(&db));
+    let left = serde_json::json!({"scope":scope,"records":records,"generation":"left"}).to_string();
+    let right =
+        serde_json::json!({"scope":scope,"records":records,"generation":"right"}).to_string();
+    let (a, b) = tokio::join!(
+        store.publish_knowledge(scope, &left, &records, Some(&next)),
+        rival.publish_knowledge(scope, &right, &records, Some(&next))
+    );
+    assert_ne!(
+        a.is_ok(),
+        b.is_ok(),
+        "exactly one scope publisher may advance the predecessor"
+    );
+    let winner = a.or(b).unwrap();
+    assert_eq!(store.knowledge(scope).await.unwrap().unwrap().0, winner);
+}
+
+#[tokio::test]
+async fn peer_ledger_is_isolated_paginated_collision_checked_and_atomically_published() {
+    use chaosbox_store::{ReplicaRow, ReplicaStore};
+    let db = test_db("t_peer_replica");
+    let Some(mut store) = connected_store(&db).await else {
+        return;
+    };
+    let user = "a".repeat(64);
+    let scope = "private:peer-test";
+    for id in ["1", "2", "3"] {
+        let row = ReplicaRow {
+            id: id.repeat(64),
+            user: user.clone(),
+            scope: scope.into(),
+            body: format!("event-{id}"),
+        };
+        store.replica_put(&row).await.unwrap();
+        store.replica_put(&row).await.unwrap();
+        let mut changed = row;
+        changed.body = "different bytes".into();
+        assert!(store.replica_put(&changed).await.is_err());
+    }
+    let page = store.replica_rows(&user, scope, "", 2).await.unwrap();
+    assert_eq!(page.len(), 2);
+    assert_eq!(
+        store
+            .replica_rows(&user, scope, &page[1].id, 2)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(store
+        .replica_rows(&"b".repeat(64), scope, "", 2)
+        .await
+        .unwrap()
+        .is_empty());
+    assert!(store
+        .replica_rows(&user, "private:other", "", 2)
+        .await
+        .unwrap()
+        .is_empty());
+    let first = "4".repeat(64);
+    store
+        .replica_publish(&user, scope, &first, "first snapshot", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.replica_current(&user, scope).await.unwrap(),
+        Some((first.clone(), "first snapshot".into()))
+    );
+    assert!(store
+        .replica_publish(&user, scope, &first, "collision", Some(&first))
+        .await
+        .is_err());
+    let mut rival = TypeDbStore::new(config(&db));
+    let left_id = "5".repeat(64);
+    let right_id = "6".repeat(64);
+    let (left, right) = tokio::join!(
+        store.replica_publish(&user, scope, &left_id, "left", Some(&first)),
+        rival.replica_publish(&user, scope, &right_id, "right", Some(&first))
+    );
+    assert_ne!(left.is_ok(), right.is_ok(), "one predecessor race winner");
+    assert!(store
+        .replica_current(&"b".repeat(64), scope)
+        .await
+        .unwrap()
+        .is_none());
+    let current = store.replica_current(&user, scope).await.unwrap().unwrap();
+    assert_eq!(current.1, if left.is_ok() { "left" } else { "right" });
+    let mut restarted = TypeDbStore::new(config(&db));
+    assert_eq!(
+        restarted
+            .replica_current(&user, scope)
+            .await
+            .unwrap()
+            .unwrap(),
+        current
+    );
+}
+
 fn addr() -> String {
-    std::env::var("TYPEDB_ADDR").unwrap_or_else(|_| "127.0.0.1:1729".into())
+    // The CLI contract is authoritative; `TYPEDB_ADDR` stays as the
+    // legacy alias so an existing invocation keeps pointing at its server.
+    std::env::var("CHAOSBOX_TYPEDB_ADDR")
+        .or_else(|_| std::env::var("TYPEDB_ADDR"))
+        .unwrap_or_else(|_| "127.0.0.1:1729".into())
+}
+
+/// Parse the required-server gate from a value. Split out of the reader so
+/// the rule is testable without mutating process environment (which races
+/// across a parallel test run).
+fn required_from(value: Option<&str>) -> bool {
+    value.is_some_and(|v| {
+        let v = v.trim();
+        v.eq_ignore_ascii_case("1")
+            || v.eq_ignore_ascii_case("true")
+            || v.eq_ignore_ascii_case("yes")
+    })
+}
+
+/// Whether anything is listening at `addr`.
+///
+/// The driver reports both "nothing is listening" and "the server rejected
+/// our credentials" as the same connection error, so the error text cannot
+/// distinguish an absent server from a rejected one. Reachability is
+/// therefore measured directly: if the address accepts a TCP connection a
+/// server is present, so a failed migration there deserves a real answer
+/// instead of a skip.
+fn server_reachable(addr: &str) -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+    addr.to_socket_addrs().is_ok_and(|mut addrs| {
+        addrs.any(|sa| TcpStream::connect_timeout(&sa, Duration::from_secs(2)).is_ok())
+    })
+}
+
+/// The operator's password configuration, in three honest states.
+///
+/// The distinction is the gate: never having been given a credential is an
+/// environment gap that may skip (nothing beyond authentication could run),
+/// while a credential that was named but yields no usable secret is a broken
+/// gate and must fail. Collapsing the latter into "unconfigured" is exactly
+/// how a typo'd secret path turns into a passing skip — and how a fallback
+/// default password could end up authenticating somewhere it should not.
+enum Credentials {
+    /// No password source was ever configured.
+    Unconfigured,
+    /// A usable secret. Never printed, never logged.
+    Ready(String),
+    /// A password source was configured but produced no usable secret. The
+    /// reason names the source and the problem, never the secret itself.
+    Broken(String),
+}
+
+impl Credentials {
+    /// Human-readable state for diagnostics; omits the secret.
+    fn describe(&self) -> String {
+        match self {
+            Credentials::Unconfigured => "no password source configured".into(),
+            Credentials::Ready(_) => "credentials configured".into(),
+            Credentials::Broken(reason) => reason.clone(),
+        }
+    }
+}
+
+/// Credential resolution, split from the environment so it is testable
+/// without mutating process environment (which races across a parallel
+/// test run).
+fn credentials_from(
+    password_file: Option<&std::ffi::OsString>,
+    password: Option<&std::ffi::OsString>,
+) -> Credentials {
+    if let Some(path) = password_file {
+        let path = std::path::Path::new(path);
+        return match std::fs::read_to_string(path) {
+            Ok(raw) if !raw.trim().is_empty() => Credentials::Ready(raw.trim().to_owned()),
+            Ok(_) => Credentials::Broken(format!(
+                "password file {} is configured but empty",
+                path.display()
+            )),
+            Err(e) => Credentials::Broken(format!(
+                "password file {} is configured but unreadable: {e}",
+                path.display()
+            )),
+        };
+    }
+    match password {
+        Some(p) => {
+            let trimmed = p.to_string_lossy().trim().to_owned();
+            if trimmed.is_empty() {
+                Credentials::Broken("TYPEDB_PASSWORD is configured but empty".into())
+            } else {
+                Credentials::Ready(trimmed)
+            }
+        }
+        None => Credentials::Unconfigured,
+    }
+}
+
+/// Credential configuration as the tests see it.
+///
+/// Supplied-but-rejected credentials are a failure: that is a broken gate
+/// trying to go green. Never having been given any is an environment gap,
+/// and without a session nothing beyond authentication can even run — so it
+/// skips and says plainly that live conformance was not proven. The
+/// `CHAOSBOX_REQUIRE_TYPEDB` gate admits no skip either way.
+fn credentials_from_env() -> Credentials {
+    credentials_from(
+        std::env::var_os("CHAOSBOX_TYPEDB_PASSWORD_FILE").as_ref(),
+        std::env::var_os("TYPEDB_PASSWORD").as_ref(),
+    )
+}
+
+/// Per-run database name for the publish tests: they exercise the
+/// fresh-database predecessor path (no active pointer yet), and a rerun must
+/// not inherit the previous run's pointer — the driver has no database
+/// delete, so each process gets a fresh database instead (leftovers
+/// accumulate; CI runs on an ephemeral server).
+fn test_db(base: &str) -> String {
+    let epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    format!("{base}_{}_{epoch}", std::process::id())
 }
 
 fn config(db: &str) -> TypeDbConfig {
+    let username = std::env::var("CHAOSBOX_TYPEDB_USER")
+        .or_else(|_| std::env::var("TYPEDB_USERNAME"))
+        .unwrap_or_else(|_| "admin".into());
+    // No default password: falling back to a well-known secret would mask
+    // the difference between "no credentials" and "bad credentials" — the
+    // very ambiguity this gate exists to close. `connected_store` classifies
+    // every other state before a test can construct a store, so reaching
+    // here without a ready credential is a bug in the gate itself.
+    let password = match credentials_from_env() {
+        Credentials::Ready(password) => password,
+        other => panic!(
+            "store configured without usable credentials: {}",
+            other.describe()
+        ),
+    };
     TypeDbConfig {
         address: addr(),
-        username: "admin".into(),
-        password: "password".into(),
+        username,
+        password,
         database: db.into(),
     }
 }
 
 async fn connected_store(db: &str) -> Option<TypeDbStore> {
-    let mut s = TypeDbStore::new(config(db));
-    match s.migrate().await {
-        Ok(()) => Some(s),
-        Err(e) => {
-            println!("SKIP (no server at {}): {e}", addr());
-            None
-        }
+    let required = required_from(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref().ok());
+
+    // Classify eligibility BEFORE touching the server. Deciding after a
+    // failed migration (as the previous version did) let that failure become
+    // a passing skip whenever credentials happened to be unconfigured —
+    // including a genuine schema/migration bug on a server whose default
+    // credentials worked. Reachability and credential configuration are
+    // measured independently here because the driver conflates "no server"
+    // with "rejected credentials", so it cannot classify its own errors.
+    if !server_reachable(&addr()) {
+        assert!(
+            !required,
+            "CHAOSBOX_REQUIRE_TYPEDB is set: nothing is listening at {}",
+            addr()
+        );
+        println!("SKIP (no server at {})", addr());
+        return None;
     }
+    match credentials_from_env() {
+        Credentials::Ready(_) => {}
+        Credentials::Unconfigured => {
+            assert!(
+                !required,
+                "CHAOSBOX_REQUIRE_TYPEDB is set: a server is reachable at {} but no \
+                 credentials were configured",
+                addr()
+            );
+            println!(
+                "SKIP (server at {} reachable, but no credentials configured): live \
+                 conformance NOT proven, this is not a pass",
+                addr()
+            );
+            return None;
+        }
+        Credentials::Broken(reason) => panic!(
+            "credentials were configured for the server at {} but are unusable ({reason}); \
+             a broken credential is a failure, never an environment gap",
+            addr()
+        ),
+    }
+
+    let mut s = TypeDbStore::new(config(db));
+    s.migrate().await.unwrap_or_else(|e| {
+        panic!(
+            "live TypeDB migration failed at {} with a reachable server and configured \
+             credentials; refusing to report that as a passing skip: {e}",
+            addr()
+        )
+    });
+    Some(s)
 }
 
 fn span(file: &str) -> SourceSpan {
@@ -59,6 +437,8 @@ fn decision(candidate_id: &str, question: &str, cache_key: &str) -> Decision {
         confidence: Some(0.9),
         probability: Some(0.8),
         cache_key: cache_key.into(),
+        reuse_key: String::new(),
+        raw_answer: None,
     }
 }
 
@@ -89,6 +469,91 @@ async fn seed_files_run(s: &mut TypeDbStore, repo: &str, snap: &str) -> (String,
     (run, set, snap.into())
 }
 
+#[test]
+fn only_a_missing_server_may_skip() {
+    // Self-contained: bind an ephemeral port to observe an address that is
+    // definitely listening, then release it to observe one that is not.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral bind");
+    let open = listener.local_addr().expect("local addr");
+    assert!(
+        server_reachable(&open.to_string()),
+        "a listening address must be treated as a present server"
+    );
+    drop(listener);
+    assert!(
+        !server_reachable(&open.to_string()),
+        "a released address must read as no server, which is the only skippable case"
+    );
+    assert!(
+        !server_reachable("definitely-not-a-host.invalid:1729"),
+        "an unresolvable address must not read as a present server"
+    );
+}
+
+#[test]
+fn supplied_credentials_are_distinguished_from_no_credentials() {
+    let existing_path = std::env::temp_dir().join("chaosbox-live-probe");
+    std::fs::write(&existing_path, "s3cret").expect("write probe file");
+    let empty_path = std::env::temp_dir().join("chaosbox-live-probe-empty");
+    std::fs::write(&empty_path, "").expect("write empty probe file");
+    let existing = std::ffi::OsString::from(existing_path.clone());
+    let empty = std::ffi::OsString::from(empty_path.clone());
+    let missing = std::ffi::OsString::from("/definitely/not/a/chaosbox/password");
+    let inline = std::ffi::OsString::from("s3cret");
+    let blank = std::ffi::OsString::new();
+
+    assert!(
+        matches!(credentials_from(None, None), Credentials::Unconfigured),
+        "nothing supplied must read as an environment gap, not a broken credential"
+    );
+    assert!(
+        matches!(
+            credentials_from(Some(&existing), None),
+            Credentials::Ready(_)
+        ),
+        "a readable password file means credentials were supplied"
+    );
+    assert!(
+        matches!(credentials_from(None, Some(&inline)), Credentials::Ready(_)),
+        "an inline password means credentials were supplied"
+    );
+    // A configured source that yields no usable secret is supplied-but-
+    // broken, not absent: it must fail loudly instead of reading as
+    // "never supplied" (which would turn a typo'd secret path into a
+    // passing skip) or falling through to a default password.
+    assert!(
+        matches!(
+            credentials_from(Some(&missing), None),
+            Credentials::Broken(_)
+        ),
+        "a password file that does not exist was configured but unusable, not absent"
+    );
+    assert!(
+        matches!(credentials_from(Some(&empty), None), Credentials::Broken(_)),
+        "an empty password file is a broken credential, not an absent one"
+    );
+    assert!(
+        matches!(credentials_from(None, Some(&blank)), Credentials::Broken(_)),
+        "an empty inline password is broken configuration, not an absent password"
+    );
+    let _ = std::fs::remove_file(&existing_path);
+    let _ = std::fs::remove_file(&empty_path);
+}
+
+#[test]
+fn required_gate_is_explicit_and_fails_closed_on_empty() {
+    assert!(required_from(Some("1")));
+    assert!(required_from(Some(" true ")));
+    assert!(required_from(Some("YES")));
+    assert!(
+        !required_from(Some("")),
+        "an empty gate value must not enable"
+    );
+    assert!(!required_from(Some("0")));
+    assert!(!required_from(Some("no")));
+    assert!(!required_from(None));
+}
+
 #[tokio::test]
 async fn migrate_is_idempotent() {
     let Some(mut s) = connected_store("t_migrate").await else {
@@ -99,8 +564,135 @@ async fn migrate_is_idempotent() {
 }
 
 #[tokio::test]
+async fn direct_fact_citations_and_coverage_survive_a_fresh_reader() {
+    use chaosbox_core::coverage::{BuildCoverage, FileCoverage, SyntaxStatus};
+    let db = test_db("t_facts");
+    let Some(mut store) = connected_store(&db).await else {
+        return;
+    };
+    let repo = "facts";
+    let file = ent(repo, "s1", "a.rs", "file");
+    let definition = ent(repo, "s1", "a.rs", "declaration");
+    store
+        .ensure_snapshot_files(
+            "s1",
+            repo,
+            &[SnapshotFile {
+                snapshot: "s1".into(),
+                path: "a.rs".into(),
+                sha256: "known-content-hash".into(),
+                bytes: 40,
+            }],
+        )
+        .await
+        .unwrap();
+    let mut build = GraphBuild::new(repo, vec!["s1".into()], 1);
+    build.add_node(file.clone()).unwrap();
+    build.add_node(definition.clone()).unwrap();
+    let mut rel = Relation::new(
+        RelationType::Defines,
+        &file.id,
+        &definition.id,
+        RelationScope::File,
+        &build.id,
+    );
+    // Deliberately different from any entity span: evidence spans must be
+    // persisted themselves rather than incidentally via an entity write.
+    let source_span = SourceSpan {
+        file: "a.rs".into(),
+        start_line: 2,
+        start_col: 4,
+        end_line: 2,
+        end_col: 15,
+        byte_start: 10,
+        byte_end: 21,
+    };
+    let evidence = Evidence {
+        id: "ev:direct".into(),
+        class: EvidenceClass::Extracted,
+        supports: true,
+        text: "declaration".into(),
+        span: Some(source_span.clone()),
+        snapshot: "s1".into(),
+        source_file_version: "a.rs".into(),
+        producer: Some("declarations-test-v1".into()),
+    };
+    store.put_evidence(evidence.clone()).await.unwrap();
+    rel.evidence_ids.push(evidence.id.clone());
+    store
+        .put_claim(Claim {
+            id: "claim:direct".into(),
+            relation_id: rel.id.clone(),
+            supporting: vec![evidence.id],
+            contradicting: vec![],
+            accepted: true,
+        })
+        .await
+        .unwrap();
+    build.add_edge(rel.clone()).unwrap();
+    build.coverage = Some(BuildCoverage {
+        catalog: None,
+        compiler: None,
+        files: vec![FileCoverage {
+            file: "a.rs".into(),
+            producer: "declarations-test-v1".into(),
+            status: SyntaxStatus::Parsed,
+            facts: 1,
+        }],
+        structural_relations: 1,
+        decision_relations: 0,
+    });
+    store.publish(build.clone(), None).await.unwrap();
+    assert_eq!(store.stats().decisions, 0);
+    let mut reader = TypeDbReader::new(config(&db));
+    reader.connect().await.unwrap();
+    assert_direct_readback(&reader, &build, &rel, &definition, &source_span).await;
+}
+
+async fn assert_direct_readback(
+    reader: &TypeDbReader,
+    build: &GraphBuild,
+    rel: &Relation,
+    definition: &Entity,
+    source_span: &SourceSpan,
+) {
+    assert!(reader.probe().await.unwrap());
+    assert_eq!(
+        reader
+            .active_build(&build.repo)
+            .await
+            .unwrap()
+            .unwrap()
+            .coverage,
+        build.coverage
+    );
+    let rows = reader.evidence_for(&build.id, &rel.id).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].producer.as_deref(), Some("declarations-test-v1"));
+    let citation = rows[0].citation.as_ref().unwrap();
+    assert_eq!(citation.sha256, "known-content-hash");
+    assert_eq!(citation.snapshot, "s1");
+    assert_eq!(citation.span.as_ref(), Some(source_span));
+    assert_eq!(
+        reader
+            .entity_by_id(&build.id, &definition.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .span,
+        Some(definition.span.clone())
+    );
+    assert!(reader
+        .evidence_for("build:other", &rel.id)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
 async fn publish_readback_and_predecessor_guards() {
-    let Some(mut s) = connected_store("t_pub").await else {
+    let db = test_db("t_pub");
+    let Some(mut s) = connected_store(&db).await else {
         return;
     };
     let repo = "pubrepo";
@@ -122,6 +714,7 @@ async fn publish_readback_and_predecessor_guards() {
         span: Some(span("a.rs")),
         snapshot: "s1".into(),
         source_file_version: "a.rs".into(),
+        producer: None,
     })
     .await
     .unwrap();
@@ -152,7 +745,7 @@ async fn publish_readback_and_predecessor_guards() {
 
     // Live readback through a FRESH store (nothing staged): decisions,
     // evidence linkage and the pointer swing really landed.
-    let mut fresh = TypeDbStore::new(config("t_pub"));
+    let mut fresh = TypeDbStore::new(config(&db));
     fresh.migrate().await.unwrap();
     let found = fresh.find_decision("cand:1", "q1").await.unwrap().unwrap();
     assert_eq!(found.cache_key, "key-1");
@@ -182,7 +775,8 @@ async fn publish_readback_and_predecessor_guards() {
 
 #[tokio::test]
 async fn concurrent_publishers_from_same_generation_exactly_one_wins() {
-    let Some(mut s1) = connected_store("t_race").await else {
+    let db = test_db("t_race");
+    let Some(mut s1) = connected_store(&db).await else {
         return;
     };
     let repo = "racerepo";
@@ -197,7 +791,7 @@ async fn concurrent_publishers_from_same_generation_exactly_one_wins() {
     s1.publish(gen1.clone(), Some(gen1.id.clone()))
         .await
         .unwrap();
-    let mut retry = TypeDbStore::new(config("t_race"));
+    let mut retry = TypeDbStore::new(config(&db));
     retry.migrate().await.unwrap();
     retry.publish(gen1.clone(), None).await.unwrap();
 
@@ -211,9 +805,9 @@ async fn concurrent_publishers_from_same_generation_exactly_one_wins() {
     b2.predecessor = Some(gen1.id.clone());
     b2.add_node(a.clone()).unwrap();
     assert_ne!(b1.id, b2.id, "rival builds must differ");
-    let mut w1 = TypeDbStore::new(config("t_race"));
+    let mut w1 = TypeDbStore::new(config(&db));
     w1.migrate().await.unwrap();
-    let mut w2 = TypeDbStore::new(config("t_race"));
+    let mut w2 = TypeDbStore::new(config(&db));
     w2.migrate().await.unwrap();
     let (r1, r2) = tokio::join!(
         w1.publish(b1.clone(), Some(gen1.id.clone())),
@@ -226,7 +820,7 @@ async fn concurrent_publishers_from_same_generation_exactly_one_wins() {
 
     // The loser retrying with its stale predecessor fails without moving
     // the pointer; last good build stays active.
-    let mut late = TypeDbStore::new(config("t_race"));
+    let mut late = TypeDbStore::new(config(&db));
     late.migrate().await.unwrap();
     let stale = if r1.is_ok() { b2 } else { b1 };
     let err = late
@@ -240,9 +834,13 @@ async fn concurrent_publishers_from_same_generation_exactly_one_wins() {
     );
 }
 
+// Long end-to-end fixture test; splitting it apart is the owning
+// session's refactor. Allowed to keep CI unblocked.
+#[allow(clippy::too_many_lines)]
 #[tokio::test]
 async fn reader_passes_reference_conformance_against_live_backend() {
-    let Some(mut s) = connected_store("t_conf").await else {
+    let db = test_db("t_conf");
+    let Some(mut s) = connected_store(&db).await else {
         return;
     };
     // Seed the reference fixture through the write path: two builds of repo
@@ -307,6 +905,7 @@ async fn reader_passes_reference_conformance_against_live_backend() {
         span: None,
         snapshot: "s1".into(),
         source_file_version: "f.rs".into(),
+        producer: None,
     })
     .await
     .unwrap();
@@ -322,7 +921,355 @@ async fn reader_passes_reference_conformance_against_live_backend() {
     s.publish(b1.clone(), None).await.unwrap();
     s.publish(b2.clone(), Some(b1.id.clone())).await.unwrap();
 
-    let mut reader = TypeDbReader::new(config("t_conf"));
+    // Snapshot fingerprint isolation: a second repo in the same database
+    // must never leak into another repo's pinned snapshot list (the typedb
+    // `active_build` read once ranged over every build in the database).
+    s.ensure_snapshot_files(
+        "s9",
+        "other",
+        &[SnapshotFile {
+            snapshot: "s9".into(),
+            path: "z.rs".into(),
+            sha256: "zz".into(),
+            bytes: 3,
+        }],
+    )
+    .await
+    .unwrap();
+    let zoe = Entity::new(
+        EntityKind::Symbol,
+        "other",
+        "s9",
+        "z.rs",
+        "Zeta",
+        "Zeta",
+        span("z.rs"),
+    );
+    let mut ob = GraphBuild::new("other", vec!["s9".into()], 1);
+    ob.add_node(zoe).unwrap();
+    s.publish(ob, None).await.unwrap();
+
+    let mut reader = TypeDbReader::new(config(&db));
     reader.connect().await.unwrap();
+    let conf_row = reader.active_build("conf").await.unwrap().unwrap();
+    assert_eq!(
+        conf_row.snapshots,
+        ["s2".to_owned()],
+        "conf pins only its own active build's snapshots"
+    );
+    let other_row = reader.active_build("other").await.unwrap().unwrap();
+    assert_eq!(
+        other_row.snapshots,
+        ["s9".to_owned()],
+        "other pins only its own active build's snapshots"
+    );
     check_conformance(&reader, &a1.id, &b1e.id, &r1.id, &a2.id, &(b1.id, b2.id)).await;
+}
+
+#[tokio::test]
+async fn inference_reuse_key_roundtrips_across_restart() {
+    use std::collections::BTreeMap;
+    let db = test_db("t_reuse");
+    let Some(mut s) = connected_store(&db).await else {
+        return;
+    };
+    // First write wins: same reuse key, different raw — the stored row keeps
+    // the first successful inference (reproducibility over recency).
+    let first = InferenceRecord {
+        reuse_key: "jev-reuse:live-test-1".into(),
+        raw: RawAnswer::Choice {
+            choice: "accept".into(),
+            probabilities: BTreeMap::from([
+                ("accept".into(), 0.9),
+                ("reject".into(), 0.05),
+                ("none".into(), 0.05),
+            ]),
+            confidence: 0.95,
+        },
+        model_requested: "jev-1.13.0".into(),
+        model_returned: "jev-1.13.0".into(),
+    };
+    s.put_inference(first.clone()).await.unwrap();
+    let rival = InferenceRecord {
+        raw: RawAnswer::Choice {
+            choice: "reject".into(),
+            probabilities: BTreeMap::from([
+                ("accept".into(), 0.05),
+                ("reject".into(), 0.9),
+                ("none".into(), 0.05),
+            ]),
+            confidence: 0.9,
+        },
+        ..first.clone()
+    };
+    s.put_inference(rival).await.unwrap();
+    // Decision rows carry the same reuse key + raw for audit.
+    let mut d = decision("cand:1", "q1", "key-1");
+    d.reuse_key = first.reuse_key.clone();
+    d.raw_answer = Some(first.raw.clone());
+    s.put_decision(d.clone()).await.unwrap();
+    // Fresh process (empty staging) reads both back from the server.
+    let fresh = TypeDbStore::new(config(&db));
+    let mut fresh = fresh;
+    fresh.migrate().await.unwrap();
+    let found = fresh
+        .find_inference(&first.reuse_key)
+        .await
+        .unwrap()
+        .expect("inference must survive restart");
+    assert_eq!(found.raw, first.raw, "first write wins");
+    assert_eq!(found.model_returned, "jev-1.13.0");
+    let found_dec = fresh
+        .find_decision("cand:1", "q1")
+        .await
+        .unwrap()
+        .expect("decision must survive restart");
+    assert_eq!(found_dec.reuse_key, first.reuse_key);
+    assert_eq!(found_dec.raw_answer, Some(first.raw));
+}
+
+#[tokio::test]
+async fn threshold_change_replaces_decision_and_survives_restart() {
+    use std::collections::BTreeMap;
+    use chaosbox_store::Store as _;
+    let db = test_db("t_thresh");
+    let Some(mut s) = connected_store(&db).await else {
+        return;
+    };
+    let rkey = "jev-reuse:live-threshold-1".to_owned();
+    let raw = RawAnswer::Choice {
+        choice: "accept".into(),
+        probabilities: BTreeMap::from([
+            ("accept".into(), 0.9),
+            ("reject".into(), 0.05),
+            ("none".into(), 0.05),
+        ]),
+        confidence: 0.95,
+    };
+    s.put_inference(InferenceRecord {
+        reuse_key: rkey.clone(),
+        raw: raw.clone(),
+        model_requested: "jev-1.13.0".into(),
+        model_returned: "jev-1.13.0".into(),
+    })
+    .await
+    .unwrap();
+    // Old thresholds: abstained. New thresholds (different audit key):
+    // accepted from the same raw. Replacement must win over same-key keep.
+    let mut old = decision("cand:1", "q1", "key-old:mat-old");
+    old.reuse_key = rkey.clone();
+    old.raw_answer = Some(raw.clone());
+    old.outcome = DecisionOutcome::Abstained;
+    old.confidence = Some(0.95);
+    s.put_decision(old).await.unwrap();
+    let mut new = decision("cand:1", "q1", "key-new:mat-new");
+    new.id = "dec:cand:1:q1:new".into();
+    new.reuse_key = rkey.clone();
+    new.raw_answer = Some(raw.clone());
+    new.outcome = DecisionOutcome::Accepted;
+    s.put_decision(new.clone()).await.unwrap();
+    let found = s
+        .find_decision("cand:1", "q1")
+        .await
+        .unwrap()
+        .expect("replacement must persist");
+    assert_eq!(found.outcome, DecisionOutcome::Accepted);
+    assert_eq!(found.cache_key, "key-new:mat-new");
+    // Fresh process reads the winner, not the stale abstained row.
+    let mut fresh = TypeDbStore::new(config(&db));
+    fresh.migrate().await.unwrap();
+    let restarted = fresh
+        .find_decision("cand:1", "q1")
+        .await
+        .unwrap()
+        .expect("replacement must survive restart");
+    assert_eq!(restarted.outcome, DecisionOutcome::Accepted);
+    assert_eq!(restarted.raw_answer, Some(raw));
+    let restarted_inf = fresh
+        .find_inference(&rkey)
+        .await
+        .unwrap()
+        .expect("inference must survive restart");
+    assert_eq!(restarted_inf.raw, restarted.raw_answer.unwrap());
+}
+
+#[tokio::test]
+async fn concurrent_inferences_first_write_wins_across_stores() {
+    use std::collections::BTreeMap;
+    use chaosbox_store::Store as _;
+    let db = test_db("t_race");
+    let Some(mut a) = connected_store(&db).await else {
+        return;
+    };
+    let Some(mut b) = connected_store(&db).await else {
+        return;
+    };
+    let rkey = "jev-reuse:live-race-1".to_owned();
+    let raw_a = RawAnswer::Choice {
+        choice: "accept".into(),
+        probabilities: BTreeMap::from([
+            ("accept".into(), 0.9),
+            ("reject".into(), 0.05),
+            ("none".into(), 0.05),
+        ]),
+        confidence: 0.95,
+    };
+    let raw_b = RawAnswer::Choice {
+        choice: "reject".into(),
+        probabilities: BTreeMap::from([
+            ("accept".into(), 0.05),
+            ("reject".into(), 0.9),
+            ("none".into(), 0.05),
+        ]),
+        confidence: 0.9,
+    };
+    // True simultaneity: both writers race in one join, not sequentially.
+    let (ra, rb) = tokio::join!(
+        a.put_inference(InferenceRecord {
+            reuse_key: rkey.clone(),
+            raw: raw_a.clone(),
+            model_requested: "jev-1.13.0".into(),
+            model_returned: "jev-1.13.0".into(),
+        }),
+        b.put_inference(InferenceRecord {
+            reuse_key: rkey.clone(),
+            raw: raw_b.clone(),
+            model_requested: "jev-1.13.0".into(),
+            model_returned: "jev-1.13.0".into(),
+        })
+    );
+    ra.unwrap();
+    rb.unwrap();
+    // Both stores agree on the winner (server-first reads).
+    let winner_a = a.find_inference(&rkey).await.unwrap().unwrap();
+    let winner_b = b.find_inference(&rkey).await.unwrap().unwrap();
+    assert_eq!(winner_a.raw, winner_b.raw, "racers must converge");
+    assert!(
+        winner_a.raw == raw_a || winner_a.raw == raw_b,
+        "winner must be one submitted raw"
+    );
+    let mut fresh = TypeDbStore::new(config(&db));
+    fresh.migrate().await.unwrap();
+    let restarted = fresh.find_inference(&rkey).await.unwrap().unwrap();
+    assert_eq!(restarted.raw, winner_a.raw, "restart reads the winner");
+}
+
+#[tokio::test]
+async fn failed_writes_leave_no_reusable_record() {
+    use std::collections::BTreeMap;
+    use chaosbox_store::Store as _;
+    let db = test_db("t_failwrite");
+    let Some(mut s) = connected_store(&db).await else {
+        return;
+    };
+    // Non-finite raw has no TypeQL form: the write must fail before any
+    // staging, leaving no reusable inference.
+    let bad = InferenceRecord {
+        reuse_key: "jev-reuse:live-bad-1".into(),
+        raw: RawAnswer::Choice {
+            choice: "accept".into(),
+            probabilities: BTreeMap::from([
+                ("accept".into(), 0.9),
+                ("reject".into(), 0.05),
+                ("none".into(), 0.05),
+            ]),
+            confidence: f64::NAN,
+        },
+        model_requested: "jev-1.13.0".into(),
+        model_returned: "jev-1.13.0".into(),
+    };
+    assert!(s.put_inference(bad).await.is_err());
+    assert!(
+        s.find_inference("jev-reuse:live-bad-1")
+            .await
+            .unwrap()
+            .is_none(),
+        "failed inference must leave no reusable record"
+    );
+    // Non-finite decision confidence likewise stages nothing.
+    let mut d = decision("cand:bad", "q1", "key-bad");
+    d.confidence = Some(f64::INFINITY);
+    assert!(s.put_decision(d).await.is_err());
+    assert!(
+        s.find_decision("cand:bad", "q1").await.unwrap().is_none(),
+        "failed decision must leave no record"
+    );
+}
+
+#[tokio::test]
+async fn policy_change_with_differing_answers_replaces_evidence() {
+    use std::collections::BTreeMap;
+    use chaosbox_store::Store as _;
+    let db = test_db("t_policy");
+    let Some(mut s) = connected_store(&db).await else {
+        return;
+    };
+    // Two policies => two reuse keys (different inputs), same
+    // (candidate, question) slot, different answers/outcomes.
+    let mk_raw = |choice: &str, conf: f64| RawAnswer::Choice {
+        choice: choice.into(),
+        probabilities: BTreeMap::from([
+            ("accept".into(), if choice == "accept" { 0.9 } else { 0.05 }),
+            ("reject".into(), if choice == "reject" { 0.9 } else { 0.05 }),
+            ("none".into(), 0.05),
+        ]),
+        confidence: conf,
+    };
+    let rkey_a = "jev-reuse:live-pol-A".to_owned();
+    let rkey_b = "jev-reuse:live-pol-B".to_owned();
+    let raw_a = mk_raw("accept", 0.95);
+    let raw_b = mk_raw("reject", 0.9);
+    s.put_inference(InferenceRecord {
+        reuse_key: rkey_a.clone(),
+        raw: raw_a.clone(),
+        model_requested: "jev-1.13.0".into(),
+        model_returned: "jev-1.13.0".into(),
+    })
+    .await
+    .unwrap();
+    s.put_inference(InferenceRecord {
+        reuse_key: rkey_b.clone(),
+        raw: raw_b.clone(),
+        model_requested: "jev-1.13.0".into(),
+        model_returned: "jev-1.13.0".into(),
+    })
+    .await
+    .unwrap();
+    // Old materialization (policy A, accepted) then replacement (policy B,
+    // rejected): different audit keys, different decision/evidence ids.
+    let mut old = decision("cand:pol", "q1", "key-pol-A:mat");
+    old.id = "dec:pol-old".into();
+    old.reuse_key = rkey_a.clone();
+    old.raw_answer = Some(raw_a.clone());
+    old.outcome = DecisionOutcome::Accepted;
+    s.put_decision(old).await.unwrap();
+    let mut new = decision("cand:pol", "q1", "key-pol-B:mat");
+    new.id = "dec:pol-new".into();
+    new.reuse_key = rkey_b.clone();
+    new.raw_answer = Some(raw_b.clone());
+    new.outcome = DecisionOutcome::Rejected;
+    s.put_decision(new.clone()).await.unwrap();
+    let found = s
+        .find_decision("cand:pol", "q1")
+        .await
+        .unwrap()
+        .expect("replacement must persist");
+    assert_eq!(found.outcome, DecisionOutcome::Rejected);
+    assert_eq!(found.reuse_key, rkey_b);
+    assert_eq!(found.raw_answer, Some(raw_b.clone()));
+    // Fresh process agrees on the replacement and both inferences survive.
+    let mut fresh = TypeDbStore::new(config(&db));
+    fresh.migrate().await.unwrap();
+    let restarted = fresh
+        .find_decision("cand:pol", "q1")
+        .await
+        .unwrap()
+        .expect("replacement must survive restart");
+    assert_eq!(restarted.outcome, DecisionOutcome::Rejected);
+    assert_eq!(restarted.reuse_key, rkey_b);
+    assert!(
+        fresh.find_inference(&rkey_a).await.unwrap().is_some()
+            && fresh.find_inference(&rkey_b).await.unwrap().is_some(),
+        "both policy inferences survive (different keys)"
+    );
 }

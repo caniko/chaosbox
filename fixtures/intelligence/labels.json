@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "purpose": "Sanitized labelled protocol-quality pilot; labels are not sent to Jev. Holdouts must not be used for threshold tuning.",
+  "cases": [
+    {"id":"explicit-policy","split":"calibration","message":"u1","expected":"admit","reason":"One explicit, project-scoped operator policy"},
+    {"id":"verified-cause","split":"calibration","message":"a1","expected":"admit","reason":"A concrete failure mechanism backed by two structured execution results"},
+    {"id":"unsupported-success","split":"calibration","message":"a1","expected":"reject","reason":"An assistant completion assertion without evidence"},
+    {"id":"compound","split":"calibration","message":"u1","expected":"reject","reason":"Two independent requirements need splitting before admission"},
+    {"id":"snapshot-integrity","split":"holdout","message":"u1","expected":"admit","reason":"Atomic scoped requirement with a concrete data-loss rationale"},
+    {"id":"observed-regression","split":"holdout","message":"a1","expected":"admit","reason":"A supported, specific invocation/environment failure"},
+    {"id":"progress","split":"holdout","message":"a1","expected":"reject","reason":"Future work, not acquired intelligence"},
+    {"id":"generic-advice","split":"holdout","message":"a1","expected":"reject","reason":"Generic advice without project-specific value"}
+  ]
+}

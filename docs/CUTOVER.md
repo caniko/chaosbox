@@ -1,5 +1,9 @@
 # Cutover and rollback (TypeDB migration)
 
+Historical scope: this records the 2026-09-20 backend rehearsal, not a current
+fleet inventory or the status of external session archives. The proposed
+session migration has its own preservation and rollback requirements.
+
 ## Data status
 
 No real data exists on either backend: the Gel history held fixtures and
@@ -26,16 +30,17 @@ What is proven instead (empty-install path):
 2. Re-run the full matrix: migrate → run → check ready → every consumer
    query → wrong-credential negative → reboot persistence
    (`scripts/test-typedb.sh` automates the disposable version).
-3. Remove the Gel runtime path: `nix/chaosbox.nix` Gel remnants (none left),
-   `dbschema/` + `chaosbox-gel` EdgeQL (keep the crate: `MemoryStore` and
-   the conformance reference stay), Gel CI jobs, Gel docs.
+3. Remove the Gel runtime path: DONE (2026-09-23) — `dbschema/` and the
+   `chaosbox-gel` crate removed outright (shared `MemoryStore`/conformance
+   relocated to `chaosbox-store`), Gel CI jobs and Gel docs deleted.
 4. Move `harbor-db` pin to trunk after harbor-db#7 merges; drop the
    `nixpkgs-typedb` input after NixOS/nixpkgs#565068 merges.
 
 ## Rollback boundaries
 
-- Before the first TypeDB-only write: rollback is the endpoint switch
-  (`CHAOSBOX_DB_BACKEND=gel`); nothing is lost.
+- Before the first TypeDB-only write: rollback was the endpoint switch
+  (`CHAOSBOX_DB_BACKEND=gel`); that switch was removed with the backend on
+  2026-09-23 and nothing is lost.
 - After TypeDB-only writes exist: flipping the endpoint back abandons those
   writes (there is no Gel replica). Rollback then means freeze the TypeDB
   database, export the affected builds/decisions/evidence through the
@@ -54,10 +59,20 @@ What is proven instead (empty-install path):
   is added).
 - Loopback binding by default; firewall exposure opt-in; vendor telemetry
   reporting off by default in the service module.
-- Bootstrap: the default admin credential is test-only. Production rotates
-  it via Console before exposure and provisions a dedicated application
-  user; the application credential arrives via file, never values, flags,
-  or logs.
+- Bootstrap: the default admin credential is test-only. Single-host pilots
+  rotate it with the `typedb-bootstrap` package (console-only, idempotent,
+  safe on every boot): run as root after `typedb.service` starts, then
+  point the deployment at the generated application credential, e.g.
+  `services.chaosbox.passwordFile = "/var/lib/typedb-auth/app-password"`.
+  Ordering is typedb.service -> typedb-bootstrap -> db migrate ->
+  application. No secret ever appears in argv: console authentication
+  reads the password from stdin under a pty, secret-bearing commands run
+  from a root-only script file, and failures report only the operation,
+  never the transcript. Both rotated credentials are verified by
+  re-authenticating, so a silent non-application fails loudly instead of
+  reporting success. With no working credential left (stored password lost
+  after rotation) bootstrap fails closed: recover the admin password via
+  console and re-run.
 - TLS is disabled on loopback (same trust boundary as before); enable it
   wherever connections cross a host boundary and verify it there.
 

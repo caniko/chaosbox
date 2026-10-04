@@ -11,7 +11,7 @@
 | caniko/harbor-db | trunk | `a1ae83b150cf5907ce7c1a4a90c215d13f3801f5` (local checkout `5c605fd`, behind) |
 | caniko/simit | trunk | `39aed87150b01131110f269f591bf38c50ad4bef` (local checkout `b16a5af` on `codex/release-whitespace`) |
 | caniko/chaosbox | (new, empty at start) | initialized this session |
-| gel-tokio (crates.io) | 0.11.0 | API verified: `create_client()`, `Client::query/query_json/query_single_json`, `QueryArgs`/`QueryResult` |
+| gel-tokio (crates.io) | 0.11.0 | API verified: `create_client()`, `Client::query/query_json/query_single_json`, `QueryArgs`/`QueryResult` (removed with the gel backend, 2026-09-23) |
 | TypeSafe docs | api + models (2026-09-18) | endpoint `POST /v1/systemone`, model `jev-1.13.0`, aliases `jev-latest`/`jev-preview` -> `jev-1.13.0`; 64k total / 32k state+longest; 250k tok/s, 1200 req/min; 429 honors `retry-after` |
 
 ## Graphify audit (reference only, never executed)
@@ -43,5 +43,5 @@ read-tx rejection). No Gel data ever persisted (fixtures/disposable only).
 ## Harbor interfaces consumed
 
 - harbor-rs: `mkToolchain` (+`toolchainProfile`), `craneLib` dep/build split, `mkCross`, `mkDevShells`, flake `checks`/`formatter`/`packages`/`apps` layout (mirrored in `flake.nix`)
-- harbor-db: `MigrationPlan`/`MigrationOperation`/`CommandSpec` plan format v1 (`PLAN_VERSION=1`), `run_plan`/`load_plan`, `Backend` (Postgres/ClickHouse only — no Gel backend yet, tracked as pending in HANDOFF)
+- harbor-db: `MigrationPlan`/`MigrationOperation`/`CommandSpec` plan format v1 (`PLAN_VERSION=1`), `run_plan`/`load_plan`, `Backend` (Postgres/ClickHouse only)
 - simit: workspace aggregate GitHub CI mode (`simit.toml`: `runtime="nix"`, `workspace=true`); local simit 0.17.13; named gates + ordered publication await the parallel simit session

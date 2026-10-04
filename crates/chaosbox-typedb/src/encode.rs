@@ -1,10 +1,10 @@
 //! Centralized `TypeQL` literal encoding.
 //!
 //! All query values flow through here; user-controlled text is never
-//! concatenated into `TypeQL` syntax elsewhere. Mirrors the discipline of the
-//! `edgeql` constants in `chaosbox-gel`: queries are fixed strings, values
-//! are encoded by these functions (the driver has no bound-parameter API
-//! for inline literals, so encoding correctness is load-bearing).
+//! concatenated into `TypeQL` syntax elsewhere: queries are fixed string
+//! constants, values are encoded by these functions (the driver has no
+//! bound-parameter API for inline literals, so encoding correctness is
+//! load-bearing).
 
 use thiserror::Error;
 

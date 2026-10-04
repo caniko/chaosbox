@@ -9,6 +9,7 @@ homepage.workspace = true
 documentation.workspace = true
 description = "Chaosbox orchestration library and CLI/MCP executable"
 readme = "../../README.md"
+include = ["examples/**/*.rs", "src/**/*.rs", "src/**/*.sql", "tests/**/*.rs"]
 
 [[bin]]
 name = "chaosbox"
@@ -22,17 +23,25 @@ path = "src/lib.rs"
 chaosbox-core = { workspace = true }
 chaosbox-extract = { workspace = true }
 chaosbox-jev = { workspace = true }
-chaosbox-gel = { workspace = true }
+chaosbox-store = { workspace = true }
 chaosbox-typedb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 clap = { workspace = true }
 async-trait = { workspace = true }
+rusqlite = { workspace = true }
+tempfile = "3"
+ring = "0.17"
+hex = { workspace = true }
+fs2 = "0.4"
 
 [dev-dependencies]
-tempfile = "3"
+scip = "=0.10.0"
+protobuf = "=3.7.2"
+url = "2"
 
 [lints]
 workspace = true

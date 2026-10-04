@@ -21,6 +21,22 @@ use thiserror::Error;
 
 /// Pinned reproducible model. Never a moving alias in production.
 pub const JEV_MODEL_PINNED: &str = "jev-1.13.0";
+/// Sole production inference endpoint. Redirects are never followed.
+pub const JEV_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
+/// Explicit offline fixture identity; never accepted by the HTTP client.
+pub const FIXTURE_MODEL: &str = "fixture-test";
+
+/// Require an approved decision identity and an exact returned match.
+/// Offline callers may explicitly request [`FIXTURE_MODEL`]; live callers
+/// always request [`JEV_MODEL_PINNED`]. Aliases and substitutions fail closed.
+pub fn validate_model_identity(requested: &str, returned: &str) -> Result<(), JevError> {
+    if !matches!(requested, JEV_MODEL_PINNED | FIXTURE_MODEL) || returned != requested {
+        return Err(JevError::Protocol(
+            "unapproved or mismatched model identity".into(),
+        ));
+    }
+    Ok(())
+}
 /// Documented ceiling: total tokens per request.
 pub const CTX_TOTAL_MAX: usize = 64_000;
 /// Documented ceiling: state plus longest-question tokens.
@@ -58,7 +74,7 @@ pub enum JevError {
 }
 
 /// One typed question. `type` selects the variant.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum Question {
     /// Yes/no question; answer is a Noul probability.
@@ -86,7 +102,7 @@ pub enum Question {
 }
 
 /// Optional yes/no criteria text for a Noul question.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoulCriteria {
     /// Description of the `true` outcome.
     #[serde(default, rename = "true", skip_serializing_if = "Option::is_none")]
@@ -155,7 +171,7 @@ pub struct SystemOneRequest {
 }
 
 /// The `POST /v1/systemone` response body.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SystemOneResponse {
     /// Model identity that actually served the request.
     pub model: String,
@@ -166,7 +182,7 @@ pub struct SystemOneResponse {
 }
 
 /// Token accounting returned with every response.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Usage {
     /// Input tokens consumed.
     pub input_tokens: u64,
@@ -177,9 +193,9 @@ pub struct Usage {
 /// Endpoint + deadline + concurrency + spending/request budgets.
 #[derive(Clone, Debug)]
 pub struct JevPolicy {
-    /// Full `POST /v1/systemone` endpoint URL (explicit TLS host).
+    /// Must equal [`JEV_ENDPOINT`]; provider overrides are rejected.
     pub endpoint: String,
-    /// Pinned model identity.
+    /// Must equal [`JEV_MODEL_PINNED`]; aliases and fixture identities are rejected.
     pub model: String,
     /// Per-request deadline (also bounds cancellation).
     pub deadline: Duration,
@@ -200,7 +216,7 @@ pub struct JevPolicy {
 impl Default for JevPolicy {
     fn default() -> Self {
         Self {
-            endpoint: "https://api.typesafe.ai/v1/systemone".to_owned(),
+            endpoint: JEV_ENDPOINT.to_owned(),
             model: JEV_MODEL_PINNED.to_owned(),
             deadline: Duration::from_secs(60),
             max_questions_per_request: 16,
@@ -264,7 +280,10 @@ pub fn check_context_limits(
     Ok(())
 }
 
-/// Cache identity: all decision inputs. Thresholds excluded (materialization).
+/// Cache identity: all decision inputs, including the effective
+/// ingestion/inference policy digest. Thresholds excluded (materialization).
+/// A policy change (scope, privacy, inference) invalidates cached decisions
+/// instead of reusing an inference authorized under different consent.
 #[must_use]
 pub fn cache_key(
     source_digest: &str,
@@ -272,12 +291,162 @@ pub fn cache_key(
     ordered_questions: &BTreeMap<String, Question>,
     model: &str,
     rubric_version: &str,
+    policy_digest: &str,
 ) -> String {
     let q = serde_json::to_string(ordered_questions).unwrap_or_default();
     format!(
         "jev:{}",
-        sha256_hex(&[source_digest, catalog_digest, &q, model, rubric_version])
+        sha256_hex(&[
+            source_digest,
+            catalog_digest,
+            &q,
+            model,
+            rubric_version,
+            policy_digest
+        ])
     )
+}
+
+/// Versioned relation-local reuse identity (issue #12).
+///
+/// The repo-wide [`cache_key`] covers the snapshot id (which rewrites every
+/// entity id on any edit) and the whole-catalog digest, so one edited file
+/// invalidates every cached decision. This key instead covers only what one
+/// decision actually reasoned over, in snapshot-independent terms:
+///
+/// * repository, relation type (canonical `snake_case`), and reason;
+/// * both endpoints as file + qualified name + kind + **file content hash**;
+/// * the bounded excerpt;
+/// * the canonical question semantics (question *values* sorted by their
+///   JSON encoding — transport-only map keys such as `rel_<candidate-id>`
+///   never enter);
+/// * the actual inference state is covered through the excerpt plus the
+///   canonical questions (the wire `state` also carries the transport-only
+///   `candidate` id, which is excluded here by construction);
+/// * model, rubric, and effective-policy digest.
+///
+/// Unchanged relations keep the same key across snapshots; any change to the
+/// relation's own evidence (endpoint file bytes, excerpt, questions) or
+/// consent (policy) changes the key.
+///
+/// Deliberately excludes: snapshot ids, entity ids, candidate ids, question
+/// map keys, and the whole-catalog digest. Callers must still resolve the
+/// `Decision` rebinding problem before switching lookups to this key (stored
+/// `candidate_id`/`id` point at the old snapshot's ids; evidence must be
+/// reassembled against the current entities, not reused byte-for-byte).
+/// The store secondary index and pipeline fallback are Slice 2.
+pub const REUSE_VERSION: &str = "reuse-v1";
+
+/// One endpoint of a reusable decision input, in snapshot-independent
+/// terms plus the content hash that authorizes reuse.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReuseEndpoint {
+    /// Repository-relative file path.
+    pub file: String,
+    /// Qualified name copied from source (never an id).
+    pub qualified: String,
+    /// Canonical entity kind name (`snake_case`, never `Debug`).
+    pub kind: String,
+    /// SHA-256 hex of the endpoint file's text at decision time.
+    pub file_hash: String,
+}
+
+/// Versioned decision input for relation-local reuse.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReuseInput {
+    /// Schema version; always [`REUSE_VERSION`] for writers.
+    pub version: String,
+    /// Owning repository name.
+    pub repo: String,
+    /// Canonical relation type name (`snake_case`).
+    pub rel_type: String,
+    /// Why the candidate was proposed.
+    pub reason: String,
+    /// Source endpoint (content-pinned).
+    pub from: ReuseEndpoint,
+    /// Target endpoint (content-pinned).
+    pub to: ReuseEndpoint,
+    /// Bounded source excerpt grounding the proposal.
+    pub excerpt: String,
+    /// Canonical question semantics: question values only, sorted by JSON
+    /// encoding so transport-only map keys never affect the key.
+    pub canonical_questions: Vec<Question>,
+    /// Model identity requested.
+    pub model: String,
+    /// Rubric version gating question semantics.
+    pub rubric_version: String,
+    /// Effective-policy digest (scope, privacy, inference).
+    pub policy_digest: String,
+}
+
+/// Canonical question semantics: the map *values* sorted by their JSON
+/// encoding. Transport-only keys (`rel_<candidate-id>`) are dropped, so two
+/// snapshots that ask the same semantic question under different candidate
+/// ids hash identically; any instruction/criteria change still flips the key.
+#[must_use]
+pub fn canonical_questions(ordered_questions: &BTreeMap<String, Question>) -> Vec<Question> {
+    let mut values: Vec<Question> = ordered_questions.values().cloned().collect();
+    values.sort_by_key(|q| serde_json::to_string(q).unwrap_or_default());
+    values
+}
+
+/// Hash a versioned [`ReuseInput`] unambiguously (single JSON document).
+/// Construct the input as a struct literal with `version: REUSE_VERSION`
+/// so no positional constructor can smuggle a transport id back in.
+#[must_use]
+pub fn reuse_key(input: &ReuseInput) -> String {
+    let doc = serde_json::to_string(input).unwrap_or_default();
+    format!("jev-reuse:{}", sha256_hex(&[&doc]))
+}
+
+/// Convert a validated [`Answer`] into its storable [`RawAnswer`] form
+/// (issue #12, Slice 2A). The raw answer is what persists; thresholds
+/// apply later through one shared materialization function.
+#[must_use]
+pub fn raw_from_answer(answer: &Answer) -> chaosbox_core::RawAnswer {
+    match answer {
+        Answer::Noul(n) => chaosbox_core::RawAnswer::Noul { noul: n.noul },
+        Answer::Choice(c) => chaosbox_core::RawAnswer::Choice {
+            choice: c.choice.clone(),
+            probabilities: c.probabilities.clone(),
+            confidence: c.confidence,
+        },
+        Answer::Score(s) => chaosbox_core::RawAnswer::Score {
+            score: s.score,
+            probabilities: s.probabilities.clone(),
+            confidence: s.confidence,
+            results: s.results.clone(),
+        },
+    }
+}
+
+/// Convert a stored [`RawAnswer`] back into a typed [`Answer`] for
+/// validation and rematerialization. Lossless with [`raw_from_answer`].
+#[must_use]
+pub fn answer_from_raw(raw: &chaosbox_core::RawAnswer) -> Answer {
+    match raw {
+        chaosbox_core::RawAnswer::Noul { noul } => Answer::Noul(NoulAnswer { noul: *noul }),
+        chaosbox_core::RawAnswer::Choice {
+            choice,
+            probabilities,
+            confidence,
+        } => Answer::Choice(ChoiceAnswer {
+            choice: choice.clone(),
+            probabilities: probabilities.clone(),
+            confidence: *confidence,
+        }),
+        chaosbox_core::RawAnswer::Score {
+            score,
+            probabilities,
+            confidence,
+            results,
+        } => Answer::Score(ScoreAnswer {
+            score: *score,
+            probabilities: probabilities.clone(),
+            confidence: *confidence,
+            results: results.clone(),
+        }),
+    }
 }
 
 /// Typed client. No OpenAI/Anthropic/Gemini/Ollama fallback anywhere.
@@ -293,8 +462,20 @@ pub struct JevClient {
 impl JevClient {
     /// Build a client from an explicit policy (timeouts from its deadline).
     pub fn new(policy: JevPolicy) -> Result<Self, JevError> {
+        if policy.model != JEV_MODEL_PINNED || policy.endpoint != JEV_ENDPOINT {
+            return Err(JevError::Protocol(
+                "only the pinned Typesafe Jev model and endpoint are allowed".into(),
+            ));
+        }
+        Self::build(policy)
+    }
+
+    // Private transport constructor also used by this crate's loopback unit
+    // tests. No feature flag or public endpoint bypass exists.
+    fn build(policy: JevPolicy) -> Result<Self, JevError> {
         let http = reqwest::Client::builder()
             .timeout(policy.deadline)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| JevError::Transport(e.to_string()))?;
         Ok(Self {
@@ -308,6 +489,13 @@ impl JevClient {
 
     /// Read API key: explicit file first, then explicit env for operators.
     /// Never auto-discovered from ambient OpenAI/Anthropic/Gemini/Ollama vars.
+    ///
+    /// Precedence (single choke point, issue #8): `CHAOSBOX_JEV_API_KEY_FILE`
+    /// (Nix-managed secret file) wins when it yields a non-empty secret;
+    /// otherwise `TYPESAFE_API_KEY` (ambient env) is used. An empty or
+    /// unreadable file falls through to the env var rather than failing,
+    /// but a missing key overall fails fast at `run --live-jev` before any
+    /// spend. Secret values never appear in diagnostics.
     #[must_use]
     pub fn api_key() -> Option<String> {
         if let Ok(f) = std::env::var("CHAOSBOX_JEV_API_KEY_FILE") {
@@ -325,6 +513,24 @@ impl JevClient {
             }
         }
         None
+    }
+
+    /// HTTP requests actually dispatched, counting every attempt: retries
+    /// and timed-out sends are billable too, so a request budget must be
+    /// spent against dispatches rather than against parsed successes.
+    /// Authoritative for budgeting — unlike [`Self::spent_tokens`] it needs
+    /// no provider cooperation to be correct.
+    #[must_use]
+    pub fn sent_requests(&self) -> u32 {
+        self.sent_requests
+    }
+
+    /// Input tokens the provider reported as consumed across all calls.
+    /// Provider-reported, so a transport failure can understate the bill;
+    /// `sent_requests` is the load-bearing budget number.
+    #[must_use]
+    pub fn spent_tokens(&self) -> u64 {
+        self.spent_tokens
     }
 
     fn api_key_for_request() -> Result<String, JevError> {
@@ -361,6 +567,12 @@ impl JevClient {
         let mut attempt = 0u32;
         loop {
             attempt += 1;
+            // Retries spend real requests too: re-check the attempt-based
+            // budget before every dispatch, not only before the first, so a
+            // flapping endpoint cannot walk the spend past `max_requests`.
+            if attempt > 1 && self.sent_requests >= self.policy.max_requests {
+                return Err(JevError::Budget("max_requests".into()));
+            }
             let res = self
                 .http
                 .post(&self.policy.endpoint)
@@ -368,6 +580,9 @@ impl JevClient {
                 .json(&body)
                 .send()
                 .await;
+            // Count the dispatch, not the response: a timed-out or rejected
+            // request still reached the provider's billing.
+            self.sent_requests += 1;
             match res {
                 Err(e) if e.is_timeout() || e.is_connect() => {
                     self.attempts.push(AttemptRecord {
@@ -438,7 +653,6 @@ impl JevClient {
                     }
                     let parsed: SystemOneResponse = serde_json::from_slice(&bytes)
                         .map_err(|e| JevError::Schema(sanitized(&e.to_string())))?;
-                    self.sent_requests += 1;
                     self.spent_tokens += parsed.usage.input_tokens;
                     if self.spent_tokens > self.policy.max_input_tokens {
                         return Err(JevError::Budget("max_input_tokens".into()));
@@ -463,12 +677,25 @@ async fn backoff(attempt: u32) {
     tokio::time::sleep(Duration::from_millis(ms.min(5_000))).await;
 }
 
-/// Validate: answer-id reconciliation, type match, finite/range, membership.
+/// Validate pinned Jev identity, answer ids, type, finite/range and membership.
 pub fn validate_response(
     resp: &SystemOneResponse,
     asked: &BTreeMap<String, Question>,
     valid_options: &BTreeMap<String, BTreeSet<String>>,
 ) -> Result<(), JevError> {
+    validate_response_for_model(resp, asked, valid_options, JEV_MODEL_PINNED)
+}
+
+/// Validate a graph decision with an explicit model identity. The sole offline
+/// exception is [`FIXTURE_MODEL`], which must be requested and returned exactly.
+/// The HTTP client never uses this exception.
+pub fn validate_response_for_model(
+    resp: &SystemOneResponse,
+    asked: &BTreeMap<String, Question>,
+    valid_options: &BTreeMap<String, BTreeSet<String>>,
+    requested: &str,
+) -> Result<(), JevError> {
+    validate_model_identity(requested, &resp.model)?;
     if resp.answers.len() != asked.len() {
         return Err(JevError::Protocol(format!(
             "answer count {} != asked {}",
@@ -526,7 +753,6 @@ pub fn validate_response(
             _ => return Err(JevError::Schema(format!("type mismatch for {id}"))),
         }
     }
-    // Returned model recorded by caller; pinned request model enforced at call site.
     Ok(())
 }
 
@@ -551,445 +777,11 @@ fn truncate(s: &str, n: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn context_limits_reject_silently_truncatable() {
-        let big = "x".repeat(CTX_TOTAL_MAX * 5);
-        let mut q = BTreeMap::new();
-        q.insert(
-            "q".into(),
-            Question::Noul {
-                instructions: "y?".into(),
-                criteria: None,
-            },
-        );
-        assert!(
-            check_context_limits(&big, &q).is_err(),
-            "never silently truncate"
-        );
-    }
-
-    #[test]
-    fn noul_missing_confidence_ok_but_choice_requires_it() {
-        let mut asked = BTreeMap::new();
-        asked.insert(
-            "a".into(),
-            Question::Noul {
-                instructions: "y?".into(),
-                criteria: None,
-            },
-        );
-        let resp = SystemOneResponse {
-            model: JEV_MODEL_PINNED.into(),
-            answers: BTreeMap::from([("a".into(), Answer::Noul(NoulAnswer { noul: 0.7 }))]),
-            usage: Usage {
-                input_tokens: 10,
-                output_tokens: 0,
-            },
-        };
-        assert!(validate_response(&resp, &asked, &BTreeMap::new()).is_ok());
-    }
-
-    #[test]
-    fn choice_rejects_out_of_scope() {
-        let mut asked = BTreeMap::new();
-        asked.insert(
-            "c".into(),
-            Question::Choice {
-                instructions: "pick".into(),
-                criteria: BTreeMap::from([
-                    ("yes".into(), None),
-                    ("no".into(), None),
-                    ("none".into(), None),
-                ]),
-            },
-        );
-        let resp = SystemOneResponse {
-            model: JEV_MODEL_PINNED.into(),
-            answers: BTreeMap::from([(
-                "c".into(),
-                Answer::Choice(ChoiceAnswer {
-                    choice: "invented".into(),
-                    probabilities: BTreeMap::from([("invented".into(), 1.0)]),
-                    confidence: 0.9,
-                }),
-            )]),
-            usage: Usage {
-                input_tokens: 5,
-                output_tokens: 0,
-            },
-        };
-        let valid = BTreeMap::from([(
-            "c".into(),
-            BTreeSet::from(["yes".into(), "no".into(), "none".into()]),
-        )]);
-        assert!(validate_response(&resp, &asked, &valid).is_err());
-    }
-
-    #[test]
-    fn malformed_probabilities_rejected() {
-        assert!(check_probability(f64::INFINITY).is_err());
-        assert!(check_probability(-1.0).is_err());
-    }
-
-    #[test]
-    fn cache_key_changes_with_inputs() {
-        let q = BTreeMap::from([(
-            "a".into(),
-            Question::Noul {
-                instructions: "y?".into(),
-                criteria: None,
-            },
-        )]);
-        let k1 = cache_key("s", "c", &q, JEV_MODEL_PINNED, "r1");
-        let k2 = cache_key("s", "c", &q, JEV_MODEL_PINNED, "r2");
-        assert_ne!(k1, k2);
-    }
-
-    #[test]
-    fn answer_wire_shape_round_trips() {
-        // The "type" discriminant appears exactly once; variant structs must
-        // not carry their own copy (serde consumes the tag before decoding).
-        let a = Answer::Choice(ChoiceAnswer {
-            choice: "accept".into(),
-            probabilities: BTreeMap::from([("accept".into(), 1.0)]),
-            confidence: 0.9,
-        });
-        let s = serde_json::to_string(&a).unwrap();
-        assert_eq!(s.matches("\"type\"").count(), 1, "{s}");
-        let back: Answer = serde_json::from_str(&s).unwrap();
-        assert!(matches!(back, Answer::Choice(_)));
-    }
-
-    #[test]
-    fn no_ambient_provider_fallback() {
-        for v in [
-            "OPENAI_API_KEY",
-            "ANTHROPIC_API_KEY",
-            "GOOGLE_API_KEY",
-            "OLLAMA_HOST",
-        ] {
-            assert!(!format!("{:?}", JevClient::api_key()).contains(v));
-        }
-    }
-}
+mod tests;
 
 #[cfg(test)]
 // The mock server holds test-only env-serialization locks across awaits by
 // design (no production deadlock surface); allowed to keep the wire tests
 // readable. Production paths never hold a guard across await.
 #[allow(clippy::await_holding_lock)]
-mod http_tests {
-    //! Wire-level tests for [`super::JevClient::evaluate`] against a scripted
-    //! mock `POST /v1/systemone` server on 127.0.0.1 (raw `tokio` TCP, no new
-    //! dependencies, no credentials, no network beyond loopback).
-    use super::*;
-    use std::fmt::Write as _;
-    use std::sync::{Arc, Mutex, OnceLock};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    /// Process-global credential env is shared by threads: serialize the
-    /// wire tests so each sees its own test key.
-    fn env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    /// One scripted HTTP response.
-    struct Script {
-        status: u16,
-        retry_after: Option<u64>,
-        body: String,
-    }
-
-    fn find_crlf2(buf: &[u8]) -> Option<usize> {
-        buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
-    }
-
-    fn content_len(head: &[u8]) -> usize {
-        let s = String::from_utf8_lossy(head).to_lowercase();
-        s.lines()
-            .find_map(|l| {
-                l.strip_prefix("content-length:")
-                    .and_then(|v| v.trim().parse::<usize>().ok())
-            })
-            .unwrap_or(0)
-    }
-
-    fn reason(status: u16) -> &'static str {
-        match status {
-            200 => "OK",
-            401 => "Unauthorized",
-            429 => "Too Many Requests",
-            500 => "Internal Server Error",
-            _ => "Error",
-        }
-    }
-
-    /// Serve the scripts in order; records raw request heads; returns the
-    /// endpoint URL and the join handle resolving to requests served.
-    async fn serve(
-        scripts: Vec<Script>,
-        heads: Arc<Mutex<Vec<String>>>,
-    ) -> (String, tokio::task::JoinHandle<usize>) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let h = tokio::spawn(async move {
-            let mut served = 0usize;
-            for s in scripts {
-                let Ok((mut sock, _)) = listener.accept().await else {
-                    break;
-                };
-                let mut buf = Vec::new();
-                let mut tmp = [0u8; 4096];
-                while let Ok(n) = sock.read(&mut tmp).await {
-                    if n == 0 {
-                        break;
-                    }
-                    buf.extend_from_slice(&tmp[..n]);
-                    if let Some(h) = find_crlf2(&buf) {
-                        if buf.len() >= h + content_len(&buf[..h]) {
-                            heads
-                                .lock()
-                                .unwrap()
-                                .push(String::from_utf8_lossy(&buf[..h]).into_owned());
-                            break;
-                        }
-                    }
-                    if buf.len() > 4_000_000 {
-                        break;
-                    }
-                }
-                let mut resp = format!(
-                    "HTTP/1.1 {} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n",
-                    s.status,
-                    reason(s.status),
-                    s.body.len()
-                );
-                if let Some(ra) = s.retry_after {
-                    let _ = write!(resp, "retry-after: {ra}\r\n");
-                }
-                resp.push_str("\r\n");
-                resp.push_str(&s.body);
-                if sock.write_all(resp.as_bytes()).await.is_err() {
-                    break;
-                }
-                served += 1;
-            }
-            served
-        });
-        (format!("http://{addr}/v1/systemone"), h)
-    }
-
-    fn test_policy(endpoint: String) -> JevPolicy {
-        JevPolicy {
-            endpoint,
-            deadline: Duration::from_secs(10),
-            max_questions_per_request: 4,
-            max_retries: 3,
-            ..JevPolicy::default()
-        }
-    }
-
-    fn choice_questions() -> BTreeMap<String, Question> {
-        BTreeMap::from([(
-            "q1".to_owned(),
-            Question::Choice {
-                instructions: "pick one".to_owned(),
-                criteria: BTreeMap::from([
-                    ("accept".to_owned(), None),
-                    ("reject".to_owned(), None),
-                    ("none".to_owned(), None),
-                ]),
-            },
-        )])
-    }
-
-    fn valid_options() -> BTreeMap<String, BTreeSet<String>> {
-        BTreeMap::from([(
-            "q1".to_owned(),
-            BTreeSet::from(["accept".to_owned(), "reject".to_owned(), "none".to_owned()]),
-        )])
-    }
-
-    fn accept_body() -> String {
-        serde_json::json!({
-            "model": JEV_MODEL_PINNED,
-            "answers": {"q1": {
-                "type": "choice", "choice": "accept",
-                "probabilities": {"accept": 0.9, "reject": 0.05, "none": 0.05},
-                "confidence": 0.85,
-            }},
-            "usage": {"input_tokens": 10, "output_tokens": 0},
-        })
-        .to_string()
-    }
-
-    fn use_test_key(name: &str) {
-        std::env::remove_var("CHAOSBOX_JEV_API_KEY_FILE");
-        std::env::set_var("TYPESAFE_API_KEY", format!("test-key-{name}"));
-    }
-
-    #[tokio::test]
-    async fn retry_after_honored_then_success_over_http() {
-        let _guard = env_lock().lock().unwrap();
-        use_test_key("retry");
-        let heads = Arc::new(Mutex::new(Vec::new()));
-        let (url, server) = serve(
-            vec![
-                Script {
-                    status: 429,
-                    retry_after: Some(0),
-                    body: "{}".to_owned(),
-                },
-                Script {
-                    status: 200,
-                    retry_after: None,
-                    body: accept_body(),
-                },
-            ],
-            heads.clone(),
-        )
-        .await;
-        let mut client = JevClient::new(test_policy(url)).unwrap();
-        let resp = client
-            .evaluate(
-                serde_json::json!({"repo": "demo"}),
-                choice_questions(),
-                &valid_options(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.model, JEV_MODEL_PINNED);
-        assert_eq!(client.attempts.len(), 2);
-        assert_eq!(client.attempts[0].http_status, Some(429));
-        assert_eq!(client.attempts[0].retry_after_secs, Some(0));
-        assert_eq!(client.attempts[1].http_status, Some(200));
-        // Bearer auth on the wire, never a query param or log line.
-        let heads = heads.lock().unwrap();
-        assert_eq!(heads.len(), 2);
-        assert!(heads[0].contains("authorization: Bearer test-key-retry"));
-        assert!(!heads[0].contains("test-key-retry\""));
-        assert_eq!(server.await.unwrap(), 2);
-    }
-
-    #[tokio::test]
-    async fn auth_failure_never_retried() {
-        let _guard = env_lock().lock().unwrap();
-        use_test_key("auth");
-        let heads = Arc::new(Mutex::new(Vec::new()));
-        let (url, server) = serve(
-            vec![Script {
-                status: 401,
-                retry_after: None,
-                body: "{}".to_owned(),
-            }],
-            heads,
-        )
-        .await;
-        let mut client = JevClient::new(test_policy(url)).unwrap();
-        let err = client
-            .evaluate(serde_json::json!({}), choice_questions(), &valid_options())
-            .await
-            .unwrap_err();
-        assert!(matches!(err, JevError::Auth(_)), "got {err:?}");
-        assert_eq!(server.await.unwrap(), 1, "auth errors must not be retried");
-    }
-
-    #[tokio::test]
-    async fn out_of_scope_choice_rejected_over_http() {
-        let _guard = env_lock().lock().unwrap();
-        use_test_key("scope");
-        let body = serde_json::json!({
-            "model": JEV_MODEL_PINNED,
-            "answers": {"q1": {
-                "type": "choice", "choice": "invented",
-                "probabilities": {"invented": 1.0},
-                "confidence": 0.9,
-            }},
-            "usage": {"input_tokens": 5, "output_tokens": 0},
-        })
-        .to_string();
-        let (url, server) = serve(
-            vec![Script {
-                status: 200,
-                retry_after: None,
-                body,
-            }],
-            Arc::new(Mutex::new(Vec::new())),
-        )
-        .await;
-        let mut client = JevClient::new(test_policy(url)).unwrap();
-        let err = client
-            .evaluate(serde_json::json!({}), choice_questions(), &valid_options())
-            .await
-            .unwrap_err();
-        assert!(matches!(err, JevError::Schema(_)), "got {err:?}");
-        assert_eq!(server.await.unwrap(), 1);
-    }
-
-    #[tokio::test]
-    async fn missing_answer_is_protocol_error() {
-        let _guard = env_lock().lock().unwrap();
-        use_test_key("missing");
-        let body = serde_json::json!({
-            "model": JEV_MODEL_PINNED,
-            "answers": {},
-            "usage": {"input_tokens": 5, "output_tokens": 0},
-        })
-        .to_string();
-        let (url, server) = serve(
-            vec![Script {
-                status: 200,
-                retry_after: None,
-                body,
-            }],
-            Arc::new(Mutex::new(Vec::new())),
-        )
-        .await;
-        let mut client = JevClient::new(test_policy(url)).unwrap();
-        let err = client
-            .evaluate(serde_json::json!({}), choice_questions(), &valid_options())
-            .await
-            .unwrap_err();
-        assert!(matches!(err, JevError::Protocol(_)), "got {err:?}");
-        assert_eq!(server.await.unwrap(), 1);
-    }
-
-    #[tokio::test]
-    async fn malformed_probability_rejected_over_http() {
-        let _guard = env_lock().lock().unwrap();
-        use_test_key("badprob");
-        let body = serde_json::json!({
-            "model": JEV_MODEL_PINNED,
-            "answers": {"q1": {"type": "noul", "noul": 7.5}},
-            "usage": {"input_tokens": 5, "output_tokens": 0},
-        })
-        .to_string();
-        let questions = BTreeMap::from([(
-            "q1".to_owned(),
-            Question::Noul {
-                instructions: "y?".to_owned(),
-                criteria: None,
-            },
-        )]);
-        let (url, server) = serve(
-            vec![Script {
-                status: 200,
-                retry_after: None,
-                body,
-            }],
-            Arc::new(Mutex::new(Vec::new())),
-        )
-        .await;
-        let mut client = JevClient::new(test_policy(url)).unwrap();
-        let err = client
-            .evaluate(serde_json::json!({}), questions, &BTreeMap::new())
-            .await
-            .unwrap_err();
-        assert!(matches!(err, JevError::Schema(_)), "got {err:?}");
-        assert_eq!(server.await.unwrap(), 1);
-    }
-}
+mod http_tests;

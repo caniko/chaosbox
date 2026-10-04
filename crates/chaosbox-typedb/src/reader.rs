@@ -1,4 +1,4 @@
-//! Read-only `TypeDB` [`GelQueries`](chaosbox_gel::GelQueries) implementation.
+//! Read-only `TypeDB` [`GraphQueries`](chaosbox_store::GraphQueries) implementation.
 //!
 //! Every read is scoped to one pinned build id through the membership
 //! relations: rows outside the build are invisible by construction. Read
@@ -7,7 +7,8 @@
 //! entity lists sort by qualified name, relationship and evidence lists are
 //! sets (sorted by id here for determinism).
 //!
-//! Search preserves the Gel `ilike` contract through the `name-fold`
+//! Search preserves case-insensitive substring (`ilike`) semantics through
+//! the `name-fold`
 //! columns: the caller-side `like` pattern is unescaped to a literal
 //! needle, folded, and matched with `contains` (`TypeQL` `like` is
 //! case-sensitive and has no case-insensitive form). An empty relation-type
@@ -15,21 +16,33 @@
 
 use std::collections::BTreeMap;
 
-use chaosbox_gel::{BuildRow, EntityRow, EndpointRef, EvidenceRow, GelError, GelQueries, RelRow};
+use chaosbox_store::{
+    BuildRow, EntityRow, EndpointRef, EvidenceRow, StoreError, GraphQueries, RelRow, SourceCitation,
+};
 use typedb_driver::{Address, Addresses, Credentials, DriverOptions, DriverTlsConfig, TypeDBDriver};
 
-use crate::common::{TypeDbConfig, col_bool, col_int, col_string, driver_error, read_rows};
+use crate::common::{
+    TypeDbConfig, col_bool, col_int, col_string, col_string_opt, driver_error, read_rows,
+};
 use crate::encode::{int_lit, str_lit};
 
 /// Entity attribute columns selected by every member query.
-const ENTITY_COLS: &[&str] = &["id", "kind", "repo", "snap", "file", "name", "qn"];
+const ENTITY_COLS: &[&str] = &[
+    "id", "kind", "repo", "snap", "file", "name", "qn", "sf", "sl", "sc", "el", "ec", "bs", "be",
+    "compiler",
+];
+const ENTITY_SELECT: &str =
+    "$id, $kind, $repo, $snap, $file, $name, $qn, $sf, $sl, $sc, $el, $ec, $bs, $be, $compiler";
+// Optional for historical rows whose evidence range was not persisted.
+const SOURCE_SPAN: &str = "try { $e has span-id $spid; $sp isa source-span, has span-id $spid, has file $sf, has start-line $sl, has start-col $sc, has end-line $el, has end-col $ec, has byte-start $bs, has byte-end $be; };";
+const COMPILER_IDENTITY: &str = "try { $e has compiler-json $compiler; };";
 /// Relationship columns: header plus endpoint ids.
 const REL_COLS: &[&str] = &["r", "rt", "fid", "tid"];
 
 /// Project an attribute column map into an [`EntityRow`].
 fn row_to_entity(
     row: &BTreeMap<String, typedb_driver::concept::Value>,
-) -> Result<EntityRow, GelError> {
+) -> Result<EntityRow, StoreError> {
     Ok(EntityRow {
         entity_id: col_string(row, "id")?,
         kind: col_string(row, "kind")?,
@@ -38,11 +51,37 @@ fn row_to_entity(
         file: col_string(row, "file")?,
         name: col_string(row, "name")?,
         qualified_name: col_string(row, "qn")?,
+        span: row_span(row)?,
+        compiler: col_string_opt(row, "compiler")
+            .map(|json| serde_json::from_str(&json))
+            .transpose()
+            .map_err(|e| StoreError::Query(format!("invalid compiler identity: {e}")))?,
     })
 }
 
+fn row_span(
+    row: &BTreeMap<String, typedb_driver::concept::Value>,
+) -> Result<Option<chaosbox_core::SourceSpan>, StoreError> {
+    let Some(file) = col_string_opt(row, "sf") else {
+        return Ok(None);
+    };
+    let position = |key| {
+        u32::try_from(col_int(row, key)?)
+            .map_err(|_| StoreError::Query(format!("source position {key} out of range")))
+    };
+    Ok(Some(chaosbox_core::SourceSpan {
+        file,
+        start_line: position("sl")?,
+        start_col: position("sc")?,
+        end_line: position("el")?,
+        end_col: position("ec")?,
+        byte_start: position("bs")?,
+        byte_end: position("be")?,
+    }))
+}
+
 /// Project an attribute column map into a [`RelRow`].
-fn row_to_rel(row: &BTreeMap<String, typedb_driver::concept::Value>) -> Result<RelRow, GelError> {
+fn row_to_rel(row: &BTreeMap<String, typedb_driver::concept::Value>) -> Result<RelRow, StoreError> {
     Ok(RelRow {
         rel_id: col_string(row, "r")?,
         rel_type: col_string(row, "rt")?,
@@ -56,7 +95,7 @@ fn row_to_rel(row: &BTreeMap<String, typedb_driver::concept::Value>) -> Result<R
 }
 
 /// Undo `%`-wrapping and `\` escapes of a `like` pattern into a literal
-/// substring needle (mirrors `unescape_like` in `chaosbox-gel`).
+/// substring needle (mirrors the in-memory reader's `unescape_like`).
 fn unescape_like(like: &str) -> String {
     let mut out = String::with_capacity(like.len());
     let mut chars = like.chars();
@@ -91,13 +130,13 @@ impl TypeDbReader {
     /// Connect the driver. Unlike the store, the read path never creates
     /// the database: a missing database is a client error the caller maps
     /// to the pending contract.
-    pub async fn connect(&mut self) -> Result<(), GelError> {
+    pub async fn connect(&mut self) -> Result<(), StoreError> {
         if self.driver.is_none() {
             let address: Address = self
                 .config
                 .address
                 .parse()
-                .map_err(|e| GelError::Client(format!("bad address: {e}")))?;
+                .map_err(|e| StoreError::Connection(format!("bad address: {e}")))?;
             let driver = TypeDBDriver::new(
                 Addresses::from_address(address),
                 Credentials::new(&self.config.username, &self.config.password),
@@ -111,7 +150,7 @@ impl TypeDbReader {
                 .await
                 .map_err(driver_error)?
             {
-                return Err(GelError::Client(format!(
+                return Err(StoreError::Connection(format!(
                     "database {} not found",
                     self.config.database
                 )));
@@ -122,17 +161,17 @@ impl TypeDbReader {
     }
 
     /// Borrow the connected driver or report a client error.
-    fn driver(&self) -> Result<&TypeDBDriver, GelError> {
+    fn driver(&self) -> Result<&TypeDBDriver, StoreError> {
         self.driver
             .as_ref()
-            .ok_or_else(|| GelError::Client("TypeDbReader disconnected".into()))
+            .ok_or_else(|| StoreError::Connection("TypeDbReader disconnected".into()))
     }
 
     /// Schema presence probe: true when the Chaosbox schema is applied
     /// (the marker query executes, rows or not), false when the schema
     /// types are unknown (`INF2`: migrations have not applied). Connection
     /// failures propagate as client errors.
-    pub async fn probe(&self) -> Result<bool, GelError> {
+    pub async fn probe(&self) -> Result<bool, StoreError> {
         use typedb_driver::{TransactionOptions, TransactionType, answer::QueryAnswer};
         use crate::common::READ_TIMEOUT;
         let driver = self.driver()?;
@@ -145,7 +184,7 @@ impl TypeDbReader {
             .await
             .map_err(driver_error)?;
         match tx
-            .query("match $x isa active-pointer; select $x; limit 1;")
+            .query("match $x isa active-pointer; $g isa graph-build; try { $g has coverage-json $c; }; $e isa evidence; try { $e has producer $p; }; $n isa code-entity; try { $n has compiler-json $ci; }; try { $m isa session-knowledge-pointer; $m has memory-scope $ms; }; select $x; limit 1;")
             .await
         {
             Ok(answer) => {
@@ -170,9 +209,9 @@ impl TypeDbReader {
         &self,
         build_id: &str,
         limit: Option<i64>,
-    ) -> Result<Vec<EntityRow>, GelError> {
+    ) -> Result<Vec<EntityRow>, StoreError> {
         let mut q = format!(
-            "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; select $id, $kind, $repo, $snap, $file, $name, $qn; sort $qn;",
+            "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; {SOURCE_SPAN} {COMPILER_IDENTITY} select {ENTITY_SELECT}; sort $qn;",
             str_lit(build_id)
         );
         if let Some(n) = limit {
@@ -189,7 +228,7 @@ impl TypeDbReader {
         &self,
         build_id: &str,
         limit: Option<i64>,
-    ) -> Result<Vec<RelRow>, GelError> {
+    ) -> Result<Vec<RelRow>, StoreError> {
         let mut q = format!(
             "match (build: $b, edge: $rel) isa edge-membership; $b isa graph-build, has build-id {}; $rel isa relationship (from-entity: $f, to-entity: $t), has rel-id $r, has rel-type $rt; $f isa code-entity, has entity-id $fid; $t isa code-entity, has entity-id $tid; select $r, $rt, $fid, $tid; sort $r;",
             str_lit(build_id)
@@ -205,26 +244,47 @@ impl TypeDbReader {
 }
 
 #[async_trait::async_trait]
-impl GelQueries for TypeDbReader {
-    async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, GelError> {
+impl GraphQueries for TypeDbReader {
+    async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, StoreError> {
         let q = format!(
-            "match $p isa active-pointer, has repo-name {}, has build-id $b; $g isa graph-build, has build-id $b, has generation $gen, has status $st; select $b, $gen, $st;",
+            "match $p isa active-pointer, has repo-name {}, has build-id $b; $g isa graph-build, has build-id $b, has generation $gen, has status $st; try {{ $g has coverage-json $coverage; }}; select $b, $gen, $st, $coverage;",
             str_lit(repo)
         );
         let rows = read_rows(
             self.driver()?,
             &self.config.database,
             &q,
-            &["b", "gen", "st"],
+            &["b", "gen", "st", "coverage"],
         )
         .await?;
         let Some(row) = rows.into_iter().next() else {
             return Ok(None);
         };
+        let build_id = col_string(&row, "b")?;
+        // Second read for the freshness fingerprint: one row per snapshot of
+        // the PINNED build (never every build in the database). Sorted for
+        // the same deterministic reporting order as the in-memory backend.
+        let qs = format!(
+            "match $g isa graph-build, has build-id {}, has snapshot-id $s; select $s;",
+            str_lit(&build_id)
+        );
+        let snap_rows = read_rows(self.driver()?, &self.config.database, &qs, &["s"]).await?;
+        let mut snapshots = Vec::with_capacity(snap_rows.len());
+        for r in &snap_rows {
+            snapshots.push(col_string(r, "s")?);
+        }
+        snapshots.sort();
         Ok(Some(BuildRow {
-            build_id: col_string(&row, "b")?,
+            build_id,
             generation: col_int(&row, "gen")?,
             status: col_string(&row, "st")?,
+            snapshots,
+            coverage: col_string_opt(&row, "coverage")
+                .map(|json| {
+                    serde_json::from_str(&json)
+                        .map_err(|e| StoreError::Query(format!("invalid build coverage: {e}")))
+                })
+                .transpose()?,
         }))
     }
 
@@ -233,7 +293,7 @@ impl GelQueries for TypeDbReader {
         build_id: &str,
         like: &str,
         limit: i64,
-    ) -> Result<Vec<EntityRow>, GelError> {
+    ) -> Result<Vec<EntityRow>, StoreError> {
         let needle = unescape_like(like).to_lowercase();
         let lim = int_lit(limit.max(0));
         // Two bounded subqueries (name fold, qualified-name fold), each
@@ -241,7 +301,7 @@ impl GelQueries for TypeDbReader {
         let mut merged: BTreeMap<String, EntityRow> = BTreeMap::new();
         for col in ["name-fold", "qualified-name-fold"] {
             let q = format!(
-                "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has {col} $hit, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; $hit contains {}; select $id, $kind, $repo, $snap, $file, $name, $qn; sort $qn; limit {lim};",
+                "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has {col} $hit, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; $hit contains {}; {SOURCE_SPAN} {COMPILER_IDENTITY} select {ENTITY_SELECT}; sort $qn; limit {lim};",
                 str_lit(build_id),
                 str_lit(&needle)
             );
@@ -258,32 +318,18 @@ impl GelQueries for TypeDbReader {
         Ok(v)
     }
 
-    async fn entity_by_id(&self, build_id: &str, id: &str) -> Result<Option<EntityRow>, GelError> {
-        // The id is known from the argument; select the remaining columns.
+    async fn entity_by_id(
+        &self,
+        build_id: &str,
+        id: &str,
+    ) -> Result<Option<EntityRow>, StoreError> {
         let q = format!(
-            "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id {}, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; select $kind, $repo, $snap, $file, $name, $qn;",
+            "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id {}, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; {SOURCE_SPAN} {COMPILER_IDENTITY} select {ENTITY_SELECT};",
             str_lit(build_id),
             str_lit(id)
         );
-        let rows = read_rows(
-            self.driver()?,
-            &self.config.database,
-            &q,
-            &["kind", "repo", "snap", "file", "name", "qn"],
-        )
-        .await?;
-        let Some(row) = rows.into_iter().next() else {
-            return Ok(None);
-        };
-        Ok(Some(EntityRow {
-            entity_id: id.to_owned(),
-            kind: col_string(&row, "kind")?,
-            repo: col_string(&row, "repo")?,
-            snapshot: col_string(&row, "snap")?,
-            file: col_string(&row, "file")?,
-            name: col_string(&row, "name")?,
-            qualified_name: col_string(&row, "qn")?,
-        }))
+        let rows = read_rows(self.driver()?, &self.config.database, &q, ENTITY_COLS).await?;
+        rows.first().map(row_to_entity).transpose()
     }
 
     async fn neighbors_out(
@@ -291,7 +337,7 @@ impl GelQueries for TypeDbReader {
         build_id: &str,
         id: &str,
         rel_types: Vec<String>,
-    ) -> Result<Vec<RelRow>, GelError> {
+    ) -> Result<Vec<RelRow>, StoreError> {
         self.neighbors(build_id, id, rel_types, true).await
     }
 
@@ -300,11 +346,15 @@ impl GelQueries for TypeDbReader {
         build_id: &str,
         id: &str,
         rel_types: Vec<String>,
-    ) -> Result<Vec<RelRow>, GelError> {
+    ) -> Result<Vec<RelRow>, StoreError> {
         self.neighbors(build_id, id, rel_types, false).await
     }
 
-    async fn build_entities(&self, build_id: &str, limit: i64) -> Result<Vec<EntityRow>, GelError> {
+    async fn build_entities(
+        &self,
+        build_id: &str,
+        limit: i64,
+    ) -> Result<Vec<EntityRow>, StoreError> {
         self.members(build_id, Some(limit)).await
     }
 
@@ -312,7 +362,7 @@ impl GelQueries for TypeDbReader {
         &self,
         build_id: &str,
         limit: i64,
-    ) -> Result<Vec<RelRow>, GelError> {
+    ) -> Result<Vec<RelRow>, StoreError> {
         self.member_rels(build_id, Some(limit)).await
     }
 
@@ -320,13 +370,13 @@ impl GelQueries for TypeDbReader {
         &self,
         build_id: &str,
         rel_id: &str,
-    ) -> Result<Vec<EvidenceRow>, GelError> {
+    ) -> Result<Vec<EvidenceRow>, StoreError> {
         // Claims about this relationship, gated on its membership in the
         // pinned build; supporting and contradicting links union below.
         let mut out: BTreeMap<String, EvidenceRow> = BTreeMap::new();
         for link in ["supporting", "contradicting"] {
             let q = format!(
-                "match (build: $b, edge: $rel) isa edge-membership; $b isa graph-build, has build-id {}; $rel isa relationship, has rel-id {}; $c isa claim, has relationship-id {}; (claim: $c, evidence: $e) isa {link}; $e isa evidence, has evidence-id $id, has class $cl, has supports $s, has text $t; select $id, $cl, $s, $t;",
+                "match (build: $b, edge: $rel) isa edge-membership; $b isa graph-build, has build-id {}; $rel isa relationship, has rel-id {}; $c isa claim, has relationship-id {}; (claim: $c, evidence: $e) isa {link}; $e isa evidence, has evidence-id $id, has class $cl, has supports $s, has text $t; try {{ $e has producer $producer; }}; try {{ $e has file-version-id $fv; $v isa file-version, has file-version-id $fv, has snapshot-id $snap, has path $file, has sha256 $sha; }}; {SOURCE_SPAN} select $id, $cl, $s, $t, $producer, $snap, $file, $sha, $sf, $sl, $sc, $el, $ec, $bs, $be;",
                 str_lit(build_id),
                 str_lit(rel_id),
                 str_lit(rel_id)
@@ -335,7 +385,10 @@ impl GelQueries for TypeDbReader {
                 self.driver()?,
                 &self.config.database,
                 &q,
-                &["id", "cl", "s", "t"],
+                &[
+                    "id", "cl", "s", "t", "producer", "snap", "file", "sha", "sf", "sl", "sc",
+                    "el", "ec", "bs", "be",
+                ],
             )
             .await?;
             for row in &rows {
@@ -344,6 +397,17 @@ impl GelQueries for TypeDbReader {
                     class: col_string(row, "cl")?,
                     supports: col_bool(row, "s")?,
                     text: col_string(row, "t")?,
+                    producer: col_string_opt(row, "producer"),
+                    citation: if let Some(snapshot) = col_string_opt(row, "snap") {
+                        Some(SourceCitation {
+                            snapshot,
+                            file: col_string(row, "file")?,
+                            sha256: col_string(row, "sha")?,
+                            span: row_span(row)?,
+                        })
+                    } else {
+                        None
+                    },
                 };
                 out.insert(ev.evidence_id.clone(), ev);
             }
@@ -363,7 +427,7 @@ impl TypeDbReader {
         id: &str,
         rel_types: Vec<String>,
         outgoing: bool,
-    ) -> Result<Vec<RelRow>, GelError> {
+    ) -> Result<Vec<RelRow>, StoreError> {
         if rel_types.is_empty() {
             return Ok(Vec::new());
         }
