@@ -100,6 +100,7 @@ pub fn summary(graph: &Value, limit: usize) -> Result<Value, String> {
         "nodes":nodes.len(),"edges":graph["links"].as_array().ok_or("missing links")?.len(),
         "algorithm":"weak-connected-components-v1","community_count":total_groups,
         "communities":groups,"omitted_communities":total_groups.saturating_sub(limit),"hubs":hubs,
+        "omitted_hubs":nodes.len().saturating_sub(limit),
         "coverage":graph["coverage"],"exhaustive":false}),
     )
 }

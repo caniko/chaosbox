@@ -203,6 +203,10 @@ impl<R: GraphQueries> GraphReader<R> {
             .as_array_mut()
             .ok_or_else(|| PipelineError::Consumer("invalid analytics hubs".into()))?
             .truncate(limit);
+        packet["omitted_hubs"] = json!(packet["nodes"]
+            .as_u64()
+            .ok_or_else(|| PipelineError::Consumer("invalid analytics node count".into()))?
+            .saturating_sub(limit as u64));
         let total = packet["community_count"]
             .as_u64()
             .ok_or_else(|| PipelineError::Consumer("invalid analytics group count".into()))?;
