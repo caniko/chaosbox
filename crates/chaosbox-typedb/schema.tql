@@ -64,6 +64,7 @@ define
   attribute raw-answer value string;
   attribute producer value string;
   attribute coverage-json value string;
+  attribute navigation-json value string;
   attribute input-tokens value integer;
   attribute http-status value integer;
   attribute error value string;
@@ -271,6 +272,7 @@ define
     owns status,
     owns created,
     owns coverage-json,
+    owns navigation-json,
     owns publication-digest,
     plays node-membership:build,
     plays edge-membership:build;

@@ -2,6 +2,9 @@
 
 use super::PipelineError;
 
+#[path = "reader_navigation.rs"]
+mod navigation;
+
 // ---- Read-only consumer path (CLI and MCP share this) ----
 
 /// Escape LIKE wildcards (`\`, `%`, `_`) so user input matches literally.

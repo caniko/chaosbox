@@ -16,6 +16,7 @@ pub struct MemoryReader {
     builds: BTreeMap<String, GraphBuild>,
     active: BTreeMap<String, String>,
     evidence: BTreeMap<(String, String), Vec<EvidenceRow>>,
+    navigation: BTreeMap<String, Result<serde_json::Value, String>>,
 }
 
 impl MemoryReader {
@@ -28,15 +29,30 @@ impl MemoryReader {
     /// Snapshot the actual published store, including source-linked claims.
     #[must_use]
     pub fn from_store(store: &crate::MemoryStore) -> Self {
+        let navigation = store
+            .builds
+            .values()
+            .map(|build| {
+                (
+                    build.id.clone(),
+                    chaosbox_core::navigation::summarize_build(build),
+                )
+            })
+            .collect();
         Self {
             builds: store.builds.clone(),
             active: store.active.clone(),
             evidence: store.sealed.clone(),
+            navigation,
         }
     }
 
     /// Insert a build (indexed by its id).
     pub fn insert_build(&mut self, build: GraphBuild) {
+        self.navigation.insert(
+            build.id.clone(),
+            chaosbox_core::navigation::summarize_build(&build),
+        );
         self.builds.insert(build.id.clone(), build);
     }
 
@@ -61,7 +77,11 @@ impl MemoryReader {
     fn members(&self, build_id: &str) -> Vec<EntityRow> {
         self.builds.get(build_id).map_or_else(Vec::new, |b| {
             let mut v: Vec<EntityRow> = b.nodes.values().map(entity_row).collect();
-            v.sort_by(|a, b| a.qualified_name.cmp(&b.qualified_name));
+            v.sort_by(|a, b| {
+                a.qualified_name
+                    .cmp(&b.qualified_name)
+                    .then_with(|| a.entity_id.cmp(&b.entity_id))
+            });
             v
         })
     }
@@ -210,6 +230,46 @@ impl GraphQueries for MemoryReader {
             .get(build_id)
             .map(|b| b.edges.values().map(rel_row).take(limit).collect())
             .unwrap_or_default())
+    }
+
+    async fn adjacent_relationships(
+        &self,
+        build_id: &str,
+        id: &str,
+        limit: i64,
+    ) -> Result<Vec<RelRow>, StoreError> {
+        let Some(build) = self.builds.get(build_id) else {
+            return Ok(Vec::new());
+        };
+        let mut edges: Vec<_> = build
+            .edges
+            .values()
+            .filter(|r| r.from == id || r.to == id)
+            .collect();
+        let neighbor = |r: &chaosbox_core::Relation| {
+            if r.from == id {
+                r.to.clone()
+            } else {
+                r.from.clone()
+            }
+        };
+        edges.sort_by(|a, b| neighbor(a).cmp(&neighbor(b)).then_with(|| a.id.cmp(&b.id)));
+        Ok(edges
+            .into_iter()
+            .take(usize::try_from(limit.max(0)).unwrap_or(0))
+            .map(rel_row)
+            .collect())
+    }
+
+    async fn navigation_summary(
+        &self,
+        build_id: &str,
+    ) -> Result<Option<serde_json::Value>, StoreError> {
+        self.navigation
+            .get(build_id)
+            .cloned()
+            .transpose()
+            .map_err(StoreError::Query)
     }
 
     async fn evidence_for(
