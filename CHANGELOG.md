@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Graph context reads bounded, build-pinned neighborhoods independently of full
+  export limits. Statistics and connectivity groups read immutable analytics
+  computed at publication; large legacy builds gain the cache on refresh.
 - Preserve legacy published-build headers for operator membership diffs while
   keeping unsealed evidence unavailable to run-bound readers.
 - Federation TypeDB reads use the read-only reader for current and historical
