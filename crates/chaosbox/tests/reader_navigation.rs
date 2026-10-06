@@ -188,6 +188,7 @@ async fn stats_returns_exact_node_edge_counts_and_first_community() {
 
     assert_eq!(stats["nodes"], json!(11000));
     assert_eq!(stats["edges"], json!(21997));
+    assert_eq!(stats["omitted_hubs"], json!(10995));
     assert_eq!(stats["build_id"], reader.build_id);
     assert_eq!(stats["generation"], json!(reader.generation));
 
