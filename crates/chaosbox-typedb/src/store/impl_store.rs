@@ -130,6 +130,8 @@ impl Store for TypeDbStore {
     }
 
     async fn put_claim(&mut self, c: Claim) -> Result<(), StoreError> {
+        self.ensure_connected().await?;
+        self.check_claim_payload(&c).await?;
         self.staging.put_claim(c).await
     }
 
@@ -157,34 +159,39 @@ impl Store for TypeDbStore {
     ) -> Result<(), StoreError> {
         // 1. Live-pointer guard before writing anything (idempotent retry
         // returns early, stale predecessors fail here).
+        let digest = self.staging.publication_digest(&build)?;
         self.ensure_connected().await?;
         let live = self.live_pointer(&build.repo).await?;
         let pred_gen = match (&live, &expected_predecessor) {
             (None, None) => None,
-            (Some((active_id, gen, _)), _) if *active_id == build.id => return Ok(()),
-            (Some((active_id, gen, _)), Some(pred))
+            (Some((active_id, _, _)), _) if *active_id == build.id => {
+                // A matching id alone is insufficient: retries must describe
+                // exactly the durable sealed version, including all members.
+                return self.check_published_version(&build, &digest).await;
+            }
+            (Some((active_id, generation, _)), Some(pred))
                 if *pred == *active_id
                     && i64::try_from(build.generation).map_err(|_| {
                         StoreError::Invariant("generation overflows i64".into())
-                    })? > *gen =>
+                    })? > *generation =>
             {
-                Some((pred.clone(), *gen))
+                Some((pred.clone(), *generation))
             }
-            (Some((active_id, gen, _)), None) => {
+            (Some((active_id, generation, _)), None) => {
                 return Err(StoreError::Invariant(format!(
-                    "predecessor mismatch: expected None, live active is {active_id} (gen {gen})"
+                    "predecessor mismatch: expected None, live active is {active_id} (gen {generation})"
                 )));
             }
-            (Some((active_id, gen, _)), Some(pred)) => {
+            (Some((active_id, generation, _)), Some(pred)) => {
                 let build_gen = i64::try_from(build.generation)
                     .map_err(|_| StoreError::Invariant("generation overflows i64".into()))?;
-                if *pred == *active_id && build_gen <= *gen {
+                if *pred == *active_id && build_gen <= *generation {
                     return Err(StoreError::Invariant(
                         "older worker cannot replace newer build".into(),
                     ));
                 }
                 return Err(StoreError::Invariant(format!(
-                    "predecessor mismatch: expected {pred:?}, live active is {active_id} (gen {gen})"
+                    "predecessor mismatch: expected {pred:?}, live active is {active_id} (gen {generation})"
                 )));
             }
             (None, Some(pred)) => {
@@ -205,16 +212,13 @@ impl Store for TypeDbStore {
         };
         self.staging.publish(build.clone(), staging_pred).await?;
         // 3. Idempotent flush; safe to retry after a crash mid-flush.
-        self.flush_build_rows(&build).await?;
+        self.flush_build_rows(&build, &digest).await?;
         self.flush_chain().await?;
         // 4. Guarded swing last: a concurrent publisher wins instead of
         // being overwritten, and the last good build stays active. NOTE: a
-        // failed swing leaves this instance's staging ahead of live; retry
+        // failed flush or swing leaves this instance's staging ahead of live; retry
         // publication with a fresh store.
-        let generation = i64::try_from(build.generation)
-            .map_err(|_| StoreError::Invariant("generation overflows i64".into()))?;
-        self.swing(&build.repo, &build.id, pred_gen, generation)
-            .await
+        self.swing(&build, pred_gen, &digest).await
     }
 
     fn active(&self, repo: &str) -> Option<GraphBuild> {
