@@ -376,24 +376,26 @@ pub(super) async fn mcp_call_tool(
             reader.diff(repo, from, to).await.map_err(|e| e.to_string())
         }
         "export" => reader.export().await.map_err(|e| e.to_string()),
-        "context" | "stats" | "community" => match reader.export().await {
-            Err(error) => Err(error.to_string()),
-            Ok(graph) => match name {
-                "context" => chaosbox::navigation::context(
-                    &graph,
-                    args["query"].as_str().unwrap_or_default(),
-                    integer(args.get("depth"), 3),
-                    integer(args.get("max_nodes"), 20),
-                    integer(args.get("max_chars"), 12000),
-                ),
-                "stats" => chaosbox::navigation::summary(&graph, integer(args.get("limit"), 10)),
-                _ => chaosbox::navigation::community(
-                    &graph,
-                    args["id"].as_str().unwrap_or_default(),
-                    integer(args.get("limit"), 100),
-                ),
-            },
-        },
+        "context" => reader
+            .context(
+                args["query"].as_str().unwrap_or_default(),
+                integer(args.get("depth"), 3),
+                integer(args.get("max_nodes"), 20),
+                integer(args.get("max_chars"), 12000),
+            )
+            .await
+            .map_err(|e| e.to_string()),
+        "stats" => reader
+            .stats(integer(args.get("limit"), 10))
+            .await
+            .map_err(|e| e.to_string()),
+        "community" => reader
+            .community(
+                args["id"].as_str().unwrap_or_default(),
+                integer(args.get("limit"), 100),
+            )
+            .await
+            .map_err(|e| e.to_string()),
         "explain" => {
             let eid = args["id"].as_str().unwrap_or_default();
             reader.explain(eid).await.map_err(|e| e.to_string())
