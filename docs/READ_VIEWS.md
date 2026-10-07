@@ -18,10 +18,12 @@ complete evidence closure to an immutable digest; evidence and its citations are
 sealed per build-edge membership. A missing recorded version blocks recovery
 instead of silently switching to a newer build.
 
-TypeDB schema **v5** adds publication digests, sealed membership evidence and
-canonical claim payloads. `chaosbox db migrate` adds the schema, but cannot prove
-the complete references of an existing unsealed build or claim. Publish a new
-build identity with complete source evidence; legacy versions remain blocked.
+TypeDB's current schema includes publication digests, sealed membership evidence
+and canonical claim payloads. `chaosbox db migrate` applies additive schema
+updates, but cannot prove the complete references of an existing unsealed build
+or claim. Publish a new build identity with complete source evidence for run-bound
+reads. Legacy published builds remain available to operator membership diffs, but
+cannot authorize run-bound reads.
 Sealed evidence has a publication ceiling of 1,000 rows and 1 MiB per relationship.
 The reader additionally applies the admitted graph and evidence budgets.
 
