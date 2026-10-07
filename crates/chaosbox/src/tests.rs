@@ -999,6 +999,7 @@ async fn graph_reader_diff_rejects_foreign_and_missing_builds() {
     let foreign = GraphBuild::new("other", vec!["secret".into()], 1);
     let foreign_id = foreign.id.clone();
     seed.reader.insert_build(foreign);
+    seed.reader.set_active("other", &foreign_id);
     let reader = GraphReader::pinned(seed.reader, "conf").await.unwrap();
     for (repo, from, to) in [
         ("conf", foreign_id.as_str(), seed.builds.1.as_str()),

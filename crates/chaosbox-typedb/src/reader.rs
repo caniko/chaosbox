@@ -192,7 +192,7 @@ impl TypeDbReader {
             .await
             .map_err(driver_error)?;
         match tx
-            .query("match $x isa active-pointer; $g isa graph-build; try { $g has coverage-json $c; }; $e isa evidence; try { $e has producer $p; }; $n isa code-entity; try { $n has compiler-json $ci; }; try { $m isa session-knowledge-pointer; $m has memory-scope $ms; }; $em isa edge-membership; try { $em has sealed-evidence-json $sealed; }; select $x; limit 1;")
+            .query("match $x isa active-pointer; $g isa graph-build; try { $g has coverage-json $c; }; try { $g has navigation-json $nav; }; $e isa evidence; try { $e has producer $p; }; $n isa code-entity; try { $n has compiler-json $ci; }; try { $m isa session-knowledge-pointer; $m has memory-scope $ms; }; $em isa edge-membership; try { $em has sealed-evidence-json $sealed; }; select $x; limit 1;")
             .await
         {
             Ok(answer) => {
@@ -219,7 +219,7 @@ impl TypeDbReader {
         limit: Option<i64>,
     ) -> Result<Vec<EntityRow>, StoreError> {
         let mut q = format!(
-            "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; {SOURCE_SPAN} {COMPILER_IDENTITY} select {ENTITY_SELECT}; sort $qn;",
+            "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; {SOURCE_SPAN} {COMPILER_IDENTITY} select {ENTITY_SELECT}; sort $qn, $id;",
             str_lit(build_id)
         );
         if let Some(n) = limit {
@@ -325,7 +325,7 @@ impl GraphQueries for TypeDbReader {
         let mut merged: BTreeMap<String, EntityRow> = BTreeMap::new();
         for col in ["name-fold", "qualified-name-fold"] {
             let q = format!(
-                "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has {col} $hit, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; $hit contains {}; {SOURCE_SPAN} {COMPILER_IDENTITY} select {ENTITY_SELECT}; sort $qn; limit {lim};",
+                "match (build: $b, member: $e) isa node-membership; $b isa graph-build, has build-id {}; $e isa code-entity, has {col} $hit, has entity-id $id, has kind $kind, has repo-name $repo, has snapshot-id $snap, has file $file, has name $name, has qualified-name $qn; $hit contains {}; {SOURCE_SPAN} {COMPILER_IDENTITY} select {ENTITY_SELECT}; sort $qn, $id; limit {lim};",
                 str_lit(build_id),
                 str_lit(&needle)
             );
@@ -337,7 +337,11 @@ impl GraphQueries for TypeDbReader {
         }
         let n = usize::try_from(limit.max(0)).unwrap_or(0);
         let mut v: Vec<EntityRow> = merged.into_values().collect();
-        v.sort_by(|a, b| a.qualified_name.cmp(&b.qualified_name));
+        v.sort_by(|a, b| {
+            a.qualified_name
+                .cmp(&b.qualified_name)
+                .then_with(|| a.entity_id.cmp(&b.entity_id))
+        });
         v.truncate(n);
         Ok(v)
     }
@@ -388,6 +392,61 @@ impl GraphQueries for TypeDbReader {
         limit: i64,
     ) -> Result<Vec<RelRow>, StoreError> {
         self.member_rels(build_id, Some(limit)).await
+    }
+
+    async fn adjacent_relationships(
+        &self,
+        build_id: &str,
+        id: &str,
+        limit: i64,
+    ) -> Result<Vec<RelRow>, StoreError> {
+        let mut edges = BTreeMap::new();
+        for (anchor, neighbor) in [("fid", "tid"), ("tid", "fid")] {
+            let q = format!(
+                "match (build: $b, edge: $rel) isa edge-membership; $b isa graph-build, has build-id {}; $rel isa relationship (from-entity: $f, to-entity: $t), has rel-id $r, has rel-type $rt; $f isa code-entity, has entity-id $fid; $t isa code-entity, has entity-id $tid; ${anchor} == {}; select $r, $rt, $fid, $tid; sort ${neighbor}, $r; limit {};",
+                str_lit(build_id), str_lit(id), int_lit(limit.max(0)),
+            );
+            let rows = read_rows(self.driver()?, &self.config.database, &q, REL_COLS).await?;
+            for row in &rows {
+                let edge = row_to_rel(row)?;
+                let next = if edge.from_entity.entity_id == id {
+                    &edge.to_entity.entity_id
+                } else {
+                    &edge.from_entity.entity_id
+                };
+                edges.insert((next.clone(), edge.rel_id.clone()), edge);
+            }
+        }
+        Ok(edges
+            .into_values()
+            .take(usize::try_from(limit.max(0)).unwrap_or(0))
+            .collect())
+    }
+
+    async fn navigation_summary(
+        &self,
+        build_id: &str,
+    ) -> Result<Option<serde_json::Value>, StoreError> {
+        let query = format!(
+            "match $b isa graph-build, has build-id {}, has status \"active\"; try {{ $b has navigation-json $nav; }}; select $nav; limit 2;",
+            str_lit(build_id),
+        );
+        let rows = read_rows(self.driver()?, &self.config.database, &query, &["nav"]).await?;
+        if rows.len() > 1 {
+            return Err(StoreError::Query(
+                "multiple publication analytics packets".into(),
+            ));
+        }
+        rows.first()
+            .and_then(|row| col_string_opt(row, "nav"))
+            .map(|json| {
+                if json.len() > chaosbox_core::navigation::SUMMARY_BYTES_MAX {
+                    return Err(StoreError::QueryBudget);
+                }
+                serde_json::from_str(&json)
+                    .map_err(|_| StoreError::Query("invalid publication analytics".into()))
+            })
+            .transpose()
     }
 
     async fn evidence_for(

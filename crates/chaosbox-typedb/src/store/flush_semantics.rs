@@ -343,6 +343,10 @@ impl TypeDbStore {
         build: &GraphBuild,
         digest: &str,
     ) -> Result<(), StoreError> {
+        let navigation =
+            chaosbox_core::navigation::summarize_build(build).map_err(StoreError::Query)?;
+        let navigation =
+            serde_json::to_string(&navigation).map_err(|e| StoreError::Query(e.to_string()))?;
         self.flush_repository(&build.repo).await?;
         for snapshot_id in &build.snapshot_ids {
             self.flush_snapshot(&build.repo, snapshot_id).await?;
@@ -371,6 +375,8 @@ impl TypeDbStore {
             owns.push_str(", has coverage-json ");
             owns.push_str(&str_lit(&json));
         }
+        owns.push_str(", has navigation-json ");
+        owns.push_str(&str_lit(&navigation));
         self.insert_ignoring_duplicates(&format!("insert $b isa graph-build, {owns};"))
             .await?;
         self.check_build_digest(build, digest).await?;

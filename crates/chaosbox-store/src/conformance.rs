@@ -62,6 +62,7 @@ pub fn conformance_seed() -> ConformanceSeed {
     b2.add_edge(r2).unwrap();
     let mut reader = MemoryReader::new();
     reader.insert_build(b1.clone());
+    reader.set_active("conf", &b1.id);
     reader.insert_build(b2.clone());
     reader.set_active("conf", &b2.id);
     reader.attach_evidence(
@@ -199,6 +200,30 @@ pub async fn check_conformance<R: GraphQueries>(
         .map(|x| x.rel_id)
         .collect();
     assert_eq!(inc, BTreeSet::from([rel1.to_owned()]));
+    // Navigation must bound both directions at the backend, preserving scope.
+    for id in [a1, b1] {
+        let edges = r.adjacent_relationships(&builds.0, id, 1).await.unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0].rel_id, rel1);
+        assert!(r
+            .adjacent_relationships(&builds.0, id, 0)
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(r
+            .adjacent_relationships(&builds.1, id, 1)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+    for (build, generation) in [(&builds.0, 1), (&builds.1, 2)] {
+        let stats = r.navigation_summary(build).await.unwrap().unwrap();
+        assert_eq!(stats["build_id"], *build);
+        assert_eq!(stats["generation"], generation);
+        assert_eq!(stats["nodes"], 2);
+        assert_eq!(stats["edges"], 1);
+        assert_eq!(stats["community_count"], 1);
+    }
     // Build projections are membership-scoped.
     let e1: BTreeSet<_> = r
         .build_entities(&builds.0, 100)

@@ -21,6 +21,21 @@ fn view(build: &str, snapshots: &[&str]) -> ReadView {
     })).unwrap()
 }
 
+#[tokio::test]
+async fn unpublished_build_cannot_authorize_a_read_view() {
+    let build = chaosbox_core::GraphBuild::new("conf", vec!["s1".into()], 1);
+    let mut reader = chaosbox_store::MemoryReader::new();
+    let view = view(&build.id, &["s1"]);
+    let identity = view.identity.clone();
+    reader.insert_build(build);
+    assert!(reader
+        .published_build("conf", &view.build_id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(ScopedReader::admit(reader, view, &identity).await.is_err());
+}
+
 async fn cited_seed() -> chaosbox_store::ConformanceSeed {
     let mut seed = conformance_seed();
     for (build, snapshot) in [(&seed.builds.0, "s1"), (&seed.builds.1, "s2")] {

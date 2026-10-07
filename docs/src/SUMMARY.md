@@ -1,6 +1,7 @@
 # Summary
 
 - [Chaosbox](index.md)
+- [Storage lifecycle integration](storage-lifecycle.md)
 - [Selective intelligence](intelligence.md)
 - [Same-user peer sync](peer-sync.md)
 - [Project-scoped federation](federation.md)
@@ -11,6 +12,7 @@
 
 - [Capability reference](capability.md)
 - [Run-bound graph read views](read-views.md)
+- [Build-pinned graph navigation](graph-navigation.md)
 - [Optional compiler evidence](compiler-evidence.md)
 - [PostgreSQL catalog evidence](postgresql.md)
 - [Source-selected continuation](checkpoints.md)
