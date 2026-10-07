@@ -713,15 +713,15 @@ async fn assert_sealed_recovery(
             .unwrap()
             .evidence_sealed
     );
-    assert_legacy_membership_headers(db, build, &next, rel, &recovered).await;
+    assert_legacy_recovery(&recovered, db, build, &next, rel).await;
 }
 
-async fn assert_legacy_membership_headers(
+async fn assert_legacy_recovery(
+    recovered: &TypeDbReader,
     db: &str,
     build: &GraphBuild,
     next: &GraphBuild,
     rel: &Relation,
-    recovered: &TypeDbReader,
 ) {
     // Model a legacy membership after additive migration: no expected
     // references survived, so completeness cannot be established from links.

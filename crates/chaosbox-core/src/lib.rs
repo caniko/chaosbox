@@ -14,6 +14,7 @@ use thiserror::Error;
 pub mod compiler;
 pub mod coverage;
 pub mod intelligence;
+pub mod navigation;
 
 /// Hash `parts` with SHA-256, joined by `\0`, hex-encoded.
 #[must_use]

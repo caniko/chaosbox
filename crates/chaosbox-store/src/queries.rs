@@ -60,6 +60,27 @@ pub trait GraphQueries: Send + Sync {
         build_id: &str,
         limit: i64,
     ) -> Result<Vec<RelRow>, StoreError>;
+    /// Bounded undirected neighborhood, ordered by neighboring entity id then
+    /// relationship id. Keeps original direction; self edges appear once.
+    /// Backends must apply the row limit before returning a projection.
+    async fn adjacent_relationships(
+        &self,
+        _build_id: &str,
+        _id: &str,
+        _limit: i64,
+    ) -> Result<Vec<RelRow>, StoreError> {
+        Err(StoreError::Query(
+            "bounded neighborhoods unavailable".into(),
+        ))
+    }
+    /// Immutable bounded analytics computed at publication, when available.
+    /// `None` identifies a legacy build; readers may use its bounded export.
+    async fn navigation_summary(
+        &self,
+        _build_id: &str,
+    ) -> Result<Option<serde_json::Value>, StoreError> {
+        Ok(None)
+    }
     /// Evidence attached to one relationship of the pinned build.
     async fn evidence_for(
         &self,

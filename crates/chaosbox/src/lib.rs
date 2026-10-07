@@ -30,6 +30,7 @@ pub mod intelligence;
 mod lifecycle;
 mod materialization;
 pub mod navigation;
+pub mod nix;
 mod pipeline;
 pub mod postgres;
 pub mod read_view;
