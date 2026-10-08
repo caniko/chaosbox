@@ -754,9 +754,7 @@ def validate_report(report, source, repo_context, reproductions=None):
             raise ValueError("invalid current status")
         check_citations(entry.get("sessionEvidence"), source, "source evidence")
         evidence = entry.get("repoEvidence", [])
-        if entry["currentStatus"] != "unverified":
-            check_citations(evidence, repo_context, "repository evidence")
-        elif evidence:
+        if entry["currentStatus"] != "unverified" or evidence:
             check_citations(evidence, repo_context, "repository evidence")
         if entry["currentStatus"] == "confirmed-gap":
             ref = entry.get("reproductionRef")
