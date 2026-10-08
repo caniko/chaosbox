@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Source-custodied session pruning validates native outcomes and selects settled
+  records in Rust. Checkpoints recover complete pre-bounding tool content and
+  metadata, enforce runtime budgets, and verify full-payload plan identities
+  against archived evidence before installation.
 - Graph context reads bounded, build-pinned neighborhoods independently of full
   export limits. Statistics and connectivity groups read immutable analytics
   computed at publication; large legacy builds gain the cache on refresh.

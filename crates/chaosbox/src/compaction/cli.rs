@@ -26,6 +26,8 @@ pub struct ArchiveArgs {
 pub enum Command {
     /// Commit complete native records from stdin.
     Capture(ArchiveArgs),
+    /// Capture settled records from an advisory snapshot; report active operations.
+    Observe(ArchiveArgs),
     /// Commit custody and return a bounded source-backed checkpoint.
     Compact {
         /// Fixed archive identity.
@@ -34,6 +36,17 @@ pub enum Command {
         /// Maximum checkpoint characters; overflow refuses reduction.
         #[arg(long, default_value_t = 60_000)]
         max_chars: usize,
+        /// Remaining runtime tokens; Rust applies a conservative UTF-8 bound.
+        #[arg(long)]
+        budget_tokens: Option<usize>,
+    },
+    /// Verify and recover a stored plan against its complete source custody.
+    VerifyPlan {
+        /// Fixed archive identity.
+        #[command(flatten)]
+        archive: ArchiveArgs,
+        /// Content-derived plan identity.
+        id: String,
     },
     /// Recover exact source data by content hash.
     Evidence {
@@ -136,8 +149,17 @@ async fn pinned(scope: &str) -> Result<(Option<String>, Bundle), String> {
 /// Execute a bounded command. Source capture never loads model credentials.
 pub async fn run(command: Command) -> Result<Value, String> {
     match command {
-        Command::Capture(archive) => capture(&archive, None),
-        Command::Compact { archive, max_chars } => capture(&archive, Some(max_chars)),
+        Command::Capture(archive) => capture(&archive, false, None),
+        Command::Observe(archive) => capture(&archive, true, None),
+        Command::Compact {
+            archive,
+            max_chars,
+            budget_tokens,
+        } => capture(&archive, false, Some((max_chars, budget_tokens))),
+        Command::VerifyPlan { archive, id } => {
+            serde_json::to_value(Journal::open(&archive.work, &archive.scope)?.verify_plan(&id)?)
+                .map_err(|e| e.to_string())
+        }
         Command::Evidence {
             archive,
             hash,
@@ -145,21 +167,7 @@ pub async fn run(command: Command) -> Result<Value, String> {
             offset,
             max_chars,
         } => evidence_page(&archive, &hash, pointer.as_deref(), offset, max_chars),
-        Command::Status(archive) => {
-            let journal = Journal::open(&archive.work, &archive.scope)?;
-            let (requests, tokens): (u32, i64) = journal
-                .db
-                .query_row(
-                    "SELECT count(*),coalesce(sum(reserved),0) FROM attempts",
-                    [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .map_err(|e| e.to_string())?;
-            let bundle = journal.bundle()?;
-            Ok(
-                json!({"pending":journal.pending()?,"records":bundle.records.len(),"assessments":bundle.assessments.len(),"reserved_requests":requests,"reserved_input_tokens":tokens}),
-            )
-        }
+        Command::Status(archive) => status(&archive),
         Command::Drain {
             archive,
             live_jev,
@@ -235,6 +243,22 @@ pub async fn run(command: Command) -> Result<Value, String> {
     }
 }
 
+fn status(archive: &ArchiveArgs) -> Result<Value, String> {
+    let journal = Journal::open(&archive.work, &archive.scope)?;
+    let (requests, tokens): (u32, i64) = journal
+        .db
+        .query_row(
+            "SELECT count(*),coalesce(sum(reserved),0) FROM attempts",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    let bundle = journal.bundle()?;
+    Ok(
+        json!({"pending":journal.pending()?,"records":bundle.records.len(),"assessments":bundle.assessments.len(),"reserved_requests":requests,"reserved_input_tokens":tokens}),
+    )
+}
+
 fn evidence_page(
     archive: &ArchiveArgs,
     hash: &str,
@@ -264,7 +288,11 @@ fn evidence_page(
     )
 }
 
-fn capture(archive: &ArchiveArgs, budget: Option<usize>) -> Result<Value, String> {
+fn capture(
+    archive: &ArchiveArgs,
+    observe: bool,
+    budget: Option<(usize, Option<usize>)>,
+) -> Result<Value, String> {
     let mut raw = String::new();
     std::io::stdin()
         .take(64 * 1024 * 1024 + 1)
@@ -275,10 +303,17 @@ fn capture(archive: &ArchiveArgs, budget: Option<usize>) -> Result<Value, String
     }
     let input: Capture = serde_json::from_str(&raw).map_err(|_| "invalid capture input")?;
     let mut journal = Journal::open(&archive.work, &archive.scope)?;
+    if observe {
+        return serde_json::to_value(journal.observe(&input)?).map_err(|e| e.to_string());
+    }
     let receipt = journal.capture(&input)?;
     match budget {
-        Some(max) => {
-            serde_json::to_value(journal.plan(&receipt.id, max)?).map_err(|e| e.to_string())
+        Some((max, tokens)) => {
+            let plan = match tokens {
+                Some(tokens) => journal.plan_with_budget(&receipt.id, max, tokens)?,
+                None => journal.plan(&receipt.id, max)?,
+            };
+            serde_json::to_value(journal.verify_plan(&plan.id)?).map_err(|e| e.to_string())
         }
         None => serde_json::to_value(receipt).map_err(|e| e.to_string()),
     }
