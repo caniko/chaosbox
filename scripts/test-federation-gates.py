@@ -30,7 +30,7 @@ class RustTestCount(unittest.TestCase):
                 ["bash", str(TYPEDB_GATE), str(root / "test.log")],
                 env=dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
                          TEST_SUMMARY=summary, TEST_EXIT=str(exit_code)),
-                text=True, capture_output=True, timeout=5,
+                text=True, capture_output=True, timeout=5, check=False,
             )
 
     def test_exactly_one_executed_test_passes(self):

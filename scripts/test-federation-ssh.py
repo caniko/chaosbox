@@ -19,7 +19,7 @@ OWNERS = ("can", "dejana")
 def run(owner, *args, **kwargs):
     return subprocess.run(
         ["runuser", "-u", owner, "--", *map(str, args)],
-        text=True, capture_output=True, timeout=20, **kwargs,
+        text=True, capture_output=True, timeout=20, check=kwargs.pop("check", False), **kwargs,
     )
 
 
