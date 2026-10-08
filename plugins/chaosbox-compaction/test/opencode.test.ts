@@ -171,6 +171,23 @@ it.live(
       const page = JSON.parse(String(recovered.content));
       expect(page.text).toBe(Array.from(output).slice(0, 12000).join(""));
       expect(page.has_more).toBe(true);
+      let complete = page.text;
+      let cursor = page;
+      while (cursor.has_more) {
+        const next = yield* archive.execute(
+          { hash, pointer: "/result/content", offset: cursor.next_offset },
+          {
+            sessionID,
+            messageID,
+            agent: Agent.defaultID,
+            id: Tool.CallID.make(`call_archive_${cursor.next_offset}`),
+            progress: () => Effect.void,
+          },
+        );
+        cursor = JSON.parse(String(next.content));
+        complete += cursor.text;
+      }
+      expect(complete).toBe(output);
       const failed = yield* hooks.trigger("session", "compaction.plan", {
         sessionID,
         model: {
