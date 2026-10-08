@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Small subprocess regressions for the federation qualification drivers."""
 import argparse
-from pathlib import Path
 import os
 import runpy
 import socket
@@ -11,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 
 REPLY = '{"result":{"status":"ok"}}\n'
 

@@ -347,15 +347,17 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(800)).await;
         let response = call.task.await.unwrap();
         let (mut output, _unread_client) = tokio::io::duplex(1);
-        assert!(write(
-            &mut output,
-            &response,
-            &reader,
-            expiry_deadline(reader.view.expires_at).unwrap(),
-            Some(call.deadline)
-        )
-        .await
-        .is_err());
+        assert!(
+            write(
+                &mut output,
+                &response,
+                &reader,
+                expiry_deadline(reader.view.expires_at).unwrap(),
+                Some(call.deadline)
+            )
+            .await
+            .is_err()
+        );
         assert!(
             accepted.elapsed() <= Duration::from_millis(1100),
             "output reset the request deadline: {:?}",
@@ -380,15 +382,17 @@ mod tests {
         reader.view.budgets.timeout_ms = 5000;
         let boundary = UNIX_EPOCH + Duration::from_secs(reader.view.expires_at);
         let (mut output, _unread_client) = tokio::io::duplex(1);
-        assert!(write(
-            &mut output,
-            &json!({"id":1}),
-            &reader,
-            expiry_deadline(reader.view.expires_at).unwrap(),
-            None
-        )
-        .await
-        .is_err());
+        assert!(
+            write(
+                &mut output,
+                &json!({"id":1}),
+                &reader,
+                expiry_deadline(reader.view.expires_at).unwrap(),
+                None
+            )
+            .await
+            .is_err()
+        );
         let late = SystemTime::now()
             .duration_since(boundary)
             .unwrap_or_default();

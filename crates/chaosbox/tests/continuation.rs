@@ -122,14 +122,18 @@ async fn successful_receipts_replay_and_interrupted_attempts_keep_their_budget()
         retry,
         output: dir.path().join(name),
     };
-    assert!(run(command(false, "refused.json"))
-        .await
-        .unwrap_err()
-        .contains("explicit --retry"));
-    assert!(run(command(true, "exhausted.json"))
-        .await
-        .unwrap_err()
-        .contains("budget exhausted"));
+    assert!(
+        run(command(false, "refused.json"))
+            .await
+            .unwrap_err()
+            .contains("explicit --retry")
+    );
+    assert!(
+        run(command(true, "exhausted.json"))
+            .await
+            .unwrap_err()
+            .contains("budget exhausted")
+    );
     journal
         .execute(
             "UPDATE attempts SET status='success',response=?1 WHERE key=?2",
@@ -152,8 +156,10 @@ async fn successful_receipts_replay_and_interrupted_attempts_keep_their_budget()
         "{\"id\":\"u1\",\"type\":\"user\",\"text\":\"Changed source.\"}",
     )
     .unwrap();
-    assert!(run(command(false, "changed.json"))
-        .await
-        .unwrap_err()
-        .contains("changed from its pinned source"));
+    assert!(
+        run(command(false, "changed.json"))
+            .await
+            .unwrap_err()
+            .contains("changed from its pinned source")
+    );
 }

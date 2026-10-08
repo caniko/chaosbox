@@ -81,34 +81,46 @@ async fn identities_operations_and_arguments_cannot_expand_admission() {
         .unwrap();
     let mut other: RunIdentity = identity.clone();
     other.run = "run-b".into();
-    assert!(reader
-        .call(&other, "status", json!({"repo":"conf"}))
-        .await
-        .is_err());
-    assert!(reader
-        .call(&identity, "export", json!({"repo":"conf"}))
-        .await
-        .is_err());
-    assert!(reader
-        .call(&identity, "status", json!({"repo":"other"}))
-        .await
-        .is_err());
-    assert!(reader
-        .call(
-            &identity,
-            "status",
-            json!({"repo":"conf", "build_id":"secret"})
-        )
-        .await
-        .is_err());
-    assert!(reader
-        .call(&identity, "run", json!({"repo":"conf"}))
-        .await
-        .is_err());
-    assert!(reader
-        .call(&identity, "status", json!({"repo":"conf"}))
-        .await
-        .is_ok());
+    assert!(
+        reader
+            .call(&other, "status", json!({"repo":"conf"}))
+            .await
+            .is_err()
+    );
+    assert!(
+        reader
+            .call(&identity, "export", json!({"repo":"conf"}))
+            .await
+            .is_err()
+    );
+    assert!(
+        reader
+            .call(&identity, "status", json!({"repo":"other"}))
+            .await
+            .is_err()
+    );
+    assert!(
+        reader
+            .call(
+                &identity,
+                "status",
+                json!({"repo":"conf", "build_id":"secret"})
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        reader
+            .call(&identity, "run", json!({"repo":"conf"}))
+            .await
+            .is_err()
+    );
+    assert!(
+        reader
+            .call(&identity, "status", json!({"repo":"conf"}))
+            .await
+            .is_ok()
+    );
 }
 
 #[tokio::test]
@@ -145,9 +157,11 @@ async fn snapshots_must_match_recorded_version() {
     let seed = conformance_seed();
     let view = view(&seed.builds.1, &["s1"]);
     let identity = view.identity.clone();
-    assert!(ScopedReader::admit(seed.reader, view, &identity)
-        .await
-        .is_err());
+    assert!(
+        ScopedReader::admit(seed.reader, view, &identity)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -181,14 +195,16 @@ async fn pagination_is_deterministic_and_bound_to_the_complete_view() {
         second["data"]["items"][0]["entity_id"]
     );
     assert!(second["data"]["next_cursor"].is_null());
-    assert!(reader
-        .call(
-            &identity,
-            "export",
-            json!({"repo":"conf", "kind":"edges", "limit":1, "cursor":cursor})
-        )
-        .await
-        .is_err());
+    assert!(
+        reader
+            .call(
+                &identity,
+                "export",
+                json!({"repo":"conf", "kind":"edges", "limit":1, "cursor":cursor})
+            )
+            .await
+            .is_err()
+    );
 
     let seed = cited_seed().await;
     let mut changed = grant;
@@ -196,14 +212,16 @@ async fn pagination_is_deterministic_and_bound_to_the_complete_view() {
     let reader = ScopedReader::admit(seed.reader, changed, &identity)
         .await
         .unwrap();
-    assert!(reader
-        .call(
-            &identity,
-            "export",
-            json!({"repo":"conf", "kind":"nodes", "limit":1, "cursor":cursor})
-        )
-        .await
-        .is_err());
+    assert!(
+        reader
+            .call(
+                &identity,
+                "export",
+                json!({"repo":"conf", "kind":"nodes", "limit":1, "cursor":cursor})
+            )
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -224,15 +242,17 @@ async fn source_exclusions_cover_every_query_including_self_paths() {
         .await
         .unwrap();
     for name in ["lookup", "explain"] {
-        assert!(reader
-            .call(
-                &identity,
-                name,
-                json!({"repo":"conf", "id":hidden.entity_id})
-            )
-            .await
-            .unwrap()["data"]
-            .is_null());
+        assert!(
+            reader
+                .call(
+                    &identity,
+                    name,
+                    json!({"repo":"conf", "id":hidden.entity_id})
+                )
+                .await
+                .unwrap()["data"]
+                .is_null()
+        );
     }
     for args in [
         json!({"repo":"conf", "from":hidden.entity_id, "to":hidden.entity_id}),
@@ -310,10 +330,12 @@ async fn budgets_fail_explicitly_instead_of_silent_truncation() {
             .code(),
         "budget_exceeded"
     );
-    assert!(reader
-        .call(&identity, "status", json!({"repo":"conf"}))
-        .await
-        .is_ok());
+    assert!(
+        reader
+            .call(&identity, "status", json!({"repo":"conf"}))
+            .await
+            .is_ok()
+    );
     assert_eq!(
         reader
             .call(&identity, "status", json!({"repo":"conf"}))
@@ -361,14 +383,16 @@ async fn strict_argument_types_and_limits_are_enforced() {
     ] {
         assert!(reader.call(&identity, "search", args).await.is_err());
     }
-    assert!(reader
-        .call(
-            &identity,
-            "neighbors",
-            json!({"repo":"conf", "id":seed.a1, "rel":"arbitrary"})
-        )
-        .await
-        .is_err());
+    assert!(
+        reader
+            .call(
+                &identity,
+                "neighbors",
+                json!({"repo":"conf", "id":seed.a1, "rel":"arbitrary"})
+            )
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]

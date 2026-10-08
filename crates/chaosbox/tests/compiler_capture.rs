@@ -110,12 +110,14 @@ async fn capture_inspect_import_and_existing_artifact_guard_use_the_same_receipt
     assert!(run(attempt).await.is_err());
     assert_eq!(fs::read(output.join("receipt.json")).unwrap(), receipt);
     fs::write(root.join("Cargo.toml"), "changed\n").unwrap();
-    assert!(run(Command::Inspect {
-        artifact: output,
-        path: root
-    })
-    .await
-    .is_err());
+    assert!(
+        run(Command::Inspect {
+            artifact: output,
+            path: root
+        })
+        .await
+        .is_err()
+    );
 }
 
 #[tokio::test]

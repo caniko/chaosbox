@@ -11,7 +11,7 @@ craneLib.mkCargoDerivation (
   // {
     pname = "chaosbox-federation-test-tools";
     inherit cargoArtifacts;
-    nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.jq ];
+    nativeBuildInputs = commonArgs.nativeBuildInputs ++ [pkgs.jq];
     doCheck = false;
     doInstallCargoArtifacts = false;
     buildPhaseCargoCommand = ''

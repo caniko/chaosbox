@@ -4,13 +4,13 @@ import argparse
 import copy
 import json
 import os
-from pathlib import Path
 import pwd
 import selectors
 import shutil
 import signal
 import subprocess
 import time
+from pathlib import Path
 
 PROJECT = "git:github.com/caniko/chaosbox"
 OWNERS = ("can", "dejana")

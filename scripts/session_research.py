@@ -6,17 +6,17 @@ source snapshot and its reconciliation are never modified or installed.
 """
 
 import argparse
-from contextlib import closing
-from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import sqlite3
 import stat
 import subprocess
+from contextlib import closing
+from datetime import datetime, timezone
+from pathlib import Path
 
 import session_research_jev as jev
 
@@ -102,7 +102,7 @@ def informative_title(title):
 
 def lineage_key(title, first_user_text):
     """Conservatively collapse forks replaying the same request, not related topics."""
-    name = re.sub(r"\s*\(fork\s*#\d+\)\s*$", "", title, flags=re.I).strip().casefold()
+    name = re.sub(r"\s*\(fork\s*#\d+\)\s*$", "", title, flags=re.IGNORECASE).strip().casefold()
     request = " ".join(first_user_text.split()).casefold()
     return hashlib.sha256(json.dumps([name, request[:10000]]).encode()).hexdigest()[:24]
 
@@ -866,7 +866,11 @@ def pin_artifact(path, value):
 
 def synthesize(work, repo_files=None, privacy_reviewed=False, retry=False, decisions=None,
                max_requests=100, max_input_tokens=1_000_000):
-    from session_research_ledger import build_ledger, review_context, validate_candidate_view
+    from session_research_ledger import (
+        build_ledger,
+        review_context,
+        validate_candidate_view,
+    )
     if not privacy_reviewed:
         raise ValueError("inspect private findings before --privacy-reviewed")
     work = Path(work)

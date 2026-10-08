@@ -1504,17 +1504,19 @@ async fn corrupt_inferences_fail_closed() {
     let mut poisoned_store = MemoryStore::new();
     ensure_a_rs(&mut poisoned_store).await;
     poisoned_store.put_inference(poisoned).await.unwrap();
-    assert!(crate::uncached_decisions(
-        std::slice::from_ref(&cand),
-        &entities,
-        &snap,
-        chaosbox_jev::JEV_MODEL_PINNED,
-        &mat,
-        &test_policy(),
-        &poisoned_store
-    )
-    .await
-    .is_err());
+    assert!(
+        crate::uncached_decisions(
+            std::slice::from_ref(&cand),
+            &entities,
+            &snap,
+            chaosbox_jev::JEV_MODEL_PINNED,
+            &mat,
+            &test_policy(),
+            &poisoned_store
+        )
+        .await
+        .is_err()
+    );
     let mk_store = |rec: InferenceRecord| async move {
         let mut s = MemoryStore::new();
         ensure_a_rs(&mut s).await;
@@ -1624,18 +1626,20 @@ async fn fresh_substituted_model_never_enters_the_cache() {
     let mut responder = FixtureResponder::new(true);
     responder.model = "other-model".into();
     let mat = Materialization::default();
-    assert!(Pipeline::<MemoryStore>::decide(
-        std::slice::from_ref(&cand),
-        &entities,
-        &snap,
-        &mut responder,
-        chaosbox_jev::JEV_MODEL_PINNED,
-        &mat,
-        &test_policy(),
-        &mut store
-    )
-    .await
-    .is_err());
+    assert!(
+        Pipeline::<MemoryStore>::decide(
+            std::slice::from_ref(&cand),
+            &entities,
+            &snap,
+            &mut responder,
+            chaosbox_jev::JEV_MODEL_PINNED,
+            &mat,
+            &test_policy(),
+            &mut store
+        )
+        .await
+        .is_err()
+    );
     assert_eq!(
         crate::uncached_decisions(
             std::slice::from_ref(&cand),
@@ -1690,10 +1694,11 @@ async fn publication_rejects_substituted_model_before_mutation() {
     ] {
         decided[0].1.model_requested = requested.into();
         decided[0].1.model_returned = returned.into();
-        assert!(pipe
-            .build_and_publish("r", &snap, &ext, &decided, &mat, Some(build.id.clone()))
-            .await
-            .is_err());
+        assert!(
+            pipe.build_and_publish("r", &snap, &ext, &decided, &mat, Some(build.id.clone()))
+                .await
+                .is_err()
+        );
         assert_eq!(pipe.generation, 1);
         assert_eq!(pipe.store.active("r").unwrap().id, build.id);
     }

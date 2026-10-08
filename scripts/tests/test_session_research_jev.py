@@ -1,9 +1,9 @@
 """Typed decisions must never invent citations or silently discard abstentions."""
 
 import copy
-from pathlib import Path
 import sys
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import session_research_jev as jev

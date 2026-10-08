@@ -255,9 +255,11 @@ fn orphaned_execution_needs_explicit_resolution_before_release() {
         {"id":"unknown","kind":"end","invocation":"orphan","outcome":"unknown"},
         {"id":"live","kind":"coverage","observer":"test","healthy":true,"detail":"watching"}
     ]))).unwrap();
-    assert!(ledger
-        .annotate("test-host", &root, &path, "released", "Disposable", None)
-        .is_err());
+    assert!(
+        ledger
+            .annotate("test-host", &root, &path, "released", "Disposable", None)
+            .is_err()
+    );
     ledger
         .resolve(
             "test-host",

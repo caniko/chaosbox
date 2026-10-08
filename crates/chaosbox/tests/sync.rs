@@ -196,9 +196,11 @@ async fn persistence_keeps_last_good_until_dependencies_arrive_and_isolates_user
     persist_event(&mut store, &a.user(), "private:can", &child)
         .await
         .unwrap();
-    assert!(publish_current(&mut store, &a.user(), "private:can")
-        .await
-        .is_err());
+    assert!(
+        publish_current(&mut store, &a.user(), "private:can")
+            .await
+            .is_err()
+    );
     assert_eq!(
         store
             .replica_current(&a.user(), "private:can")
@@ -208,11 +210,13 @@ async fn persistence_keeps_last_good_until_dependencies_arrive_and_isolates_user
             .0,
         good.digest
     );
-    assert!(store
-        .replica_current(&"00".repeat(32), "private:can")
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        store
+            .replica_current(&"00".repeat(32), "private:can")
+            .await
+            .unwrap()
+            .is_none()
+    );
     persist_event(&mut store, &a.user(), "private:can", &parent)
         .await
         .unwrap();
@@ -325,9 +329,11 @@ fn conflicting_jev_receipts_converge_to_a_dispute_then_accept_joint_adjudication
     let final_view = replica.view().unwrap();
     assert!(!final_view.relationships[0].unresolved);
     assert_eq!(final_view.relationships[0].action, Action::Distinct);
-    assert!(reconcile_jobs(&replica, &final_view, 10)
-        .unwrap()
-        .is_empty());
+    assert!(
+        reconcile_jobs(&replica, &final_view, 10)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -963,11 +969,13 @@ async fn signed_history_and_live_consumers_survive_real_typedb_restarts() {
             .digest,
         next.digest
     );
-    assert!(reader
-        .query(
-            "intelligence_context",
-            &serde_json::json!({"repo":"canix","query":"evidence","scope":"private:other"})
-        )
-        .await
-        .is_err());
+    assert!(
+        reader
+            .query(
+                "intelligence_context",
+                &serde_json::json!({"repo":"canix","query":"evidence","scope":"private:other"})
+            )
+            .await
+            .is_err()
+    );
 }

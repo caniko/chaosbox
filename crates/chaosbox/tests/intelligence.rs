@@ -328,17 +328,23 @@ fn retrieval_is_scoped_bounded_and_read_only() {
     let mut bundle = Bundle::new("private:can");
     let response = answer(&c, &bundle, "novel");
     assess(&c, &mut bundle, response).unwrap();
-    assert!(bundle
-        .context("private:other", "canix", "direnv", 5, 12_000)
-        .is_err());
-    assert!(bundle
-        .context("private:can", "unrelated", "direnv", 5, 12_000)
-        .unwrap()
-        .is_empty());
-    assert!(bundle
-        .context("private:can", "canix", "direnv", 5, 256)
-        .unwrap()
-        .is_empty());
+    assert!(
+        bundle
+            .context("private:other", "canix", "direnv", 5, 12_000)
+            .is_err()
+    );
+    assert!(
+        bundle
+            .context("private:can", "unrelated", "direnv", 5, 12_000)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        bundle
+            .context("private:can", "canix", "direnv", 5, 256)
+            .unwrap()
+            .is_empty()
+    );
     let response = mcp_query(
         &bundle,
         "intelligence_context",
@@ -347,20 +353,24 @@ fn retrieval_is_scoped_bounded_and_read_only() {
     .unwrap();
     assert_eq!(response["records"].as_array().unwrap().len(), 1);
     assert!(mcp_query(&bundle, "intelligence_assess", &serde_json::json!({})).is_err());
-    assert!(mcp_query(
-        &bundle,
-        "intelligence_context",
-        &serde_json::json!({"repo":"canix","query":"direnv","bundle":"/other-scope"})
-    )
-    .is_err());
+    assert!(
+        mcp_query(
+            &bundle,
+            "intelligence_context",
+            &serde_json::json!({"repo":"canix","query":"direnv","bundle":"/other-scope"})
+        )
+        .is_err()
+    );
     let id = bundle.records[0].id.clone();
-    assert!(mcp_query(
-        &bundle,
-        "intelligence_evidence",
-        &serde_json::json!({"repo":"other","id":id})
-    )
-    .unwrap()
-    .is_null());
+    assert!(
+        mcp_query(
+            &bundle,
+            "intelligence_evidence",
+            &serde_json::json!({"repo":"other","id":id})
+        )
+        .unwrap()
+        .is_null()
+    );
     bundle.records[0].statement = "Invented replacement statement".into();
     bundle.records[0].evidence[0].quote = "Invented replacement statement".into();
     assert!(bundle.validate().is_err());
@@ -388,15 +398,17 @@ fn extraction_reports_coverage_instead_of_silent_truncation() {
     assert_ne!(second.candidates[0].id, result.candidates[0].id);
     let wrong = serde_json::json!({"id":"u1","sessionID":"other","type":"user","text":"We must preserve native process permissions."}).to_string();
     assert!(extract(&wrong, "opencode", "s", "private:can", &["canix".into()], 1).is_err());
-    assert!(extract(
-        &format!("{input}\n{input}"),
-        "opencode",
-        "s",
-        "private:can",
-        &["canix".into()],
-        1
-    )
-    .is_err());
+    assert!(
+        extract(
+            &format!("{input}\n{input}"),
+            "opencode",
+            "s",
+            "private:can",
+            &["canix".into()],
+            1
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -475,10 +487,12 @@ fn policy_reevaluation_withholds_then_can_readmit_without_losing_history() {
         .insert("support".into(), Answer::Noul(NoulAnswer { noul: 0.1 }));
     assess(&revised, &mut bundle, response).unwrap();
     assert_eq!(bundle.records[0].status, IntelligenceStatus::Withheld);
-    assert!(bundle
-        .context("private:can", "canix", "direnv", 5, 12000)
-        .unwrap()
-        .is_empty());
+    assert!(
+        bundle
+            .context("private:can", "canix", "direnv", 5, 12000)
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(bundle.records[0].assessments.len(), 2);
     revised
         .context
@@ -518,11 +532,13 @@ fn evidence_bundle_keeps_execution_metadata_and_affects_identity() {
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].exit_code, Some(1));
     assert_eq!(results[1].exit_code, Some(0));
-    assert!(results[0]
-        .operation
-        .as_ref()
-        .unwrap()
-        .contains("without-session-id"));
+    assert!(
+        results[0]
+            .operation
+            .as_ref()
+            .unwrap()
+            .contains("without-session-id")
+    );
     let mut changed = proposed.clone();
     changed.evidence_bundle[0].text.push_str(" changed");
     assert_ne!(changed.identity(), proposed.id);
