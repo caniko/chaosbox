@@ -1,5 +1,9 @@
 import { expect } from "bun:test";
 import { Effect } from "effect";
+import { Database } from "bun:sqlite";
+import { Session as NativeSession } from "../../src/session";
+import { Location } from "../../src/location";
+import { AbsolutePath } from "../../src/schema";
 import { Plugin } from "../../src/plugin";
 import { PluginHooks } from "../../src/plugin/hooks";
 import { PluginModule } from "../../src/plugin/module";
@@ -8,10 +12,9 @@ import { Tool } from "../../src/tool";
 import { Agent } from "../../src/agent";
 import { Provider } from "@opencode/schema/provider";
 import { Model } from "@opencode/schema/model";
-import { Session } from "@opencode/schema/session";
 import { SessionMessage } from "@opencode/schema/session-message";
 import { testEffect } from "../lib/effect";
-import { PluginTestLayer } from "../plugin/fixture";
+import { PluginTestLayer } from "./fixture";
 
 const it = testEffect(PluginTestLayer);
 
@@ -22,6 +25,12 @@ it.live(
       const plugins = yield* Plugin.Service;
       const hooks = yield* PluginHooks.Service;
       const tools = yield* Tool.Service;
+      const sessions = yield* NativeSession.Service;
+      const location = yield* Location.Service;
+      const created = yield* sessions.create({
+        location: { directory: location.directory },
+      });
+      expect(created.projectID).toBe(location.project.id);
       const modules = yield* PluginModule.make().pipe(
         Effect.provide(Watcher.testLayer),
       );
@@ -31,7 +40,6 @@ it.live(
         options: {
           work: process.env.CHAOSBOX_TEST_WORK!,
           scope: "private:test",
-          repo: "test",
           chaosboxBin: process.env.CHAOSBOX_TEST_BIN!,
           liveAssessment: false,
           inject: false,
@@ -53,7 +61,7 @@ it.live(
           "chaosbox_memory_status",
         ]),
       );
-      const sessionID = Session.ID.make("ses_adapter");
+      const sessionID = created.id;
       const messageID = SessionMessage.ID.make("msg_adapter");
       const output = "Complete source result λ😀.\n".repeat(3000);
       yield* hooks.trigger("tool", "execute.after", {
@@ -111,6 +119,38 @@ it.live(
       });
       expect(plan.failure).toBeUndefined();
       expect(plan.result?.summary).toContain("Fix remains pending");
+      const foreign = yield* sessions.create({
+        location: {
+          directory: AbsolutePath.make(process.env.CHAOSBOX_TEST_WORK!),
+        },
+      });
+      expect(foreign.projectID).not.toBe(created.projectID);
+      const mismatch = yield* hooks.trigger("session", "compaction.plan", {
+        sessionID: foreign.id,
+        model: {
+          id: Model.ID.make("test"),
+          providerID: Provider.ID.make("test"),
+        },
+        records,
+        budgetTokens: 8000,
+      });
+      expect(mismatch.failure).toContain("does not match native project");
+      expect(mismatch.result).toBeUndefined();
+      const db = new Database(
+        `${process.env.CHAOSBOX_TEST_WORK}/memory.sqlite`,
+        { readonly: true },
+      );
+      try {
+        expect(
+          db
+            .query("SELECT repo FROM captures WHERE id = ?")
+            .get(plan.result!.custody),
+        ).toEqual({
+          repo: location.project.canonical,
+        });
+      } finally {
+        db.close();
+      }
       const hash = plan.result!.summary.match(
         /"archive_hash":"([a-f0-9]{64})"/,
       )![1];

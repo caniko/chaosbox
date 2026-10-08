@@ -27,8 +27,21 @@ with tempfile.TemporaryDirectory(prefix="chaosbox-verify-", dir=core / "test") a
     for name in ["index.ts", "runtime.mjs", "runtime.d.mts", "package.json"]:
         shutil.copyfile(plugin / name, target / name)
     shutil.copyfile(plugin / "test/opencode.test.ts", target / "opencode.test.ts")
+    # Use the pinned host fixture's dependency graph, but bind a real native
+    # location rather than its placeholder global project identity. Keeping a
+    # verifier-local copy leaves other host tests' fixture semantics intact.
+    fixture_source = (core / "test/plugin/fixture.ts").read_text()
+    placeholder = 'import { tempLocationLayer } from "../fixture/location"'
+    if fixture_source.count(placeholder) != 1:
+        raise RuntimeError("Native host fixture location contract changed")
+    fixture_source = fixture_source.replace('"@opencode/core/', '"../../src/')
+    (target / "fixture.ts").write_text(fixture_source.replace(placeholder, '''import { AbsolutePath } from "../../src/schema"
+const tempLocationLayer = Location.boundNode(Location.Ref.make({
+  directory: AbsolutePath.make(process.env.CHAOSBOX_TEST_PROJECT!),
+}))'''))
     scratch = os.environ.get("TMPDIR", "/data/scratch/tmp/opencode")
     with tempfile.TemporaryDirectory(prefix="chaosbox-custody-", dir=scratch) as work:
         env["CHAOSBOX_TEST_WORK"] = work
+        env["CHAOSBOX_TEST_PROJECT"] = str(args.opencode.resolve())
         subprocess.run([args.bun, "run", "typecheck"], cwd=core, env=env, check=True)
         subprocess.run([args.bun, "test", str(target / "opencode.test.ts")], cwd=core, env=env, check=True)

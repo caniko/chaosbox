@@ -11,6 +11,53 @@ const options = {
   repo: "chaosbox",
   inject: false,
 };
+test("global custody resolves canonical repositories from native session identity", async () => {
+  const calls = [];
+  const memory = coordinator(
+    { ...options, repo: undefined },
+    async (_, args, input) => {
+      calls.push({ args, input });
+      return {
+        summary: "Keep each repository's original requirement.",
+        recent: "",
+        custody: "a".repeat(64),
+        id: "b".repeat(64),
+      };
+    },
+    async (session) => `/projects/${session === "ses_a" ? "alpha" : "beta"}`,
+  );
+  await memory.settled("ses_a", [{ id: "msg_a", type: "user", text: "Alpha" }]);
+  await memory.compact({ sessionID: "ses_b", records: [], budgetTokens: 8000 });
+  await memory.retrieve(
+    { query: "original requirement", repo: "other" },
+    "ses_b",
+  );
+  assert.equal(calls[0].input.repo, "/projects/alpha");
+  assert.equal(calls[1].input.repo, "/projects/beta");
+  assert.deepEqual(calls[2].args.slice(-3), [
+    "--repo",
+    "/projects/beta",
+    "original requirement",
+  ]);
+  assert.equal(calls[0].input.scope, calls[1].input.scope);
+});
+test("failed native repository resolution never authorizes compaction", async () => {
+  let invoked = false;
+  const memory = coordinator(
+    { ...options, repo: undefined },
+    async () => {
+      invoked = true;
+    },
+    async () => {
+      throw new Error("Session location unavailable");
+    },
+  );
+  const event = { sessionID: "ses_missing", records: [], budgetTokens: 8000 };
+  await memory.compact(event);
+  assert.match(event.failure, /Session location unavailable/);
+  assert.equal(event.result, undefined);
+  assert.equal(invoked, false);
+});
 test("requires complete custody and never silently delegates a failed reduction", async () => {
   const memory = coordinator(options, async () => {
     throw new Error("disk full");

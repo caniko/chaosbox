@@ -187,6 +187,8 @@
               passthru.nixPlugin = "${./plugins}/chaosbox-nix/index.ts";
               passthru.federationVersion = 1;
               passthru.intelligencePlugin = "${./plugins}/chaosbox-intelligence/index.ts";
+              passthru.compactionPlugin = "${./plugins}/chaosbox-compaction";
+              passthru.compactionVersion = 2;
             }
           );
           docs = harbor-docs.lib.mkDocs {

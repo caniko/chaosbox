@@ -68,8 +68,11 @@ fence instead of silently performing standard lossy compaction.
 
 Copy the operator configuration from
 [`plugins/chaosbox-compaction/opencode.example.jsonc`](../plugins/chaosbox-compaction/opencode.example.jsonc).
-Set an absolute private `work` directory, `scope`, explicit `repo`, and the built
-`chaosboxBin` if it is not on PATH. Use the same archive root for a private scope
+Set an absolute private `work` directory, `scope`, and the built `chaosboxBin`
+if it is not on PATH. Global configuration omits `repo`: the adapter resolves
+each session's canonical project root through the native runtime, including
+worktrees. An explicit `repo` remains available for project-local configuration.
+Use the same archive root for a private scope
 across sessions and repositories. `liveAssessment: true` authorizes background
 Jev assessment; `publish: true` enables the TypeDB outbox. Compaction itself needs
 neither live inference nor database connectivity.
