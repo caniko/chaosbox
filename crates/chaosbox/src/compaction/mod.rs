@@ -3,8 +3,8 @@
 //! never authorizes forgetting active work. All archive references are hashes.
 
 pub mod cli;
-mod planner;
 mod native;
+mod planner;
 mod replica;
 mod worker;
 pub use worker::Budget;

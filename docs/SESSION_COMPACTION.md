@@ -211,5 +211,6 @@ without warnings; 22 current-pin OpenCode compaction/native/transport tests;
 root OpenCode lint/type checks and documentation build; all six adapter tests
 (including real Rust subprocess recovery); native-host loading/typechecking;
 and the disposable TypeDB gate with 19 backend tests and required-server
-cross-session publication. Rust formatter commands were denied by tool permissions.
+cross-session publication. Rust formatting passes through treefmt with the
+repository's edition-2021 configuration.
 Runtime package consumption and activation are still required for ordinary sessions.
