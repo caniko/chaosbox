@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Global OpenCode session custody binds each archive capture and retrieval to
+  the native session's canonical project root, including worktrees, and refuses
+  context reduction when that identity cannot be verified.
 - Source-custodied session pruning validates native outcomes and selects settled
   records in Rust. Checkpoints recover complete pre-bounding tool content and
   metadata, enforce runtime budgets, and verify full-payload plan identities
