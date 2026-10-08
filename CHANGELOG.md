@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Session-research validators reject malformed top-level input types with
+  `TypeError`, including non-object portfolio and reproduction inventories.
 - Global OpenCode session custody binds each archive capture and retrieval to
   the native session's canonical project root, including worktrees, and refuses
   context reduction when that identity cannot be verified.
