@@ -154,7 +154,10 @@ fn assistant(raw: &Value) -> Result<bool, String> {
                     }
                     "error" => {
                         object(state, "input")?;
-                        string(state.get("error").ok_or("native tool lacks error")?, "message")?;
+                        string(
+                            state.get("error").ok_or("native tool lacks error")?,
+                            "message",
+                        )?;
                         if let Some(content) = state.get("content") {
                             tool_content(content)?;
                         }
@@ -210,7 +213,10 @@ fn tool_content(content: &Value) -> Result<(), String> {
 }
 
 pub(super) fn complete_result(raw: &Value) -> Result<(), String> {
-    if raw.pointer("/result/metadata/truncated").and_then(Value::as_bool) == Some(true)
+    if raw
+        .pointer("/result/metadata/truncated")
+        .and_then(Value::as_bool)
+        == Some(true)
         || raw.pointer("/result/metadata/outputPath").is_some()
     {
         return Err("tool was bounded before capture; complete output lacks custody".into());

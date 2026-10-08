@@ -81,7 +81,9 @@ fn a_truncated_early_result_is_custody_but_not_complete_output() {
     let mut early = settlement();
     early["result"]["metadata"]["truncated"] = json!(true);
     journal.capture(&capture(vec![early])).unwrap();
-    let receipt = journal.capture(&capture(vec![user(), assistant()])).unwrap();
+    let receipt = journal
+        .capture(&capture(vec![user(), assistant()]))
+        .unwrap();
     assert!(journal.plan(&receipt.id, 8000).is_err());
     assert_eq!(journal.pending().unwrap().len(), 2);
 }
@@ -91,9 +93,13 @@ fn the_checkpoint_uses_the_complete_outcome_instead_of_a_bounded_preview() {
     let dir = private_dir();
     let mut journal = Journal::open(dir.path(), "private:test").unwrap();
     journal.capture(&capture(vec![settlement()])).unwrap();
-    let receipt = journal.capture(&capture(vec![user(), assistant()])).unwrap();
+    let receipt = journal
+        .capture(&capture(vec![user(), assistant()]))
+        .unwrap();
     let plan = journal.plan(&receipt.id, 8000).unwrap();
-    assert!(plan.summary.contains("Complete failure: repair remains pending."));
+    assert!(plan
+        .summary
+        .contains("Complete failure: repair remains pending."));
     assert!(plan.summary.contains("\"exitCode\":1"));
     assert!(!plan.summary.contains("bounded preview"));
     assert!(!plan.summary.contains("\"exitCode\":0"));
@@ -173,21 +179,25 @@ fn settled_shells_require_an_outcome_and_truncation_is_explicit() {
     let dir = private_dir();
     let mut journal = Journal::open(dir.path(), "private:test").unwrap();
     let mut shell = json!({"id":"msg_shell","type":"shell","status":"exited","command":"test"});
-    assert!(journal.capture(&capture(vec![user(), shell.clone()])).is_err());
+    assert!(journal
+        .capture(&capture(vec![user(), shell.clone()]))
+        .is_err());
     shell["output"] = json!({"output":"bounded preview","truncated":"false"});
-    assert!(journal.capture(&capture(vec![user(), shell.clone()])).is_err());
+    assert!(journal
+        .capture(&capture(vec![user(), shell.clone()]))
+        .is_err());
     shell["output"]["truncated"] = json!(true);
-    let receipt = journal.capture(&capture(vec![user(), shell.clone()])).unwrap();
+    let receipt = journal
+        .capture(&capture(vec![user(), shell.clone()]))
+        .unwrap();
     assert!(journal.plan(&receipt.id, 8000).is_err());
     shell["output"]["truncated"] = json!(false);
     let receipt = journal.capture(&capture(vec![user(), shell])).unwrap();
-    assert!(
-        journal
-            .plan(&receipt.id, 8000)
-            .unwrap()
-            .summary
-            .contains("bounded preview")
-    );
+    assert!(journal
+        .plan(&receipt.id, 8000)
+        .unwrap()
+        .summary
+        .contains("bounded preview"));
 }
 
 #[test]
