@@ -62,6 +62,7 @@ pub fn conformance_seed() -> ConformanceSeed {
     b2.add_edge(r2).unwrap();
     let mut reader = MemoryReader::new();
     reader.insert_build(b1.clone());
+    reader.set_active("conf", &b1.id);
     reader.insert_build(b2.clone());
     reader.set_active("conf", &b2.id);
     reader.attach_evidence(
