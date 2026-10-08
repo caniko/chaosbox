@@ -94,23 +94,8 @@ export function coordinator(options, run) {
     wake,
     async settled(session, records) {
       sessions.add(session);
-      const safe = records
-        .filter(
-          (record) =>
-            record.type !== "assistant" ||
-            (typeof record.time?.completed === "number" &&
-              (record.content ?? record.parts ?? []).every(
-                (part) =>
-                  part.type !== "tool" ||
-                  ["completed", "error"].includes(part.state?.status),
-              )),
-        )
-        .filter(
-          (record) => record.type !== "shell" || record.status !== "running",
-        );
-      if (!safe.length) return;
       try {
-        await command("capture", archiveArgs, capture(session, safe));
+        await command("observe", archiveArgs, capture(session, records));
         wake();
       } catch (error) {
         state.degraded = true;
@@ -150,20 +135,15 @@ export function coordinator(options, run) {
     async compact(event) {
       sessions.add(event.sessionID);
       try {
-        if (
-          !Array.isArray(event.records) ||
-          !Number.isFinite(event.budgetTokens) ||
-          event.budgetTokens <= 0
-        )
-          throw new Error("Missing native pre-reduction history or budget");
-        // Rust refuses oversize protected state. The runtime independently checks
-        // its token estimate before installation; this character bound is stricter.
-        const max = Math.floor(
-          Math.min(options.maxChars ?? 60_000, event.budgetTokens, 120_000),
-        );
         const plan = await command(
           "compact",
-          [...archiveArgs, "--max-chars", String(max)],
+          [
+            ...archiveArgs,
+            "--max-chars",
+            String(options.maxChars ?? 60_000),
+            "--budget-tokens",
+            String(event.budgetTokens),
+          ],
           capture(event.sessionID, event.records),
         );
         if (
