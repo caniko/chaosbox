@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow_ref }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
+  group: .github/workflows/ci.yaml-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -40,7 +40,7 @@ jobs:
         run: |
           # Expand formatter variables inside the Nix shell.
           # shellcheck disable=SC2016
-          nix develop -c sh -c 'formatter=$(nix eval --impure --raw --expr "let root = toString ./.; flake = builtins.getFlake (if builtins.pathExists ./.git then \"git+file://\" + root else root); in if flake ? formatter.\${builtins.currentSystem} then flake.formatter.\${builtins.currentSystem}.drvPath else \"\"") || exit; if [ -n "$formatter" ]; then formatter_path=$(nix build --no-link --print-out-paths "$formatter^out") || exit; test -x "$formatter_path/bin/treefmt" || { echo "project formatter does not provide bin/treefmt" >&2; exit 1; }; exec "$formatter_path/bin/treefmt" --ci; fi; if [ -f nix/treefmt.nix ] || [ -f treefmt.toml ] || [ -f .treefmt.toml ]; then echo "treefmt policy requires a flake formatter output; run simit init flake" >&2; exit 1; fi; exec cargo fmt --all -- --check'
+          nix develop -c sh -c 'formatter_expr="let root = toString ./.; flake = builtins.getFlake (if builtins.pathExists ./.git then \"git+file://\" + root else root); in if flake ? formatter.\${builtins.currentSystem} then flake.formatter.\${builtins.currentSystem} else null"; formatter=$(nix eval --impure --raw --expr "let f = ($formatter_expr); in if f == null then \"\" else f.drvPath") || exit; if [ -n "$formatter" ]; then formatter_program=$(nix eval --impure --raw --expr "let f = ($formatter_expr); in f.meta.mainProgram or (f.pname or (builtins.parseDrvName f.name).name)") || exit; formatter_path=$(nix build --no-link --print-out-paths "$formatter^out") || exit; formatter_exe="$formatter_path/bin/$formatter_program"; if [ ! -x "$formatter_exe" ]; then echo "Declared flake formatter executable is missing: $formatter_exe" >&2; exit 1; fi; if [ "$formatter_program" = treefmt ]; then exec "$formatter_exe" --ci; fi; repository_root=$(git rev-parse --show-toplevel) || exit; index_tree=$(git -C "$repository_root" write-tree) || exit; snapshot_dir=$(mktemp -d "${TMPDIR:-/tmp}/simit-format.XXXXXXXX") || exit; trap "rm -rf -- \"\$snapshot_dir\"" 0; trap "exit 129" HUP; trap "exit 130" INT; trap "exit 143" TERM; snapshot_dir=$(cd "$snapshot_dir" && pwd -P) || exit; case "$snapshot_dir/" in "$repository_root/"*) echo "Formatter snapshot directory must be outside the repository" >&2; exit 1;; esac; snapshot_worktree() { GIT_INDEX_FILE="$snapshot_dir/index" git -C "$repository_root" read-tree "$index_tree" && GIT_INDEX_FILE="$snapshot_dir/index" git -C "$repository_root" add --all -- . && GIT_INDEX_FILE="$snapshot_dir/index" git -C "$repository_root" write-tree; }; before_tree=$(snapshot_worktree) || exit; "$formatter_exe" || exit; after_tree=$(snapshot_worktree) || exit; current_index=$(git -C "$repository_root" write-tree) || exit; if [ "$before_tree" != "$after_tree" ] || [ "$index_tree" != "$current_index" ]; then echo "Formatter modified repository content or staging" >&2; exit 1; fi; exit 0; fi; if command -v treefmt >/dev/null 2>&1; then exec treefmt --ci; else exec cargo fmt --all -- --check; fi'
 
       - name: Check flake
         run: nix flake check
@@ -76,3 +76,203 @@ jobs:
 
       - name: Required gate package-inventory
         run: set -euo pipefail; for crate in chaosbox-core chaosbox-extract chaosbox-jev chaosbox-store chaosbox-typedb chaosbox; do nix develop -c cargo package -p "$crate" --allow-dirty --list; done
+
+  gate-release-workspace:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      CARGO_HOME: "/tmp/.cargo"
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+      XDG_CACHE_HOME: "/tmp/.cache"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+
+      - name: Configure GitHub input transport
+        run: |
+          git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
+          git config --global --add url.https://github.com/.insteadOf git@github.com:
+
+      - name: Required gate release-workspace
+        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then export NIX_CONFIG="${NIX_CONFIG}"$'\nmax-jobs = 1\ncores = 2'; test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix develop --no-update-lock-file -c sh -c 'formatter=$(nix eval --impure --raw --expr "let root = toString ./.; flake = builtins.getFlake (if builtins.pathExists ./.git then \"git+file://\" + root else root); in if flake ? formatter.\${builtins.currentSystem} then flake.formatter.\${builtins.currentSystem}.drvPath else \"\"") || exit; if [ -n "$formatter" ]; then formatter_path=$(nix build --no-link --print-out-paths "$formatter^out") || exit; test -x "$formatter_path/bin/treefmt" || { echo "project formatter does not provide treefmt" >&2; exit 1; }; "$formatter_path/bin/treefmt" --fail-on-change; else echo "project flake must declare formatter for release qualification" >&2; exit 1; fi'; nix develop --no-update-lock-file -c nix flake check --no-update-lock-file --print-build-logs; nix develop --no-update-lock-file -c cargo nextest --version; nix develop --no-update-lock-file -c cargo nextest run --workspace --all-features; nix develop --no-update-lock-file -c cargo doc --no-deps --all-features; nix develop --no-update-lock-file -c cargo clippy --all-targets --all-features -- -D warnings; fi
+
+  gate-release-nix-production:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+
+      - name: Configure GitHub input transport
+        run: |
+          git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
+          git config --global --add url.https://github.com/.insteadOf git@github.com:
+
+      - name: Required gate release-nix-production
+        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#packages.x86_64-linux.chaosbox; fi
+
+  gate-release-nix-unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+
+      - name: Configure GitHub input transport
+        run: |
+          git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
+          git config --global --add url.https://github.com/.insteadOf git@github.com:
+
+      - name: Required gate release-nix-unit
+        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#checks.x86_64-linux.unit; fi
+
+  gate-release-nix-lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+
+      - name: Configure GitHub input transport
+        run: |
+          git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
+          git config --global --add url.https://github.com/.insteadOf git@github.com:
+
+      - name: Required gate release-nix-lint
+        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#checks.x86_64-linux.lint; fi
+
+  gate-release-nix-scratch-plugin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+
+      - name: Configure GitHub input transport
+        run: |
+          git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
+          git config --global --add url.https://github.com/.insteadOf git@github.com:
+
+      - name: Required gate release-nix-scratch-plugin
+        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#checks.x86_64-linux.scratch-plugin; fi
+
+  gate-release-nix-federation-home:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+
+      - name: Configure GitHub input transport
+        run: |
+          git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
+          git config --global --add url.https://github.com/.insteadOf git@github.com:
+
+      - name: Required gate release-nix-federation-home
+        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#checks.x86_64-linux.federation-home; fi
+
+  gate-release-nix-intelligence-plugin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+
+      - name: Configure GitHub input transport
+        run: |
+          git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
+          git config --global --add url.https://github.com/.insteadOf git@github.com:
+
+      - name: Required gate release-nix-intelligence-plugin
+        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#checks.x86_64-linux.intelligence-plugin; fi
+
+  gate-release-nix-typedb-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+
+      - name: Configure GitHub input transport
+        run: |
+          git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
+          git config --global --add url.https://github.com/.insteadOf git@github.com:
+
+      - name: Required gate release-nix-typedb-integration
+        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#checks.x86_64-linux.typedb-integration; fi
+
+  gate-release-nix-federation-ssh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    env:
+      NIX_CONFIG: "experimental-features = nix-command flakes"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+
+      - name: Configure GitHub input transport
+        run: |
+          git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/
+          git config --global --add url.https://github.com/.insteadOf git@github.com:
+
+      - name: Required gate release-nix-federation-ssh
+        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#checks.x86_64-linux.federation-ssh; fi
