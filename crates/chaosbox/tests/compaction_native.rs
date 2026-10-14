@@ -89,6 +89,52 @@ fn a_truncated_early_result_is_custody_but_not_complete_output() {
 }
 
 #[test]
+fn malformed_truncation_markers_never_authorize_complete_tool_output() {
+    for truncated in [
+        json!("true"),
+        json!("false"),
+        json!(null),
+        json!(0),
+        json!({}),
+    ] {
+        let dir = private_dir();
+        let mut journal = Journal::open(dir.path(), "private:test").unwrap();
+        let mut early = settlement();
+        early["result"]["metadata"]["truncated"] = truncated;
+        journal.capture(&capture(vec![early])).unwrap();
+        let receipt = journal
+            .capture(&capture(vec![user(), assistant()]))
+            .unwrap();
+        assert!(journal.plan(&receipt.id, 8000).is_err());
+        assert_eq!(journal.pending().unwrap().len(), 2);
+    }
+}
+
+#[test]
+fn string_output_settlements_preserve_exact_text_in_the_checkpoint() {
+    let dir = private_dir();
+    let mut journal = Journal::open(dir.path(), "private:test").unwrap();
+    let mut early = settlement();
+    let text = "Actual output: \"quoted\"\nsecond line\\path";
+    early["result"].as_object_mut().unwrap().remove("content");
+    early["result"]["output"] = json!(text);
+    early["result"]["metadata"]["truncated"] = json!(false);
+    journal.capture(&capture(vec![early])).unwrap();
+    let receipt = journal
+        .capture(&capture(vec![user(), assistant()]))
+        .unwrap();
+    let plan = journal.plan(&receipt.id, 8000).unwrap();
+    let projected: Value = plan
+        .summary
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|record| record["id"] == "msg_assistant")
+        .unwrap();
+    assert_eq!(projected["content"][0]["state"]["content"][0]["text"], text);
+    assert_eq!(journal.verify_plan(&plan.id).unwrap(), plan);
+}
+
+#[test]
 fn the_checkpoint_uses_the_complete_outcome_instead_of_a_bounded_preview() {
     let dir = private_dir();
     let mut journal = Journal::open(dir.path(), "private:test").unwrap();
@@ -97,9 +143,10 @@ fn the_checkpoint_uses_the_complete_outcome_instead_of_a_bounded_preview() {
         .capture(&capture(vec![user(), assistant()]))
         .unwrap();
     let plan = journal.plan(&receipt.id, 8000).unwrap();
-    assert!(plan
-        .summary
-        .contains("Complete failure: repair remains pending."));
+    assert!(
+        plan.summary
+            .contains("Complete failure: repair remains pending.")
+    );
     assert!(plan.summary.contains("\"exitCode\":1"));
     assert!(!plan.summary.contains("bounded preview"));
     assert!(!plan.summary.contains("\"exitCode\":0"));
@@ -179,13 +226,17 @@ fn settled_shells_require_an_outcome_and_truncation_is_explicit() {
     let dir = private_dir();
     let mut journal = Journal::open(dir.path(), "private:test").unwrap();
     let mut shell = json!({"id":"msg_shell","type":"shell","status":"exited","command":"test"});
-    assert!(journal
-        .capture(&capture(vec![user(), shell.clone()]))
-        .is_err());
+    assert!(
+        journal
+            .capture(&capture(vec![user(), shell.clone()]))
+            .is_err()
+    );
     shell["output"] = json!({"output":"bounded preview","truncated":"false"});
-    assert!(journal
-        .capture(&capture(vec![user(), shell.clone()]))
-        .is_err());
+    assert!(
+        journal
+            .capture(&capture(vec![user(), shell.clone()]))
+            .is_err()
+    );
     shell["output"]["truncated"] = json!(true);
     let receipt = journal
         .capture(&capture(vec![user(), shell.clone()]))
@@ -193,11 +244,13 @@ fn settled_shells_require_an_outcome_and_truncation_is_explicit() {
     assert!(journal.plan(&receipt.id, 8000).is_err());
     shell["output"]["truncated"] = json!(false);
     let receipt = journal.capture(&capture(vec![user(), shell])).unwrap();
-    assert!(journal
-        .plan(&receipt.id, 8000)
-        .unwrap()
-        .summary
-        .contains("bounded preview"));
+    assert!(
+        journal
+            .plan(&receipt.id, 8000)
+            .unwrap()
+            .summary
+            .contains("bounded preview")
+    );
 }
 
 #[test]

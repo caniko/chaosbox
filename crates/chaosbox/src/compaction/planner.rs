@@ -457,7 +457,10 @@ fn tool_content(record: &Value) -> Value {
         _ => {
             let text = record
                 .pointer("/result/output")
-                .map(Value::to_string)
+                .map(|output| match output {
+                    Value::String(text) => text.clone(),
+                    _ => output.to_string(),
+                })
                 .or_else(|| {
                     record
                         .pointer("/error/message")
