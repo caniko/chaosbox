@@ -47,6 +47,11 @@ jobs:
           printf '%s\n' "$INSTALLABLE" > "$SIMIT_NIX_BUILD_RESULTS/installable"
       - name: Install Nix
         uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://cache.nixos.org https://attic.candee.baby/nixpkgs-review-gha
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixpkgs-review-gha:0fg7mYWpk0A2L627XE3tdW56J8dvZ2Y/+ATNjkcMfIE=
 
       - name: Configure GitHub input transport
         run: |

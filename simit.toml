@@ -26,3 +26,15 @@ cores = 2
 kvm = true
 capture_results = true
 artifact_retention_days = 30
+
+# TypeDB comes from the qualified nixpkgs PR merge; reuse its signed public
+# review outputs rather than compiling the server and console on VM runners.
+[release.artifacts]
+substituters = [
+  "https://cache.nixos.org",
+  "https://attic.candee.baby/nixpkgs-review-gha",
+]
+trusted_public_keys = [
+  "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=",
+  "nixpkgs-review-gha:0fg7mYWpk0A2L627XE3tdW56J8dvZ2Y/+ATNjkcMfIE=",
+]
