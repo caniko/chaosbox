@@ -189,6 +189,13 @@
               passthru.intelligencePlugin = "${./plugins}/chaosbox-intelligence/index.ts";
               passthru.compactionPlugin = "${./plugins}/chaosbox-compaction";
               passthru.compactionVersion = 2;
+              passthru.compactionSource = self.outPath;
+              doInstallCheck = true;
+              installCheckPhase = ''
+                runHook preInstallCheck
+                CHAOSBOX_TEST_BIN="$out/bin/chaosbox" node --test plugins/chaosbox-compaction/test/runtime.test.mjs
+                runHook postInstallCheck
+              '';
             }
           );
           docs = harbor-docs.lib.mkDocs {
