@@ -2,11 +2,13 @@
 
 Source custody, source-backed checkpoints, deferred Jev assessment and private
 cross-session TypeDB retrieval. This adapter requires the `compaction.plan`
-OpenCode extension implemented on `chaosbox-compaction`, based on
-`f18083c78e54e65907000ab5a9ca4472b723ee7f`.
+OpenCode extension implemented on `chaosbox-custody`, based on
+`047c74ec64ca6029f93be4bb4d1f5797c8838b9a`.
 
-Configure an absolute private archive directory, `scope` and repository using
-[`opencode.example.jsonc`](opencode.example.jsonc). The Rust process owns custody,
+Configure an absolute private archive directory and `scope` using
+[`opencode.example.jsonc`](opencode.example.jsonc). Omit `repo` in global
+configuration to use the native session's canonical project root; project-local
+configuration may pin an explicit repository identity. The Rust process owns custody,
 budgets, assessment and publication. `liveAssessment` is explicit consent;
 capture/checkpoint assembly remains available when inference or TypeDB is down.
 
