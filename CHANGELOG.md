@@ -26,6 +26,10 @@
 
 ### Changed
 
+- Indexing avoids redundant graph/evidence copies and streams publication hashing
+  and CLI exports. Complete-export comparisons show 47–56% lower peak RSS on the
+  measured corpora; TypeDB server memory and the original million-fact workload
+  remain unqualified. See [memory verification](docs/memory-performance.md).
 - The continuation design now requires Jev-selected records and deterministic
   source-backed rendering, replacing the earlier generative-model contract.
 - Session research uses pinned Typesafe Jev choices for extraction, reviewed
