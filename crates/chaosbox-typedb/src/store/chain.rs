@@ -18,32 +18,32 @@ impl TypeDbStore {
     /// Flush staged runs, sets, candidates, decisions, inferences, evidence,
     /// and claims in dependency order (all idempotent; safe to retry).
     pub(super) async fn flush_chain(&self) -> Result<(), StoreError> {
-        let staged = self.staging.export_staged();
-        for (run_id, (repo, snapshot_id)) in &staged.runs {
+        let staged = self.staging.staged();
+        for (run_id, (repo, snapshot_id)) in staged.runs {
             self.flush_repository(repo).await?;
             self.flush_snapshot(repo, snapshot_id).await?;
             self.flush_run(run_id, repo, snapshot_id).await?;
         }
-        for (set_id, (run_id, catalog, rubric)) in &staged.sets {
+        for (set_id, (run_id, catalog, rubric)) in staged.sets {
             self.flush_set(set_id, run_id, catalog, rubric).await?;
         }
-        for (_, (set_id, cand)) in &staged.candidates {
+        for (set_id, cand) in staged.candidates.values() {
             self.flush_candidate(set_id, cand).await?;
         }
-        for rec in &staged.inferences {
+        for rec in staged.inferences.values() {
             self.flush_inference(rec).await?;
         }
-        for d in &staged.decisions {
+        for d in staged.decisions.values() {
             self.flush_decision(d).await?;
         }
-        for ((snapshot_id, path), (sha, bytes)) in &staged.files {
+        for ((snapshot_id, path), (sha, bytes)) in staged.files {
             self.flush_file_version(snapshot_id, path, sha, *bytes)
                 .await?;
         }
-        for e in &staged.evidence {
+        for e in staged.evidence.values() {
             self.flush_evidence(e).await?;
         }
-        for c in &staged.claims {
+        for c in staged.claims.values() {
             self.flush_claim(c).await?;
         }
         Ok(())
