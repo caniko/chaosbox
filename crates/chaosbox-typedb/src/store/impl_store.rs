@@ -205,20 +205,25 @@ impl Store for TypeDbStore {
         // empty staging, so its predecessor is validated against live state
         // (step 1) and the swing (step 4) instead of failing here. A
         // same-process re-publish still goes through the staging check.
-        let staging_pred = if self.staging.active(&build.repo).is_none() {
+        let staging_pred = if self.staging.active_ref(&build.repo).is_none() {
             None
         } else {
             expected_predecessor.clone()
         };
-        self.staging.publish(build.clone(), staging_pred).await?;
+        let build_id = build.id.clone();
+        self.staging.publish(build, staging_pred).await?;
+        let build = self
+            .staging
+            .get_ref(&build_id)
+            .ok_or_else(|| StoreError::NotFound(build_id.clone()))?;
         // 3. Idempotent flush; safe to retry after a crash mid-flush.
-        self.flush_build_rows(&build, &digest).await?;
+        self.flush_build_rows(build, &digest).await?;
         self.flush_chain().await?;
         // 4. Guarded swing last: a concurrent publisher wins instead of
         // being overwritten, and the last good build stays active. NOTE: a
         // failed flush or swing leaves this instance's staging ahead of live; retry
         // publication with a fresh store.
-        self.swing(&build, pred_gen, &digest).await
+        self.swing(build, pred_gen, &digest).await
     }
 
     fn active(&self, repo: &str) -> Option<GraphBuild> {
