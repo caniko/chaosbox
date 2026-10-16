@@ -4,6 +4,10 @@ use super::PipelineError;
 
 #[path = "reader_navigation.rs"]
 mod navigation;
+#[path = "reader_pages.rs"]
+mod pages;
+
+pub use pages::{NeighborhoodMode, NeighborhoodPage, NeighborhoodQuery, PreparedNeighborhood};
 
 // ---- Read-only consumer path (CLI and MCP share this) ----
 
@@ -72,17 +76,18 @@ pub const EXPORT_NODE_CAP: i64 = 10_000;
 pub const EXPORT_EDGE_CAP: i64 = 20_000;
 
 /// Backend read-only queries. One build id is pinned per reader from the
-/// active-build pointer; readers never mutate, migrate, or load Jev credentials.
+/// active-build pointer or an exact published build; readers never mutate,
+/// migrate, or load Jev credentials.
 /// Generic over [`chaosbox_store::GraphQueries`] with `TypeDbReader` as the
 /// live backend and [`chaosbox_store::MemoryReader`] for tests.
 pub struct GraphReader<R> {
     handle: R,
     repo: String,
-    /// Pinned active build id for every request this reader serves.
+    /// Pinned publication id for every request this reader serves.
     pub build_id: String,
     /// Pinned generation (predecessor/generation checks on the read side).
     pub generation: i64,
-    /// Pinned build status (`active`; the pointer can only pin active builds).
+    /// Published build status (`active`, including historical publications).
     pub status: String,
     /// Snapshot ids pinned by the build: the freshness fingerprint status
     /// reports so consumers can detect a build that no longer matches its
@@ -101,7 +106,25 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
             .await
             .map_err(|e| PipelineError::Consumer(format!("active build: {e}")))?
             .ok_or_else(|| PipelineError::Consumer(format!("no active build for repo {repo}")))?;
-        Ok(Self {
+        Ok(Self::from_header(handle, repo, build))
+    }
+
+    /// Pin one exact publication owned by `repo`, without consulting its active
+    /// pointer. This repository-level reader does not grant scoped-view access.
+    pub async fn published(handle: R, repo: &str, build_id: &str) -> Result<Self, PipelineError> {
+        let build = handle
+            .published_build(repo, build_id)
+            .await
+            .map_err(|e| PipelineError::Consumer(format!("published build: {e}")))?
+            .filter(|build| build.build_id == build_id)
+            .ok_or_else(|| {
+                PipelineError::Consumer("published build unavailable for repo".into())
+            })?;
+        Ok(Self::from_header(handle, repo, build))
+    }
+
+    fn from_header(handle: R, repo: &str, build: chaosbox_store::BuildRow) -> Self {
+        Self {
             handle,
             repo: repo.to_owned(),
             build_id: build.build_id,
@@ -109,7 +132,7 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
             status: build.status,
             snapshots: build.snapshots,
             coverage: build.coverage,
-        })
+        }
     }
 
     /// Bounded substring search over the pinned build's entity names.
