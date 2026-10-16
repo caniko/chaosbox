@@ -276,13 +276,25 @@ enum QueryCmd {
         #[arg(long, default_value = "demo")]
         repo: String,
     },
-    /// Incoming/outgoing neighborhoods with optional relation filter.
+    /// Page incoming/outgoing neighborhoods, pinned across continuation.
     Neighbors {
         id: String,
         #[arg(long, default_value = "demo")]
         repo: String,
         #[arg(long)]
         rel: Option<String>,
+        /// Relation names; an explicitly empty list matches nothing.
+        #[arg(long, num_args = 0.., value_delimiter = ',', conflicts_with = "rel")]
+        rel_types: Option<Vec<String>>,
+        /// Rows per selected direction (1..=200).
+        #[arg(long, default_value_t = backend_cmd::NEIGHBORHOOD_DEFAULT_LIMIT)]
+        limit: usize,
+        /// Continue the exact prior request and publication.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Select both, outgoing or incoming.
+        #[arg(long, default_value = "both")]
+        direction: chaosbox::NeighborhoodMode,
     },
     /// Bounded path between two entities (successful negative => null).
     Path {

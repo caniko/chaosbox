@@ -29,12 +29,21 @@ pub(super) fn mcp_tool_defs() -> Vec<serde_json::Value> {
             serde_json::json!({"id": {"type": "string"}}),
             vec!["id"],
         ),
-        mcp_tool(
-            "neighbors",
-            "Incoming/outgoing neighborhoods with optional relation filter.",
-            serde_json::json!({"id": {"type": "string"}, "rel": {"type": "string"}}),
-            vec!["id"],
-        ),
+        {
+            let mut tool = mcp_tool(
+                "neighbors",
+                "Page neighborhoods in relationship-ID order. Limit applies per direction. Follow next_cursor with the same arguments until complete; continuation pins the exact build. Use rel or rel_types, not both; an empty rel_types list matches nothing.",
+                serde_json::json!({"id":{"type":"string","minLength":1,"maxLength":256},
+                    "rel":{"type":"string"},"rel_types":{"type":"array","items":{"type":"string"}},
+                    "limit":{"type":"integer","minimum":1,"maximum":200,"default":super::backend_cmd::NEIGHBORHOOD_DEFAULT_LIMIT},
+                    "cursor":{"type":"string","maxLength":16384},
+                    "direction":{"type":"string","enum":["both","outgoing","incoming"],"default":"both"}}),
+                vec!["id"],
+            );
+            tool["inputSchema"]["additionalProperties"] = serde_json::json!(false);
+            tool["inputSchema"]["not"] = serde_json::json!({"required":["rel","rel_types"]});
+            tool
+        },
         mcp_tool(
             "path",
             "Bounded path between two entities (null when absent).",
@@ -235,6 +244,17 @@ pub(super) async fn mcp_call_tool(
             None,
         );
     };
+    // Continuation selects its historical publication before any active pin.
+    if name == "neighbors" {
+        let query = match prepare_neighborhood(args) {
+            Ok(query) => query,
+            Err(error) => return mcp_error(id, -32602, error, None),
+        };
+        return match Box::pin(AnyReader::neighborhood_page(query)).await {
+            Ok(page) => mcp_text_result(id, &serde_json::json!(page)),
+            Err(error) => mcp_backend_error(id, name, &error),
+        };
+    }
     // Cheap service limits before any backend work: an unbounded query
     // would block the serial stdio loop for every later call.
     if name == "search" {
@@ -298,15 +318,7 @@ pub(super) async fn mcp_call_tool(
     }
     let reader = match Box::pin(AnyReader::connect(repo)).await {
         Ok(r) => r,
-        Err(e) => {
-            let report = LifecycleReport::error(&format!("mcp {name}"), &e.to_string());
-            return mcp_error(
-                id,
-                -32603,
-                e.to_string(),
-                Some(serde_json::to_value(&report).unwrap()),
-            );
-        }
+        Err(e) => return mcp_backend_error(id, name, &e),
     };
     let payload: Result<serde_json::Value, String> = match name {
         "search" => {
@@ -327,22 +339,6 @@ pub(super) async fn mcp_call_tool(
                 .lookup(eid)
                 .await
                 .map(|row| serde_json::to_value(&row).unwrap())
-                .map_err(|e| e.to_string())
-        }
-        "neighbors" => {
-            let eid = args["id"].as_str().unwrap_or_default();
-            let raw = args
-                .get("rel")
-                .and_then(|r| r.as_str())
-                .map(|r| vec![r.to_owned()]);
-            let filter = match chaosbox::validate_rel_filter(raw) {
-                Ok(f) => f,
-                Err(e) => return mcp_error(id, -32602, e.to_string(), None),
-            };
-            reader
-                .neighbors(eid, filter)
-                .await
-                .map(|(out, inc)| serde_json::json!({"id": eid, "outgoing": out, "incoming": inc}))
                 .map_err(|e| e.to_string())
         }
         "path" => {
@@ -642,6 +638,54 @@ fn workspace_call(
             integer(args.get("max_nodes"), 20),
         )
         .map_err(|e| e.to_string())
+}
+
+fn prepare_neighborhood(
+    mut args: serde_json::Map<String, serde_json::Value>,
+) -> Result<chaosbox::PreparedNeighborhood, String> {
+    if let Some(rel) = args.remove("rel") {
+        if args.contains_key("rel_types") {
+            return Err("rel and rel_types are mutually exclusive".into());
+        }
+        let rel = rel.as_str().ok_or("rel must be a string")?;
+        args.insert("rel_types".into(), serde_json::json!([rel]));
+    }
+    for (key, valid) in [
+        (
+            "cursor",
+            args.get("cursor").is_none_or(serde_json::Value::is_string),
+        ),
+        (
+            "rel_types",
+            args.get("rel_types")
+                .is_none_or(serde_json::Value::is_array),
+        ),
+    ] {
+        if !valid {
+            return Err(format!("{key} has an invalid type"));
+        }
+    }
+    args.entry("limit").or_insert(serde_json::json!(
+        super::backend_cmd::NEIGHBORHOOD_DEFAULT_LIMIT
+    ));
+    let query: chaosbox::NeighborhoodQuery =
+        serde_json::from_value(serde_json::Value::Object(args))
+            .map_err(|error| error.to_string())?;
+    query.prepare().map_err(|error| error.to_string())
+}
+
+fn mcp_backend_error(
+    id: &serde_json::Value,
+    name: &str,
+    error: &impl std::fmt::Display,
+) -> serde_json::Value {
+    let report = LifecycleReport::error(&format!("mcp {name}"), &error.to_string());
+    mcp_error(
+        id,
+        -32603,
+        error.to_string(),
+        Some(serde_json::json!(report)),
+    )
 }
 
 fn integer(value: Option<&serde_json::Value>, default: usize) -> usize {

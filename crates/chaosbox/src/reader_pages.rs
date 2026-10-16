@@ -27,6 +27,15 @@ pub enum NeighborhoodMode {
     Both,
 }
 
+impl std::str::FromStr for NeighborhoodMode {
+    type Err = PipelineError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        serde_json::from_value(serde_json::Value::String(value.into()))
+            .map_err(|_| invalid("direction: expected both, outgoing or incoming"))
+    }
+}
+
 /// An ordinary repository read, not an authorization decision. Callers must
 /// confine the backend/repository they expose. A cursor grants no access and
 /// cannot be used in place of a connector-authorized scoped read view.

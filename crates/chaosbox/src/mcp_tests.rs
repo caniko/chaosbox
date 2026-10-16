@@ -28,6 +28,69 @@ fn tool_defs_are_read_only_with_schemas() {
 }
 
 #[test]
+fn neighbors_advertises_bounded_continuation() {
+    let defs = mcp_tool_defs();
+    let neighbors = defs
+        .iter()
+        .find(|tool| tool["name"] == "neighbors")
+        .unwrap();
+    let schema = &neighbors["inputSchema"];
+    assert_eq!(schema["additionalProperties"], false);
+    let props = &schema["properties"];
+    assert_eq!(props["limit"]["default"], 20);
+    assert_eq!(props["limit"]["minimum"], 1);
+    assert_eq!(props["limit"]["maximum"], 200);
+    assert_eq!(props["cursor"]["type"], "string");
+    assert_eq!(
+        props["direction"]["enum"],
+        serde_json::json!(["both", "outgoing", "incoming"])
+    );
+    assert_eq!(props["rel"]["type"], "string");
+    assert_eq!(props["rel_types"]["items"]["type"], "string");
+}
+
+#[tokio::test]
+async fn neighbors_rejects_invalid_supplied_arguments_before_credentials() {
+    use serde_json::json;
+    for (field, value) in [
+        ("limit", json!(0)),
+        ("limit", json!(201)),
+        ("limit", json!(-1)),
+        ("limit", json!("3")),
+        ("limit", json!(null)),
+        ("direction", json!("sideways")),
+        ("direction", json!(null)),
+        ("cursor", json!(false)),
+        ("cursor", json!(null)),
+        ("cursor", json!("not json")),
+        ("cursor", json!("x".repeat(20_000))),
+        ("rel", json!(3)),
+        ("rel", json!(null)),
+        ("rel", json!("unknown")),
+        ("rel_types", json!(null)),
+        ("rel_types", json!("calls")),
+        ("rel_types", json!(["calls", 3])),
+        ("unexpected", json!(true)),
+        ("repo", json!(" ")),
+        ("id", json!("x".repeat(257))),
+    ] {
+        let mut args = json!({"repo":"demo", "id":"ent:hub"});
+        args[field] = value;
+        let response = mcp_call_tool(&json!(1), "neighbors", &json!({"arguments":args})).await;
+        assert_eq!(response["error"]["code"], -32602, "{field}: {response}");
+    }
+    let response = mcp_call_tool(
+        &json!(1),
+        "neighbors",
+        &json!({"arguments":{
+            "repo":"demo", "id":"ent:hub", "rel":"calls", "rel_types":["calls"]
+        }}),
+    )
+    .await;
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+}
+
+#[test]
 fn missing_args_rejected_before_backend() {
     let err = mcp_args("search", &serde_json::json!({})).unwrap_err();
     assert_eq!(err["code"], -32602);

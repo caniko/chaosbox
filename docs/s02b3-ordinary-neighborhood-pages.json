@@ -1,0 +1,93 @@
+{
+  "workcard": "S02b.3",
+  "status": "ordinary-clients-locally-qualified",
+  "date": "2026-10-16",
+  "parentS02bOrdinaryClientGatePassed": true,
+  "source": {
+    "repository": "/data/nvme0/can/canix/projects/repos/owned/chaosbox",
+    "baselineHead": "436f830283967509eee0a5d0093f3fbad327e614",
+    "qualificationUsesDirtyCheckout": true,
+    "cleanReleaseQualificationClaimed": false,
+    "scopedSavepoint": "commit containing this receipt; five production files, five test/support files, report and receipt",
+    "testedSourceSha256": "99bb0eed547986aeee0cec2866a2c37b70eae0940a52991d0212f389a63b066a",
+    "testedSourceMatchesCheckout": true
+  },
+  "contract": {
+    "domain": "chaosbox.repository-neighborhood",
+    "version": 1,
+    "defaultLimitPerDirection": 20,
+    "maximumLimitPerDirection": 200,
+    "prepareBeforeCredentialAcquisition": true,
+    "historicalResumeWithoutActivePin": true,
+    "legacyArrayFieldsPreserved": true,
+    "legacyScalarFilterPreserved": true,
+    "defaultIsBoundedFirstPage": true,
+    "cursorIsCredential": false,
+    "scopedViewAdmissionAndEvidenceValidationChanged": false
+  },
+  "checks": {
+    "redFailedBeforeImplementation": true,
+    "aggregatePassed": 91,
+    "aggregateIgnoredDisposableCases": 4,
+    "requiredLiveClientPassed": 1,
+    "requiredLiveCountRegressionPassed": 1,
+    "requiredLiveIgnored": 0,
+    "priorS02b1AndS02b2LiveCasesRerun": false,
+    "warningsDeniedClippyPassed": true,
+    "treefmtPassed": true,
+    "gitDiffCheckPassed": true
+  },
+  "live": {
+    "serverVersion": "TypeDB CE 3.13.0",
+    "address": "127.0.0.1:24729",
+    "database": "s02b3_clients_20261016",
+    "oldBuild": "build:5eff79a93a12",
+    "newActiveBuild": "build:9d87aa123524",
+    "oldNodes": 1026,
+    "oldRelationships": 2056,
+    "hubRowsPerDirection": 1029,
+    "transports": ["fresh-cli", "fresh-mcp", "persistent-mcp"],
+    "caseCount": 9,
+    "pagesPerTransport": 29,
+    "deliveredRowsPerTransport": 4124,
+    "pageJsonBytesPerTransport": 597217,
+    "totalsIncludeOverlappingCases": true,
+    "totalsExcludeDefaultNewFirstSchemaErrorsAndRpcFraming": true,
+    "backendQueryAndScannedRowCountsMeasured": false,
+    "fullRelationshipProjectionEquality": true,
+    "independentEndpointMembership": true,
+    "freshProcessHistoricalContinuationQualified": true,
+    "testSeconds": 26.08,
+    "workerWallSeconds": 26.198,
+    "workerMemoryPeakNativeSummary": "122.7M",
+    "recordedServerPeakBytes": 201072640,
+    "recordedServerCurrentSwapBytes": 0,
+    "productionResourceAndLongRunningRetentionAcceptance": false
+  },
+  "environment": {
+    "approvedUnchangedRootedProfileReused": true,
+    "normalDirenvPreparationVerified": false,
+    "environmentRefreshed": false,
+    "admissionPolicyChanged": false
+  },
+  "evidence": {
+    "root": "/data/scratch/tmp/opencode/chaosbox-s02b3-20261016",
+    "manifest": "qualification.sha256",
+    "manifestEntries": 27,
+    "manifestSha256": "6721e8bc2dfdad3dc9aa5e17916eb5a5e7dac28f91611bb3d6317d360f06e768",
+    "checksumsVerified": true,
+    "cliExecutableSha256": "ff6584408c042f24034f2d3e2e0f0889130d8ef131abee4b964dc2118abcb6e6",
+    "testExecutableSha256": "03a36dbc6c8b7e03aaf47353cb96b908352a390a972dcfdef3d75859cf0ed982",
+    "commandsAndBoundaries": "qualification-context.txt",
+    "nativeCommandsAndResources": "worker-resources.txt"
+  },
+  "preservation": {
+    "foreignTrackedPatchUnchanged": true,
+    "canixStagingUnchanged": true,
+    "productionTypeDbPidAndStartUnchanged": true,
+    "disposableServerInactiveAfterSigterm": true,
+    "disposableDataAndLogsRetained": true
+  },
+  "nextWorkcard": "S02c",
+  "installedConsumerTransitionQualified": false
+}

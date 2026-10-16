@@ -114,15 +114,30 @@ pub(super) async fn active_publishes_relations<S: chaosbox_store::Store>(
 /// read surface. Query methods deref through to the pinned reader.
 pub(super) struct AnyReader(GraphReader<TypeDbReader>);
 
+pub(super) const NEIGHBORHOOD_DEFAULT_LIMIT: usize = 20;
+
 impl AnyReader {
-    /// Connect and pin the active build for `repo` on `TypeDB`.
-    pub(super) async fn connect(repo: &str) -> Result<Self, PipelineError> {
+    async fn handle() -> Result<TypeDbReader, PipelineError> {
         let config = typedb_config_from_env().map_err(PipelineError::Consumer)?;
         let mut handle = TypeDbReader::new(config);
         Box::pin(handle.connect())
             .await
             .map_err(|e| PipelineError::Consumer(format!("typedb connect: {e}")))?;
-        Ok(Self(GraphReader::pinned(handle, repo).await?))
+        Ok(handle)
+    }
+
+    /// Connect and pin the active build for `repo` on `TypeDB`.
+    pub(super) async fn connect(repo: &str) -> Result<Self, PipelineError> {
+        Ok(Self(
+            GraphReader::pinned(Self::handle().await?, repo).await?,
+        ))
+    }
+
+    /// Acquire credentials only after shared preparation has validated the query.
+    pub(super) async fn neighborhood_page(
+        query: chaosbox::PreparedNeighborhood,
+    ) -> Result<chaosbox::NeighborhoodPage, PipelineError> {
+        query.read(Self::handle().await?).await
     }
 
     /// Pinned active build id for status responses.

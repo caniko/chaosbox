@@ -22,6 +22,10 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_with_degrees(9, 2)
+}
+
+fn fixture_with_degrees(outgoing: usize, incoming: usize) -> Fixture {
     let node = |name: &str| {
         Entity::new(
             EntityKind::Symbol,
@@ -36,17 +40,20 @@ fn fixture() -> Fixture {
     let hub = node("hub");
     let mut old = GraphBuild::new(REPO, vec!["s-pages".into()], 1);
     old.add_node(hub.clone()).unwrap();
-    for index in 0..9 {
+    for index in 0..outgoing.max(incoming) {
         let leaf = node(&format!("leaf-{index}"));
         old.add_node(leaf.clone()).unwrap();
         for (kind, from, to) in [
             (RelationType::Calls, &hub.id, &leaf.id),
             (RelationType::References, &hub.id, &leaf.id),
-        ] {
+        ]
+        .into_iter()
+        .filter(|_| index < outgoing)
+        {
             old.add_edge(Relation::new(kind, from, to, RelationScope::File, &old.id))
                 .unwrap();
         }
-        if index < 2 {
+        if index < incoming {
             old.add_edge(Relation::new(
                 RelationType::Calls,
                 &leaf.id,
@@ -287,6 +294,44 @@ async fn canonical_filters_resume_and_scope_changes_fail_before_backend_reads() 
             .await
             .is_ok()
     );
+}
+
+#[tokio::test]
+async fn both_positions_advance_and_either_direction_can_finish_first() {
+    for (outgoing, incoming) in [(9, 9), (2, 9)] {
+        let f = fixture_with_degrees(outgoing, incoming);
+        let mut request = query(&f);
+        let mut rows = [Vec::new(), Vec::new()];
+        let mut first = true;
+        loop {
+            let page = request
+                .clone()
+                .prepare()
+                .unwrap()
+                .read(handle(&f, first, false))
+                .await
+                .unwrap();
+            rows[0].extend(page.outgoing);
+            rows[1].extend(page.incoming);
+            if page.complete {
+                break;
+            }
+            request.cursor = page.next_cursor;
+            first = false;
+            assert!(rows.iter().all(|rows| rows.len() <= f.old.edges.len()));
+        }
+        for (actual, direction) in rows.into_iter().zip([
+            NeighborhoodDirection::Outgoing,
+            NeighborhoodDirection::Incoming,
+        ]) {
+            let expected = f.old.edges.values().filter(|edge| match direction {
+                NeighborhoodDirection::Outgoing => edge.from == f.hub,
+                NeighborhoodDirection::Incoming => edge.to == f.hub,
+            }).map(|edge| json!({"rel_id":edge.id,"rel_type":chaosbox_core::relation_type_name(&edge.rel_type),
+                "from_entity":{"entity_id":edge.from},"to_entity":{"entity_id":edge.to}})).collect::<Vec<_>>();
+            assert_eq!(json!(actual), json!(expected));
+        }
+    }
 }
 
 #[tokio::test]

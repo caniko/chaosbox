@@ -55,25 +55,30 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
                 Err(e) => consumer_err("query lookup", e),
             }
         }
-        QueryCmd::Neighbors { id, repo, rel } => {
-            // Validate the filter before touching the backend: typos must fail loudly.
-            let filter = match chaosbox::validate_rel_filter(rel.map(|r| vec![r])) {
-                Ok(f) => f,
-                Err(e) => return consumer_err("query neighbors", e),
+        QueryCmd::Neighbors {
+            id,
+            repo,
+            rel,
+            rel_types,
+            limit,
+            cursor,
+            direction,
+        } => {
+            let query = chaosbox::NeighborhoodQuery {
+                id,
+                repo,
+                direction,
+                limit,
+                cursor,
+                rel_types: rel_types.or_else(|| rel.map(|name| vec![name])),
             };
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
-                Ok(r) => r,
-                Err(e) => return consumer_err("query neighbors", e),
+            let query = match query.prepare() {
+                Ok(query) => query,
+                Err(error) => return consumer_err("query neighbors", error),
             };
-            match reader.neighbors(&id, filter).await {
-                Ok((out, inc)) => {
-                    println!(
-                        "{}",
-                        serde_json::to_string(&serde_json::json!({
-                            "id": id, "outgoing": out, "incoming": inc,
-                        }))
-                        .unwrap()
-                    );
+            match Box::pin(AnyReader::neighborhood_page(query)).await {
+                Ok(page) => {
+                    println!("{}", serde_json::to_string(&page).unwrap());
                     0
                 }
                 Err(e) => consumer_err("query neighbors", e),
