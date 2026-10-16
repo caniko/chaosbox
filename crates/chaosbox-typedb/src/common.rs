@@ -167,7 +167,7 @@ pub(crate) async fn drain(answer: QueryAnswer) -> Result<(), Box<typedb_driver::
     }
 }
 
-/// Collect a read query into owned column values. Missing optional columns
+/// Collect attribute or scalar query results into owned column values. Missing optional columns
 /// (bound through `try {}`) surface as absent keys.
 pub(crate) async fn read_rows(
     driver: &TypeDBDriver,
@@ -211,9 +211,12 @@ pub(crate) async fn read_rows_in(
                 Some(Concept::Attribute(attr)) => {
                     map.insert((*col).to_owned(), attr.value.clone());
                 }
+                Some(Concept::Value(value)) => {
+                    map.insert((*col).to_owned(), value.clone());
+                }
                 Some(other) => {
                     return Err(StoreError::Query(format!(
-                        "column {col} is not an attribute: {other:?}"
+                        "column {col} is not a value: {other:?}"
                     )));
                 }
             }

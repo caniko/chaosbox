@@ -176,6 +176,27 @@ impl GraphQueries for MemoryReader {
             .find(|e| e.entity_id == id))
     }
 
+    async fn neighbor_counts(
+        &self,
+        build_id: &str,
+        id: &str,
+        rel_types: Vec<String>,
+    ) -> Result<(u64, u64), StoreError> {
+        let mut counts = (0, 0);
+        if !rel_types.is_empty() {
+            if let Some(build) = self.builds.get(build_id) {
+                // ponytail: O(build edges) reference scan; index adjacency if this backend becomes hot.
+                for rel in build.edges.values() {
+                    if rel_types.contains(&chaosbox_core::relation_type_name(&rel.rel_type)) {
+                        counts.0 += u64::from(rel.from == id);
+                        counts.1 += u64::from(rel.to == id);
+                    }
+                }
+            }
+        }
+        Ok(counts)
+    }
+
     async fn neighbors_out(
         &self,
         build_id: &str,

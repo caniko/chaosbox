@@ -34,6 +34,18 @@ pub trait GraphQueries: Send + Sync {
     /// Typed entity lookup within the pinned build.
     async fn entity_by_id(&self, build_id: &str, id: &str)
         -> Result<Option<EntityRow>, StoreError>;
+    /// Exact outgoing/incoming relationship counts in one pinned build.
+    /// Counts use the same type filter as neighborhoods, including self edges
+    /// once in each direction. Backends must aggregate without returning edge
+    /// collections; unsupported backends fail rather than fall back to fetching.
+    async fn neighbor_counts(
+        &self,
+        _build_id: &str,
+        _id: &str,
+        _rel_types: Vec<String>,
+    ) -> Result<(u64, u64), StoreError> {
+        Err(StoreError::Query("relationship counts unavailable".into()))
+    }
     /// Outgoing relationships within the pinned build, with a type filter.
     async fn neighbors_out(
         &self,

@@ -122,26 +122,9 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query explain", e),
             };
-            match reader.lookup(&id).await {
-                Ok(None) => {
-                    println!("null");
-                    0
-                }
-                Ok(Some(e)) => {
-                    let (out, inc) = match reader.neighbors(&id, None).await {
-                        Ok(n) => n,
-                        Err(e) => return consumer_err("query explain", e),
-                    };
-                    println!(
-                        "{}",
-                        serde_json::to_string(&serde_json::json!({
-                            "id": e.entity_id, "kind": e.kind, "file": e.file,
-                            "qualified_name": e.qualified_name,
-                            "snapshot": e.snapshot, "span": e.span, "compiler": e.compiler,
-                            "outgoing": out.len(), "incoming": inc.len(),
-                        }))
-                        .unwrap()
-                    );
+            match reader.explain(&id).await {
+                Ok(value) => {
+                    println!("{value}");
                     0
                 }
                 Err(e) => consumer_err("query explain", e),

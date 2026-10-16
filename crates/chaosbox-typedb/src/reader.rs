@@ -360,6 +360,36 @@ impl GraphQueries for TypeDbReader {
         rows.first().map(row_to_entity).transpose()
     }
 
+    async fn neighbor_counts(
+        &self,
+        build_id: &str,
+        id: &str,
+        rel_types: Vec<String>,
+    ) -> Result<(u64, u64), StoreError> {
+        if rel_types.is_empty() {
+            return Ok((0, 0));
+        }
+        let filter = rel_types
+            .iter()
+            .map(|kind| format!("{{ $rt == {}; }}", str_lit(kind)))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        let mut counts = [0; 2];
+        for (index, role) in ["from-entity", "to-entity"].iter().enumerate() {
+            let query = format!(
+                "match (build: $b, edge: $rel) isa edge-membership; $b isa graph-build, has build-id {}; $rel isa relationship ({role}: $e), has rel-type $rt; $e isa code-entity, has entity-id {}; {filter}; reduce $count = count($rel);",
+                str_lit(build_id), str_lit(id),
+            );
+            let rows = read_rows(self.driver()?, &self.config.database, &query, &["count"]).await?;
+            if rows.len() != 1 {
+                return Err(StoreError::Query("expected one relationship count".into()));
+            }
+            counts[index] = u64::try_from(col_int(&rows[0], "count")?)
+                .map_err(|_| StoreError::Query("negative relationship count".into()))?;
+        }
+        Ok((counts[0], counts[1]))
+    }
+
     async fn neighbors_out(
         &self,
         build_id: &str,

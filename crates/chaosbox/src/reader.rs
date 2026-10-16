@@ -301,13 +301,17 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
         let Some(e) = entity else {
             return Ok(serde_json::Value::Null);
         };
-        let (out, inc) = self.neighbors(id, None).await?;
+        let (out, inc) = self
+            .handle
+            .neighbor_counts(&self.build_id, id, all_relation_types())
+            .await
+            .map_err(|e| PipelineError::Consumer(e.to_string()))?;
         Ok(serde_json::json!({
             "id": e.entity_id, "kind": e.kind, "file": e.file,
             "qualified_name": e.qualified_name,
             "snapshot": e.snapshot, "span": e.span,
             "compiler": e.compiler,
-            "outgoing": out.len(), "incoming": inc.len(),
+            "outgoing": out, "incoming": inc,
         }))
     }
 
