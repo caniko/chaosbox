@@ -3,12 +3,21 @@
 use crate::StoreError;
 use crate::rows::{BuildRow, EntityRow, EvidenceRow, RelRow};
 
+/// Which endpoint of a relationship is anchored by a neighborhood query.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NeighborhoodDirection {
+    /// The anchor is the source endpoint.
+    Outgoing,
+    /// The anchor is the target endpoint.
+    Incoming,
+}
+
 /// Read-only query surface shared by the `TypeDB` reader and the
 /// in-memory fake. Member reads are scoped to one explicit build id. Trusted
 /// callers must resolve ownership through `active_build` or `published_build`
 /// before using member queries; raw query methods are not an authorization API.
 /// Ordering: entity lists come back ordered by qualified name; relationship
-/// and evidence lists have unspecified order (conformance compares as sets).
+/// and evidence lists have unspecified order unless the method documents one.
 /// An empty relation-type filter matches nothing (mirrors `array_unpack([])`).
 #[async_trait::async_trait]
 pub trait GraphQueries: Send + Sync {
@@ -60,6 +69,25 @@ pub trait GraphQueries: Send + Sync {
         id: &str,
         rel_types: Vec<String>,
     ) -> Result<Vec<RelRow>, StoreError>;
+    /// One directional page ordered by relationship id, strictly after `after`.
+    /// Build, anchor, direction, type filter and exclusive boundary are applied
+    /// before the backend row limit. Empty filters and nonpositive limits return
+    /// no rows. Self-loops appear once in each direction; repeated filter values
+    /// do not duplicate rows. The caller may request page size + 1 for a sentinel.
+    /// Unsupported backends fail rather than materialize an unbounded collection.
+    /// This raw key is not an authorized continuation token: trusted callers must
+    /// pin ownership and bind the complete request scope before resuming a page.
+    async fn neighbor_page(
+        &self,
+        _build_id: &str,
+        _id: &str,
+        _direction: NeighborhoodDirection,
+        _rel_types: Vec<String>,
+        _after: Option<&str>,
+        _limit: i64,
+    ) -> Result<Vec<RelRow>, StoreError> {
+        Err(StoreError::Query("neighborhood pages unavailable".into()))
+    }
     /// Member entities of one build, bounded.
     async fn build_entities(
         &self,

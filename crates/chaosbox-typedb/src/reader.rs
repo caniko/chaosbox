@@ -16,7 +16,10 @@
 
 use std::collections::BTreeMap;
 
-use chaosbox_store::{BuildRow, EntityRow, EndpointRef, EvidenceRow, StoreError, GraphQueries, RelRow};
+use chaosbox_store::{
+    BuildRow, EntityRow, EndpointRef, EvidenceRow, StoreError, GraphQueries, NeighborhoodDirection,
+    RelRow,
+};
 use typedb_driver::{Address, Addresses, Credentials, DriverOptions, DriverTlsConfig, TypeDBDriver};
 
 use crate::common::{TypeDbConfig, col_int, col_string, col_string_opt, driver_error, read_rows};
@@ -406,6 +409,40 @@ impl GraphQueries for TypeDbReader {
         rel_types: Vec<String>,
     ) -> Result<Vec<RelRow>, StoreError> {
         self.neighbors(build_id, id, rel_types, false).await
+    }
+
+    async fn neighbor_page(
+        &self,
+        build_id: &str,
+        id: &str,
+        direction: NeighborhoodDirection,
+        mut rel_types: Vec<String>,
+        after: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<RelRow>, StoreError> {
+        if limit <= 0 || rel_types.is_empty() {
+            return Ok(Vec::new());
+        }
+        rel_types.sort();
+        rel_types.dedup();
+        let filter = rel_types
+            .iter()
+            .map(|kind| format!("{{ $rt == {}; }}", str_lit(kind)))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        let anchor = match direction {
+            NeighborhoodDirection::Outgoing => "fid",
+            NeighborhoodDirection::Incoming => "tid",
+        };
+        let boundary = after
+            .map(|key| format!("$r > {};", str_lit(key)))
+            .unwrap_or_default();
+        let query = format!(
+            "match (build: $b, edge: $rel) isa edge-membership; $b isa graph-build, has build-id {}; $rel isa relationship (from-entity: $f, to-entity: $t), has rel-id $r, has rel-type $rt; $f isa code-entity, has entity-id $fid; $t isa code-entity, has entity-id $tid; ${anchor} == {}; {filter}; {boundary} select $r, $rt, $fid, $tid; sort $r asc; limit {};",
+            str_lit(build_id), str_lit(id), int_lit(limit),
+        );
+        let rows = read_rows(self.driver()?, &self.config.database, &query, REL_COLS).await?;
+        rows.iter().map(row_to_rel).collect()
     }
 
     async fn build_entities(

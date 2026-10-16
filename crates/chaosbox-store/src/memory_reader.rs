@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use chaosbox_core::GraphBuild;
 
 use crate::StoreError;
-use crate::queries::GraphQueries;
+use crate::queries::{GraphQueries, NeighborhoodDirection};
 use crate::rows::{BuildRow, EntityRow, EvidenceRow, RelRow, entity_row, rel_row};
 
 /// In-memory [`GraphQueries`] fake: same method surface and ordering as the
@@ -220,6 +220,40 @@ impl GraphQueries for MemoryReader {
             .member_relations(build_id)
             .into_iter()
             .filter(|r| r.to_entity.entity_id == id && rel_types.contains(&r.rel_type))
+            .collect())
+    }
+
+    async fn neighbor_page(
+        &self,
+        build_id: &str,
+        id: &str,
+        direction: NeighborhoodDirection,
+        rel_types: Vec<String>,
+        after: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<RelRow>, StoreError> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        if limit <= 0 || rel_types.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(build) = self.builds.get(build_id) else {
+            return Ok(Vec::new());
+        };
+        // ponytail: scan remaining build edges; index adjacency if this reference backend becomes hot.
+        Ok(build
+            .edges
+            .range::<str, _>((after.map_or(Unbounded, Excluded), Unbounded))
+            .map(|(_, edge)| edge)
+            .filter(|edge| {
+                let anchor = match direction {
+                    NeighborhoodDirection::Outgoing => &edge.from,
+                    NeighborhoodDirection::Incoming => &edge.to,
+                };
+                anchor == id
+                    && rel_types.contains(&chaosbox_core::relation_type_name(&edge.rel_type))
+            })
+            .take(usize::try_from(limit).unwrap_or(usize::MAX))
+            .map(rel_row)
             .collect())
     }
 
