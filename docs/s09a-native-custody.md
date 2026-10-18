@@ -23,6 +23,7 @@ the local credential-free `custody/custody-recorder` recording provider.
 | Actual listener's `2.0.12+f18083c78e` package, isolated r11 | Pass | **Fail: missing `compaction.plan`** | Not reached |
 | Production `2.0.22+047c74e` package, isolated r10 | Pass | Pass | Pass |
 | Native-check `2.0.22+047c74e` output, earlier isolated r8 | Pass | Pass | Pass |
+| Complete five-patch production package, isolated `SiSNOB` follow-up | Pass | Pass | Pass |
 
 The production r10 package carries `environment-recovery.patch`,
 `amc-governor.patch` and `session-custody.patch`. The native-check r8 package also
@@ -150,3 +151,48 @@ under the parent evidence directory, SHA-256
 Foreign staging also advanced during
 the owner's work; the original index comparison above applies to the isolated
 fixture runs, rather than asserting that no other worker subsequently staged.
+
+## Complete patch-set package and fixture repair
+
+The production output `/nix/store/vb6rfap8g2ibmca00bn7n3mm041qgdrf-opencode-v2-candidate-2.0.22+047c74e`
+now passes the same packaged lifecycle proof with **all five current patches**:
+environment recovery, AMC governor, session custody, service readiness and session
+cancellation. The receipt records each patch's SHA-256, the base revision, ELF,
+derivation and captured Canix source. Canix commit
+`c7bf17ac25b5884716776119d53c6066128c7905` contains the fixture and gate changes;
+the captured source also includes concurrent dirty work. The production package
+built through `canix cache binary build .#opencode-v2-candidate --max-jobs 1 --cores 2`,
+and private publication verified its one selected missing path on `canix-fleet`
+after omitting ten upstream-signed paths.
+
+The follow-up fixes two fixture lifecycle defects. Live mode now allows a
+ten-minute backend lifetime around its three-minute assessment/publication wait;
+ordinary mode keeps its two-minute lifetime. `AsyncDisposableStack` drains every
+cleanup action after event observation fails, retains logs and model requests,
+and preserves the original injected failure. Disposable child shutdown first
+allows five seconds for SIGTERM, then uses bounded SIGKILL fallback. Two helper
+regressions fail against the retained old helper and pass after the repair.
+
+The separate `--fail-event-stream` run against this complete package exits **1**
+with the intended observation error. It retains backend/TypeDB logs, model
+requests and `cleanup.json`; both its backend and TypeDB PIDs are absent after
+cleanup. The ordinary follow-up also reaps both children and again records five
+model requests, two checkpoints, zero assessments/admitted records and fifteen
+pending custody items. Neither run establishes live assessment or publication.
+
+Evidence is under
+`/data/scratch/tmp/opencode/canix-memory-consumer-20261018/fixture-lifecycle/`.
+`current-runtime-tested-source.tar` freezes the fixture, helper, tests, complete
+package patch set, check wiring, registry and declaration/lock bytes from the
+captured source. The **21-file** `current-runtime-evidence.sha256` manifest
+verifies from that directory and hashes to
+`a530305569ec2f2d4c24296c2257c9a24129ee29612da56174e9c60ee77adec0`.
+`custody-consumer-SiSNOB/` is the success case and `custody-consumer-JeBx5V/`
+is the injected failure.
+
+The immutable registered native and consumer gates still require reconciled
+pins. Toolbelt's original `caee984b…` cancellation candidate was superseded by
+reviewed fixes at `509622ba32cf32c3d186427ddfb78f6b21e8620c`; its exact-head hosted
+qualification is pending. The selected reconciliation is only source-prepared.
+No host activation, production service restart, live graph mutation or measured
+production-resource acceptance is claimed by this follow-up.
