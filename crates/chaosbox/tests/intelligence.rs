@@ -671,7 +671,7 @@ fn cli_extract_is_private_and_refuses_to_overwrite() {
 
 #[test]
 fn actual_mcp_process_serves_intelligence_without_database_or_model_credentials() {
-    use std::io::Write;
+    use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("knowledge.json");
@@ -703,17 +703,17 @@ fn actual_mcp_process_serves_intelligence_without_database_or_model_credentials(
         serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"intelligence_assess","arguments":{"repo":"canix"}}}),
     ];
     let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut responses = Vec::<serde_json::Value>::new();
     for request in requests {
         writeln!(stdin, "{request}").unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        responses.push(serde_json::from_str(&line).unwrap());
+        assert_eq!(responses.last().unwrap()["id"], request["id"]);
     }
     drop(stdin);
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-    let responses: Vec<serde_json::Value> = String::from_utf8(output.stdout)
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
+    assert!(child.wait().unwrap().success());
     let text = responses[1]["result"]["content"][0]["text"]
         .as_str()
         .unwrap();

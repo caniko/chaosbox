@@ -325,7 +325,7 @@ async fn disposable_counts_and_native_cli_mcp_preserve_explanations() {
 
 async fn native(args: &[&str], requests: &[Value]) -> Vec<Value> {
     use std::{process::Stdio, time::Duration};
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_chaosbox"))
         .args(args)
         .env_remove("CHAOSBOX_JEV_API_KEY_FILE")
@@ -336,11 +336,26 @@ async fn native(args: &[&str], requests: &[Value]) -> Vec<Value> {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = args
+        .first()
+        .filter(|arg| **arg == "mcp")
+        .map(|_| BufReader::new(child.stdout.take().unwrap()).lines());
+    let mut replies = Vec::new();
     for request in requests {
         stdin
             .write_all(format!("{request}\n").as_bytes())
             .await
             .unwrap();
+        if let Some(stdout) = stdout.as_mut().filter(|_| request.get("id").is_some()) {
+            let line = tokio::time::timeout(Duration::from_secs(30), stdout.next_line())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let response: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(response["id"], request["id"]);
+            replies.push(response);
+        }
     }
     drop(stdin);
     let output = tokio::time::timeout(Duration::from_secs(60), child.wait_with_output())
@@ -352,6 +367,9 @@ async fn native(args: &[&str], requests: &[Value]) -> Vec<Value> {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    if stdout.is_some() {
+        return replies;
+    }
     String::from_utf8(output.stdout)
         .unwrap()
         .lines()
