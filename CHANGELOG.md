@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- OpenCode adapters load from standalone packaged runtimes without a runtime
+  dependency on the SDK. Production install checks cover all four adapter imports.
 - Reject malformed pre-bounding truncation metadata and preserve string-valued
   tool output exactly when reconstructing source-custodied checkpoints. The
   global plugin example now uses native project resolution instead of a fixed repo.
