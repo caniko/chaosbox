@@ -134,34 +134,48 @@ pub(crate) async fn publish_facts<S: Store>(
     build: &mut GraphBuild,
     snapshot: &Snapshot,
     extraction: &Extraction,
-    entities: &BTreeMap<String, Entity>,
 ) -> Result<(), PipelineError> {
-    validate_facts(&build.repo, snapshot, extraction, entities)?;
-    let mut observations = Vec::new();
+    validate_facts(&build.repo, snapshot, extraction, &build.nodes)?;
+    // Validate all graph memberships before any durable writes, retaining only
+    // source references and relation ids rather than another copy of each
+    // relation and evidence body.
+    let mut observations = Vec::with_capacity(extraction.facts.len());
     for fact in &extraction.facts {
         let mut relation = Relation::new(
             fact.rel_type.clone(),
             &fact.from,
             &fact.to,
-            if entities[&fact.from].file == entities[&fact.to].file {
+            if build.nodes[&fact.from].file == build.nodes[&fact.to].file {
                 RelationScope::File
             } else {
                 RelationScope::CrossFile
             },
             &build.id,
         );
+        relation.evidence_ids.push(deterministic_id(
+            "ev",
+            &[
+                &snapshot.id,
+                &fact.from,
+                &fact.to,
+                &format!("{:?}", fact.rel_type),
+                &fact.producer,
+                &fact.text,
+            ],
+        ));
+        let relation_id = relation.id.clone();
+        build
+            .add_edge(relation)
+            .map_err(|e| PipelineError::Validation(e.to_string()))?;
+        observations.push((relation_id, fact));
+    }
+    store
+        .ensure_snapshot_files(&snapshot.id, &snapshot.repo, &snapshot.snapshot_files())
+        .await
+        .map_err(|e| PipelineError::Store(e.to_string()))?;
+    for (relation_id, fact) in observations {
         let evidence = Evidence {
-            id: deterministic_id(
-                "ev",
-                &[
-                    &snapshot.id,
-                    &fact.from,
-                    &fact.to,
-                    &format!("{:?}", fact.rel_type),
-                    &fact.producer,
-                    &fact.text,
-                ],
-            ),
+            id: build.edges[&relation_id].evidence_ids[0].clone(),
             class: EvidenceClass::Extracted,
             supports: true,
             text: fact.text.clone(),
@@ -170,20 +184,9 @@ pub(crate) async fn publish_facts<S: Store>(
             source_file_version: fact.span.file.clone(),
             producer: Some(fact.producer.clone()),
         };
-        relation.evidence_ids.push(evidence.id.clone());
-        build
-            .add_edge(relation.clone())
-            .map_err(|e| PipelineError::Validation(e.to_string()))?;
-        observations.push((relation, evidence));
-    }
-    store
-        .ensure_snapshot_files(&snapshot.id, &snapshot.repo, &snapshot.snapshot_files())
-        .await
-        .map_err(|e| PipelineError::Store(e.to_string()))?;
-    for (relation, evidence) in observations {
         let claim = Claim {
-            id: deterministic_id("claim", &[&relation.id]),
-            relation_id: relation.id,
+            id: deterministic_id("claim", &[&relation_id]),
+            relation_id,
             supporting: vec![evidence.id.clone()],
             contradicting: Vec::new(),
             accepted: true,
