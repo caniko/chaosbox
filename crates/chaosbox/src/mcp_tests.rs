@@ -386,6 +386,50 @@ async fn ordinary_response_overflow_is_an_error_and_keeps_the_rpc_id() {
 }
 
 #[tokio::test]
+async fn ordinary_controls_drain_after_a_backpressured_final_response() {
+    use super::mcp_server::{Frames, exchange};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let (mut sender, input) = tokio::io::duplex(4096);
+    let (mut output, receiver) = tokio::io::duplex(1);
+    let id = serde_json::json!(1);
+    let mut frames = Frames::new(input);
+    let serving = exchange(&mut frames, &mut output, &id, async {
+        serde_json::json!({"jsonrpc":"2.0", "id":1, "result":"x".repeat(1024)})
+    });
+    let client = async {
+        sender.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":2}}\n{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}\n").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let mut lines = BufReader::new(receiver).lines();
+        for (index, expected) in [1, 2, 3, 1].into_iter().enumerate() {
+            let response: serde_json::Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(response["id"], expected);
+            if index == 0 {
+                // A flushed final response releases its ID even while earlier
+                // control responses remain backpressured.
+                sender
+                    .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n")
+                    .await
+                    .unwrap();
+            }
+            if expected == 2 {
+                assert_eq!(response["error"]["code"], -32800);
+            } else {
+                assert!(response.get("error").is_none(), "{response}");
+            }
+        }
+        // Keep stdin open until exchange has drained every control response.
+        sender
+    };
+    let (result, _sender) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(serving, client)
+    })
+    .await
+    .unwrap();
+    assert!(result.unwrap());
+}
+
+#[tokio::test]
 async fn ordinary_slow_output_keeps_one_deadline_and_drops_the_active_read() {
     use super::mcp_server::{Frames, exchange};
     use tokio::io::AsyncWriteExt;

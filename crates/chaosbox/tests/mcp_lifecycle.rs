@@ -144,6 +144,162 @@ async fn matching_cancel_and_eof_close_real_acquisition_sockets() {
 }
 
 #[tokio::test]
+async fn overlapping_calls_serialize_and_queued_cancellation_preserves_typed_ids() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let credentials = tempfile::tempdir().unwrap();
+    let password = credentials.path().join("password");
+    std::fs::write(&password, "disposable-test-password").unwrap();
+    let mut client = Client::start(&listener.local_addr().unwrap().to_string(), &password).await;
+    client.path(json!(7)).await;
+    let (mut socket, _) = listener.accept().await.unwrap();
+    for id in [json!(8), json!("8"), json!(10)] {
+        client
+            .send(json!({"jsonrpc":"2.0","id":id,"method":"tools/list"}))
+            .await;
+    }
+    client
+        .send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":8}}))
+        .await;
+    client
+        .send(json!({"jsonrpc":"2.0","id":9,"method":"ping"}))
+        .await;
+    let cancelled = client.receive().await;
+    assert_eq!(cancelled["id"], 8);
+    assert_eq!(cancelled["error"]["code"], -32800, "{cancelled}");
+    assert_eq!(client.receive().await["id"], 9);
+    // Cancelling a queued call must not cancel the active acquisition.
+    assert!(tokio::time::timeout(
+        Duration::from_millis(50),
+        socket.read_to_end(&mut Vec::new())
+    )
+    .await
+    .is_err());
+    client
+        .send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}))
+        .await;
+    let cancelled = client.receive().await;
+    assert_eq!(cancelled["id"], 7);
+    assert_eq!(cancelled["error"]["code"], -32800);
+    for id in [json!("8"), json!(10)] {
+        let response = client.receive().await;
+        assert_eq!(response["id"], id);
+        assert!(response["result"]["tools"].is_array(), "{response}");
+    }
+    tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut Vec::new()))
+        .await
+        .unwrap()
+        .unwrap();
+    drop(client.input.take());
+    assert!(client.stopped().await.success());
+}
+
+#[tokio::test]
+async fn admission_bounds_reject_only_excess_and_duplicate_calls() {
+    for wide in [false, true] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let credentials = tempfile::tempdir().unwrap();
+        let password = credentials.path().join("password");
+        std::fs::write(&password, "disposable-test-password").unwrap();
+        let mut client =
+            Client::start(&listener.local_addr().unwrap().to_string(), &password).await;
+        client.path(json!(7)).await;
+        let (_socket, _) = listener.accept().await.unwrap();
+        let count = if wide { 4 } else { 8 };
+        let request = |id| {
+            json!({"jsonrpc":"2.0","id":id,"method":"tools/list",
+            "params":{"padding":"x".repeat(if wide { 60_000 } else { 0 })}})
+        };
+        for id in 100..100 + count {
+            client.send(request(id)).await;
+        }
+        client.send(request(200)).await;
+        for id in [7, 100] {
+            client.send(request(id)).await;
+        }
+        client
+            .send(json!({"jsonrpc":"2.0","id":201,"method":"ping"}))
+            .await;
+        let rejected = client.receive().await;
+        assert_eq!(rejected["id"], 200);
+        assert_eq!(rejected["error"]["code"], -32000);
+        assert_eq!(rejected["error"]["message"], "MCP admission queue full");
+        for _ in 0..2 {
+            let duplicate = client.receive().await;
+            assert!(duplicate["id"].is_null(), "{duplicate}");
+            assert_eq!(duplicate["error"]["code"], -32600);
+        }
+        assert_eq!(client.receive().await["id"], 201);
+        client.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":100}})).await;
+        let cancelled = client.receive().await;
+        assert_eq!(cancelled["id"], 100);
+        assert_eq!(cancelled["error"]["code"], -32800);
+        // Removing a queued frame returns both its count and byte capacity.
+        client.send(request(300)).await;
+        client
+            .send(json!({"jsonrpc":"2.0","id":301,"method":"ping"}))
+            .await;
+        assert_eq!(client.receive().await["id"], 301);
+        client.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}})).await;
+        assert_eq!(client.receive().await["error"]["code"], -32800);
+        for id in (101..100 + count).chain([300]) {
+            let response = client.receive().await;
+            assert_eq!(response["id"], id);
+            assert!(response["result"]["tools"].is_array(), "{response}");
+        }
+        drop(client.input.take());
+        assert!(client.stopped().await.success());
+    }
+}
+
+#[tokio::test]
+async fn queued_wait_expires_without_starting_another_acquisition() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let credentials = tempfile::tempdir().unwrap();
+    let password = credentials.path().join("password");
+    std::fs::write(&password, "disposable-test-password").unwrap();
+    let mut client = Client::start(&listener.local_addr().unwrap().to_string(), &password).await;
+    let status = |id| {
+        json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+        "params":{"name":"status","arguments":{"repo":"demo"}}})
+    };
+    client.send(status(7)).await;
+    let (mut socket, _) = listener.accept().await.unwrap();
+    let started = std::time::Instant::now();
+    client.send(status(8)).await;
+    client
+        .send(json!({"jsonrpc":"2.0","id":9,"method":"ping"}))
+        .await;
+    assert_eq!(client.receive().await["id"], 9);
+    let expired = client.receive_within(Duration::from_secs(12)).await;
+    assert_eq!(expired["id"], 8);
+    assert_eq!(expired["error"]["code"], -32000);
+    assert_eq!(
+        expired["error"]["message"],
+        "MCP admission wait deadline exceeded"
+    );
+    assert!(started.elapsed() >= Duration::from_secs(9));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
+    client
+        .send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}))
+        .await;
+    assert_eq!(client.receive().await["error"]["code"], -32800);
+    tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut Vec::new()))
+        .await
+        .unwrap()
+        .unwrap();
+    client
+        .send(json!({"jsonrpc":"2.0","id":10,"method":"tools/list"}))
+        .await;
+    assert!(client.receive().await["result"]["tools"].is_array());
+    drop(client.input.take());
+    assert!(client.stopped().await.success());
+}
+
+#[tokio::test]
 async fn oversized_unterminated_frame_stops_without_waiting_for_eof() {
     let credentials = tempfile::tempdir().unwrap();
     let mut client = Client::start("127.0.0.1:1", &credentials.path().join("absent")).await;
@@ -296,6 +452,13 @@ async fn check_cleanup(mut client: Client, mode: &str, database: &str, path: Val
     payload(&call(&mut client, 100, "status", json!({"repo":REPO})).await);
     client.send(json!({"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"path","arguments":path}})).await;
     let active = wait_reads(database, true).await;
+    client
+        .send(json!({"jsonrpc":"2.0","id":104,"method":"tools/list"}))
+        .await;
+    client
+        .send(json!({"jsonrpc":"2.0","id":105,"method":"ping"}))
+        .await;
+    assert_eq!(client.receive().await["id"], 105);
     let started = std::time::Instant::now();
     match mode {
         "cancel" => {
@@ -309,6 +472,9 @@ async fn check_cleanup(mut client: Client, mode: &str, database: &str, path: Val
             let response = client.receive().await;
             assert_eq!(response["id"], 101);
             assert_eq!(response["error"]["code"], -32800);
+            let queued = client.receive().await;
+            assert_eq!(queued["id"], 104);
+            assert!(queued["result"]["tools"].is_array());
             wait_reads(database, false).await;
             let observed = settled_sample(client.child.id().unwrap()).await;
             assert_eq!(observed["tcp_sockets"], 0);
@@ -950,5 +1116,215 @@ async fn disposable_ordinary_mcp_header_batches_reduce_transactions() {
         json!({"case":"header-batch-pin-parity", "zero_and_single_snapshot":true,
         "historical_repository_and_credential_checks":true, "missing_header_queries":1, "missing_header_transactions":1,
         "remaining_reads":active_reads(&wait_reads(&config.database, false).await, &config.database)})
+    );
+}
+
+async fn hold_wide_response(client: &mut Client, database: &str, id: u64, entity: &str) -> Value {
+    let before = action_count(&diagnostics().await, database, "TRANSACTION_QUERY");
+    client
+        .send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+        "params":{"name":"lookup","arguments":{"repo":REPO,"id":entity}}}))
+        .await;
+    let metrics = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let metrics = diagnostics().await;
+            if action_count(&metrics, database, "TRANSACTION_QUERY") == before + 3
+                && active_reads(&metrics, database) == 0
+            {
+                break metrics;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    metrics
+}
+
+fn status_request(id: u64) -> Value {
+    json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
+        "params":{"name":"status","arguments":{"repo":REPO}}})
+}
+
+async fn queued_repin_and_credentials(
+    client: &mut Client,
+    store: &mut chaosbox_typedb::store::TypeDbStore,
+    password: &std::path::Path,
+    config: &chaosbox_typedb::store::TypeDbConfig,
+    wide: &chaosbox_core::Entity,
+    old: &str,
+) -> String {
+    use chaosbox_core::GraphBuild;
+    use chaosbox_store::Store;
+    let held = hold_wide_response(client, &config.database, 1, &wide.id).await;
+    for id in 10..18 {
+        client.send(status_request(id)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        action_count(&diagnostics().await, &config.database, "TRANSACTION_QUERY"),
+        action_count(&held, &config.database, "TRANSACTION_QUERY"),
+        "queued calls started behind blocked output"
+    );
+    let mut replacement = GraphBuild::new(REPO, vec![SNAP.into()], 2);
+    replacement.add_node(wide.clone()).unwrap();
+    let current = replacement.id.clone();
+    store
+        .publish(replacement, Some(old.to_owned()))
+        .await
+        .unwrap();
+    let before = diagnostics().await;
+    assert_eq!(payload(&client.receive().await)["entity_id"], wide.id);
+    for id in 10..18 {
+        let response = client.receive().await;
+        assert_eq!(response["id"], id);
+        assert_eq!(payload(&response)["build_id"], current);
+    }
+    let after = wait_reads(&config.database, false).await;
+    assert_eq!(
+        action_count(&after, &config.database, "TRANSACTION_QUERY")
+            - action_count(&before, &config.database, "TRANSACTION_QUERY"),
+        16
+    );
+    assert_eq!(
+        action_count(&after, &config.database, "TRANSACTION_OPEN")
+            - action_count(&before, &config.database, "TRANSACTION_OPEN"),
+        8
+    );
+
+    let held = hold_wide_response(client, &config.database, 100, &wide.id).await;
+    client.send(status_request(101)).await;
+    client
+        .send(json!({"jsonrpc":"2.0","id":102,"method":"tools/list"}))
+        .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(
+        action_count(&diagnostics().await, &config.database, "TRANSACTION_QUERY"),
+        action_count(&held, &config.database, "TRANSACTION_QUERY")
+    );
+    std::fs::write(password, "disposable-wrong-password").unwrap();
+    assert_eq!(payload(&client.receive().await)["entity_id"], wide.id);
+    let failed = client.receive().await;
+    assert_eq!(failed["id"], 101);
+    assert_eq!(
+        failed["error"]["code"], -32603,
+        "queued call reused stale credentials: {failed}"
+    );
+    let listed = client.receive().await;
+    assert_eq!(listed["id"], 102);
+    assert!(listed["result"]["tools"].is_array());
+    assert_eq!(
+        settled_sample(client.child.id().unwrap()).await["tcp_sockets"],
+        0
+    );
+    std::fs::write(password, &config.password).unwrap();
+    assert_eq!(
+        payload(&call(client, 110, "status", json!({"repo":REPO})).await)["build_id"],
+        current
+    );
+    current
+}
+
+async fn queued_status_retention(client: &mut Client, database: &str, current: &str) -> Vec<Value> {
+    let mut samples = Vec::new();
+    for batch in 0..7 {
+        let base = 1000 + batch * 8;
+        let before = diagnostics().await;
+        for id in base..base + 8 {
+            client.send(status_request(id)).await;
+        }
+        for id in base..base + 8 {
+            let response = client.receive().await;
+            assert_eq!(response["id"], id);
+            assert_eq!(payload(&response)["build_id"], current);
+        }
+        let after = wait_reads(database, false).await;
+        assert_eq!(
+            action_count(&after, database, "TRANSACTION_QUERY")
+                - action_count(&before, database, "TRANSACTION_QUERY"),
+            16
+        );
+        assert_eq!(
+            action_count(&after, database, "TRANSACTION_OPEN")
+                - action_count(&before, database, "TRANSACTION_OPEN"),
+            8
+        );
+        assert_eq!(
+            action_count(&after, database, "CONNECTION_OPEN")
+                - action_count(&before, database, "CONNECTION_OPEN"),
+            0
+        );
+        samples.push(sample(client.child.id().unwrap()));
+    }
+    for observed in &samples {
+        assert_eq!(observed["tcp_sockets"], 1);
+        assert_eq!(observed["VmSwap"], 0);
+        assert!(
+            observed["VmRSS"].as_u64().unwrap()
+                <= samples[0]["VmRSS"].as_u64().unwrap() + 16 * 1024
+        );
+        assert!(
+            observed["Threads"].as_u64().unwrap() <= samples[0]["Threads"].as_u64().unwrap() + 2
+        );
+        assert!(observed["fds"].as_u64().unwrap() <= samples[0]["fds"].as_u64().unwrap() + 2);
+    }
+    samples
+}
+
+#[tokio::test]
+#[ignore = "requires fresh disposable s02c4_* TypeDB, monitoring and CHAOSBOX_REQUIRE_TYPEDB=1"]
+async fn disposable_queued_calls_repin_reread_credentials_and_retain_bounded_state() {
+    use chaosbox_core::{Entity, EntityKind, SnapshotFile, SourceSpan};
+    use chaosbox_store::Store;
+    use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
+    assert_eq!(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref(), Ok("1"));
+    let config = TypeDbConfig::from_env().unwrap();
+    assert!(config.database.starts_with("s02c4_"));
+    let mut store = TypeDbStore::new(config.clone());
+    store.migrate().await.unwrap();
+    store
+        .ensure_snapshot_files(
+            SNAP,
+            REPO,
+            &[SnapshotFile {
+                snapshot: SNAP.into(),
+                path: "f.rs".into(),
+                sha256: "fixture".into(),
+                bytes: 1,
+            }],
+        )
+        .await
+        .unwrap();
+    let (mut build, _) = connection_fixture();
+    let wide = Entity::new(
+        EntityKind::Symbol,
+        REPO,
+        SNAP,
+        "f.rs",
+        &"wide".repeat(150_000),
+        "wide",
+        SourceSpan::point("f.rs", 1, 1, 0),
+    );
+    build.add_node(wide.clone()).unwrap();
+    let old = build.id.clone();
+    store.publish(build, None).await.unwrap();
+    let credentials = tempfile::tempdir().unwrap();
+    let password = credentials.path().join("password");
+    std::fs::write(&password, &config.password).unwrap();
+    let mut client = Client::start_db(&config.address, &password, &config.database).await;
+    let current =
+        queued_repin_and_credentials(&mut client, &mut store, &password, &config, &wide, &old)
+            .await;
+    let samples = queued_status_retention(&mut client, &config.database, &current).await;
+    drop(client.input.take());
+    assert!(client.stopped().await.success());
+    assert_eq!(active_reads(&diagnostics().await, &config.database), 0);
+    eprintln!(
+        "{}",
+        json!({"case":"bounded-ordinary-admission", "old":old,"current":current,
+        "queued_after_pointer_movement":8,"credential_replacement_rejected":true,
+        "retention_bursts":7,"calls_per_burst":8,"queries_per_burst":16,"transactions_per_burst":8,
+        "samples":samples,"remaining_reads":0})
     );
 }

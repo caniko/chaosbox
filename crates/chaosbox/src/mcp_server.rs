@@ -4,6 +4,7 @@ use super::{
     AnyReader, LifecycleReport, TypeDbReader, EXPORT_NODE_CAP, EXPORT_EDGE_CAP, all_relation_types,
 };
 use std::{
+    collections::VecDeque,
     future::{Future, pending},
     time::Duration,
 };
@@ -25,6 +26,10 @@ pub(super) const MCP_FRAME_BYTES: usize = 64 * 1024;
 pub(super) const MCP_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MCP_OUTPUT_TIMEOUT: Duration = Duration::from_secs(10);
 const MCP_GRAPH_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const MCP_PENDING_REQUESTS: usize = 8;
+const MCP_PENDING_BYTES: usize = 256 * 1024;
+// Admission wait is separate from dispatch-owned backend/path deadlines.
+const MCP_ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(super) fn mcp_tool_defs() -> Vec<serde_json::Value> {
     vec![
@@ -448,7 +453,7 @@ pub(super) async fn serve_mcp(
     let mut frames = Frames::new(tokio::io::stdin());
     let mut initialized = false;
     // ponytail: one idle driver per ordinary server; no result/header cache.
-    // Bounded admission/pooling belongs here if concurrent graph calls are added.
+    // Queued frames acquire credentials and fresh pins only when dispatched.
     let mut graph: Option<(TypeDbReader, tokio::time::Instant)> = None;
     loop {
         let line = tokio::select! {
@@ -457,9 +462,9 @@ pub(super) async fn serve_mcp(
                 Some((_, deadline)) => tokio::time::sleep_until(*deadline).await,
                 None => pending().await,
             }} => { graph = None; continue; }
-            line = frames.next() => line?,
+            line = frames.request() => line?,
         };
-        let Some(line) = line else {
+        let Some((line, admission_deadline)) = line else {
             break;
         };
         let req = match decode_frame(&line) {
@@ -477,6 +482,16 @@ pub(super) async fn serve_mcp(
             Some(i) => i.clone(),
             None => continue,
         };
+        if admission_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+            if !exchange(&mut frames, &mut stdout, &id, async {
+                admission_expired(&id)
+            })
+            .await?
+            {
+                break;
+            }
+            continue;
+        }
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
         let params = req
             .get("params")
@@ -654,11 +669,18 @@ fn mcp_output() -> std::io::Result<Box<dyn AsyncWrite + Unpin>> {
     Ok(Box::new(tokio::io::stdout()))
 }
 
-/// Cancellation-safe framing: bytes consumed before a competing event remain in
-/// `line`. No input task, decoded-request queue, or detached tool task is retained.
+struct Queued {
+    line: Vec<u8>,
+    id: Value,
+    deadline: tokio::time::Instant,
+}
+
+/// Cancellation-safe framing and bounded raw-request admission. No queued frame
+/// owns credentials, a backend future, a publication pin or a query result.
 pub(super) struct Frames<I> {
     input: BufReader<I>,
     line: Vec<u8>,
+    queued: VecDeque<Queued>,
 }
 
 impl<I: AsyncRead + Unpin> Frames<I> {
@@ -666,7 +688,17 @@ impl<I: AsyncRead + Unpin> Frames<I> {
         Self {
             input: BufReader::new(input),
             line: Vec::new(),
+            queued: VecDeque::new(),
         }
+    }
+
+    async fn request(
+        &mut self,
+    ) -> std::io::Result<Option<(Vec<u8>, Option<tokio::time::Instant>)>> {
+        if let Some(queued) = self.queued.pop_front() {
+            return Ok(Some((queued.line, Some(queued.deadline))));
+        }
+        Ok(self.next().await?.map(|line| (line, None)))
     }
 
     pub(super) async fn next(&mut self) -> std::io::Result<Option<Vec<u8>>> {
@@ -722,6 +754,7 @@ fn decode_frame(line: &[u8]) -> Result<Option<Value>, Value> {
 }
 
 struct Output {
+    id: Value,
     bytes: Vec<u8>,
     offset: usize,
     deadline: tokio::time::Instant,
@@ -743,6 +776,7 @@ impl Output {
             });
         bytes.push(b'\n');
         Self {
+            id: response["id"].clone(),
             bytes,
             offset: 0,
             deadline: tokio::time::Instant::now() + MCP_OUTPUT_TIMEOUT,
@@ -778,11 +812,21 @@ impl Output {
     }
 }
 
-/// One backend request, one control response and one final response at most.
-/// Further requests while output is backpressured close the connection rather
-/// than accumulating a queue. EOF/error drops the in-place backend future.
-// ponytail: one backend request per connection; add bounded admission/scheduling
-// here if concurrent reads become necessary, retaining the same cleanup rules.
+fn admission_expired(id: &Value) -> Value {
+    mcp_error(
+        id,
+        -32000,
+        "MCP admission wait deadline exceeded".into(),
+        None,
+    )
+}
+
+/// One backend future, one final response and bounded request/control queues.
+/// EOF/error drops the in-place backend future; pings and cancellation bypass
+/// admission. Controls drain before returning so every removed request receives
+/// its response even when the active final response was already being written.
+// ponytail: one active backend request per connection; increase concurrency only
+// with explicit per-request connection ownership and the same cleanup bounds.
 pub(super) async fn exchange<I, O, F>(
     frames: &mut Frames<I>,
     output: &mut O,
@@ -797,10 +841,17 @@ where
     let mut call = Some(Box::pin(response));
     let mut writing: Option<Output> = None;
     let mut ready: Option<Output> = None;
+    let mut controls = VecDeque::<Output>::new();
+    let mut finished = false;
     loop {
         if writing.is_none() {
-            writing = ready.take();
+            writing = controls.pop_front().or_else(|| ready.take());
         }
+        if finished && writing.is_none() {
+            return Ok(true);
+        }
+        let deadline = frames.queued.front().map(|queued| queued.deadline);
+        let output_deadline = ready.as_ref().map(|frame| frame.deadline);
         tokio::select! {
             biased;
             value = async { match call.as_mut() { Some(future) => future.await, None => pending().await } } => {
@@ -808,7 +859,24 @@ where
                 ready = Some(Output::new(&value, true));
             }
             written = async { match writing.as_mut() { Some(frame) => frame.step(output).await, None => pending().await } } => {
-                if written? && writing.take().is_some_and(|frame| frame.final_response) { return Ok(true); }
+                if written? {
+                    finished |= writing.take().is_some_and(|frame| frame.final_response);
+                }
+            }
+            () = async { match output_deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => pending().await,
+            }} => return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "MCP output deadline exceeded")),
+            () = async { match deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => pending().await,
+            }} => {
+                if controls.len() == MCP_PENDING_REQUESTS {
+                    return Err(std::io::Error::other("MCP output backpressure: response queue full"));
+                }
+                if let Some(queued) = frames.queued.pop_front() {
+                    controls.push_back(Output::new(&admission_expired(&queued.id), false));
+                }
             }
             line = frames.next() => {
                 let Some(line) = line? else { return Ok(false); };
@@ -817,26 +885,37 @@ where
                     Err(error) => error,
                     Ok(Some(req)) => {
                         if req.get("id").is_none() {
-                            if req["method"] == "notifications/cancelled" && call.is_some()
-                                && req["params"].get("requestId") == Some(id) {
+                            if req["method"] != "notifications/cancelled" { continue; }
+                            let Some(target) = req["params"].get("requestId") else { continue; };
+                            if call.is_some() && target == id {
                                 call = None;
                                 ready = Some(Output::new(&mcp_error(id, -32800, "request cancelled".into(), None), true));
+                                continue;
                             }
-                            continue;
-                        }
-                        if req["id"] == *id {
-                            mcp_error(&Value::Null, -32600, "duplicate active request id".into(), None)
+                            let Some(position) = frames.queued.iter().position(|queued| queued.id == *target) else { continue; };
+                            let queued = frames.queued.remove(position).expect("queued position exists");
+                            mcp_error(&queued.id, -32800, "request cancelled".into(), None)
+                        } else if (!finished && req["id"] == *id)
+                            || frames.queued.iter().any(|queued| queued.id == req["id"])
+                            || writing.as_ref().is_some_and(|frame| frame.id == req["id"])
+                            || controls.iter().any(|frame| frame.id == req["id"]) {
+                            mcp_error(&Value::Null, -32600, "duplicate outstanding request id".into(), None)
                         } else if req["method"] == "ping" {
                             serde_json::json!({"jsonrpc":"2.0", "id":req["id"], "result":{}})
+                        } else if frames.queued.len() < MCP_PENDING_REQUESTS
+                            && frames.queued.iter().map(|queued| queued.line.len()).sum::<usize>() + line.len() <= MCP_PENDING_BYTES {
+                            frames.queued.push_back(Queued { line, id: req["id"].clone(),
+                                deadline: tokio::time::Instant::now() + MCP_ADMISSION_TIMEOUT });
+                            continue;
                         } else {
-                            mcp_error(&req["id"], -32000, "one request is already in flight; cancel or await it".into(), None)
+                            mcp_error(&req["id"], -32000, "MCP admission queue full".into(), None)
                         }
                     }
                 };
-                if writing.is_some() || ready.is_some() {
+                if controls.len() == MCP_PENDING_REQUESTS {
                     return Err(std::io::Error::other("MCP output backpressure: response queue full"));
                 }
-                writing = Some(Output::new(&response, false));
+                controls.push_back(Output::new(&response, false));
             }
         }
     }
