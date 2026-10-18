@@ -266,25 +266,32 @@ impl TypeDbReader {
     }
 
     async fn build_header(&self, query: &str) -> Result<Option<BuildRow>, StoreError> {
-        let rows = read_rows(
-            self.driver()?,
-            &self.config.database,
-            query,
-            &["b", "gen", "st", "coverage", "digest"],
-        )
-        .await?;
+        use typedb_driver::{TransactionOptions, TransactionType};
+        use crate::common::{READ_TIMEOUT, read_rows_in};
+
+        // One request-owned read batch; the cached driver never retains this tx.
+        let tx = self
+            .driver()?
+            .transaction_with_options(
+                &self.config.database,
+                TransactionType::Read,
+                TransactionOptions::new().transaction_timeout(READ_TIMEOUT),
+            )
+            .await
+            .map_err(driver_error)?;
+        let rows = read_rows_in(&tx, query, &["b", "gen", "st", "coverage", "digest"]).await?;
         let Some(row) = rows.into_iter().next() else {
             return Ok(None);
         };
         let build_id = col_string(&row, "b")?;
-        // Second read for the freshness fingerprint: one row per snapshot of
+        // Second query in the same read snapshot: one row per snapshot of
         // the PINNED build (never every build in the database). Sorted for
         // the same deterministic reporting order as the in-memory backend.
         let qs = format!(
             "match $g isa graph-build, has build-id {}, has snapshot-id $s; select $s;",
             str_lit(&build_id)
         );
-        let snap_rows = read_rows(self.driver()?, &self.config.database, &qs, &["s"]).await?;
+        let snap_rows = read_rows_in(&tx, &qs, &["s"]).await?;
         let mut snapshots = Vec::with_capacity(snap_rows.len());
         for r in &snap_rows {
             snapshots.push(col_string(r, "s")?);

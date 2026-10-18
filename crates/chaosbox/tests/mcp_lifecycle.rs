@@ -587,6 +587,7 @@ async fn lookup_batch(client: &mut Client, id: &str, database: &str, base_id: u6
     }
     let after = wait_reads(database, false).await;
     json!({"connections":action_count(&after,database,"CONNECTION_OPEN") - action_count(&before,database,"CONNECTION_OPEN"),
+        "transactions":action_count(&after,database,"TRANSACTION_OPEN") - action_count(&before,database,"TRANSACTION_OPEN"),
         "queries":action_count(&after,database,"TRANSACTION_QUERY") - action_count(&before,database,"TRANSACTION_QUERY"),
         "sample":sample(client.child.id().unwrap())})
 }
@@ -791,5 +792,163 @@ async fn disposable_ordinary_mcp_connection_reuse_is_pinned_and_bounded() {
         json!({"case":"ordinary-connection-reuse","baseline_calls":20,"baseline":before,
         "candidate_success_calls":140,"batches":batches,"idle":idle,"idle_elapsed_ms":started.elapsed().as_millis(),
         "pointer_repo_credential_and_historical_checks":true})
+    );
+}
+
+async fn header_cases(
+    client: &mut Client,
+    baseline: &mut Client,
+    store: &mut chaosbox_typedb::store::TypeDbStore,
+    database: &str,
+) {
+    use chaosbox_store::Store;
+    for snapshots in [vec![], vec!["s04a2-header".to_owned()]] {
+        let repo = format!("s04a2-snapshots-{}", snapshots.len());
+        store
+            .publish(
+                chaosbox_core::GraphBuild::new(&repo, snapshots.clone(), 1),
+                None,
+            )
+            .await
+            .unwrap();
+        let expected = payload(&call(baseline, 500, "status", json!({"repo":repo})).await);
+        let before = diagnostics().await;
+        let actual = payload(&call(client, 500, "status", json!({"repo":repo})).await);
+        let after = wait_reads(database, false).await;
+        assert_eq!(
+            action_count(&after, database, "TRANSACTION_OPEN")
+                - action_count(&before, database, "TRANSACTION_OPEN"),
+            1
+        );
+        assert_eq!(
+            action_count(&after, database, "TRANSACTION_QUERY")
+                - action_count(&before, database, "TRANSACTION_QUERY"),
+            2
+        );
+        assert_eq!(actual, expected);
+        assert_eq!(actual["snapshots"], json!(snapshots));
+    }
+}
+
+async fn historical_header_batch(config: &chaosbox_typedb::store::TypeDbConfig, old: &str) {
+    use chaosbox_store::GraphQueries;
+    let mut reader = chaosbox_typedb::reader::TypeDbReader::new(config.clone());
+    reader.connect().await.unwrap();
+    let before = diagnostics().await;
+    let historical = reader.published_build(REPO, old).await.unwrap().unwrap();
+    assert_eq!(historical.build_id, old);
+    assert_eq!(historical.generation, 1);
+    assert_eq!(historical.snapshots, [SNAP]);
+    assert!(historical.evidence_sealed);
+    assert!(reader
+        .published_build("s04a2-foreign", old)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(reader
+        .published_build(REPO, "build:missing")
+        .await
+        .unwrap()
+        .is_none());
+    let after = wait_reads(&config.database, false).await;
+    assert_eq!(
+        action_count(&after, &config.database, "TRANSACTION_OPEN")
+            - action_count(&before, &config.database, "TRANSACTION_OPEN"),
+        3
+    );
+    assert_eq!(
+        action_count(&after, &config.database, "TRANSACTION_QUERY")
+            - action_count(&before, &config.database, "TRANSACTION_QUERY"),
+        4
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires fresh disposable s04a2_* TypeDB, monitoring, S04a.1 CHAOSBOX_BASELINE_TEST_BIN and CHAOSBOX_REQUIRE_TYPEDB=1"]
+async fn disposable_ordinary_mcp_header_batches_reduce_transactions() {
+    use chaosbox_core::SnapshotFile;
+    use chaosbox_store::Store;
+    use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
+    assert_eq!(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref(), Ok("1"));
+    let config = TypeDbConfig::from_env().unwrap();
+    assert!(config.database.starts_with("s04a2_"));
+    let mut store = TypeDbStore::new(config.clone());
+    store.migrate().await.unwrap();
+    store
+        .ensure_snapshot_files(
+            SNAP,
+            REPO,
+            &[SnapshotFile {
+                snapshot: SNAP.into(),
+                path: "f.rs".into(),
+                sha256: "fixture".into(),
+                bytes: 1,
+            }],
+        )
+        .await
+        .unwrap();
+    let (build, hub) = connection_fixture();
+    let old = build.id.clone();
+    store.publish(build, None).await.unwrap();
+    let credentials = tempfile::tempdir().unwrap();
+    let password = credentials.path().join("password");
+    std::fs::write(&password, &config.password).unwrap();
+    let mut baseline = Client::start_binary(
+        &config.address,
+        &password,
+        &config.database,
+        std::env::var_os("CHAOSBOX_BASELINE_TEST_BIN").unwrap(),
+    )
+    .await;
+    let before = lookup_batch(&mut baseline, &hub, &config.database, 1).await;
+    let mut client = Client::start_db(&config.address, &password, &config.database).await;
+    let after = lookup_batch(&mut client, &hub, &config.database, 1).await;
+    eprintln!(
+        "{}",
+        json!({"case":"header-batch-before-after", "lookups_each":20, "baseline":before, "candidate":after})
+    );
+    assert_eq!(before["transactions"], 60);
+    assert_eq!(after["transactions"], 40);
+    assert_eq!(before["queries"], 60);
+    assert_eq!(after["queries"], 60);
+    assert_eq!(before["connections"], 1);
+    assert_eq!(after["connections"], 1);
+    header_cases(&mut client, &mut baseline, &mut store, &config.database).await;
+    repin_and_rotate(&mut client, &mut store, &password, &config, &hub, &old).await;
+    historical_header_batch(&config, &old).await;
+    let before_missing = diagnostics().await;
+    assert!(call(
+        &mut client,
+        20000,
+        "status",
+        json!({"repo":"s04a2-missing"})
+    )
+    .await
+    .get("error")
+    .is_some());
+    let missing = wait_reads(&config.database, false).await;
+    assert_eq!(
+        action_count(&missing, &config.database, "TRANSACTION_OPEN")
+            - action_count(&before_missing, &config.database, "TRANSACTION_OPEN"),
+        1
+    );
+    assert_eq!(
+        action_count(&missing, &config.database, "TRANSACTION_QUERY")
+            - action_count(&before_missing, &config.database, "TRANSACTION_QUERY"),
+        1
+    );
+    assert_eq!(
+        settled_sample(client.child.id().unwrap()).await["tcp_sockets"],
+        0
+    );
+    drop(client.input.take());
+    drop(baseline.input.take());
+    assert!(client.stopped().await.success());
+    assert!(baseline.stopped().await.success());
+    eprintln!(
+        "{}",
+        json!({"case":"header-batch-pin-parity", "zero_and_single_snapshot":true,
+        "historical_repository_and_credential_checks":true, "missing_header_queries":1, "missing_header_transactions":1,
+        "remaining_reads":active_reads(&wait_reads(&config.database, false).await, &config.database)})
     );
 }
