@@ -193,6 +193,64 @@ is the injected failure.
 The immutable registered native and consumer gates still require reconciled
 pins. Toolbelt's original `caee984b…` cancellation candidate was superseded by
 reviewed fixes at `509622ba32cf32c3d186427ddfb78f6b21e8620c`; its exact-head hosted
-qualification is pending. The selected reconciliation is only source-prepared.
+Nix matrix passed, but the dependency audit and retention gate failed as detailed
+below. The selected reconciliation is only source-prepared.
 No host activation, production service restart, live graph mutation or measured
 production-resource acceptance is claimed by this follow-up.
+
+## Dependency-release qualification blocker
+
+Toolbelt `509622ba…` passed **all 34** Nix installable jobs in run
+[`39116513011`](https://github.com/caniko/canix-toolbelt/actions/runs/39116513011).
+Its main CI run
+[`39116513125`](https://github.com/caniko/canix-toolbelt/actions/runs/39116513125)
+passed five jobs and failed dependency audit in the sixth. The exact chain is
+`Fleetix 0.6.0 → pklx 0.1.0 → Pklr 1.5.1 → zip 8.6.0`; the three ZIP advisories
+are RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369. The source-evidence
+retention gate correctly rejected the failed original producer. Nix packaging
+success therefore does not qualify this pin.
+
+The operator authorized expanding this task into the dependency release.
+The existing Fleetix `0.7.0` candidate at
+`2afddcf1dc8df43b7aec151292ec73b69038c936` already consumes published pklx `0.2.0`,
+Pklr `5.1.2` and ZIP `9.0.5`. Its metadata audit passes after repairing the audit
+helper's rejection of Cargo workspace root members (`"."`, `"./"`, `"./."`).
+The helper repair is signed local AI-skills commit
+`e95c70712154b101aa5556c9736b399a7fce635d`: all five tests pass against its staged
+source and the scoped working-source treefmt check passes.
+
+Fleetix's existing uncommitted sidecar-facade regression reproduces a separate
+Pklr `5.1.2` defect: its shipped topology fails evaluation because imported
+constraint aliases lose their definition-site bindings. The focused run has
+**one pass and one failure**. The committed Fleetix source archive and the
+separate foreign test patch are retained; neither that test nor the Pklr owner's
+ongoing edits was staged or overwritten by this continuation.
+
+The owning repair is [Pklr #316](https://github.com/jdx/pklr/pull/316), revision
+`5701349776bf22f2a7f276ec85ab3ec5b73a4d84`. Its
+[CI run](https://github.com/jdx/pklr/actions/runs/39125895124) passed all seven
+jobs and its [performance run](https://github.com/jdx/pklr/actions/runs/39125895122)
+also passed. Publication remains blocked on the Pklr maintainer accepting the
+repair and releasing it to crates.io; the operator account has only `READ`
+permission on that repository. A fork/path override does not satisfy the
+published-dependency release gate.
+
+Once that owning release is available, select its verified registry version in
+Fleetix, rerun the shipped-topology and full release gates, publish both Fleetix
+workspace members, then adapt and requalify Toolbelt before Canix consumption.
+The prepared Canix request binds `500aa3b4…`; a concurrent documentation commit
+advanced HEAD to `0b16bbe3…`, so a fresh request is required before promotion.
+
+The focused Canix command
+`canix cache binary build .#checks.x86_64-linux.local-inference --include-tests --max-jobs 1 --cores 2 --eval-wait-seconds 120`
+also exits **1 before realization** at the existing Atlas Roborev cancellation
+assertion. Thus this current-source check, the immutable compaction gates, full
+registry profile and Atlas top-level build remain open. The independent live
+assessment gate still needs TypeSafe credits.
+
+The **27-file** `dependency-release-blockers.sha256` manifest under the existing
+fixture evidence directory verifies and hashes to
+`cb491b1f45117d1316059b93d9fb3efc233fd6c3aa62aef624d7a142c5554b54`.
+It retains exact producer logs, the Fleetix source/reproduction patch, upstream
+CI/authority evidence, helper red/green checks and the focused Canix failure.
+The seven foreign Canix staged paths remain byte-identical across this phase.
