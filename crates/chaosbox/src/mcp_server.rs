@@ -1,6 +1,8 @@
 //! Read-only MCP over stdio: tool definitions, argument validation, dispatch, and the serve loop.
 
-use super::{AnyReader, LifecycleReport, EXPORT_NODE_CAP, EXPORT_EDGE_CAP, all_relation_types};
+use super::{
+    AnyReader, LifecycleReport, TypeDbReader, EXPORT_NODE_CAP, EXPORT_EDGE_CAP, all_relation_types,
+};
 use std::{
     future::{Future, pending},
     time::Duration,
@@ -22,6 +24,7 @@ const MCP_SEARCH_LIMIT_MAX: i64 = 200;
 pub(super) const MCP_FRAME_BYTES: usize = 64 * 1024;
 pub(super) const MCP_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 const MCP_OUTPUT_TIMEOUT: Duration = Duration::from_secs(10);
+const MCP_GRAPH_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(super) fn mcp_tool_defs() -> Vec<serde_json::Value> {
     vec![
@@ -213,10 +216,11 @@ pub(super) fn mcp_args(
 // Long CLI/dispatch functions; splitting them apart is the owning
 // session's refactor. Allowed to keep CI unblocked.
 #[allow(clippy::too_many_lines)]
-pub(super) async fn mcp_call_tool(
+async fn mcp_call_tool_connected(
     id: &serde_json::Value,
     name: &str,
     params: &serde_json::Value,
+    connection: &mut Option<TypeDbReader>,
 ) -> serde_json::Value {
     let args = match mcp_args(name, params) {
         Ok(a) => a,
@@ -269,7 +273,13 @@ pub(super) async fn mcp_call_tool(
             Ok(query) => query,
             Err(error) => return mcp_error(id, -32602, error, None),
         };
-        return match Box::pin(AnyReader::neighborhood_page(query)).await {
+        return match async {
+            query
+                .read(AnyReader::handle_cached(connection).await?)
+                .await
+        }
+        .await
+        {
             Ok(page) => mcp_text_result(id, &serde_json::json!(page)),
             Err(error) => mcp_backend_error(id, name, &error),
         };
@@ -282,7 +292,7 @@ pub(super) async fn mcp_call_tool(
             Ok(query) => query,
             Err(error) => return mcp_error(id, -32602, error, None),
         };
-        return match Box::pin(AnyReader::path_query(query)).await {
+        return match query.read(AnyReader::handle_cached(connection)).await {
             Ok(value) => mcp_text_result(id, &value),
             Err(error) => mcp_backend_error(id, name, &error),
         };
@@ -335,10 +345,13 @@ pub(super) async fn mcp_call_tool(
             None,
         );
     }
-    let reader = match Box::pin(AnyReader::connect(repo)).await {
-        Ok(r) => r,
-        Err(e) => return mcp_backend_error(id, name, &e),
-    };
+    let reader =
+        match async { AnyReader::pin(AnyReader::handle_cached(connection).await?, repo).await }
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => return mcp_backend_error(id, name, &e),
+        };
     let payload: Result<serde_json::Value, String> = match name {
         "search" => {
             let q = args["query"].as_str().unwrap_or_default();
@@ -415,6 +428,11 @@ pub(super) async fn mcp_call_tool(
     }
 }
 
+#[cfg(test)]
+pub(super) async fn mcp_call_tool(id: &Value, name: &str, params: &Value) -> Value {
+    mcp_call_tool_connected(id, name, params, &mut None).await
+}
+
 /// Read-only MCP over stdio: full handshake, paginated tools, validated calls.
 /// Never loads Jev credentials; never accepts prose as evidence.
 // Long CLI/dispatch functions; splitting them apart is the owning
@@ -429,7 +447,21 @@ pub(super) async fn serve_mcp(
     let mut stdout = mcp_output()?;
     let mut frames = Frames::new(tokio::io::stdin());
     let mut initialized = false;
-    while let Some(line) = frames.next().await? {
+    // ponytail: one idle driver per ordinary server; no result/header cache.
+    // Bounded admission/pooling belongs here if concurrent graph calls are added.
+    let mut graph: Option<(TypeDbReader, tokio::time::Instant)> = None;
+    loop {
+        let line = tokio::select! {
+            biased;
+            () = async { match graph.as_ref() {
+                Some((_, deadline)) => tokio::time::sleep_until(*deadline).await,
+                None => pending().await,
+            }} => { graph = None; continue; }
+            line = frames.next() => line?,
+        };
+        let Some(line) = line else {
+            break;
+        };
         let req = match decode_frame(&line) {
             Ok(Some(req)) => req,
             Ok(None) => continue,
@@ -526,6 +558,7 @@ pub(super) async fn serve_mcp(
                 if initialized {
                     let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     if name == "workspace_impact" {
+                        graph = None;
                         match workspace.as_ref() {
                             Some(workspace) => {
                                 match workspace_call(workspace, &params["arguments"]) {
@@ -541,6 +574,7 @@ pub(super) async fn serve_mcp(
                             ),
                         }
                     } else if name.starts_with("intelligence_") {
+                        graph = None;
                         if let Some(reader) = federation.as_ref() {
                             match reader.query(name, &params["arguments"]).await {
                                 Ok(value) => mcp_text_result(&id, &value),
@@ -570,7 +604,20 @@ pub(super) async fn serve_mcp(
                             }
                         }
                     } else {
-                        Box::pin(mcp_call_tool(&id, name, &params)).await
+                        // Move ownership into this future. Cancellation drops all
+                        // request-owned clones; no cached driver survives it.
+                        let mut connection = graph
+                            .take()
+                            .filter(|(_, deadline)| tokio::time::Instant::now() < *deadline)
+                            .map(|(handle, _)| handle);
+                        let result =
+                            mcp_call_tool_connected(&id, name, &params, &mut connection).await;
+                        if result.get("error").is_none() {
+                            graph = connection.map(|handle| {
+                                (handle, tokio::time::Instant::now() + MCP_GRAPH_IDLE_TIMEOUT)
+                            });
+                        }
+                        result
                     }
                 } else {
                     mcp_error(&id, -32600, "server not initialized".to_owned(), None)

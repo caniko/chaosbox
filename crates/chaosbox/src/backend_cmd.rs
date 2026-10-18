@@ -118,19 +118,38 @@ pub(super) const NEIGHBORHOOD_DEFAULT_LIMIT: usize = 20;
 
 impl AnyReader {
     async fn handle() -> Result<TypeDbReader, PipelineError> {
+        Self::handle_cached(&mut None).await
+    }
+
+    /// Reuse transport only, after rereading the operator's credential file.
+    /// The caller owns eviction and must not retain this slot after failure.
+    pub(super) async fn handle_cached(
+        slot: &mut Option<TypeDbReader>,
+    ) -> Result<TypeDbReader, PipelineError> {
         let config = typedb_config_from_env().map_err(PipelineError::Consumer)?;
+        if let Some(handle) = slot
+            .as_ref()
+            .filter(|handle| handle.matches_config(&config))
+        {
+            return Ok(handle.clone());
+        }
+        *slot = None;
         let mut handle = TypeDbReader::new(config);
         Box::pin(handle.connect())
             .await
             .map_err(|e| PipelineError::Consumer(format!("typedb connect: {e}")))?;
+        *slot = Some(handle.clone());
         Ok(handle)
     }
 
     /// Connect and pin the active build for `repo` on `TypeDB`.
     pub(super) async fn connect(repo: &str) -> Result<Self, PipelineError> {
-        Ok(Self(
-            GraphReader::pinned(Self::handle().await?, repo).await?,
-        ))
+        Self::pin(Self::handle().await?, repo).await
+    }
+
+    /// Pin a fresh publication on an existing transport, never a previous reader.
+    pub(super) async fn pin(handle: TypeDbReader, repo: &str) -> Result<Self, PipelineError> {
+        Ok(Self(GraphReader::pinned(handle, repo).await?))
     }
 
     /// Acquire credentials only after shared preparation has validated the query.

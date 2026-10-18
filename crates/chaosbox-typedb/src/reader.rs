@@ -14,7 +14,7 @@
 //! case-sensitive and has no case-insensitive form). An empty relation-type
 //! filter matches nothing.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use chaosbox_store::{
     BuildRow, EntityRow, EndpointRef, EvidenceRow, StoreError, GraphQueries, NeighborhoodDirection,
@@ -111,9 +111,11 @@ fn unescape_like(like: &str) -> String {
 }
 
 /// Read-only `TypeDB` query handle: one pinned database, read transactions.
+/// Clones share only the driver; every query still opens its own transaction.
+#[derive(Clone)]
 pub struct TypeDbReader {
     config: TypeDbConfig,
-    driver: Option<TypeDBDriver>,
+    driver: Option<Arc<TypeDBDriver>>,
 }
 
 impl TypeDbReader {
@@ -124,6 +126,16 @@ impl TypeDbReader {
             config,
             driver: None,
         }
+    }
+
+    /// Whether an operator-selected configuration has the same connection and
+    /// credential identity. This grants no build pin or scoped-read authority.
+    #[must_use]
+    pub fn matches_config(&self, config: &TypeDbConfig) -> bool {
+        self.config.address == config.address
+            && self.config.database == config.database
+            && self.config.username == config.username
+            && self.config.password == config.password
     }
 
     /// Connect the driver. Unlike the store, the read path never creates
@@ -154,7 +166,7 @@ impl TypeDbReader {
                     self.config.database
                 )));
             }
-            self.driver = Some(driver);
+            self.driver = Some(Arc::new(driver));
         }
         Ok(())
     }
@@ -162,7 +174,7 @@ impl TypeDbReader {
     /// Borrow the connected driver or report a client error.
     fn driver(&self) -> Result<&TypeDBDriver, StoreError> {
         self.driver
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| StoreError::Connection("TypeDbReader disconnected".into()))
     }
 
@@ -611,5 +623,32 @@ impl TypeDbReader {
         }
         out.sort_by(|a, b| a.rel_id.cmp(&b.rel_id));
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_identity_includes_every_backend_and_credential_field() {
+        let config = TypeDbConfig {
+            address: "127.0.0.1:1729".into(),
+            database: "disposable".into(),
+            username: "reader".into(),
+            password: "disposable-password".into(),
+        };
+        let reader = TypeDbReader::new(config.clone());
+        assert!(reader.matches_config(&config));
+        for key in ["address", "database", "username", "password"] {
+            let mut other = config.clone();
+            match key {
+                "address" => other.address.push('x'),
+                "database" => other.database.push('x'),
+                "username" => other.username.push('x'),
+                _ => other.password.push('x'),
+            }
+            assert!(!reader.matches_config(&other), "{key}");
+        }
     }
 }

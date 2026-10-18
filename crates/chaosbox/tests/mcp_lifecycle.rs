@@ -21,6 +21,15 @@ impl Client {
     async fn start_db(address: &str, password: &std::path::Path, database: &str) -> Self {
         let binary = std::env::var_os("CHAOSBOX_TEST_BIN")
             .unwrap_or_else(|| env!("CARGO_BIN_EXE_chaosbox").into());
+        Self::start_binary(address, password, database, binary).await
+    }
+
+    async fn start_binary(
+        address: &str,
+        password: &std::path::Path,
+        database: &str,
+        binary: std::ffi::OsString,
+    ) -> Self {
         let mut child = tokio::process::Command::new(binary)
             .arg("mcp")
             .env("CHAOSBOX_TYPEDB_ADDR", address)
@@ -282,6 +291,9 @@ async fn call(client: &mut Client, id: u64, name: &str, arguments: Value) -> Val
 }
 
 async fn check_cleanup(mut client: Client, mode: &str, database: &str, path: Value) -> Value {
+    // Prime successful graph reuse first: transport failures must also release
+    // a reused connection, not only a freshly acquired request-owned driver.
+    payload(&call(&mut client, 100, "status", json!({"repo":REPO})).await);
     client.send(json!({"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"path","arguments":path}})).await;
     let active = wait_reads(database, true).await;
     let started = std::time::Instant::now();
@@ -539,5 +551,245 @@ async fn disposable_ordinary_mcp_cleanup_and_retention() {
         "nodes":653,"relationships":650,"wide_entity_name_bytes":large.name.len(),
         "cleanup":cleanup,"calls_in_one_persistent_process":147,"warmup_calls":21,"samples":samples,
         "diagnostics_before":before,"diagnostics_after":after})
+    );
+}
+
+fn action_count(metrics: &Value, database: &str, action: &str) -> u64 {
+    metrics["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| {
+            row["name"] == action && (action == "CONNECTION_OPEN" || row["database"] == database)
+        })
+        .map(|row| row["successful"].as_u64().unwrap())
+        .sum()
+}
+
+fn payload(response: &Value) -> Value {
+    assert!(response.get("error").is_none(), "{response}");
+    serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+async fn lookup_batch(client: &mut Client, id: &str, database: &str, base_id: u64) -> Value {
+    let before = diagnostics().await;
+    for index in 0..20 {
+        let row = payload(
+            &call(
+                client,
+                base_id + index,
+                "lookup",
+                json!({"repo":REPO,"id":id}),
+            )
+            .await,
+        );
+        assert_eq!(row["entity_id"], id);
+    }
+    let after = wait_reads(database, false).await;
+    json!({"connections":action_count(&after,database,"CONNECTION_OPEN") - action_count(&before,database,"CONNECTION_OPEN"),
+        "queries":action_count(&after,database,"TRANSACTION_QUERY") - action_count(&before,database,"TRANSACTION_QUERY"),
+        "sample":sample(client.child.id().unwrap())})
+}
+
+async fn repin_and_rotate(
+    client: &mut Client,
+    store: &mut chaosbox_typedb::store::TypeDbStore,
+    password: &std::path::Path,
+    config: &chaosbox_typedb::store::TypeDbConfig,
+    hub: &str,
+    old: &str,
+) {
+    use chaosbox_store::Store;
+    let page = payload(
+        &call(
+            client,
+            10000,
+            "neighbors",
+            json!({"repo":REPO,"id":hub,"limit":1,"direction":"outgoing"}),
+        )
+        .await,
+    );
+    let cursor = page["next_cursor"]
+        .as_str()
+        .expect("old publication needs a second page");
+    let replacement = chaosbox_core::GraphBuild::new(REPO, vec![SNAP.into()], 2);
+    let id = replacement.id.clone();
+    // This publication deliberately has no members. Current lookup must not
+    // borrow the previous request's pin; continuation still selects the old one.
+    store
+        .publish(replacement, Some(old.to_owned()))
+        .await
+        .unwrap();
+    assert!(payload(&call(client, 10001, "lookup", json!({"repo":REPO,"id":hub})).await).is_null());
+    let status = payload(&call(client, 10002, "status", json!({"repo":REPO})).await);
+    assert_eq!(status["build_id"], id);
+    let historical = payload(
+        &call(
+            client,
+            10003,
+            "neighbors",
+            json!({"repo":REPO,"id":hub,"limit":1,"direction":"outgoing","cursor":cursor}),
+        )
+        .await,
+    );
+    assert_eq!(historical["build_id"], old);
+    let other = "s04a1-other";
+    store
+        .publish(chaosbox_core::GraphBuild::new(other, vec![], 1), None)
+        .await
+        .unwrap();
+    assert!(
+        payload(&call(client, 10004, "lookup", json!({"repo":other,"id":hub})).await).is_null()
+    );
+    assert!(call(
+        client,
+        10005,
+        "neighbors",
+        json!({"repo":other,"id":hub,"limit":1,"direction":"outgoing","cursor":cursor})
+    )
+    .await
+    .get("error")
+    .is_some());
+    payload(&call(client, 10006, "status", json!({"repo":REPO})).await);
+    std::fs::write(password, "disposable-wrong-password").unwrap();
+    assert!(call(client, 10007, "status", json!({"repo":REPO}))
+        .await
+        .get("error")
+        .is_some());
+    assert_eq!(
+        settled_sample(client.child.id().unwrap()).await["tcp_sockets"],
+        0
+    );
+    std::fs::write(password, &config.password).unwrap();
+    assert_eq!(
+        payload(&call(client, 10008, "status", json!({"repo":REPO})).await)["build_id"],
+        id
+    );
+}
+
+fn connection_fixture() -> (chaosbox_core::GraphBuild, String) {
+    use chaosbox_core::{
+        Entity, EntityKind, GraphBuild, Relation, RelationScope, RelationType, SourceSpan,
+    };
+    let mut build = GraphBuild::new(REPO, vec![SNAP.into()], 1);
+    let node = |name| {
+        Entity::new(
+            EntityKind::Symbol,
+            REPO,
+            SNAP,
+            "f.rs",
+            name,
+            name,
+            SourceSpan::point("f.rs", 1, 1, 0),
+        )
+    };
+    let hub = node("hub");
+    build.add_node(hub.clone()).unwrap();
+    for name in ["a", "b"] {
+        let leaf = node(name);
+        build.add_node(leaf.clone()).unwrap();
+        build
+            .add_edge(Relation::new(
+                RelationType::Calls,
+                &hub.id,
+                &leaf.id,
+                RelationScope::File,
+                &build.id,
+            ))
+            .unwrap();
+    }
+    (build, hub.id)
+}
+
+#[tokio::test]
+#[ignore = "requires fresh disposable s04a1_* TypeDB, monitoring, CHAOSBOX_BASELINE_TEST_BIN and CHAOSBOX_REQUIRE_TYPEDB=1"]
+async fn disposable_ordinary_mcp_connection_reuse_is_pinned_and_bounded() {
+    use chaosbox_core::SnapshotFile;
+    use chaosbox_store::Store;
+    use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
+    assert_eq!(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref(), Ok("1"));
+    let config = TypeDbConfig::from_env().unwrap();
+    assert!(config.database.starts_with("s04a1_"));
+    let mut store = TypeDbStore::new(config.clone());
+    store.migrate().await.unwrap();
+    store
+        .ensure_snapshot_files(
+            SNAP,
+            REPO,
+            &[SnapshotFile {
+                snapshot: SNAP.into(),
+                path: "f.rs".into(),
+                sha256: "fixture".into(),
+                bytes: 1,
+            }],
+        )
+        .await
+        .unwrap();
+    let (build, hub) = connection_fixture();
+    let old = build.id.clone();
+    store.publish(build, None).await.unwrap();
+    let credentials = tempfile::tempdir().unwrap();
+    let password = credentials.path().join("password");
+    std::fs::write(&password, &config.password).unwrap();
+    let baseline_binary = std::env::var_os("CHAOSBOX_BASELINE_TEST_BIN").unwrap();
+    let mut baseline = Client::start_binary(
+        &config.address,
+        &password,
+        &config.database,
+        baseline_binary,
+    )
+    .await;
+    let before = lookup_batch(&mut baseline, &hub, &config.database, 1).await;
+    drop(baseline.input.take());
+    assert!(baseline.stopped().await.success());
+    let mut client = Client::start_db(&config.address, &password, &config.database).await;
+    let mut batches = Vec::new();
+    for batch in 0..7 {
+        batches.push(lookup_batch(&mut client, &hub, &config.database, 100 + batch * 20).await);
+        if batch == 0 {
+            eprintln!(
+                "{}",
+                json!({"case":"connection-reuse-before-after","baseline":before,"candidate":batches[0]})
+            );
+            assert!(
+                batches[0]["connections"].as_u64().unwrap()
+                    < before["connections"].as_u64().unwrap()
+            );
+            assert_eq!(batches[0]["queries"], before["queries"]);
+        }
+        let observed = batches.last().unwrap();
+        assert_eq!(observed["connections"], u64::from(batch == 0));
+        assert_eq!(observed["queries"], 60);
+        let current = &observed["sample"];
+        assert_eq!(current["tcp_sockets"], 1);
+        assert_eq!(current["VmSwap"], 0);
+        let warm = &batches[0]["sample"];
+        assert!(current["VmRSS"].as_u64().unwrap() <= warm["VmRSS"].as_u64().unwrap() + 16 * 1024);
+        assert!(current["Threads"].as_u64().unwrap() <= warm["Threads"].as_u64().unwrap() + 2);
+        assert!(current["fds"].as_u64().unwrap() <= warm["fds"].as_u64().unwrap() + 2);
+    }
+    repin_and_rotate(&mut client, &mut store, &password, &config, &hub, &old).await;
+    let started = std::time::Instant::now();
+    tokio::time::sleep(Duration::from_secs(16)).await;
+    assert_eq!(sample(client.child.id().unwrap())["tcp_sockets"], 1);
+    client
+        .send(json!({"jsonrpc":"2.0","id":19999,"method":"ping"}))
+        .await;
+    assert_eq!(client.receive().await["id"], 19999);
+    tokio::time::sleep(Duration::from_secs(15)).await;
+    let idle = sample(client.child.id().unwrap());
+    assert_eq!(
+        idle["tcp_sockets"], 0,
+        "idle connection was retained: {idle}"
+    );
+    payload(&call(&mut client, 20000, "status", json!({"repo":REPO})).await);
+    drop(client.input.take());
+    assert!(client.stopped().await.success());
+    wait_reads(&config.database, false).await;
+    eprintln!(
+        "{}",
+        json!({"case":"ordinary-connection-reuse","baseline_calls":20,"baseline":before,
+        "candidate_success_calls":140,"batches":batches,"idle":idle,"idle_elapsed_ms":started.elapsed().as_millis(),
+        "pointer_repo_credential_and_historical_checks":true})
     );
 }
