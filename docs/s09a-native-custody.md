@@ -29,7 +29,8 @@ The production r10 package carries `environment-recovery.patch`,
 carries `service-readiness.patch`; the newly edited checkout additionally requests
 `session-cancellation.patch`. These are distinct tuples. The r10 result does not
 qualify the checkout's later patch set or establish native TypeScript checking of
-the new adapter against that patch set.
+the new adapter against that patch set. A subsequent native-source check does
+qualify the adapter against the clean custody host described below.
 
 In r11, the backend log explicitly reports:
 
@@ -85,16 +86,16 @@ The separate live Jev diagnostic returned HTTP **402**, with the provider's
 explicit no-credits billing message. Live assessment, admission and model-bound
 retrieval of published knowledge remain unqualified.
 
-The checkout's registered `chaosbox-compaction-consumer` build and the full
-registry profile both fail before realization: Git's filtered snapshot omits the
+The initial registered `chaosbox-compaction-consumer` build and full
+registry profile both failed before realization: Git's filtered snapshot omitted the
 other worker's untracked `root/packages/opencode-v2-candidate/session-cancellation.patch`.
 The earlier selected pin reconciliation also reached the Roborev assertion
 requiring `opencodeCancellationVersion=1`, absent from the currently pinned
 Toolbelt package. Its recovery completed without changing the live pins.
 
-The cancellation work's owner must publish/include the actual runtime patch and
-its tests, and supply the qualified cancellation-capable Toolbelt revision.
-Then refresh the selected reconciliation request, load the reconciled root
+The recovery sequence requires the actual runtime patch and tests in the
+snapshot, then a qualified cancellation-capable Toolbelt revision. Refresh the
+selected reconciliation request, load the reconciled root
 direnv, rerun native typing and both consumer checks, and finish the registry
 profile and authorized non-activating Atlas build. A separately authorized live
 transition and executable-chain recheck are still required for serving acceptance.
@@ -118,3 +119,34 @@ Manifest SHA-256:
 The seven foreign staged Canix paths remain byte-identical to their pre-test
 index snapshot. No production activation, service restart or live graph write
 was performed. Broader S23/S24 resource and quality qualification remains open.
+
+## Native typing follow-up
+
+The producer's existing `scripts/test-opencode-compaction.py` now passes with
+the new adapter and packaged Rust binary against clean OpenCode source
+`db48c4233c2d6a8af49bcf1d28aa3202c77e3dd1` (base `047c74ec…`). It runs the
+core's `bun run typecheck` and its native Promise-host regression: **1 passed,
+0 failed, 17 assertions**. The installed `session-custody.patch` also passes
+`git apply --reverse --check` against this host. The checkout remains clean after
+the verifier's temporary fixture is removed. The initial launcher lacked
+`python3` in Chaosbox's shell; the successful retry explicitly selects the
+approved root environment's immutable Python interpreter.
+
+The eight-file `native-typecheck-followup.sha256` manifest preserves both logs,
+the verifier, adapter type surface, exact host patch and clean status. Its
+SHA-256 is `98729b3b3a364348aa48efd4727fe84c463851325c8aec32f82698713fb1fe24`.
+This adds source-host typing evidence; the current Canix patch set still needs
+its own immutable native-package gate.
+
+During this work the cancellation owner committed Canix `9f899586977f8036beffeb5d8bb270dd3362bee6`
+and Toolbelt `b871b3ac9cd49b2aefa262bec43e65daff6f3240`. The missing runtime
+patch is now tracked, so that earlier snapshot blocker is resolved. The Canix
+pin still selects Toolbelt `36097d8f…`; qualification and consumption of the
+cancellation-capable producer remain pending. The fresh full-profile diagnostic
+after that source change fails manifest evaluation at the explicit Roborev
+cancellation assertion. Its log is `full-profile-after-cancellation-commit.log`
+under the parent evidence directory, SHA-256
+`97c5ad13ec93a5db59e55225e4b2abef88586f564ada7ec3c55436511d33a606`.
+Foreign staging also advanced during
+the owner's work; the original index comparison above applies to the isolated
+fixture runs, rather than asserting that no other worker subsequently staged.

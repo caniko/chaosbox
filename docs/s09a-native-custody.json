@@ -78,14 +78,32 @@
     "globalLiveCompactionAdapters": 0
   },
   "remainingGates": {
+    "nativeTypecheckAndPromiseHostAtDb48c4233c": "passed",
     "nativeTypecheckForNewAdapterAndCurrentPatchSet": "pending",
     "liveJevAssessmentPublication": "blocked-http-402-no-credits",
-    "registeredConsumerBuild": "blocked-untracked-session-cancellation-patch",
-    "fullRegistryProfile": "blocked-untracked-session-cancellation-patch",
+    "registeredConsumerBuild": "pending-retry-after-runtime-source-commit-and-qualified-pins",
+    "fullRegistryProfile": "blocked-pinned-toolbelt-missing-roborev-cancellation-capability",
     "selectedPinReconciliation": "recovered-after-missing-toolbelt-roborev-cancellation-capability",
     "atlasProductionBuild": "pending",
     "servingTransition": "separate-authorization",
     "s23s24Acceptance": "pending"
+  },
+  "nativeTypecheckFollowup": {
+    "hostRevision": "db48c4233c2d6a8af49bcf1d28aa3202c77e3dd1",
+    "hostCleanBeforeAndAfter": true,
+    "packagedCustodyPatchReverseCheck": true,
+    "coreTypecheckPassed": true,
+    "nativePromiseHostPassed": 1,
+    "nativePromiseHostFailed": 0,
+    "assertions": 17,
+    "manifest": "native-typecheck-followup.sha256",
+    "manifestEntries": 8,
+    "manifestSha256": "98729b3b3a364348aa48efd4727fe84c463851325c8aec32f82698713fb1fe24",
+    "checksumsVerified": true,
+    "laterCanixCancellationCommit": "9f899586977f8036beffeb5d8bb270dd3362bee6",
+    "laterToolbeltCancellationCommit": "b871b3ac9cd49b2aefa262bec43e65daff6f3240",
+    "fullProfileLog": "/data/scratch/tmp/opencode/canix-memory-consumer-20261018/full-profile-after-cancellation-commit.log",
+    "fullProfileLogSha256": "97c5ad13ec93a5db59e55225e4b2abef88586f564ada7ec3c55436511d33a606"
   },
   "executionContainment": {
     "cpuPercent": 200,
@@ -100,7 +118,7 @@
     "manifestSha256": "9893b0fad0d84113985fedc020fb16d6f550eb37427e12ad6412cbe1ed5ac31c",
     "manifestEntries": 31,
     "checksumsVerified": true,
-    "canixForeignIndexUnchanged": true,
+    "canixForeignIndexUnchangedDuringNativeFixtureRuns": true,
     "foreignIndexSha256": "32ae1fa38d8b9da9d4f8bee4ec91ae93339f1d77bdffa8cd7871cf441b85c659",
     "productionActivated": false,
     "productionServiceRestarted": false,
