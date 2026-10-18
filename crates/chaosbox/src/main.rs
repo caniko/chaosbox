@@ -662,7 +662,10 @@ async fn main() {
                     eprintln!("intelligence federation: {error}");
                     std::process::exit(1);
                 });
-            Box::pin(serve_mcp(bundle, workspace, current, federation)).await;
+            if let Err(error) = Box::pin(serve_mcp(bundle, workspace, current, federation)).await {
+                eprintln!("MCP transport: {error}");
+                std::process::exit(1);
+            }
         }
         Command::Db { op } => match op {
             DbCmd::Check { json: _, repo } => {

@@ -256,3 +256,186 @@ fn mcp_tool_set_loads_no_provider_credentials() {
         "mcp_server.rs must never load provider credentials"
     );
 }
+
+#[tokio::test]
+async fn ordinary_frames_keep_partial_bytes_when_a_response_wins() {
+    use super::mcp_server::{Frames, exchange, MCP_FRAME_BYTES};
+    use tokio::io::{AsyncWriteExt, AsyncReadExt};
+    let (mut sender, input) = tokio::io::duplex(MCP_FRAME_BYTES + 1);
+    let mut frames = Frames::new(input);
+    let (mut output, mut receiver) = tokio::io::duplex(1024);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let sending = async {
+        sender
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\",\"label\":\"")
+            .await
+            .unwrap();
+        // Split a multi-byte UTF-8 character across the competing event.
+        sender.write_all(&[0xc3]).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        tx.send(()).unwrap();
+    };
+    let id = serde_json::json!(1);
+    let serving = exchange(&mut frames, &mut output, &id, async {
+        rx.await.unwrap();
+        serde_json::json!({"id":1})
+    });
+    let (result, ()) = tokio::join!(serving, sending);
+    assert!(result.unwrap());
+    let mut response = vec![0; 9];
+    receiver.read_exact(&mut response).await.unwrap();
+    assert_eq!(response, b"{\"id\":1}\n");
+    sender.write_all(&[0xa9, b'"', b'}', b'\n']).await.unwrap();
+    let req: serde_json::Value =
+        serde_json::from_slice(&frames.next().await.unwrap().unwrap()).unwrap();
+    assert_eq!(req["label"], "é");
+    sender
+        .write_all(&vec![b' '; MCP_FRAME_BYTES - 1])
+        .await
+        .unwrap();
+    sender.write_all(b"\n").await.unwrap();
+    assert_eq!(frames.next().await.unwrap().unwrap().len(), MCP_FRAME_BYTES);
+    sender
+        .write_all(&vec![b' '; MCP_FRAME_BYTES + 1])
+        .await
+        .unwrap();
+    assert_eq!(
+        frames.next().await.unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[tokio::test]
+async fn ordinary_transport_drops_pending_reads_on_eof_oversize_and_closed_output() {
+    use super::mcp_server::{Frames, exchange, MCP_FRAME_BYTES};
+    use tokio::io::AsyncWriteExt;
+    // A pending backend must be polled before any transport failure is injected.
+    for case in ["eof", "oversize", "closed-output"] {
+        let (mut sender, input) = tokio::io::duplex(MCP_FRAME_BYTES + 1);
+        let (mut output, receiver) = tokio::io::duplex(1);
+        let (started, start) = tokio::sync::oneshot::channel();
+        let (dropped, mut drop_rx) = tokio::sync::watch::channel(false);
+        struct Guard(tokio::sync::watch::Sender<bool>);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                self.0.send_replace(true);
+            }
+        }
+        let serving = async {
+            exchange(
+                &mut Frames::new(input),
+                &mut output,
+                &serde_json::json!(1),
+                async {
+                    let _guard = Guard(dropped);
+                    started.send(()).unwrap();
+                    std::future::pending().await
+                },
+            )
+            .await
+        };
+        let failing = async {
+            start.await.unwrap();
+            if case == "eof" {
+                drop(sender);
+                drop(receiver);
+            } else if case == "oversize" {
+                sender
+                    .write_all(&vec![b'x'; MCP_FRAME_BYTES + 1])
+                    .await
+                    .unwrap();
+            } else {
+                drop(receiver);
+                sender
+                    .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n")
+                    .await
+                    .unwrap();
+            }
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(serving, failing)
+        })
+        .await
+        .unwrap();
+        if case == "eof" {
+            assert!(!result.unwrap());
+        } else {
+            assert!(result.is_err());
+        }
+        drop_rx.wait_for(|value| *value).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn ordinary_response_overflow_is_an_error_and_keeps_the_rpc_id() {
+    use super::mcp_server::{Frames, exchange, MCP_RESPONSE_BYTES};
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let (_sender, input) = tokio::io::duplex(16);
+    let (mut output, receiver) = tokio::io::duplex(1024);
+    let mut frames = Frames::new(input);
+    let id = serde_json::json!(7);
+    let serving = exchange(&mut frames, &mut output, &id, async {
+        serde_json::json!({"jsonrpc":"2.0", "id":7, "result":"x".repeat(MCP_RESPONSE_BYTES)})
+    });
+    let mut lines = BufReader::new(receiver).lines();
+    let (result, line) = tokio::join!(serving, lines.next_line());
+    assert!(result.unwrap());
+    let response: serde_json::Value = serde_json::from_str(&line.unwrap().unwrap()).unwrap();
+    assert_eq!(response["id"], 7);
+    assert_eq!(response["error"]["code"], -32603);
+}
+
+#[tokio::test]
+async fn ordinary_slow_output_keeps_one_deadline_and_drops_the_active_read() {
+    use super::mcp_server::{Frames, exchange};
+    use tokio::io::AsyncWriteExt;
+    let (mut sender, input) = tokio::io::duplex(4096);
+    let (mut output, _unread) = tokio::io::duplex(1);
+    let (started, start) = tokio::sync::oneshot::channel();
+    let (dropped, mut drop_rx) = tokio::sync::watch::channel(false);
+    struct Guard(tokio::sync::watch::Sender<bool>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.0.send_replace(true);
+        }
+    }
+    let serving = async {
+        exchange(
+            &mut Frames::new(input),
+            &mut output,
+            &serde_json::json!(1),
+            async {
+                let _guard = Guard(dropped);
+                started.send(()).unwrap();
+                std::future::pending().await
+            },
+        )
+        .await
+    };
+    let client = async {
+        start.await.unwrap();
+        sender
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n")
+            .await
+            .unwrap();
+        // Unrelated notifications neither cancel work nor restart the blocked
+        // output deadline. Keep stdin open until the backend guard is released.
+        loop {
+            tokio::select! {
+                _ = drop_rx.wait_for(|value| *value) => break,
+                () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                    sender.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":999}}\n").await.unwrap();
+                }
+            }
+        }
+    };
+    let began = std::time::Instant::now();
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        tokio::join!(serving, client)
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+    assert!(began.elapsed() >= std::time::Duration::from_secs(9));
+    assert!(*drop_rx.borrow());
+}
