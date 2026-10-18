@@ -12,8 +12,6 @@ const MCP_PROTOCOL_FALLBACKS: &[&str] = &["2024-11-05", "2025-03-26"];
 const MCP_PAGE_SIZE: usize = 5;
 /// Upper bound for caller-supplied search limits: paginate instead.
 const MCP_SEARCH_LIMIT_MAX: i64 = 200;
-/// Upper bound for caller-supplied path hop counts.
-const MCP_MAX_HOPS: usize = 8;
 
 pub(super) fn mcp_tool_defs() -> Vec<serde_json::Value> {
     vec![
@@ -44,13 +42,21 @@ pub(super) fn mcp_tool_defs() -> Vec<serde_json::Value> {
             tool["inputSchema"]["not"] = serde_json::json!({"required":["rel","rel_types"]});
             tool
         },
-        mcp_tool(
-            "path",
-            "Bounded path between two entities (null when absent).",
-            serde_json::json!({"from": {"type": "string"}, "to": {"type": "string"},
-                "max_hops": {"type": "integer", "default": 4, "maximum": 8}}),
-            vec!["from", "to"],
-        ),
+        {
+            let text = serde_json::json!({"type":"string","minLength":1,"maxLength":256});
+            let mut tool = mcp_tool(
+                "path",
+                "Shortest undirected path within max_hops; null when absent, error on work/deadline exhaustion. Repository and endpoints must be nonblank, control-free and at most 256 UTF-8 bytes.",
+                serde_json::json!({"from":text,"to":text,
+                    "max_hops":{"type":"integer","minimum":0,
+                        "default":chaosbox::PathQuery::DEFAULT_MAX_HOPS,
+                        "maximum":chaosbox::PathQuery::MAX_HOPS}}),
+                vec!["from", "to"],
+            );
+            tool["inputSchema"]["properties"]["repo"] = text;
+            tool["inputSchema"]["additionalProperties"] = serde_json::json!(false);
+            tool
+        },
         mcp_tool(
             "evidence",
             "Claim evidence and source locations for a relationship.",
@@ -255,6 +261,19 @@ pub(super) async fn mcp_call_tool(
             Err(error) => mcp_backend_error(id, name, &error),
         };
     }
+    if name == "path" {
+        let query = serde_json::from_value::<chaosbox::PathQuery>(serde_json::Value::Object(args))
+            .map_err(|error| error.to_string())
+            .and_then(|query| query.prepare().map_err(|error| error.to_string()));
+        let query = match query {
+            Ok(query) => query,
+            Err(error) => return mcp_error(id, -32602, error, None),
+        };
+        return match Box::pin(AnyReader::path_query(query)).await {
+            Ok(value) => mcp_text_result(id, &value),
+            Err(error) => mcp_backend_error(id, name, &error),
+        };
+    }
     // Cheap service limits before any backend work: an unbounded query
     // would block the serial stdio loop for every later call.
     if name == "search" {
@@ -264,18 +283,6 @@ pub(super) async fn mcp_call_tool(
                     id,
                     -32602,
                     format!("search limit exceeds maximum {MCP_SEARCH_LIMIT_MAX}"),
-                    None,
-                );
-            }
-        }
-    }
-    if name == "path" {
-        if let Some(h) = args.get("max_hops").and_then(serde_json::Value::as_u64) {
-            if h > MCP_MAX_HOPS as u64 {
-                return mcp_error(
-                    id,
-                    -32602,
-                    format!("max_hops exceeds maximum {MCP_MAX_HOPS}"),
                     None,
                 );
             }
@@ -339,21 +346,6 @@ pub(super) async fn mcp_call_tool(
                 .lookup(eid)
                 .await
                 .map(|row| serde_json::to_value(&row).unwrap())
-                .map_err(|e| e.to_string())
-        }
-        "path" => {
-            let from = args["from"].as_str().unwrap_or_default();
-            let to = args["to"].as_str().unwrap_or_default();
-            let hops = usize::try_from(
-                args.get("max_hops")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(4),
-            )
-            .expect("hop count fits in usize");
-            reader
-                .path(from, to, hops)
-                .await
-                .map(|path| serde_json::json!({"from": from, "to": to, "path": path}))
                 .map_err(|e| e.to_string())
         }
         "evidence" => {

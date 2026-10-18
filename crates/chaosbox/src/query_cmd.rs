@@ -90,20 +90,20 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
             repo,
             max_hops,
         } => {
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
-                Ok(r) => r,
-                Err(e) => return consumer_err("query path", e),
+            let query = chaosbox::PathQuery {
+                repo,
+                from,
+                to,
+                max_hops,
             };
-            match reader.path(&from, &to, max_hops).await {
+            let query = match query.prepare() {
+                Ok(query) => query,
+                Err(error) => return consumer_err("query path", error),
+            };
+            match Box::pin(AnyReader::path_query(query)).await {
                 // Successful negative (no path) is a null result, exit 0.
-                Ok(path) => {
-                    println!(
-                        "{}",
-                        serde_json::to_string(&serde_json::json!({
-                            "from": from, "to": to, "path": path,
-                        }))
-                        .unwrap()
-                    );
+                Ok(value) => {
+                    println!("{value}");
                     0
                 }
                 Err(e) => consumer_err("query path", e),

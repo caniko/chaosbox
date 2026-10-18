@@ -10,7 +10,7 @@ mod pages;
 mod path;
 
 pub use pages::{NeighborhoodMode, NeighborhoodPage, NeighborhoodQuery, PreparedNeighborhood};
-pub use path::PathBudget;
+pub use path::{PathBudget, PathQuery, PreparedPath};
 
 // ---- Read-only consumer path (CLI and MCP share this) ----
 

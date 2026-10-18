@@ -140,6 +140,13 @@ impl AnyReader {
         query.read(Self::handle().await?).await
     }
 
+    /// Start the whole path budget before polling credential/backend acquisition.
+    pub(super) async fn path_query(
+        query: chaosbox::PreparedPath,
+    ) -> Result<serde_json::Value, PipelineError> {
+        query.read(Self::handle()).await
+    }
+
     /// Pinned active build id for status responses.
     pub(super) fn build_id(&self) -> &str {
         &self.0.build_id

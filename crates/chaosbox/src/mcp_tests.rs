@@ -49,6 +49,49 @@ fn neighbors_advertises_bounded_continuation() {
     assert_eq!(props["rel_types"]["items"]["type"], "string");
 }
 
+#[test]
+fn path_advertises_shared_bounds_and_rejects_unknown_fields() {
+    let defs = mcp_tool_defs();
+    let path = defs.iter().find(|tool| tool["name"] == "path").unwrap();
+    let schema = &path["inputSchema"];
+    assert_eq!(schema["additionalProperties"], false);
+    for field in ["repo", "from", "to"] {
+        assert_eq!(schema["properties"][field]["minLength"], 1);
+        assert_eq!(schema["properties"][field]["maxLength"], 256);
+    }
+    let hops = &schema["properties"]["max_hops"];
+    assert_eq!(hops["default"], 4);
+    assert_eq!(hops["minimum"], 0);
+    assert_eq!(hops["maximum"], 8);
+}
+
+#[tokio::test]
+async fn path_rejects_malformed_arguments_before_credentials() {
+    use serde_json::json;
+    for (field, value) in [
+        ("max_hops", json!(-1)),
+        ("max_hops", json!(9)),
+        ("max_hops", json!(1.5)),
+        ("max_hops", json!("4")),
+        ("max_hops", json!(true)),
+        ("max_hops", json!(null)),
+        ("max_hops", json!([])),
+        ("max_hops", json!(18446744073709551615_u64)),
+        ("repo", json!(" ")),
+        ("repo", json!("x".repeat(257))),
+        ("from", json!(" ")),
+        ("from", json!("ent:\ncontrol")),
+        ("from", json!("é".repeat(129))),
+        ("to", json!("x".repeat(257))),
+        ("unexpected", json!(true)),
+    ] {
+        let mut args = json!({"repo":"demo", "from":"ent:a", "to":"ent:b"});
+        args[field] = value;
+        let response = mcp_call_tool(&json!(1), "path", &json!({"arguments":args})).await;
+        assert_eq!(response["error"]["code"], -32602, "{field}: {response}");
+    }
+}
+
 #[tokio::test]
 async fn neighbors_rejects_invalid_supplied_arguments_before_credentials() {
     use serde_json::json;

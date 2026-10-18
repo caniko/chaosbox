@@ -302,7 +302,7 @@ enum QueryCmd {
         to: String,
         #[arg(long, default_value = "demo")]
         repo: String,
-        #[arg(long, default_value_t = 4)]
+        #[arg(long, default_value_t = chaosbox::PathQuery::DEFAULT_MAX_HOPS)]
         max_hops: usize,
     },
     /// Deterministic export of the pinned active build.

@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use chaosbox::{GraphReader, PathBudget};
+use chaosbox::{GraphReader, PathBudget, PathQuery};
 use chaosbox_core::{Entity, EntityKind, GraphBuild, Relation, RelationScope, RelationType, SourceSpan};
 use chaosbox_store::{
     BuildRow, EntityRow, EvidenceRow, GraphQueries, MemoryReader, NeighborhoodDirection, RelRow,
@@ -22,10 +22,12 @@ const DEGREE: usize = 450;
 struct Observations {
     pages: Mutex<Vec<(NeighborhoodDirection, Option<String>, i64)>>,
     queries: AtomicUsize,
+    pins: AtomicUsize,
     pending: AtomicUsize,
     block_pages: AtomicBool,
     bad_page: AtomicUsize,
     page_delay: Mutex<Duration>,
+    pin_delay: Mutex<Duration>,
 }
 
 struct Pending(Arc<Observations>);
@@ -44,6 +46,13 @@ struct PagedOnly {
 #[async_trait::async_trait]
 impl GraphQueries for PagedOnly {
     async fn active_build(&self, repo: &str) -> Result<Option<BuildRow>, StoreError> {
+        self.observations.pins.fetch_add(1, Ordering::SeqCst);
+        self.observations.pending.fetch_add(1, Ordering::SeqCst);
+        let _pending = Pending(self.observations.clone());
+        let delay = *self.observations.pin_delay.lock().unwrap();
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
         self.inner.active_build(repo).await
     }
 
@@ -148,13 +157,7 @@ impl GraphQueries for PagedOnly {
     }
 }
 
-async fn fixture() -> (
-    GraphReader<PagedOnly>,
-    Arc<Observations>,
-    String,
-    String,
-    String,
-) {
+fn handle_fixture() -> (PagedOnly, Arc<Observations>, String, String, String) {
     let node = |name: &str| {
         Entity::new(
             EntityKind::Symbol,
@@ -190,16 +193,39 @@ async fn fixture() -> (
     inner.set_active(REPO, &build.id);
     inner.insert_build(build);
     let observations = Arc::new(Observations::default());
-    let reader = GraphReader::pinned(
+    (
         PagedOnly {
             inner,
             observations: observations.clone(),
         },
-        REPO,
+        observations,
+        hub.id,
+        late,
+        isolated.id,
     )
-    .await
-    .unwrap();
-    (reader, observations, hub.id, late, isolated.id)
+}
+
+async fn fixture() -> (
+    GraphReader<PagedOnly>,
+    Arc<Observations>,
+    String,
+    String,
+    String,
+) {
+    let (handle, observations, hub, late, isolated) = handle_fixture();
+    let reader = GraphReader::pinned(handle, REPO).await.unwrap();
+    (reader, observations, hub, late, isolated)
+}
+
+fn request(from: &str, to: &str, max_hops: usize) -> chaosbox::PreparedPath {
+    PathQuery {
+        repo: REPO.into(),
+        from: from.into(),
+        to: to.into(),
+        max_hops,
+    }
+    .prepare()
+    .unwrap()
 }
 
 #[tokio::test]
@@ -409,4 +435,134 @@ async fn dropping_a_search_drops_its_read_and_later_requests_still_work() {
     assert_eq!(observations.pending.load(Ordering::SeqCst), 0);
     observations.block_pages.store(false, Ordering::SeqCst);
     assert!(reader.path(&hub, &late, 1).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn prepared_request_shares_exact_query_and_row_boundaries_with_acquisition() {
+    for maximum in [0, 1, 7, 8] {
+        let (handle, observations, hub, _, isolated) = handle_fixture();
+        let acquired = AtomicBool::new(false);
+        let acquire = async {
+            acquired.store(true, Ordering::SeqCst);
+            Ok(handle)
+        };
+        let result = request(&hub, &isolated, 1)
+            .read_with_budget(
+                acquire,
+                PathBudget {
+                    max_rows: DEGREE,
+                    max_queries: maximum,
+                    ..PathBudget::default()
+                },
+            )
+            .await;
+        assert_eq!(acquired.load(Ordering::SeqCst), maximum > 0);
+        assert_eq!(
+            observations.pins.load(Ordering::SeqCst),
+            usize::from(maximum > 1)
+        );
+        if maximum == 8 {
+            assert_eq!(result.unwrap()["path"], serde_json::Value::Null);
+            assert_eq!(observations.queries.load(Ordering::SeqCst), 6);
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("budget exceeded (queries)"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn prepared_byte_budget_includes_the_header_and_allows_the_exact_total() {
+    for short_by in [0, 1] {
+        let (handle, observations, hub, _, _) = handle_fixture();
+        let header = handle.inner.active_build(REPO).await.unwrap();
+        let endpoint = handle
+            .inner
+            .entity_by_id(&header.as_ref().unwrap().build_id, &hub)
+            .await
+            .unwrap();
+        let bytes = serde_json::to_vec(&header).unwrap().len()
+            + serde_json::to_vec(&endpoint).unwrap().len();
+        let result = request(&hub, &hub, 0)
+            .read_with_budget(
+                async { Ok(handle) },
+                PathBudget {
+                    max_visits: 1,
+                    max_rows: 0,
+                    max_queries: 3,
+                    max_bytes: bytes - short_by,
+                    ..PathBudget::default()
+                },
+            )
+            .await;
+        if short_by == 0 {
+            assert_eq!(result.unwrap()["path"], serde_json::json!([hub]));
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("budget exceeded (bytes)"));
+        }
+        assert_eq!(observations.pins.load(Ordering::SeqCst), 1);
+        assert_eq!(observations.queries.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn prepared_deadline_covers_pending_acquisition_and_pinning() {
+    for block_acquisition in [true, false] {
+        let (handle, observations, hub, _, isolated) = handle_fixture();
+        *observations.pin_delay.lock().unwrap() = Duration::from_secs(5);
+        let acquire = async {
+            observations.pending.fetch_add(1, Ordering::SeqCst);
+            let _pending = Pending(observations.clone());
+            if block_acquisition {
+                std::future::pending::<()>().await;
+            }
+            Ok(handle)
+        };
+        let error = request(&hub, &isolated, 1)
+            .read_with_budget(
+                acquire,
+                PathBudget {
+                    timeout: Duration::from_millis(25),
+                    ..PathBudget::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("deadline exceeded"), "{error}");
+        assert_eq!(observations.pending.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            observations.pins.load(Ordering::SeqCst),
+            usize::from(!block_acquisition)
+        );
+        assert_eq!(observations.queries.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn prepared_deadline_is_not_reset_after_acquisition_or_pinning() {
+    let (handle, observations, hub, _, isolated) = handle_fixture();
+    *observations.pin_delay.lock().unwrap() = Duration::from_millis(40);
+    *observations.page_delay.lock().unwrap() = Duration::from_millis(40);
+    let acquire = async {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        Ok(handle)
+    };
+    let error = request(&hub, &isolated, 1)
+        .read_with_budget(
+            acquire,
+            PathBudget {
+                timeout: Duration::from_millis(100),
+                ..PathBudget::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("deadline exceeded"), "{error}");
+    assert!(observations.pages.lock().unwrap().len() <= 1);
+    assert_eq!(observations.pending.load(Ordering::SeqCst), 0);
 }
