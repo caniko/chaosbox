@@ -41,14 +41,14 @@ pub(super) fn mcp_tool_defs() -> Vec<serde_json::Value> {
         ),
         mcp_tool(
             "lookup",
-            "Typed entity lookup by id.",
+            "Typed entity lookup by id. Optional build_id selects an exact repository-owned publication; omission selects current at dispatch.",
             serde_json::json!({"id": {"type": "string"}}),
             vec!["id"],
         ),
         {
             let mut tool = mcp_tool(
                 "neighbors",
-                "Page neighborhoods in relationship-ID order. Limit applies per direction. Follow next_cursor with the same arguments until complete; continuation pins the exact build. Use rel or rel_types, not both; an empty rel_types list matches nothing.",
+                "Page neighborhoods in relationship-ID order. Limit applies per direction. Follow next_cursor with the same arguments until complete; continuation pins the exact build. Optional build_id starts a fresh historical anchor and must agree with any cursor. Use rel or rel_types, not both; an empty rel_types list matches nothing.",
                 serde_json::json!({"id":{"type":"string","minLength":1,"maxLength":256},
                     "rel":{"type":"string"},"rel_types":{"type":"array","items":{"type":"string"}},
                     "limit":{"type":"integer","minimum":1,"maximum":200,"default":super::backend_cmd::NEIGHBORHOOD_DEFAULT_LIMIT},
@@ -152,6 +152,12 @@ pub(super) fn mcp_tool(
             "repo".to_owned(),
             serde_json::json!({"type": "string", "minLength": 1}),
         );
+        if matches!(name, "lookup" | "explain" | "evidence" | "neighbors") {
+            props.insert("build_id".into(), serde_json::json!({
+                "type":"string", "minLength":1, "maxLength":256,
+                "description":"Exact repository-owned publication. Omit for current; with a cursor, must match its build."
+            }));
+        }
     }
     serde_json::json!({
         "name": name, "description": description,
@@ -272,6 +278,21 @@ async fn mcp_call_tool_connected(
             None,
         );
     };
+    let build_id = args
+        .get("build_id")
+        .map(|value| {
+            if !matches!(name, "lookup" | "explain" | "evidence" | "neighbors") {
+                return Err("build_id is not supported by this tool".to_owned());
+            }
+            let build_id = value.as_str().ok_or("build_id must be a string")?;
+            chaosbox::validate_build_id(build_id).map_err(|error| error.to_string())?;
+            Ok(build_id)
+        })
+        .transpose();
+    let build_id = match build_id {
+        Ok(build_id) => build_id,
+        Err(error) => return mcp_error(id, -32602, error, None),
+    };
     // Continuation selects its historical publication before any active pin.
     if name == "neighbors" {
         let query = match prepare_neighborhood(args) {
@@ -350,13 +371,14 @@ async fn mcp_call_tool_connected(
             None,
         );
     }
-    let reader =
-        match async { AnyReader::pin(AnyReader::handle_cached(connection).await?, repo).await }
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => return mcp_backend_error(id, name, &e),
-        };
+    let reader = match async {
+        AnyReader::pin(AnyReader::handle_cached(connection).await?, repo, build_id).await
+    }
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => return mcp_backend_error(id, name, &e),
+    };
     let payload: Result<serde_json::Value, String> = match name {
         "search" => {
             let q = args["query"].as_str().unwrap_or_default();

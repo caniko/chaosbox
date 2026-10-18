@@ -4,7 +4,7 @@
 use chaosbox_store::{GraphQueries, NeighborhoodDirection, RelRow};
 use serde::{Deserialize, Serialize};
 
-use super::{GraphReader, PipelineError, all_relation_types, validate_rel_filter};
+use super::{GraphReader, PipelineError, all_relation_types, validate_build_id, validate_rel_filter};
 use crate::read_view::bounded_json;
 
 const CONTRACT: &str = "chaosbox.repository-neighborhood";
@@ -57,6 +57,9 @@ pub struct NeighborhoodQuery {
     /// Opaque continuation from a previous response, never a credential.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
+    /// Exact publication for a fresh anchor; must agree with a supplied cursor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
 }
 
 /// One bounded neighborhood response, pinned to exactly one publication.
@@ -139,6 +142,10 @@ impl NeighborhoodQuery {
         kinds.sort();
         kinds.dedup();
         self.rel_types = Some(kinds);
+        let build_id = self.build_id.take();
+        if let Some(build_id) = &build_id {
+            validate_build_id(build_id)?;
+        }
         let cursor = self
             .cursor
             .take()
@@ -172,9 +179,15 @@ impl NeighborhoodQuery {
                 Ok(cursor)
             })
             .transpose()?;
+        if let (Some(cursor), Some(build_id)) = (&cursor, &build_id) {
+            if cursor.build_id != *build_id {
+                return Err(invalid("build_id conflicts with cursor"));
+            }
+        }
         Ok(PreparedNeighborhood {
             query: self,
             cursor,
+            build_id,
         })
     }
 }
@@ -183,6 +196,7 @@ impl NeighborhoodQuery {
 pub struct PreparedNeighborhood {
     query: NeighborhoodQuery,
     cursor: Option<Cursor>,
+    build_id: Option<String>,
 }
 
 impl PreparedNeighborhood {
@@ -190,11 +204,16 @@ impl PreparedNeighborhood {
     /// `published_build` without an active-pointer fallback. The cursor is
     /// untrusted query state, not authenticated server issuance.
     pub async fn read<R: GraphQueries>(self, handle: R) -> Result<NeighborhoodPage, PipelineError> {
-        let Self { query, cursor } = self;
-        let reader = match &cursor {
-            Some(cursor) => GraphReader::published(handle, &query.repo, &cursor.build_id).await?,
-            None => GraphReader::pinned(handle, &query.repo).await?,
-        };
+        let Self {
+            query,
+            cursor,
+            build_id,
+        } = self;
+        let selected = cursor
+            .as_ref()
+            .map(|cursor| cursor.build_id.as_str())
+            .or(build_id.as_deref());
+        let reader = GraphReader::selected(handle, &query.repo, selected).await?;
         let mut cursor = cursor.unwrap_or_else(|| Cursor {
             contract: CONTRACT.into(),
             version: VERSION,

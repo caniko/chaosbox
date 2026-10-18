@@ -275,6 +275,9 @@ enum QueryCmd {
         id: String,
         #[arg(long, default_value = "demo")]
         repo: String,
+        /// Read this exact published build instead of the current publication.
+        #[arg(long)]
+        build_id: Option<String>,
     },
     /// Page incoming/outgoing neighborhoods, pinned across continuation.
     Neighbors {
@@ -292,6 +295,9 @@ enum QueryCmd {
         /// Continue the exact prior request and publication.
         #[arg(long)]
         cursor: Option<String>,
+        /// Exact publication; must agree with a supplied continuation cursor.
+        #[arg(long)]
+        build_id: Option<String>,
         /// Select both, outgoing or incoming.
         #[arg(long, default_value = "both")]
         direction: chaosbox::NeighborhoodMode,
@@ -315,6 +321,9 @@ enum QueryCmd {
         id: String,
         #[arg(long, default_value = "demo")]
         repo: String,
+        /// Read this exact published build instead of the current publication.
+        #[arg(long)]
+        build_id: Option<String>,
     },
     /// Active-build status, coverage, and generation.
     Status {

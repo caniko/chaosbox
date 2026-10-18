@@ -1359,6 +1359,34 @@ async fn reader_passes_reference_conformance_against_live_backend() {
 }
 
 #[tokio::test]
+async fn unpublished_build_header_is_unavailable_despite_live_pointer() {
+    let db = test_db("t_unpublished");
+    let Some(mut store) = connected_store(&db).await else {
+        return;
+    };
+    let current = GraphBuild::new("conf", vec![], 1);
+    store.publish(current.clone(), None).await.unwrap();
+    let driver = live_driver(&db).await;
+    let tx = driver
+        .transaction(&db, typedb_driver::TransactionType::Write)
+        .await
+        .unwrap();
+    tx.query("insert $b isa graph-build, has build-id \"build:staging\", has repo-name \"conf\", has generation 2, has status \"staging\";").await.unwrap();
+    tx.commit().await.unwrap();
+    let mut reader = TypeDbReader::new(config(&db));
+    reader.connect().await.unwrap();
+    assert!(reader
+        .published_build("conf", "build:staging")
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        reader.active_build("conf").await.unwrap().unwrap().build_id,
+        current.id
+    );
+}
+
+#[tokio::test]
 async fn inference_reuse_key_roundtrips_across_restart() {
     use std::collections::BTreeMap;
     let db = test_db("t_reuse");

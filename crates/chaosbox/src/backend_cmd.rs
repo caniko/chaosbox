@@ -144,12 +144,27 @@ impl AnyReader {
 
     /// Connect and pin the active build for `repo` on `TypeDB`.
     pub(super) async fn connect(repo: &str) -> Result<Self, PipelineError> {
-        Self::pin(Self::handle().await?, repo).await
+        Self::connect_at(repo, None).await
+    }
+
+    /// Validate selection before acquiring credentials, then pin exactly once.
+    pub(super) async fn connect_at(
+        repo: &str,
+        build_id: Option<&str>,
+    ) -> Result<Self, PipelineError> {
+        if let Some(build_id) = build_id {
+            chaosbox::validate_build_id(build_id)?;
+        }
+        Self::pin(Self::handle().await?, repo, build_id).await
     }
 
     /// Pin a fresh publication on an existing transport, never a previous reader.
-    pub(super) async fn pin(handle: TypeDbReader, repo: &str) -> Result<Self, PipelineError> {
-        Ok(Self(GraphReader::pinned(handle, repo).await?))
+    pub(super) async fn pin(
+        handle: TypeDbReader,
+        repo: &str,
+        build_id: Option<&str>,
+    ) -> Result<Self, PipelineError> {
+        Ok(Self(GraphReader::selected(handle, repo, build_id).await?))
     }
 
     /// Acquire credentials only after shared preparation has validated the query.

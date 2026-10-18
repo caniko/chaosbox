@@ -78,6 +78,18 @@ pub const EXPORT_NODE_CAP: i64 = 10_000;
 /// Hard cap for exported edges.
 pub const EXPORT_EDGE_CAP: i64 = 20_000;
 
+/// Validate an exact-publication selector before credentials/backend acquisition.
+/// Labels are opaque: validation never trims or rewrites historical identities.
+pub fn validate_build_id(build_id: &str) -> Result<(), PipelineError> {
+    if build_id.trim().is_empty() || build_id.len() > 256 || build_id.chars().any(char::is_control)
+    {
+        return Err(PipelineError::Consumer(
+            "invalid build_id: expected nonblank 1..256 bytes without controls".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Backend read-only queries. One build id is pinned per reader from the
 /// active-build pointer or an exact published build; readers never mutate,
 /// migrate, or load Jev credentials.
@@ -101,6 +113,18 @@ pub struct GraphReader<R> {
 }
 
 impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
+    /// Select current or one exact repository-owned publication without fallback.
+    pub async fn selected(
+        handle: R,
+        repo: &str,
+        build_id: Option<&str>,
+    ) -> Result<Self, PipelineError> {
+        match build_id {
+            Some(build_id) => Self::published(handle, repo, build_id).await,
+            None => Self::pinned(handle, repo).await,
+        }
+    }
+
     /// Pin the active build for `repo` on an existing query backend.
     /// Used by tests with [`chaosbox_store::MemoryReader`].
     pub async fn pinned(handle: R, repo: &str) -> Result<Self, PipelineError> {
@@ -115,6 +139,7 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
     /// Pin one exact publication owned by `repo`, without consulting its active
     /// pointer. This repository-level reader does not grant scoped-view access.
     pub async fn published(handle: R, repo: &str, build_id: &str) -> Result<Self, PipelineError> {
+        validate_build_id(build_id)?;
         let build = handle
             .published_build(repo, build_id)
             .await

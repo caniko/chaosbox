@@ -42,8 +42,8 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
                 Err(e) => consumer_err("query search", e),
             }
         }
-        QueryCmd::Lookup { id, repo } => {
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
+        QueryCmd::Lookup { id, repo, build_id } => {
+            let reader = match Box::pin(AnyReader::connect_at(&repo, build_id.as_deref())).await {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query lookup", e),
             };
@@ -62,6 +62,7 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
             rel_types,
             limit,
             cursor,
+            build_id,
             direction,
         } => {
             let query = chaosbox::NeighborhoodQuery {
@@ -70,6 +71,7 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
                 direction,
                 limit,
                 cursor,
+                build_id,
                 rel_types: rel_types.or_else(|| rel.map(|name| vec![name])),
             };
             let query = match query.prepare() {
@@ -122,8 +124,8 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
                 Err(e) => consumer_err("query export", e),
             }
         }
-        QueryCmd::Explain { id, repo } => {
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
+        QueryCmd::Explain { id, repo, build_id } => {
+            let reader = match Box::pin(AnyReader::connect_at(&repo, build_id.as_deref())).await {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query explain", e),
             };

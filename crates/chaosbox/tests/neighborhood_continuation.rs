@@ -90,6 +90,7 @@ fn query(f: &Fixture) -> NeighborhoodQuery {
         rel_types: None,
         limit: 3,
         cursor: None,
+        build_id: None,
     }
 }
 
@@ -294,6 +295,85 @@ async fn canonical_filters_resume_and_scope_changes_fail_before_backend_reads() 
             .await
             .is_ok()
     );
+}
+
+#[tokio::test]
+async fn explicit_publications_start_and_resume_without_current_fallback() {
+    let f = fixture();
+    let mut args = serde_json::to_value(query(&f)).unwrap();
+    args["build_id"] = json!(f.old.id);
+    let request: NeighborhoodQuery = serde_json::from_value(args.clone()).unwrap();
+    let page = request
+        .prepare()
+        .unwrap()
+        .read(handle(&f, false, false))
+        .await
+        .unwrap();
+    assert_eq!(page.build_id, f.old.id);
+    let cursor = page.next_cursor.unwrap();
+    // Version-1 scopes never contained a selector: both old and new cursors
+    // keep publication identity in the cursor's existing top-level field.
+    let encoded: Value = serde_json::from_str(&cursor).unwrap();
+    assert_eq!(encoded["version"], 1);
+    assert!(encoded["scope"].get("build_id").is_none());
+    args["cursor"] = json!(cursor);
+    for selector in [None, Some(json!(f.old.id))] {
+        let mut args = args.clone();
+        args.as_object_mut().unwrap().remove("build_id");
+        if let Some(selector) = selector {
+            args["build_id"] = selector;
+        }
+        let request: NeighborhoodQuery = serde_json::from_value(args).unwrap();
+        assert_eq!(
+            request
+                .prepare()
+                .unwrap()
+                .read(handle(&f, false, false))
+                .await
+                .unwrap()
+                .build_id,
+            f.old.id
+        );
+    }
+    args["build_id"] = json!(f.new.id);
+    let request: NeighborhoodQuery = serde_json::from_value(args).unwrap();
+    assert!(request
+        .prepare()
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("conflicts"));
+
+    let foreign = GraphBuild::new("foreign", vec!["s-other".into()], 1);
+    for build in ["build:missing", foreign.id.as_str()] {
+        let mut args = serde_json::to_value(query(&f)).unwrap();
+        args["build_id"] = json!(build);
+        let request: NeighborhoodQuery = serde_json::from_value(args).unwrap();
+        let mut backend = handle(&f, false, false);
+        backend.reader.insert_build(foreign.clone());
+        assert!(request
+            .prepare()
+            .unwrap()
+            .read(backend)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("published build unavailable"));
+    }
+    // A returned endpoint can become a fresh anchor in the old publication.
+    let leaf = f.old.nodes.values().find(|node| node.id != f.hub).unwrap();
+    let mut args = serde_json::to_value(query(&f)).unwrap();
+    args["build_id"] = json!(f.old.id);
+    args["id"] = json!(leaf.id);
+    let request: NeighborhoodQuery = serde_json::from_value(args).unwrap();
+    let page = request
+        .prepare()
+        .unwrap()
+        .read(handle(&f, false, false))
+        .await
+        .unwrap();
+    assert_eq!(page.incoming.len(), 2);
+    assert_eq!(page.incoming[0].from_entity.entity_id, f.hub);
 }
 
 #[tokio::test]

@@ -52,7 +52,7 @@ pub use pipeline::{Pipeline, chain_publication, summarize_outcomes, uncached_dec
 pub use reader::{
     EXPORT_EDGE_CAP, EXPORT_NODE_CAP, GraphReader, NeighborhoodMode, NeighborhoodPage,
     NeighborhoodQuery, PathBudget, PathQuery, PreparedNeighborhood, PreparedPath,
-    all_relation_types, validate_rel_filter,
+    all_relation_types, validate_build_id, validate_rel_filter,
 };
 pub use responder::{FixtureResponder, LiveResponder, Responder};
 pub use view::{export_json, explain_entity, search};

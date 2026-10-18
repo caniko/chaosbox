@@ -50,6 +50,72 @@ fn neighbors_advertises_bounded_continuation() {
 }
 
 #[test]
+fn historical_tools_advertise_optional_exact_publication() {
+    let defs = mcp_tool_defs();
+    for name in ["lookup", "explain", "evidence", "neighbors"] {
+        let tool = defs.iter().find(|tool| tool["name"] == name).unwrap();
+        let schema = &tool["inputSchema"];
+        let build = &schema["properties"]["build_id"];
+        assert_eq!(build["type"], "string", "{name}");
+        assert_eq!(build["minLength"], 1);
+        assert_eq!(build["maxLength"], 256);
+        assert!(!schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("build_id")));
+    }
+}
+
+#[tokio::test]
+async fn historical_tools_validate_selection_before_credentials() {
+    use serde_json::json;
+    for name in ["lookup", "explain", "evidence", "neighbors"] {
+        for build in [
+            json!(null),
+            json!(false),
+            json!(1),
+            json!([]),
+            json!(""),
+            json!(" "),
+            json!("build:\ncontrol"),
+            json!("é".repeat(129)),
+        ] {
+            let mut args = json!({"repo":"demo", "build_id":build});
+            args[if name == "evidence" { "rel" } else { "id" }] = json!("fixture:id");
+            let response = mcp_call_tool(&json!(1), name, &json!({"arguments":args})).await;
+            assert_eq!(response["error"]["code"], -32602, "{name}: {response}");
+            assert!(response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("build_id"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn historical_cursor_conflicts_fail_before_credentials() {
+    use serde_json::json;
+    let mut kinds = chaosbox::all_relation_types();
+    kinds.sort();
+    let cursor = json!({"contract":"chaosbox.repository-neighborhood", "version":1, "order":"rel_id_asc",
+        "scope":{"repo":"demo", "id":"ent:hub", "direction":"both", "rel_types":kinds, "limit":20},
+        "build_id":"build:old", "outgoing":{"after":"rel:first"}, "incoming":"done"});
+    let response = mcp_call_tool(
+        &json!(1),
+        "neighbors",
+        &json!({"arguments":{
+            "repo":"demo", "id":"ent:hub", "build_id":"build:new", "cursor":cursor.to_string()
+        }}),
+    )
+    .await;
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+    assert!(response["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("conflicts"));
+}
+
+#[test]
 fn path_advertises_shared_bounds_and_rejects_unknown_fields() {
     let defs = mcp_tool_defs();
     let path = defs.iter().find(|tool| tool["name"] == "path").unwrap();
