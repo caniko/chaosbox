@@ -1,0 +1,10 @@
+[package]
+name = "fixture-app"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+api_v1 = { package = "fixture-api", path = "../api-v1", version = "=1.0.0" }
+api_v2 = { package = "fixture-api", path = "../api-v2", version = "=2.0.0" }
+missing_api = { package = "fixture-api", path = "../missing-api", version = "=3.0.0" }
+private_api = { package = "fixture-private-api", path = "../private-api", version = "=1.0.0" }
