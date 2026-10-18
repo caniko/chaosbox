@@ -6,8 +6,11 @@ use super::PipelineError;
 mod navigation;
 #[path = "reader_pages.rs"]
 mod pages;
+#[path = "reader_path.rs"]
+mod path;
 
 pub use pages::{NeighborhoodMode, NeighborhoodPage, NeighborhoodQuery, PreparedNeighborhood};
+pub use path::PathBudget;
 
 // ---- Read-only consumer path (CLI and MCP share this) ----
 
@@ -179,76 +182,6 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
             .await
             .map_err(|e| PipelineError::Consumer(e.to_string()))?;
         Ok((out, inc))
-    }
-
-    /// Upper bound on BFS node visits for one path query. Exceeding it is
-    /// an explicit budget error, never an unbounded traversal: callers
-    /// (MCP agents) retry with a narrower query instead of hanging the
-    /// serial server loop.
-    pub const PATH_VISITED_CAP: usize = 100_000;
-
-    /// Bounded BFS path using iterative backend neighborhood expansion.
-    /// `ponytail: O(hops * degree) round-trips; single-projection fetch if this dominates`.
-    pub async fn path(
-        &self,
-        from: &str,
-        to: &str,
-        max_hops: usize,
-    ) -> Result<Option<Vec<String>>, PipelineError> {
-        self.path_with_cap(from, to, max_hops, Self::PATH_VISITED_CAP)
-            .await
-    }
-
-    /// [`GraphReader::path`] with an explicit visit budget (tests + future policy).
-    pub async fn path_with_cap(
-        &self,
-        from: &str,
-        to: &str,
-        max_hops: usize,
-        visit_cap: usize,
-    ) -> Result<Option<Vec<String>>, PipelineError> {
-        use std::collections::{BTreeMap, BTreeSet, VecDeque};
-        if from == to {
-            return Ok(Some(vec![from.to_owned()]));
-        }
-        let types = all_relation_types();
-        let mut prev: BTreeMap<String, String> = BTreeMap::new();
-        let mut seen: BTreeSet<String> = BTreeSet::from([from.to_owned()]);
-        let mut queue: VecDeque<(String, usize)> = VecDeque::from([(from.to_owned(), 0)]);
-        while let Some((cur, depth)) = queue.pop_front() {
-            if depth >= max_hops {
-                continue;
-            }
-            let (out, inc) = self.neighbors(&cur, Some(types.clone())).await?;
-            let mut nexts: Vec<String> = Vec::new();
-            for r in out.iter().chain(inc.iter()) {
-                nexts.push(r.from_entity.entity_id.clone());
-                nexts.push(r.to_entity.entity_id.clone());
-            }
-            for nxt in nexts {
-                if nxt == cur || !seen.insert(nxt.clone()) {
-                    continue;
-                }
-                if seen.len() > visit_cap {
-                    return Err(PipelineError::Consumer(
-                        "path traversal budget exceeded; narrow the query".into(),
-                    ));
-                }
-                prev.insert(nxt.clone(), cur.clone());
-                if nxt == to {
-                    let mut path = vec![to.to_owned()];
-                    let mut c = to.to_owned();
-                    while let Some(p) = prev.get(&c) {
-                        path.push(p.clone());
-                        c = p.clone();
-                    }
-                    path.reverse();
-                    return Ok(Some(path));
-                }
-                queue.push_back((nxt, depth + 1));
-            }
-        }
-        Ok(None)
     }
 
     /// Deterministic export of the pinned build; truncation errors honestly.

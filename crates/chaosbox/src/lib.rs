@@ -51,7 +51,7 @@ pub use materialization::{
 pub use pipeline::{Pipeline, chain_publication, summarize_outcomes, uncached_decisions};
 pub use reader::{
     EXPORT_EDGE_CAP, EXPORT_NODE_CAP, GraphReader, NeighborhoodMode, NeighborhoodPage,
-    NeighborhoodQuery, PreparedNeighborhood, all_relation_types, validate_rel_filter,
+    NeighborhoodQuery, PathBudget, PreparedNeighborhood, all_relation_types, validate_rel_filter,
 };
 pub use responder::{FixtureResponder, LiveResponder, Responder};
 pub use view::{export_json, explain_entity, search};
