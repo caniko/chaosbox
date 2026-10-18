@@ -334,6 +334,17 @@ enum QueryCmd {
 
 #[derive(Debug, Subcommand)]
 enum DbCmd {
+    /// Page retained build headers and membership counts without loading graph payloads.
+    Inventory {
+        #[arg(long)]
+        repo: String,
+        /// Build headers per page (1..=50).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Exclusive build-ID boundary returned by the previous page.
+        #[arg(long)]
+        after: Option<String>,
+    },
     /// Read-only readiness check. Exit 0 only when ready.
     Check {
         /// Emit the versioned JSON envelope (contract v2; always on).
@@ -677,6 +688,12 @@ async fn main() {
             }
         }
         Command::Db { op } => match op {
+            DbCmd::Inventory { repo, limit, after } => {
+                match Box::pin(backend_cmd::run_inventory_typedb(repo, limit, after)).await {
+                    Ok(report) => println!("{}", serde_json::to_string(&report).unwrap()),
+                    Err(error) => std::process::exit(consumer_err("db inventory", error)),
+                }
+            }
             DbCmd::Check { json: _, repo } => {
                 // Read-only: never init/migrate/repair. Exit 0 when ready,
                 // 2 when pending, 1 otherwise (harbor-db contract v2).

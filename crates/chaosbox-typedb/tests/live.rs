@@ -1384,6 +1384,23 @@ async fn unpublished_build_header_is_unavailable_despite_live_pointer() {
         reader.active_build("conf").await.unwrap().unwrap().build_id,
         current.id
     );
+    let query = chaosbox_typedb::reader::InventoryQuery::new("conf".into(), 20, None).unwrap();
+    let inventory = reader.inventory(&query).await.unwrap();
+    assert_eq!(
+        inventory.current_build.as_deref(),
+        Some(current.id.as_str())
+    );
+    assert_eq!(inventory.builds.len(), 2);
+    let staging = inventory
+        .builds
+        .iter()
+        .find(|row| row.build_id == "build:staging")
+        .unwrap();
+    assert_eq!(staging.status, "staging");
+    assert!(!staging.is_current);
+    assert_eq!(staging.node_memberships, 0);
+    assert_eq!(staging.edge_memberships, 0);
+    assert_eq!(staging.sealed_memberships, 0);
 }
 
 #[tokio::test]

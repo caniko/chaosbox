@@ -1,4 +1,4 @@
-//! Backend selection, `TypeDB` connection helpers, the pinned consumer reader, and the `db check` / `db migrate` lifecycle commands.
+//! Backend selection, `TypeDB` connection helpers, the pinned reader, and database commands.
 
 use super::*;
 
@@ -264,4 +264,35 @@ pub(super) fn consumer_err(op: &str, e: impl std::fmt::Display) -> i32 {
     println!("{}", serde_json::to_string(&report).unwrap());
     eprintln!("{op} failed: {e}");
     1
+}
+
+/// Inspect retained headers/counts using the existing credential-file route.
+pub(super) async fn run_inventory_typedb(
+    repo: String,
+    limit: usize,
+    after: Option<String>,
+) -> Result<LifecycleReport, String> {
+    use chaosbox_typedb::reader::{InventoryQuery, INVENTORY_TIMEOUT};
+    let query = InventoryQuery::new(repo, limit, after).map_err(|error| error.to_string())?;
+    let page = tokio::time::timeout(INVENTORY_TIMEOUT, async {
+        let mut reader = TypeDbReader::new(typedb_config_from_env()?);
+        Box::pin(reader.connect())
+            .await
+            .map_err(|error| error.to_string())?;
+        reader
+            .inventory(&query)
+            .await
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "build inventory deadline exceeded")??;
+    Ok(LifecycleReport {
+        contract_version: 2,
+        backend: "typedb".into(),
+        operation: "db inventory".into(),
+        status: "ready".into(),
+        schema_version: chaosbox_typedb::SCHEMA_VERSION,
+        pinned: chaosbox_typedb::TYPEDB_PINNED.into(),
+        detail: serde_json::json!({"contract":"chaosbox.build-inventory.v1", "page":page}),
+    })
 }

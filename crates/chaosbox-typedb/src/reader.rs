@@ -25,6 +25,10 @@ use typedb_driver::{Address, Addresses, Credentials, DriverOptions, DriverTlsCon
 use crate::common::{TypeDbConfig, col_int, col_string, col_string_opt, driver_error, read_rows};
 use crate::encode::{int_lit, str_lit};
 
+#[path = "inventory.rs"]
+mod inventory;
+pub use inventory::{InventoryPage, InventoryQuery, RetainedBuild, INVENTORY_TIMEOUT};
+
 /// Entity attribute columns selected by every member query.
 const ENTITY_COLS: &[&str] = &[
     "id", "kind", "repo", "snap", "file", "name", "qn", "sf", "sl", "sc", "el", "ec", "bs", "be",
