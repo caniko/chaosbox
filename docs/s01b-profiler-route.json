@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "id": "s01b-profiler-route-atlas-20261019",
+  "status": "disposable-route-qualified",
+  "parentAttributionGateClosed": false,
+  "evidence": {
+    "directory": "/data/scratch/tmp/opencode/chaosbox-s01b-profiler-20261019",
+    "manifest": "evidence.sha256",
+    "manifestSha256": "82ec86e223208a3f90f77a712e41fdb297efe217126cf4cfc6aa218949c53073",
+    "manifestEntries": 314,
+    "commandRecord": "commands.md"
+  },
+  "sourceIdentity": {
+    "chaosboxBaselineHead": "35023ee5b3017b918b48e6a3f9655298a763774f",
+    "chaosboxDirty": true,
+    "sourceArchive": "source.tar",
+    "sourceArchiveSha256": "69a869fddf24d989047296f75d4df2282670bacdd931f8564e4e4d86cccfc7f0",
+    "sourceChecksumInventory": "source-files.sha256",
+    "sourceChecksumInventorySha256": "15d94a36d9f192a47502a628b485587fc8bedcddf5e3d6d0983aacf58a62f006",
+    "typedbInspectedRevision": "7e3baa369a5afd3c42c3e21a4672785dbdbb09ec",
+    "typedbExecutableSha256": "f2eda580af8a386f25d68d82bcd2984fa3b03b5f330b12a5c12a6bc88d2db3b8",
+    "typedbSourceToBinaryDerivationBindingVerified": false,
+    "runtimeCodeChanged": false
+  },
+  "checks": {
+    "nativeConsistencyAssertionsPassed": 17,
+    "requiredNativeCasesPassed": 2,
+    "requiredNativeCasesIgnored": 0,
+    "treefmtExitStatus": 0,
+    "treefmtMatchedFiles": 0,
+    "formatterCoverageClaimed": false
+  },
+  "inventoryClient": {
+    "executable": "bin/chaosbox-inventory",
+    "sha256": "a7a9d15a9159a8e4501cbfcc7c530190a3a327620370895cdf89aff982852fb3",
+    "originReceipt": "inventory-client-origin.json",
+    "originImplementationCommit": "4704623025ee23a977ee5759043bc73e9c209836",
+    "originSourceArchiveSha256": "c10749c9d51692336d380fa532cfccc9bc595e6ea8d5d3a97f4ada55303ab27e",
+    "copiedBytesVerified": true
+  },
+  "route": {
+    "profiler": "Valgrind Massif 3.26.0",
+    "toolRoot": "/nix/store/9mw8a1jy9pasfsix1az35byjxs1lspr2-valgrind-3.26.0",
+    "commandLineOnly": true,
+    "heap": true,
+    "stacks": false,
+    "depth": 40,
+    "thresholdPercent": 0.1,
+    "maxSnapshots": 60,
+    "detailedFrequency": 1,
+    "timeUnit": "ms",
+    "monitorDumps": ["detailed_snapshot", "xtmemory"],
+    "nativeRenderers": ["ms_print", "callgrind_annotate"],
+    "warnings": ["unimplemented fcntl command: 1036"],
+    "requiresNewProfiledProcess": true,
+    "productionInstrumented": false
+  },
+  "executionBounds": {
+    "cpuQuotaPercent": 200,
+    "cargoJobs": 2,
+    "tokioWorkers": 2,
+    "memoryHighBytes": 2147483648,
+    "memoryMaxBytes": 4294967296,
+    "memorySwapMaxBytes": 0,
+    "serverRuntimeSeconds": 1200,
+    "serverPerFileLimitBytes": 268435456,
+    "nativeCaseDeadlineSeconds": 300,
+    "nativeCaseKillGraceSeconds": 5
+  },
+  "nativeCases": [
+    {
+      "name": "disposable_inventory_enumerates_history_without_confusing_status_and_pointer",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 9.09,
+      "log": "native-history.log"
+    },
+    {
+      "name": "private_session_knowledge_is_pinned_idempotent_and_predecessor_guarded",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 2.59,
+      "log": "native-knowledge.log"
+    }
+  ],
+  "observations": {
+    "startup": {"requestedHeapBytes": 115281500, "modeledExtraBytes": 12062876},
+    "history": {"requestedHeapBytes": 127393121, "modeledExtraBytes": 12234751},
+    "knowledge": {"requestedHeapBytes": 133026757, "modeledExtraBytes": 12358203},
+    "retainedSnapshots": 32,
+    "peakRequestedHeapBytes": 133171995,
+    "peakSnapshotModeledExtraBytes": 12358349,
+    "profiledProcessCgroupPeakBytes": 463716352,
+    "profiledProcessCgroupSwapPeakBytes": 0,
+    "persistentSamplerSubtreeBytes": 85934394,
+    "samplerSubtreeObservedPhases": ["startup", "history", "knowledge"]
+  },
+  "finding": {
+    "owner": "TypeDB diagnostics/metrics/system_sampler.rs",
+    "mechanism": "all-process constructor refresh precedes existing own-PID refresh and retains the System state",
+    "sourceLines": [48, 52, 68, 75, 80],
+    "measuredSubtree": "sysinfo::unix::linux::process::update_proc_info",
+    "nextWorkcard": "reuse own-PID refresh at initialization; guard process-map scope and existing metrics",
+    "repairImplemented": false,
+    "repairQualified": false,
+    "workspaceSelectedTypedbHead": "d86c6763d7dcffdff754ca65b60a1ffb068e0d2d",
+    "workspaceSelectedTypedbHasNewSamplerFile": false
+  },
+  "cleanup": {
+    "unit": "chaosbox-s01b-profiler.service",
+    "activeState": "inactive",
+    "subState": "dead",
+    "mainPid": 0,
+    "result": "success",
+    "exitStatus": 0,
+    "listenersRemaining": false,
+    "dataRetained": true
+  },
+  "remaining": {
+    "productionAllocationOwnershipBytes": null,
+    "nativeAllocatorRetentionBytes": null,
+    "perBuildPhysicalBytes": null,
+    "productionMemoryBudgetAccepted": false,
+    "productionFootprintExplainedBySamplerFinding": false,
+    "substantialS05StorageGateClosed": false
+  },
+  "contextUsageTelemetry": null
+}
