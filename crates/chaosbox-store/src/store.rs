@@ -129,7 +129,55 @@ pub struct StagedData {
     pub files: Vec<((String, String), (String, u64))>,
 }
 
+/// Read-only staged payloads in deterministic key order, without copying the
+/// uncapped evidence and claim collections during a backend flush.
+pub struct StagedDataRef<'a> {
+    /// Run identities.
+    pub runs: &'a BTreeMap<String, (String, String)>,
+    /// Candidate set identities and provenance.
+    pub sets: &'a BTreeMap<String, (String, String, String)>,
+    /// Registered candidates and their set ids.
+    pub candidates: &'a BTreeMap<String, (String, Candidate)>,
+    /// Decisions keyed by candidate/question.
+    pub decisions: &'a BTreeMap<String, Decision>,
+    /// Reusable inferences keyed by reuse key.
+    pub inferences: &'a BTreeMap<String, InferenceRecord>,
+    /// Evidence keyed by id.
+    pub evidence: &'a BTreeMap<String, Evidence>,
+    /// Claims keyed by id.
+    pub claims: &'a BTreeMap<String, Claim>,
+    /// Registered file versions.
+    pub files: &'a BTreeMap<(String, String), (String, u64)>,
+}
+
 impl MemoryStore {
+    /// Borrow validated staged rows for an idempotent publication flush.
+    #[must_use]
+    pub fn staged(&self) -> StagedDataRef<'_> {
+        StagedDataRef {
+            runs: &self.runs,
+            sets: &self.sets,
+            candidates: &self.candidates,
+            decisions: &self.decisions,
+            inferences: &self.inferences,
+            evidence: &self.evidence,
+            claims: &self.claims,
+            files: &self.files,
+        }
+    }
+
+    /// Borrow an immutable published build without duplicating its members.
+    #[must_use]
+    pub fn get_ref(&self, build_id: &str) -> Option<&GraphBuild> {
+        self.builds.get(build_id)
+    }
+
+    /// Borrow the last good build for a repository without copying it.
+    #[must_use]
+    pub fn active_ref(&self, repo: &str) -> Option<&GraphBuild> {
+        self.active.get(repo).and_then(|id| self.get_ref(id))
+    }
+
     /// Export the staged contents for a publication flush. Ordering is
     /// deterministic (`BTreeMap` key order) so retries replay identically.
     #[must_use]
@@ -431,18 +479,15 @@ impl Store for MemoryStore {
             ));
         }
         self.seal_build(&build)?;
-        self.builds.insert(build.id.clone(), build.clone());
         self.active.insert(build.repo.clone(), build.id.clone());
+        self.builds.insert(build.id.clone(), build);
         Ok(())
     }
     fn active(&self, repo: &str) -> Option<GraphBuild> {
-        self.active
-            .get(repo)
-            .and_then(|id| self.builds.get(id))
-            .cloned()
+        self.active_ref(repo).cloned()
     }
     fn get(&self, build_id: &str) -> Option<GraphBuild> {
-        self.builds.get(build_id).cloned()
+        self.get_ref(build_id).cloned()
     }
     fn stats(&self) -> StoreStats {
         self.stats()

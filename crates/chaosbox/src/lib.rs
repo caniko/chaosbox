@@ -55,7 +55,7 @@ pub use reader::{
     all_relation_types, validate_build_id, validate_rel_filter,
 };
 pub use responder::{FixtureResponder, LiveResponder, Responder};
-pub use view::{export_json, explain_entity, search};
+pub use view::{export_json, explain_entity, search, write_export_json};
 
 /// Pipeline failures across extraction, inference, validation, storage, and consumers.
 #[derive(Debug, Error)]

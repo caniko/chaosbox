@@ -26,7 +26,7 @@ pub use queries::{GraphQueries, NeighborhoodDirection};
 pub use replica::{MemoryReplicaStore, ReplicaRow, ReplicaStore, validate_row, validate_replica_view};
 pub use rows::{BuildRow, EndpointRef, EntityRow, EvidenceRow, RelRow, SourceCitation};
 pub use sealed_evidence::SEALED_EVIDENCE_BYTES_MAX;
-pub use store::{MemoryStore, StagedData, Store, StoreStats};
+pub use store::{MemoryStore, StagedData, StagedDataRef, Store, StoreStats};
 pub use task::{Task, TaskState, claim_task, heartbeat_task, reclaim_task};
 
 /// Persistence/query failures: connection, query, invariant, or missing rows.

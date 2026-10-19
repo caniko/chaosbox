@@ -366,27 +366,14 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
             build.id = chaosbox_core::deterministic_id("build", &[&build.id, &compiler.context.id]);
         }
         build.predecessor = expected_predecessor.clone();
-        let entities: BTreeMap<String, Entity> = extraction
+        build.nodes = extraction
             .entities
             .iter()
             .map(|e| (e.id.clone(), e.clone()))
             .collect();
-        for e in entities.values() {
-            build
-                .add_node(e.clone())
-                .map_err(|e| PipelineError::Validation(e.to_string()))?;
-        }
-        crate::structural::publish_facts(
-            &mut self.store,
-            &mut build,
-            snapshot,
-            extraction,
-            &entities,
-        )
-        .await?;
+        crate::structural::publish_facts(&mut self.store, &mut build, snapshot, extraction).await?;
         let direct_relations = build.edges.len();
-        self.materialize_decisions(&mut build, decided, mat, &entities)
-            .await?;
+        self.materialize_decisions(&mut build, decided, mat).await?;
         build.coverage = Some(chaosbox_core::coverage::BuildCoverage {
             files: extraction.coverage.clone(),
             structural_relations: direct_relations
@@ -411,7 +398,6 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
         build: &mut GraphBuild,
         decided: &[(Candidate, Decision, Evidence)],
         mat: &Materialization,
-        entities: &BTreeMap<String, Entity>,
     ) -> Result<(), PipelineError> {
         // Materialize accepted relations as first-class objects.
         // Index rejected evidence by endpoint triple so materialized claims
@@ -441,11 +427,13 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
             if !accept {
                 continue;
             }
-            let scope = if entities
+            let scope = if build
+                .nodes
                 .get(&cand.from_entity)
                 .map(|e| e.file.clone())
                 .unwrap_or_default()
-                == entities
+                == build
+                    .nodes
                     .get(&cand.to_entity)
                     .map(|e| e.file.clone())
                     .unwrap_or_default()
