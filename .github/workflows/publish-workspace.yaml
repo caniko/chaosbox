@@ -18,7 +18,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 345
     env:
       NIX_CONFIG: "experimental-features = nix-command flakes"
       XDG_CACHE_HOME: "/tmp/.cache"
@@ -109,46 +109,23 @@ jobs:
           NIX_CONFIG: "experimental-features = nix-command flakes"
           XDG_CACHE_HOME: "/tmp/.cache"
         run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then export NIX_CONFIG="${NIX_CONFIG}"$'\nmax-jobs = 1\ncores = 2'; test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix develop --no-update-lock-file -c sh -c 'formatter=$(nix eval --impure --raw --expr "let root = toString ./.; flake = builtins.getFlake (if builtins.pathExists ./.git then \"git+file://\" + root else root); in if flake ? formatter.\${builtins.currentSystem} then flake.formatter.\${builtins.currentSystem}.drvPath else \"\"") || exit; if [ -n "$formatter" ]; then formatter_path=$(nix build --no-link --print-out-paths "$formatter^out") || exit; test -x "$formatter_path/bin/treefmt" || { echo "project formatter does not provide treefmt" >&2; exit 1; }; "$formatter_path/bin/treefmt" --fail-on-change; else echo "project flake must declare formatter for release qualification" >&2; exit 1; fi'; nix develop --no-update-lock-file -c nix flake check --no-update-lock-file --print-build-logs; nix develop --no-update-lock-file -c cargo nextest --version; nix develop --no-update-lock-file -c cargo nextest run --workspace --all-features; nix develop --no-update-lock-file -c cargo doc --no-deps --all-features; nix develop --no-update-lock-file -c cargo clippy --all-targets --all-features -- -D warnings; fi
-      - name: Required gate release-nix-production
-        timeout-minutes: 180
+      - name: Required gate release-nix
+        timeout-minutes: 120
         env:
           NIX_CONFIG: "experimental-features = nix-command flakes"
-        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#packages.x86_64-linux.chaosbox; fi
-      - name: Required gate release-nix-unit
-        timeout-minutes: 180
-        env:
-          NIX_CONFIG: "experimental-features = nix-command flakes"
-        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#checks.x86_64-linux.unit; fi
-      - name: Required gate release-nix-lint
-        timeout-minutes: 180
-        env:
-          NIX_CONFIG: "experimental-features = nix-command flakes"
-        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#checks.x86_64-linux.lint; fi
-      - name: Required gate release-nix-scratch-plugin
-        timeout-minutes: 180
-        env:
-          NIX_CONFIG: "experimental-features = nix-command flakes"
-        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#checks.x86_64-linux.scratch-plugin; fi
-      - name: Required gate release-nix-federation-home
-        timeout-minutes: 180
-        env:
-          NIX_CONFIG: "experimental-features = nix-command flakes"
-        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#checks.x86_64-linux.federation-home; fi
-      - name: Required gate release-nix-intelligence-plugin
-        timeout-minutes: 180
-        env:
-          NIX_CONFIG: "experimental-features = nix-command flakes"
-        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#checks.x86_64-linux.intelligence-plugin; fi
-      - name: Required gate release-nix-typedb-integration
-        timeout-minutes: 180
-        env:
-          NIX_CONFIG: "experimental-features = nix-command flakes"
-        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#checks.x86_64-linux.typedb-integration; fi
-      - name: Required gate release-nix-federation-ssh
-        timeout-minutes: 180
-        env:
-          NIX_CONFIG: "experimental-features = nix-command flakes"
-        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#checks.x86_64-linux.federation-ssh; fi
+        id: simit-required-gate-release-nix
+        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; evidence="$RUNNER_TEMP/chaosbox-release-nix"; mkdir -p "$evidence"; { nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --print-build-logs --json .#packages.x86_64-linux.chaosbox .#checks.x86_64-linux.unit .#checks.x86_64-linux.lint .#checks.x86_64-linux.scratch-plugin .#checks.x86_64-linux.federation-home .#checks.x86_64-linux.intelligence-plugin .#checks.x86_64-linux.typedb-integration .#checks.x86_64-linux.federation-ssh 2>&1 >&3 | tee "$evidence/build.log" >&2; } 3>"$evidence/result.json"; fi
+
+      - name: Retain required gate evidence
+        if: always() && steps.simit-required-gate-release-nix.outcome != '' && steps.simit-required-gate-release-nix.outcome != 'skipped'
+        timeout-minutes: 5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: "release-nix-evidence.source"
+          include-hidden-files: true
+          path: "${{ runner.temp }}/chaosbox-release-nix/\n"
+          retention-days: 30
+          if-no-files-found: warn
       - name: Test chaosbox-core
         run: nix develop -c cargo test --locked -p chaosbox-core --all-targets --all-features
       - name: Clippy chaosbox-core
