@@ -146,9 +146,10 @@ described in the new book chapters are not yet implemented.
   A signed semver tag push starts the credential-free `publish-workspace.yaml`
   build: `git verify-tag` uses `keys/maintainers.gpg`, the tag commit must match
   the immutable workflow event SHA, and all six Cargo versions must match the
-  tag. It runs the package-inventory, release-workspace (treefmt, flake check,
-  nextest, docs, Clippy) and release-nix (all eight Nix outputs, evidence
-  retained) gates, then packages the release set. Only a successful build
+  tag. It runs the package-inventory, release-workspace (treefmt, flake check)
+  and release-nix (all eight Nix outputs, evidence retained) gates, then
+  per-crate tests, Clippy and docs, and packages the release set. Only a
+  successful build
   starts the default-branch `trusted-publish-workspace.yaml`, which re-admits
   each archive and uploads in dependency order
   **`chaosbox-core` → `chaosbox-extract` → `chaosbox-jev` → `chaosbox-store`
