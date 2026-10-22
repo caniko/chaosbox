@@ -14,19 +14,20 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
             max_nodes,
             max_chars,
         } => {
-            run_navigation(&repo, |graph| {
-                chaosbox::navigation::context(graph, &query, depth, max_nodes, max_chars)
+            run_navigation(async {
+                AnyReader::connect(&repo)
+                    .await?
+                    .context(&query, depth, max_nodes, max_chars)
+                    .await
             })
             .await
         }
         QueryCmd::Stats { repo, limit } => {
-            run_navigation(&repo, |graph| chaosbox::navigation::summary(graph, limit)).await
+            run_navigation(async { AnyReader::connect(&repo).await?.stats(limit).await }).await
         }
         QueryCmd::Community { id, repo, limit } => {
-            run_navigation(&repo, |graph| {
-                chaosbox::navigation::community(graph, &id, limit)
-            })
-            .await
+            run_navigation(async { AnyReader::connect(&repo).await?.community(&id, limit).await })
+                .await
         }
         QueryCmd::Search { query, repo, limit } => {
             let reader = match Box::pin(AnyReader::connect(&repo)).await {
@@ -169,15 +170,9 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
 }
 
 async fn run_navigation(
-    repo: &str,
-    query: impl FnOnce(&serde_json::Value) -> Result<serde_json::Value, String>,
+    query: impl std::future::Future<Output = Result<serde_json::Value, chaosbox::PipelineError>>,
 ) -> i32 {
-    let result = async {
-        let reader = AnyReader::connect(repo).await.map_err(|e| e.to_string())?;
-        query(&reader.export().await.map_err(|e| e.to_string())?)
-    }
-    .await;
-    match result {
+    match query.await {
         Ok(value) => {
             println!("{value}");
             0

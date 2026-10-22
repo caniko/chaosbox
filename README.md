@@ -2,7 +2,7 @@
 
 <!-- simit:badges:start -->
 
-[![CI](https://img.shields.io/badge/CI-managed-2088ff)](.github/workflows/ci.yaml) [![docs](https://img.shields.io/badge/docs-enabled-6f42c1)](docs) [![crates.io](https://img.shields.io/badge/crates.io-ready-f46623)](https://crates.io/crates/chaosbox)
+[![CI](https://img.shields.io/badge/CI-managed-2088ff)](.github/workflows/ci.yaml) [![docs](https://img.shields.io/badge/docs-enabled-6f42c1)](docs) [![crates.io](https://img.shields.io/badge/crates.io-publishable-f46623)](https://crates.io/crates/chaosbox)
 
 <!-- simit:badges:end -->
 
@@ -72,6 +72,12 @@ Jev credentials: `CHAOSBOX_JEV_API_KEY_FILE` (or operator `TYPESAFE_API_KEY`).
 Backend: TypeDB only — `db check`/`db migrate`/query/MCP always target
 TypeDB; `run` publishes through TypeDB with `CHAOSBOX_DB_BACKEND=typedb`,
 in-memory otherwise.
+For a trusted host connector, `chaosbox reader --admission /private/read-view.json`
+serves a run-isolated, source-scoped and version-pinned MCP connection. See
+[run-bound read views](docs/READ_VIEWS.md) for its admission contract, budgets,
+revocation, and worker-integration gates. The admission file is not a credential;
+the existing `chaosbox mcp` command remains an operator surface.
+
 Choose `--no-decisions`, `--live-jev`, or `--fixture-decisions` explicitly.
 Fixture graphs are disposable/test-only and recorded under `fixture-test`.
 `run --no-decisions` publishes parser-certified declarations and file/module
@@ -87,7 +93,10 @@ build can refresh without any model coverage. A decision-bearing or legacy
 build keeps the conservative exit-4 guard when current candidates lack reusable
 decisions. See the [certified fact contract](docs/STRUCTURAL_FACTS.md) for the
 exact syntax subset, citation format, coverage limits, and regression baseline.
-Existing TypeDB databases need `chaosbox db migrate` for additive schema v4.
+Existing TypeDB databases need `chaosbox db migrate` to reach the current schema.
+Run-bound readers additionally require a newly published, source-complete sealed
+build; migration cannot establish the evidence closure of legacy versions. See
+[`docs/READ_VIEWS.md`](docs/READ_VIEWS.md).
 
 See [optional compiler evidence](docs/COMPILER_EVIDENCE.md) for capture/import,
 source/configuration staleness checks and capability limits. The

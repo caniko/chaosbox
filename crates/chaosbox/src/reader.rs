@@ -2,6 +2,9 @@
 
 use super::PipelineError;
 
+#[path = "reader_navigation.rs"]
+mod navigation;
+
 // ---- Read-only consumer path (CLI and MCP share this) ----
 
 /// Escape LIKE wildcards (`\`, `%`, `_`) so user input matches literally.
@@ -74,6 +77,7 @@ pub const EXPORT_EDGE_CAP: i64 = 20_000;
 /// live backend and [`chaosbox_store::MemoryReader`] for tests.
 pub struct GraphReader<R> {
     handle: R,
+    repo: String,
     /// Pinned active build id for every request this reader serves.
     pub build_id: String,
     /// Pinned generation (predecessor/generation checks on the read side).
@@ -99,6 +103,7 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
             .ok_or_else(|| PipelineError::Consumer(format!("no active build for repo {repo}")))?;
         Ok(Self {
             handle,
+            repo: repo.to_owned(),
             build_id: build.build_id,
             generation: build.generation,
             status: build.status,
@@ -340,6 +345,26 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
                 ents.iter().map(|e| e.entity_id.clone()).collect(),
                 rels.iter().map(|r| r.rel_id.clone()).collect(),
             ))
+        }
+        if repo != self.repo {
+            return Err(PipelineError::Consumer(
+                "repository differs from pinned reader".into(),
+            ));
+        }
+        // Validate both headers before reading either side. Empty builds and
+        // unknown ids cannot be authorized by examining their member rows.
+        for build in [from_build, to_build] {
+            if self
+                .handle
+                .published_build(repo, build)
+                .await
+                .map_err(|e| PipelineError::Consumer(e.to_string()))?
+                .is_none()
+            {
+                return Err(PipelineError::Consumer(
+                    "published build unavailable for repo".into(),
+                ));
+            }
         }
         let (old_n, old_e) = members(self, from_build).await?;
         let (new_n, new_e) = members(self, to_build).await?;

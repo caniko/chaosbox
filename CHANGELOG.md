@@ -4,6 +4,21 @@
 
 ### Fixed
 
+- Reject malformed pre-bounding truncation metadata and preserve string-valued
+  tool output exactly when reconstructing source-custodied checkpoints. The
+  global plugin example now uses native project resolution instead of a fixed repo.
+- Global OpenCode session custody binds each archive capture and retrieval to
+  the native session's canonical project root, including worktrees, and refuses
+  context reduction when that identity cannot be verified.
+- Source-custodied session pruning validates native outcomes and selects settled
+  records in Rust. Checkpoints recover complete pre-bounding tool content and
+  metadata, enforce runtime budgets, and verify full-payload plan identities
+  against archived evidence before installation.
+- Graph context reads bounded, build-pinned neighborhoods independently of full
+  export limits. Statistics and connectivity groups read immutable analytics
+  computed at publication; large legacy builds gain the cache on refresh.
+- Preserve legacy published-build headers for operator membership diffs while
+  keeping unsealed evidence unavailable to run-bound readers.
 - Federation TypeDB reads use the read-only reader for current and historical
   knowledge. Querying a missing database no longer creates it.
 - Flush one-shot federation responses before process shutdown so callers always
@@ -36,6 +51,8 @@
 
 ### Added
 
+- Reason-gated Nix additions retain private, durable native execution receipts,
+  exact retry identity, offline context and read-only cleanup inspection.
 - Mandatory server-present TypeDB federation regressions and a disposable
   reciprocal SSH gate exercising Home Manager-generated query-only endpoints,
   exact history, attribution, revocation, withholding and outage behavior.

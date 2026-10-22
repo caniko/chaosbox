@@ -38,18 +38,18 @@ export function subprocess(binary, args, input, timeout = 120_000) {
 }
 
 /** Runtime seam tested with real Rust separately and an injected command runner. */
-export function coordinator(options, run) {
+export function coordinator(options, run, repository) {
   const { work, scope, repo } = options;
   if (
     typeof work !== "string" ||
     !isAbsolute(work) ||
     typeof scope !== "string" ||
     !/^private:.+/.test(scope) ||
-    typeof repo !== "string" ||
-    !repo.trim()
+    (repo !== undefined && (typeof repo !== "string" || !repo.trim())) ||
+    (repo === undefined && typeof repository !== "function")
   )
     throw new Error(
-      "Chaosbox compaction requires absolute work, private scope and explicit repo.",
+      "Chaosbox compaction requires absolute work, private scope and native or explicit repo.",
     );
   const binary =
     typeof options.chaosboxBin === "string" ? options.chaosboxBin : "chaosbox";
@@ -59,6 +59,12 @@ export function coordinator(options, run) {
   const sessions = new Set();
   const command = (name, args = [], input, timeout) =>
     run(binary, ["memory", name, ...args], input, timeout);
+  async function repoFor(session) {
+    const value = repo ?? (await repository(session));
+    if (typeof value !== "string" || !value.trim())
+      throw new Error("Native session repository is unavailable.");
+    return value;
+  }
   function wake() {
     if (options.liveAssessment !== true || worker) return;
     worker = command(
@@ -87,30 +93,22 @@ export function coordinator(options, run) {
         worker = undefined;
       });
   }
-  function capture(session, records) {
-    return { version: 1, scope, repo, source: "opencode", session, records };
+  async function capture(session, records) {
+    return {
+      version: 1,
+      scope,
+      repo: await repoFor(session),
+      source: "opencode",
+      session,
+      records,
+    };
   }
   return {
     wake,
     async settled(session, records) {
       sessions.add(session);
-      const safe = records
-        .filter(
-          (record) =>
-            record.type !== "assistant" ||
-            (typeof record.time?.completed === "number" &&
-              (record.content ?? record.parts ?? []).every(
-                (part) =>
-                  part.type !== "tool" ||
-                  ["completed", "error"].includes(part.state?.status),
-              )),
-        )
-        .filter(
-          (record) => record.type !== "shell" || record.status !== "running",
-        );
-      if (!safe.length) return;
       try {
-        await command("capture", archiveArgs, capture(session, safe));
+        await command("observe", archiveArgs, await capture(session, records));
         wake();
       } catch (error) {
         state.degraded = true;
@@ -150,21 +148,16 @@ export function coordinator(options, run) {
     async compact(event) {
       sessions.add(event.sessionID);
       try {
-        if (
-          !Array.isArray(event.records) ||
-          !Number.isFinite(event.budgetTokens) ||
-          event.budgetTokens <= 0
-        )
-          throw new Error("Missing native pre-reduction history or budget");
-        // Rust refuses oversize protected state. The runtime independently checks
-        // its token estimate before installation; this character bound is stricter.
-        const max = Math.floor(
-          Math.min(options.maxChars ?? 60_000, event.budgetTokens, 120_000),
-        );
         const plan = await command(
           "compact",
-          [...archiveArgs, "--max-chars", String(max)],
-          capture(event.sessionID, event.records),
+          [
+            ...archiveArgs,
+            "--max-chars",
+            String(options.maxChars ?? 60_000),
+            "--budget-tokens",
+            String(event.budgetTokens),
+          ],
+          await capture(event.sessionID, event.records),
         );
         if (
           !plan ||
@@ -199,7 +192,7 @@ export function coordinator(options, run) {
         await command(
           "capture",
           archiveArgs,
-          capture(event.sessionID, [
+          await capture(event.sessionID, [
             {
               id: `${event.messageID}:${event.id}`,
               type: "tool-result",
@@ -248,7 +241,7 @@ export function coordinator(options, run) {
           "--scope",
           scope,
           "--repo",
-          repo,
+          await repoFor(event.sessionID),
           query,
         ]);
         if (packet.records?.length)
@@ -279,7 +272,7 @@ export function coordinator(options, run) {
         ...(input.pointer === undefined ? [] : ["--pointer", input.pointer]),
       ]);
     },
-    async retrieve(input) {
+    async retrieve(input, session) {
       if (
         !input ||
         typeof input.query !== "string" ||
@@ -291,7 +284,7 @@ export function coordinator(options, run) {
         "--scope",
         scope,
         "--repo",
-        repo,
+        await repoFor(session),
         input.query,
       ]);
     },

@@ -38,6 +38,7 @@ mod flush;
 mod flush_semantics;
 mod impl_store;
 mod memory;
+mod publication;
 mod replica;
 
 // TypeDbConfig and shared driver plumbing live in [`crate::common`].

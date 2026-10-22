@@ -36,7 +36,8 @@ pub struct BuildRow {
     pub build_id: String,
     /// Monotonic generation.
     pub generation: i64,
-    /// `staging` or `active`.
+    /// `staging` or `active`. Here `active` means published; historical builds
+    /// retain that status after the repository's active pointer advances.
     pub status: String,
     /// Snapshot ids pinned by this build (freshness fingerprint), sorted
     /// for deterministic reporting. Readers whose projection predates the
@@ -46,6 +47,10 @@ pub struct BuildRow {
     /// Processing coverage of this immutable build; unknown for legacy builds.
     #[serde(default)]
     pub coverage: Option<BuildCoverage>,
+    /// Publication sealed its complete evidence closure. Legacy headers remain
+    /// available for operator diffs, but cannot authorize run-bound readers.
+    #[serde(default)]
+    pub evidence_sealed: bool,
 }
 
 /// Relationship row with endpoint ids.

@@ -11,6 +11,53 @@ const options = {
   repo: "chaosbox",
   inject: false,
 };
+test("global custody resolves canonical repositories from native session identity", async () => {
+  const calls = [];
+  const memory = coordinator(
+    { ...options, repo: undefined },
+    async (_, args, input) => {
+      calls.push({ args, input });
+      return {
+        summary: "Keep each repository's original requirement.",
+        recent: "",
+        custody: "a".repeat(64),
+        id: "b".repeat(64),
+      };
+    },
+    async (session) => `/projects/${session === "ses_a" ? "alpha" : "beta"}`,
+  );
+  await memory.settled("ses_a", [{ id: "msg_a", type: "user", text: "Alpha" }]);
+  await memory.compact({ sessionID: "ses_b", records: [], budgetTokens: 8000 });
+  await memory.retrieve(
+    { query: "original requirement", repo: "other" },
+    "ses_b",
+  );
+  assert.equal(calls[0].input.repo, "/projects/alpha");
+  assert.equal(calls[1].input.repo, "/projects/beta");
+  assert.deepEqual(calls[2].args.slice(-3), [
+    "--repo",
+    "/projects/beta",
+    "original requirement",
+  ]);
+  assert.equal(calls[0].input.scope, calls[1].input.scope);
+});
+test("failed native repository resolution never authorizes compaction", async () => {
+  let invoked = false;
+  const memory = coordinator(
+    { ...options, repo: undefined },
+    async () => {
+      invoked = true;
+    },
+    async () => {
+      throw new Error("Session location unavailable");
+    },
+  );
+  const event = { sessionID: "ses_missing", records: [], budgetTokens: 8000 };
+  await memory.compact(event);
+  assert.match(event.failure, /Session location unavailable/);
+  assert.equal(event.result, undefined);
+  assert.equal(invoked, false);
+});
 test("requires complete custody and never silently delegates a failed reduction", async () => {
   const memory = coordinator(options, async () => {
     throw new Error("disk full");
@@ -40,6 +87,12 @@ test("installs the returned tail and receipt only after native capture", async (
   await memory.compact(event);
   assert.deepEqual(calls[0].input.records, native);
   assert.deepEqual(calls[0].args.slice(0, 2), ["memory", "compact"]);
+  assert.deepEqual(calls[0].args.slice(-4), [
+    "--max-chars",
+    "60000",
+    "--budget-tokens",
+    "10000",
+  ]);
   assert.equal(event.result.custody, "a".repeat(64));
   assert.equal(event.result.recent, "");
 });
@@ -100,7 +153,7 @@ test("settled boundary capture preserves final replies and job notifications", a
     type: "user",
     text: "Keep current requirements.",
   };
-  await memory.settled("ses_test", [
+  const records = [
     user,
     {
       id: "msg_streaming",
@@ -108,8 +161,10 @@ test("settled boundary capture preserves final replies and job notifications", a
       time: { created: 1 },
       content: [],
     },
-  ]);
-  assert.deepEqual(calls[0].input.records, [user]);
+  ];
+  await memory.settled("ses_test", records);
+  assert.equal(calls[0].args[1], "observe");
+  assert.deepEqual(calls[0].input.records, records);
   async function* events() {
     yield { type: "session.step.ended", data: { sessionID: "ses_other" } };
     yield { type: "session.step.ended", data: { sessionID: "ses_test" } };
@@ -143,6 +198,21 @@ test(
         chaosboxBin: process.env.CHAOSBOX_TEST_BIN,
       };
       const memory = coordinator(config, subprocess);
+      await memory.settled("ses_real", [
+        {
+          id: "msg_user",
+          type: "user",
+          text: "Keep exact requirements including λ😀.",
+          time: { created: 1 },
+        },
+        {
+          id: "msg_running",
+          type: "assistant",
+          time: { created: 2 },
+          content: [],
+        },
+      ]);
+      assert.equal((await memory.status()).archive.pending.length, 1);
       const result = "λ😀".repeat(30000);
       await memory.tool({
         sessionID: "ses_real",
@@ -189,6 +259,16 @@ test(
       assert.equal(event.failure, undefined);
       assert.match(event.result.summary, /λ😀/);
       assert.match(event.result.summary, /pending/);
+      const verified = await subprocess(config.chaosboxBin, [
+        "memory",
+        "verify-plan",
+        "--work",
+        work,
+        "--scope",
+        options.scope,
+        event.result.planID,
+      ]);
+      assert.equal(verified.summary, event.result.summary);
       const hash = event.result.summary.match(
         /"archive_hash":"([a-f0-9]{64})"/,
       )[1];

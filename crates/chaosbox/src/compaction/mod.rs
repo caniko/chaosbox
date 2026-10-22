@@ -3,6 +3,7 @@
 //! never authorizes forgetting active work. All archive references are hashes.
 
 pub mod cli;
+mod native;
 mod planner;
 mod replica;
 mod worker;
@@ -41,8 +42,18 @@ pub struct Custody {
     pub records: usize,
 }
 
-/// Deterministic checkpoint and auditable reduction dispositions.
+/// Advisory settlement capture. Unsettled records never authorize reduction.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Observation {
+    /// Receipt for the settled subset, absent when no record is settled.
+    pub custody: Option<Custody>,
+    /// Native identities excluded because their operations are still active.
+    pub unsettled: Vec<String>,
+}
+
+/// Deterministic checkpoint and auditable reduction dispositions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Plan {
     /// Checkpoint text for `OpenCode`'s compaction result.
     pub summary: String,
@@ -175,7 +186,7 @@ impl Journal {
                 params![hash, body],
             )
             .map_err(err)?;
-            if record["type"] == "tool-result" {
+            if native::Record::parse(record, &input.session)?.kind == native::Kind::ToolResult {
                 let existing: Option<String> = tx.query_row("SELECT hash FROM tool_sources WHERE source=?1 AND session=?2 AND repo=?3 AND message=?4 AND call_id=?5",
                     params![input.source,input.session,input.repo,record["messageID"].as_str(),record["callID"].as_str()], |r| r.get(0)).optional().map_err(err)?;
                 if existing.as_ref().is_some_and(|h| h != &hash) {
@@ -208,9 +219,13 @@ impl Journal {
     }
 
     fn validate_capture(&self, input: &Capture) -> Result<String, String> {
+        self.validate_snapshot(input, true)
+    }
+
+    fn validate_snapshot(&self, input: &Capture, require_settled: bool) -> Result<String, String> {
         if input.version != 1
             || input.scope != self.scope
-            || input.records.is_empty()
+            || (require_settled && input.records.is_empty())
             || input.records.len() > 100_000
             || [&input.repo, &input.source, &input.session]
                 .iter()
@@ -224,69 +239,38 @@ impl Journal {
         }
         let mut ids = std::collections::BTreeSet::new();
         for record in &input.records {
-            let id = record["id"]
-                .as_str()
-                .filter(|s| !s.is_empty())
-                .ok_or("native record lacks identity")?;
-            if !ids.insert(id)
-                || record["sessionID"]
-                    .as_str()
-                    .is_some_and(|s| s != input.session)
-            {
+            let native = native::Record::parse(record, &input.session)?;
+            if !ids.insert(native.id) {
                 return Err("duplicate or cross-session record".into());
             }
-            match record["type"].as_str() {
-                Some("assistant")
-                    if record
-                        .pointer("/time/completed")
-                        .and_then(Value::as_i64)
-                        .is_none() =>
-                {
-                    return Err("unsettled assistant cannot be reduced".into());
-                }
-                Some("assistant") => {
-                    for part in record["parts"]
-                        .as_array()
-                        .or_else(|| record["content"].as_array())
-                        .into_iter()
-                        .flatten()
-                    {
-                        if part["type"] == "tool"
-                            && !matches!(
-                                part.pointer("/state/status").and_then(Value::as_str),
-                                Some("completed" | "error")
-                            )
-                        {
-                            return Err("unsettled tool cannot be reduced".into());
-                        }
-                    }
-                }
-                Some("tool-result") => {
-                    if !matches!(record["status"].as_str(), Some("completed" | "error"))
-                        || ["messageID", "callID", "tool"]
-                            .iter()
-                            .any(|key| record[key].as_str().is_none_or(str::is_empty))
-                    {
-                        return Err("invalid settled tool result".into());
-                    }
-                }
-                Some("shell")
-                    if !matches!(
-                        record["status"].as_str(),
-                        Some("completed" | "error" | "exited" | "timeout" | "killed")
-                    ) =>
-                {
-                    return Err("unsettled shell cannot be reduced".into());
-                }
-                Some(
-                    "user" | "system" | "synthetic" | "compaction" | "shell" | "agent"
-                    | "agent-switched" | "model-switched" | "model-selected" | "location-switched"
-                    | "skill" | "idle",
-                ) => (),
-                _ => return Err("unsupported native record type".into()),
+            if require_settled && !native.settled {
+                return Err("unsettled native operation cannot be reduced".into());
             }
         }
         Ok(raw)
+    }
+
+    /// Validate a complete advisory snapshot and commit only settled records.
+    /// Malformed records reject the entire observation; active operations are reported.
+    pub fn observe(&mut self, input: &Capture) -> Result<Observation, String> {
+        self.validate_snapshot(input, false)?;
+        let mut selected = input.clone();
+        selected.records.clear();
+        let mut unsettled = Vec::new();
+        for raw in &input.records {
+            let record = native::Record::parse(raw, &input.session)?;
+            if record.settled {
+                selected.records.push(raw.clone());
+            } else {
+                unsettled.push(record.id.to_owned());
+            }
+        }
+        let custody = if selected.records.is_empty() {
+            None
+        } else {
+            Some(self.capture(&selected)?)
+        };
+        Ok(Observation { custody, unsettled })
     }
 
     /// Retrieve by opaque hash only, never a caller-selected file path.
@@ -325,9 +309,7 @@ impl Journal {
             return Err("custody manifest digest mismatch".into());
         }
         let capture: Capture = serde_json::from_str(&raw).map_err(err)?;
-        if capture.scope != self.scope {
-            return Err("custody scope mismatch".into());
-        }
+        self.validate_capture(&capture)?;
         for record in &capture.records {
             let hash = sha256_hex(&[&serde_json::to_string(record).map_err(err)?]);
             if self.evidence(&hash)? != *record {

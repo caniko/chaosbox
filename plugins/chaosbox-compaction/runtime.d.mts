@@ -27,6 +27,7 @@ type Settlement = {
 export function coordinator(
   options: Record<string, unknown>,
   run: typeof subprocess,
+  repository?: (sessionID: string) => Promise<string>,
 ): {
   wake(): void;
   settled(sessionID: string, records: readonly unknown[]): Promise<void>;
@@ -38,6 +39,6 @@ export function coordinator(
   tool(event: Settlement): Promise<void>;
   context(event: SessionContext, load?: LoadContext): Promise<void>;
   archive(input: unknown): Promise<unknown>;
-  retrieve(input: unknown): Promise<unknown>;
+  retrieve(input: unknown, sessionID?: string): Promise<unknown>;
   status(): Promise<unknown>;
 };

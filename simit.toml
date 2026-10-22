@@ -87,3 +87,15 @@ id = "release-nix-federation-ssh"
 timeout_minutes = 180
 env = { NIX_CONFIG = "experimental-features = nix-command flakes" }
 run = 'set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --json .#checks.x86_64-linux.federation-ssh; fi'
+
+# TypeDB comes from the qualified nixpkgs PR merge; reuse its signed public
+# review outputs rather than compiling the server and console on VM runners.
+[release.artifacts]
+substituters = [
+  "https://cache.nixos.org",
+  "https://attic.candee.baby/nixpkgs-review-gha",
+]
+trusted_public_keys = [
+  "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=",
+  "nixpkgs-review-gha:0fg7mYWpk0A2L627XE3tdW56J8dvZ2Y/+ATNjkcMfIE=",
+]

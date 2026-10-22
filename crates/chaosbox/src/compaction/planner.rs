@@ -115,6 +115,7 @@ impl Journal {
             {
                 return Err("tool custody does not match native settlement".into());
             }
+            super::native::complete_result(&original)?;
             Ok((hash, original))
         })
         .transpose()
@@ -123,6 +124,52 @@ impl Journal {
     /// Build a conservative checkpoint. Only high-confidence irrelevant
     /// assistant text can be omitted; tool groups and users remain.
     pub fn plan(&mut self, capture_id: &str, max_chars: usize) -> Result<Plan, String> {
+        let plan = self.build_plan(capture_id, max_chars, None)?;
+        self.persist_plan(&plan)?;
+        Ok(plan)
+    }
+
+    /// Bound checkpoints conservatively in Rust before persisting or installing them.
+    /// UTF-8 bytes upper-bound the runtime token estimate, including non-ASCII text.
+    pub fn plan_with_budget(
+        &mut self,
+        capture_id: &str,
+        max_chars: usize,
+        budget_tokens: usize,
+    ) -> Result<Plan, String> {
+        let plan = self.build_plan(capture_id, max_chars.min(budget_tokens), None)?;
+        if plan.summary.len().saturating_add(plan.recent.len()) > budget_tokens {
+            return Err(
+                "protected continuation exceeds runtime token budget; custody retained".into(),
+            );
+        }
+        self.persist_plan(&plan)?;
+        Ok(plan)
+    }
+
+    /// Recover and independently reconstruct a stored plan from complete custody.
+    /// Later assessments cannot silently change the dispositions of an issued plan.
+    pub fn verify_plan(&self, id: &str) -> Result<Plan, String> {
+        let raw: String = self
+            .db
+            .query_row("SELECT body FROM plans WHERE id=?1", [id], |r| r.get(0))
+            .map_err(err)?;
+        let plan: Plan = serde_json::from_str(&raw).map_err(err)?;
+        if plan.id != id || plan_identity(&plan)? != id {
+            return Err("pruning plan digest mismatch".into());
+        }
+        if self.build_plan(&plan.custody, 120_000, Some(&plan.omitted))? != plan {
+            return Err("pruning plan does not match source-backed dispositions".into());
+        }
+        Ok(plan)
+    }
+
+    fn build_plan(
+        &self,
+        capture_id: &str,
+        max_chars: usize,
+        selected_omissions: Option<&[String]>,
+    ) -> Result<Plan, String> {
         if !(512..=120_000).contains(&max_chars) {
             return Err("invalid checkpoint character budget".into());
         }
@@ -150,7 +197,11 @@ impl Journal {
             if matches!(kind, "compaction" | "tool-result") {
                 continue;
             }
-            if self.can_omit(&capture, record, &hash, latest, &text)? {
+            let omit = match selected_omissions {
+                Some(selected) if !selected.contains(&hash) => false,
+                _ => self.can_omit(&capture, record, &hash, latest, &text)?,
+            };
+            if omit {
                 omitted.push(hash);
                 continue;
             }
@@ -166,26 +217,30 @@ impl Journal {
         if summary.chars().count() > max_chars {
             return Err("protected continuation exceeds budget; custody retained, context reduction refused".into());
         }
-        let id = sha256_hex(&["session-pruning-v1", capture_id, &summary]);
-        let plan = Plan {
+        let mut plan = Plan {
             summary,
             recent: String::new(),
             custody: capture_id.into(),
-            id,
+            id: String::new(),
             externalized,
             omitted,
         };
+        plan.id = plan_identity(&plan)?;
+        Ok(plan)
+    }
+
+    fn persist_plan(&self, plan: &Plan) -> Result<(), String> {
         self.db
             .execute(
                 "INSERT OR IGNORE INTO plans VALUES (?1,?2,?3)",
                 params![
                     plan.id,
-                    capture_id,
+                    plan.custody,
                     serde_json::to_string(&plan).map_err(err)?
                 ],
             )
             .map_err(err)?;
-        Ok(plan)
+        Ok(())
     }
 
     fn project_record(
@@ -211,6 +266,19 @@ impl Journal {
                 ));
                 if !externalized.iter().any(|h| h == hash) {
                     externalized.push(hash.to_owned());
+                }
+            }
+        }
+        if let Some(content) = projection.pointer_mut("/prompt/parts") {
+            require_inline_files(content)?;
+            for (index, part) in content.as_array_mut().into_iter().flatten().enumerate() {
+                if part["type"] == "file" {
+                    part["uri"] = json!(format!(
+                        "Archived attachment: chaosbox_archive({hash}), pointer /prompt/parts/{index}/uri"
+                    ));
+                    if !externalized.iter().any(|h| h == hash) {
+                        externalized.push(hash.to_owned());
+                    }
                 }
             }
         }
@@ -343,13 +411,15 @@ impl Journal {
                         );
                     }
                     if let Some((full_hash, original)) = full {
-                        if original.pointer("/result/metadata/outputPath").is_some() {
-                            return Err(
-                                "tool was bounded before capture; complete output lacks custody"
-                                    .into(),
-                            );
-                        }
                         require_inline_files(&tool_content(&original))?;
+                        part["state"]["content"] = tool_content(&original);
+                        part["state"]["metadata"] = original
+                            .pointer("/result/metadata")
+                            .cloned()
+                            .unwrap_or_else(|| json!({}));
+                        if original["status"] == "error" {
+                            part["state"]["error"] = original["error"].clone();
+                        }
                         part["state"]["archive_hash"] = json!(full_hash);
                     }
                     require_inline_files(&part["state"]["content"])?;
@@ -371,6 +441,15 @@ impl Journal {
     }
 }
 
+fn plan_identity(plan: &Plan) -> Result<String, String> {
+    let mut payload = plan.clone();
+    payload.id.clear();
+    Ok(sha256_hex(&[
+        "session-pruning-v2",
+        &serde_json::to_string(&payload).map_err(err)?,
+    ]))
+}
+
 fn tool_content(record: &Value) -> Value {
     match record.pointer("/result/content") {
         Some(Value::String(text)) => json!([{"type":"text","text":text}]),
@@ -378,7 +457,10 @@ fn tool_content(record: &Value) -> Value {
         _ => {
             let text = record
                 .pointer("/result/output")
-                .map(Value::to_string)
+                .map(|output| match output {
+                    Value::String(text) => text.clone(),
+                    _ => output.to_string(),
+                })
                 .or_else(|| {
                     record
                         .pointer("/error/message")

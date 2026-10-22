@@ -1,9 +1,10 @@
 # Source-custodied session compaction
 
 Chaosbox now has a private, durable custody coordinator, a deferred intelligence
-worker, TypeDB publication and an OpenCode V2 adapter. The runtime extension is
-implemented against `f18083c78e54e65907000ab5a9ca4472b723ee7f` on the local
-`chaosbox-compaction` OpenCode branch.
+worker, TypeDB publication and an OpenCode V2 adapter. Rust owns capture validation,
+settled-record selection, checkpoint bounds, pruning dispositions and recovery.
+The runtime extension is integrated against Canix's OpenCode pin
+`047c74ec64ca6029f93be4bb4d1f5797c8838b9a` on the local `chaosbox-custody` branch.
 
 ## Contract
 
@@ -17,6 +18,8 @@ implemented against `f18083c78e54e65907000ab5a9ca4472b723ee7f` on the local
    bodies and attachment bytes have recoverable hash/pointer references. Tool
    inputs, outcome, exit metadata, original user requirements and uncertain
    assistant state remain in the checkpoint.
+   Pre-bounding results replace bounded content and metadata together; a result
+   already marked truncated cannot establish complete output custody.
 5. Independently assess reusable intelligence and continuation relevance using
    pinned Jev. Publication uses the existing admission/consolidation policy.
 6. Publish immutable TypeDB knowledge generations through a scope-specific,
@@ -44,7 +47,8 @@ the current latest user anchor. A changed anchor conservatively restores it.
 
 ## Enable
 
-Build Chaosbox and apply schema version 5 through the existing migration command:
+Build Chaosbox and apply the current packaged schema (version 8) through the
+existing migration command:
 
 ```sh
 cargo build --locked -p chaosbox
@@ -57,30 +61,33 @@ uses Chaosbox's existing pinned Jev credential handling. The adapter does not
 read credentials or call the inference endpoint itself.
 
 Use an OpenCode runtime containing the `compaction.plan` extension. The source
-worktree is `projects/worktrees/opencode/chaosbox-compaction` in the Canix
+worktree is `projects/worktrees/opencode/chaosbox-custody` in the Canix
 workspace. The installed runtime has not been repinned or restarted by this
 implementation. An unextended runtime fails visibly at the adapter's compatibility
 fence instead of silently performing standard lossy compaction.
 
 Copy the operator configuration from
 [`plugins/chaosbox-compaction/opencode.example.jsonc`](../plugins/chaosbox-compaction/opencode.example.jsonc).
-Set an absolute private `work` directory, `scope`, explicit `repo`, and the built
-`chaosboxBin` if it is not on PATH. Use the same archive root for a private scope
+Set an absolute private `work` directory, `scope`, and the built `chaosboxBin`
+if it is not on PATH. Global configuration omits `repo`: the adapter resolves
+each session's canonical project root through the native runtime, including
+worktrees. An explicit `repo` remains available for project-local configuration.
+Use the same archive root for a private scope
 across sessions and repositories. `liveAssessment: true` authorizes background
 Jev assessment; `publish: true` enables the TypeDB outbox. Compaction itself needs
 neither live inference nor database connectivity.
 
 ### OpenCode runtime handoff
 
-The local `chaosbox-compaction` branch contains commit
-`8a3968a2f4d3751eeeed1e6a1f19dde3ed7f07b9`, based on
-`f18083c78e54e65907000ab5a9ca4472b723ee7f`. It adds the hook, encoded full-history
-read, checkpoint budget checks, regression tests and public plugin documentation.
+The local `chaosbox-custody` branch integrates the original extension
+(`8a3968a2f4d3751eeeed1e6a1f19dde3ed7f07b9`) with the current pinned OpenCode
+compaction lifecycle. It adds the hook, encoded full-history read, checkpoint
+budget checks, regression tests and public plugin documentation.
 Export a portable patch from that checkout with:
 
 ```sh
 git -C /path/to/patched/opencode format-patch -1 --stdout \
-  8a3968a2f4d3751eeeed1e6a1f19dde3ed7f07b9 > chaosbox-compaction.patch
+  HEAD > chaosbox-compaction.patch
 ```
 
 After applying it to the pinned base with `git am`, install that checkout's
@@ -99,7 +106,9 @@ before the adapter can own compaction in ordinary sessions.
 
 ```sh
 chaosbox memory compact --work /private/memory --scope private:can \
-  --max-chars 60000 < capture.json
+  --max-chars 60000 --budget-tokens 80000 < capture.json
+chaosbox memory observe --work /private/memory --scope private:can < capture.json
+chaosbox memory verify-plan --work /private/memory --scope private:can PLAN_ID
 chaosbox memory status --work /private/memory --scope private:can
 chaosbox memory drain --work /private/memory --scope private:can --live-jev \
   --publish --max-requests 1000 --max-input-tokens 10000000
@@ -132,6 +141,20 @@ Capture stdin has the versioned shape:
 - Failed/interrupted inference retains its spending reservation and pending job.
   An explicit `drain --retry` authorizes another attempt. Negative decisions and
   successful receipts replay; budgets accumulate across restarts and sessions.
+- `observe` validates the complete snapshot in Rust, commits its settled subset
+  and reports unsettled IDs. Strict `capture` and `compact` refuse active work.
+  Missing content, malformed outcomes, duplicate calls and foreign session IDs
+  reject the snapshot before mutation.
+  Settled shells require their output, and legacy prompt attachments require
+  inline bytes before a checkpoint can externalize them by hash and pointer.
+- `compact` persists a plan only within both character and optional runtime-token
+  bounds. The adapter supplies the runtime bound; Rust conservatively charges
+  UTF-8 bytes. Custody survives a budget refusal.
+- `verify-plan` checks the full plan digest, archived sources, externalization
+  and source-bound omission receipts. Compaction verifies its stored plan before
+  returning it. Later assessments cannot rewrite an issued plan's dispositions.
+  Earlier `session-pruning-v1` plans remain archived; regenerate a plan to obtain
+  the full-payload `session-pruning-v2` identity required by this verifier.
 - Workers share a separate SQLite write lease; capture is not blocked by network
   dispatch. Kernel/process cleanup releases the lease after crashes.
 - A publication interrupted after the TypeDB commit reconciles by content hash.
@@ -167,7 +190,10 @@ event deliveries.
 `crates/chaosbox/tests/compaction.rs` exercises custody/restart recovery, scope and
 symlink isolation, source variants, complete tool-result linkage, non-English
 candidate extraction, independent admission/pruning, changed-anchor restoration
-and persistent failed-attempt budgets. Its required-server test proves
+and persistent failed-attempt budgets. `compaction_native.rs` additionally tests
+malformed native records, Rust settlement selection, bounded-preview reconciliation,
+Unicode budget refusal, stored-plan tampering and lost-custody refusal.
+The required-server test proves
 cross-session TypeDB publication, duplicate consolidation and fresh-handle reads.
 
 `scripts/test-typedb.sh` runs that test and the backend's pinned-publication,
@@ -183,12 +209,11 @@ host. It verifies the advertised tool names, complete output recovery, bounded
 checkpoint failure and unloading of hooks/tools. It uses a disposable archive
 and does not require inference or database credentials.
 
-Verified locally on 2026-10-01: Rust workspace tests and build; 23 OpenCode
-compaction/native/transport tests; root OpenCode lint/type checks; the OpenCode
-documentation build and Chaosbox mdBook build; all six adapter tests (including a real Rust subprocess);
-native-host loading/typechecking; and the disposable TypeDB gate, including
-14 backend conformance tests and required-server cross-session publication.
-Clippy reports existing warnings in adjacent work; the new compaction and memory
-modules introduce none. The narrow Nix package evaluation was denied by tool
-permissions. The installed Nix formatter also reports baseline layout drift in
-`flake.nix`; the test wrapper change adds only its required Node runtime input.
+Verified locally on 2026-10-08: Rust workspace tests and build; focused Clippy
+without warnings; 22 current-pin OpenCode compaction/native/transport tests;
+root OpenCode lint/type checks and documentation build; all six adapter tests
+(including real Rust subprocess recovery); native-host loading/typechecking;
+and the disposable TypeDB gate with 19 backend tests and required-server
+cross-session publication. Rust formatting passes through treefmt with the
+repository's edition-2021 configuration.
+Runtime package consumption and activation are still required for ordinary sessions.

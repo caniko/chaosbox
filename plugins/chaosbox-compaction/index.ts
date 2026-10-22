@@ -4,7 +4,18 @@ import { coordinator, subprocess } from "./runtime.mjs";
 export default Plugin.define({
   id: "chaosbox-compaction",
   async setup(ctx) {
-    const memory = coordinator(ctx.options ?? {}, subprocess);
+    const memory = coordinator(
+      ctx.options ?? {},
+      subprocess,
+      async (sessionID) => {
+        const session = await ctx.session.get({ sessionID });
+        if (session.projectID !== ctx.location.project.id)
+          throw new Error(
+            `Session project ${session.projectID} does not match native project ${ctx.location.project.id}.`,
+          );
+        return ctx.location.project.canonical;
+      },
+    );
     await ctx.session.hook("compaction.plan", memory.compact);
     // A runtime without the pre-reduction extension must fail visibly rather
     // than silently reverting to its lossy tail/summary policy.
@@ -61,8 +72,10 @@ export default Plugin.define({
           required: ["query"],
           additionalProperties: false,
         },
-        execute: async (input) => ({
-          content: JSON.stringify(await memory.retrieve(input)),
+        execute: async (input, context) => ({
+          content: JSON.stringify(
+            await memory.retrieve(input, context.sessionID),
+          ),
           metadata: { chaosboxDerived: true },
         }),
       });

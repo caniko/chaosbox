@@ -23,10 +23,15 @@ jobs:
       CARGO_HOME: "/tmp/.cargo"
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://cache.nixos.org https://attic.candee.baby/nixpkgs-review-gha
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixpkgs-review-gha:0fg7mYWpk0A2L627XE3tdW56J8dvZ2Y/+ATNjkcMfIE=
 
       - name: Configure GitHub input transport
         run: |
@@ -51,6 +56,9 @@ jobs:
       - name: Test all features
         run: nix develop -c cargo nextest run --workspace --all-features
 
+      - name: Doctests
+        run: nix develop -c cargo test --doc --workspace --all-features
+
       - name: Build docs
         run: nix develop .#docs -c cargo doc --workspace --no-deps --all-features
 
@@ -64,10 +72,15 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://cache.nixos.org https://attic.candee.baby/nixpkgs-review-gha
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixpkgs-review-gha:0fg7mYWpk0A2L627XE3tdW56J8dvZ2Y/+ATNjkcMfIE=
 
       - name: Configure GitHub input transport
         run: |
@@ -88,10 +101,15 @@ jobs:
       XDG_CACHE_HOME: "/tmp/.cache"
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://cache.nixos.org https://attic.candee.baby/nixpkgs-review-gha
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixpkgs-review-gha:0fg7mYWpk0A2L627XE3tdW56J8dvZ2Y/+ATNjkcMfIE=
 
       - name: Configure GitHub input transport
         run: |
@@ -110,10 +128,15 @@ jobs:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://cache.nixos.org https://attic.candee.baby/nixpkgs-review-gha
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixpkgs-review-gha:0fg7mYWpk0A2L627XE3tdW56J8dvZ2Y/+ATNjkcMfIE=
 
       - name: Configure GitHub input transport
         run: |
@@ -132,10 +155,15 @@ jobs:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://cache.nixos.org https://attic.candee.baby/nixpkgs-review-gha
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixpkgs-review-gha:0fg7mYWpk0A2L627XE3tdW56J8dvZ2Y/+ATNjkcMfIE=
 
       - name: Configure GitHub input transport
         run: |
@@ -154,10 +182,15 @@ jobs:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://cache.nixos.org https://attic.candee.baby/nixpkgs-review-gha
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixpkgs-review-gha:0fg7mYWpk0A2L627XE3tdW56J8dvZ2Y/+ATNjkcMfIE=
 
       - name: Configure GitHub input transport
         run: |
@@ -176,10 +209,15 @@ jobs:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://cache.nixos.org https://attic.candee.baby/nixpkgs-review-gha
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixpkgs-review-gha:0fg7mYWpk0A2L627XE3tdW56J8dvZ2Y/+ATNjkcMfIE=
 
       - name: Configure GitHub input transport
         run: |
@@ -198,10 +236,15 @@ jobs:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://cache.nixos.org https://attic.candee.baby/nixpkgs-review-gha
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixpkgs-review-gha:0fg7mYWpk0A2L627XE3tdW56J8dvZ2Y/+ATNjkcMfIE=
 
       - name: Configure GitHub input transport
         run: |
@@ -220,10 +263,15 @@ jobs:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://cache.nixos.org https://attic.candee.baby/nixpkgs-review-gha
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixpkgs-review-gha:0fg7mYWpk0A2L627XE3tdW56J8dvZ2Y/+ATNjkcMfIE=
 
       - name: Configure GitHub input transport
         run: |
@@ -242,10 +290,15 @@ jobs:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://cache.nixos.org https://attic.candee.baby/nixpkgs-review-gha
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixpkgs-review-gha:0fg7mYWpk0A2L627XE3tdW56J8dvZ2Y/+ATNjkcMfIE=
 
       - name: Configure GitHub input transport
         run: |
@@ -264,10 +317,15 @@ jobs:
       NIX_CONFIG: "experimental-features = nix-command flakes"
     steps:
       - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Nix
-        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            substituters = https://cache.nixos.org https://attic.candee.baby/nixpkgs-review-gha
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nixpkgs-review-gha:0fg7mYWpk0A2L627XE3tdW56J8dvZ2Y/+ATNjkcMfIE=
 
       - name: Configure GitHub input transport
         run: |

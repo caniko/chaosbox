@@ -93,6 +93,7 @@ pub struct MemoryStore {
     pub(crate) decisions: BTreeMap<String, Decision>,
     pub(crate) evidence: BTreeMap<String, Evidence>,
     pub(crate) claims: BTreeMap<String, Claim>,
+    pub(crate) sealed: BTreeMap<(String, String), Vec<crate::EvidenceRow>>,
     /// Reusable inferences by relation-local reuse key (issue #12).
     pub(crate) inferences: BTreeMap<String, InferenceRecord>,
     /// (snapshot, path) -> (sha256, bytes); evidence linkage validated here.
@@ -284,6 +285,12 @@ impl Store for MemoryStore {
         Ok(())
     }
     async fn put_claim(&mut self, c: Claim) -> Result<(), StoreError> {
+        self.validate_claim(&c)?;
+        if self.claims.get(&c.id).is_some_and(|old| old != &c) {
+            return Err(StoreError::Invariant(
+                "claim id reused with different evidence".into(),
+            ));
+        }
         self.claims.entry(c.id.clone()).or_insert(c);
         Ok(())
     }
@@ -423,6 +430,7 @@ impl Store for MemoryStore {
                 "expected predecessor but no active build".into(),
             ));
         }
+        self.seal_build(&build)?;
         self.builds.insert(build.id.clone(), build.clone());
         self.active.insert(build.repo.clone(), build.id.clone());
         Ok(())
