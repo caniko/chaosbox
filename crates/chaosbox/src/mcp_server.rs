@@ -1014,13 +1014,14 @@ fn mcp_backend_error(
     name: &str,
     error: &impl std::fmt::Display,
 ) -> serde_json::Value {
-    let report = LifecycleReport::error(&format!("mcp {name}"), &error.to_string());
-    mcp_error(
-        id,
-        -32603,
-        error.to_string(),
-        Some(serde_json::json!(report)),
-    )
+    let message = error.to_string();
+    let mut data = serde_json::json!(LifecycleReport::error(&format!("mcp {name}"), &message));
+    // Machine-readable class for the one failure agents must act on
+    // differently (index or pick another repo key) instead of retrying.
+    if message.contains("no active build for repo") {
+        data["code"] = serde_json::json!("no_active_build");
+    }
+    mcp_error(id, -32603, message, Some(data))
 }
 
 fn integer(value: Option<&serde_json::Value>, default: usize) -> usize {

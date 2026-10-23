@@ -15,6 +15,9 @@
 - Snapshot capture skips files under a source extension that are not valid
   UTF-8 and reports them as `unreadable` instead of failing the whole run.
   Explicit file selections still refuse them.
+- `no active build for repo` names the next action and carries
+  `data.code = "no_active_build"` on MCP errors; TypeDB `[REX1]` read
+  interruptions explain the read timeout and server-restart causes.
 - Reject malformed pre-bounding truncation metadata and preserve string-valued
   tool output exactly when reconstructing source-custodied checkpoints. The
   global plugin example now uses native project resolution instead of a fixed repo.

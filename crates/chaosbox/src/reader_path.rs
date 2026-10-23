@@ -118,9 +118,7 @@ impl PreparedPath {
             let query = self.0;
             let build = work.query(handle.active_build(&query.repo)).await?;
             work.bytes(&build)?;
-            let build = build.ok_or_else(|| {
-                PipelineError::Consumer(format!("no active build for repo {}", query.repo))
-            })?;
+            let build = build.ok_or_else(|| crate::no_active_build(&query.repo))?;
             let reader = GraphReader::from_header(handle, &query.repo, build);
             let path = reader
                 .path_inner(&query.from, &query.to, query.max_hops, &mut work)
