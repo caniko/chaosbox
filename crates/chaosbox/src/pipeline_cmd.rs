@@ -60,6 +60,13 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
             .filter(|f| f.status == chaosbox_core::coverage::SyntaxStatus::ParseError)
             .count()
     );
+    if !snap.unreadable.is_empty() {
+        eprintln!(
+            "unreadable: skipped={} (not valid UTF-8) first={:?}",
+            snap.unreadable.len(),
+            &snap.unreadable[..snap.unreadable.len().min(5)]
+        );
+    }
     eprintln!(
         "scope: {}",
         if snap.scope.is_empty() {

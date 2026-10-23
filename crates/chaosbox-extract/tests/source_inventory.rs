@@ -63,7 +63,11 @@ fn metadata_reads_no_source_text_and_notices_new_supported_files() {
     let metadata = source_inventory(root.path(), &[], limits()).unwrap();
     assert!(metadata.complete);
     assert_eq!((metadata.files, metadata.bytes), (1, 2));
-    assert!(Snapshot::capture("fixture", root.path()).is_err());
+    // Capture reads the bytes, finds them unreadable, and reports the file
+    // instead of failing the snapshot; the inventory never looked inside.
+    let captured = Snapshot::capture("fixture", root.path()).unwrap();
+    assert_eq!(captured.unreadable, vec!["invalid.rs".to_owned()]);
+    assert!(captured.files.is_empty());
     fs::write(root.path().join("added.md"), "new source").unwrap();
     let again = source_inventory(root.path(), &[], limits()).unwrap();
     assert_eq!((again.files, again.bytes), (2, 12));

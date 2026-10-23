@@ -12,6 +12,9 @@
   the per-row path, so first-write-wins semantics are unchanged. The redundant
   per-edge sealed-evidence read-back is gone; the publication swing still
   verifies the complete membership set.
+- Snapshot capture skips files under a source extension that are not valid
+  UTF-8 and reports them as `unreadable` instead of failing the whole run.
+  Explicit file selections still refuse them.
 - Reject malformed pre-bounding truncation metadata and preserve string-valued
   tool output exactly when reconstructing source-custodied checkpoints. The
   global plugin example now uses native project resolution instead of a fixed repo.
