@@ -2,9 +2,10 @@
 
 The shared, already-pinned path reader is locally qualified. CLI and ordinary
 MCP dispatch already call `GraphReader::path`, so both use this implementation.
-**Parent S02c remains open:** transport cancellation/framing, deadlines including
-connection/build acquisition, live TypeDB path qualification and persistent-MCP
-retention measurements belong to S02c.2.
+**Parent S02c remains open:** shared request validation, deadlines including
+connection/build acquisition and live TypeDB path qualification belong to S02c.2.
+Transport cancellation/framing, backpressure, cleanup and persistent-MCP retention
+measurements belong to S02c.3.
 
 See the [receipt](s02c1-bounded-path-search.json) and the
 [parent workcard](../tasks/session-efficiency/todo.md#--s02c--bounded-path-expansion-and-request-cost).
@@ -95,11 +96,12 @@ consumer pin transition, activation or service restart.
 
 ## Next-session handoff
 
-Continue as S02c.2 from the commit containing this report. Recheck HEAD and dirty
+Continue as S02c.2 from signed savepoint `accc0e5b1289b10c6c51733acc8b11737430c7a1`. Recheck HEAD and dirty
 state, then load this report plus the S02b.3 ordinary-client report. The shared
-reader does not consume MCP cancellation notifications, bound ordinary stdio
-frames/backpressure, or include backend acquisition in its deadline. Implement
-those transport controls with compatible found/null/error semantics and qualify
-fresh CLI, fresh MCP and repeated persistent MCP against disposable TypeDB.
-Measure retention and remote-read cleanup rather than extrapolating from these
-mock-future checks. Parent S02c must stay open until that evidence exists.
+reader does not include backend acquisition in its deadline. Reuse that reader
+and its local budgets while adding shared argument validation and acquisition-inclusive
+request accounting. Qualify fresh CLI, fresh MCP and persistent MCP against
+disposable TypeDB with compatible found/null/error semantics. Then S02c.3 handles
+matching-ID cancellation, bounded ordinary stdio frames/backpressure and cleanup.
+Measure retention and remote-read cleanup there rather than extrapolating from
+these mock-future checks. Parent S02c must stay open until both slices have evidence.

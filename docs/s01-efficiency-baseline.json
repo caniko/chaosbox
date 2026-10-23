@@ -1,0 +1,245 @@
+{
+  "schemaVersion": 1,
+  "id": "s01-atlas-20261016",
+  "status": "baseline-recorded",
+  "measurementWindow": {
+    "date": "2026-10-16",
+    "host": "atlas",
+    "isolatedHost": false,
+    "coldCacheControlled": false,
+    "repetitionsPerOfflineBinary": 1
+  },
+  "evidence": {
+    "directory": "/data/scratch/tmp/opencode/chaosbox-s01-20261016",
+    "manifest": "SHA256SUMS",
+    "manifestSha256": "b259c5164e2ccf299f02785984594e8b5411f6af3b51f4a2cd4925258dbcc9d8",
+    "retention": "local-scratch; retain or relocate with checksum verification before cleanup"
+  },
+  "sources": {
+    "canix": {
+      "revision": "d4586fb6cd1da86be3f57f84da7f93aeea298263",
+      "tree": "313b77c1bf031dbeddbfe61c6b46a6626cb58456",
+      "checkoutDirty": true,
+      "corpusIncludesDirtyChanges": false,
+      "indexBeforeSha256": "32ae1fa38d8b9da9d4f8bee4ec91ae93339f1d77bdffa8cd7871cf441b85c659",
+      "selectionPolicy": "lib/chaosbox/Chaosbox.pkl",
+      "selectionPolicySha256": "58c74cf5ad406ce6706ab4010d287344ed7d668280261c3129c43bdd9a6b3663"
+    },
+    "chaosboxCanonical": {
+      "revision": "42f0e64fddd50f612516e39e82d5c2ea4d2ead45",
+      "branch": "feat/harbor-monorepo-components",
+      "checkoutDirty": true,
+      "trackedDiffBeforeSha256": "5b7da061ac7690d4d387f1f478e08d2336041822b4523c59ff5cd91f4ac013b4",
+      "usedToBuildMeasuredBinaries": false
+    },
+    "memoryCandidate": {
+      "revision": "7313e6e5feaf6f50dad9595d74aeaa691c556a24",
+      "tree": "68ca81d9cdef64a93801718fca97228141c51d11",
+      "derivation": "/nix/store/xwgp6bib7fysy71bd2fvnybvgzclhfij-chaosbox-0.1.0.drv",
+      "binary": "/nix/store/kg922178hx87ydnxn2nilmyiplaa5qyj-chaosbox-0.1.0/bin/chaosbox",
+      "binarySha256": "05a47a01429de41c52427041bf84ab609c844d3b3294a0b43a9b3cda0793f94e"
+    }
+  },
+  "installed": {
+    "chaosboxCanix": {
+      "wrapper": "/nix/store/5ksfi5dg17q91lda5nqfpf2sw5zhasgr-chaosbox-canix/bin/chaosbox-canix",
+      "wrapperSha256": "20e2e626c26a771dfd07d8b8e40f9c11817efb3193dd32462f58b5e69e87d43a",
+      "binary": "/nix/store/aamrc152yl781cs8fy5nrk1nzgip19a7-chaosbox-0.1.0/bin/chaosbox",
+      "binarySha256": "30f1fa847478ac9f087b65266c79b5d559cc94b15ab187698c0ccc9a8a5bcdf6",
+      "declaredInputRevision": "9d6c81d202aa5e9b4e0a513161891e8a4ff01e96",
+      "backend": "typedb",
+      "database": "chaosbox",
+      "driverVersion": "3.12.3"
+    },
+    "bareChaosbox": {
+      "binary": "/nix/store/h9q6shkz3pbdqffbj576nf6wih9a55v8-chaosbox-0.1.0/bin/chaosbox",
+      "binarySha256": "07d4a38fc6b60b4c481c10b1783847ba752a9549acd57c840f0b6a310f3c4a77",
+      "sourceRevision": null,
+      "usedInOfflineComparison": false
+    },
+    "opencode": {
+      "binary": "/nix/store/i8mz61r692sfqqrx0rgav7b7gc18h3w2-opencode-v2-candidate-2.0.12+f18083c78e/bin/opencode",
+      "binarySha256": "5ad96ab021807bc97d2032861a8a4c060dffa4bbc95daacb1f3b666e24a994a5",
+      "canixDeclaredLegacyInputRevision": "047c74ec64ca6029f93be4bb4d1f5797c8838b9a",
+      "canonicalForkCheckoutRevision": "381d1bf41a286a1d7183fc5000334293ca6e717d",
+      "canonicalForkCheckoutDirty": true,
+      "globalConfigSha256": "b1547281de0b17d10fc8b5de3f661bb448401456bd20521ff30b1124de5a863f",
+      "cliConfigSha256": "fc15886b16c7653b928fcf5a7f89d169d7ab9fc5b358dc00e90d45cc86d39a6a",
+      "observedGlobalPlugin": "/home/can/.local/share/infernix/ponytail/.opencode/plugins/ponytail.mjs",
+      "observedGlobalPluginSha256": "e9e2214149ace3e589a584a27136bf5bd9da558fbad948f8cf1d3bc2c50d3828",
+      "observedGlobalCompaction": { "auto": true, "prune": true, "tail_turns": 15 },
+      "effectiveLayeredConfigurationVerified": false,
+      "nativeCustodyCompatibilityVerified": false,
+      "activeChaosboxAdapterIdentity": null,
+      "sessionArchiveIdentity": null
+    },
+    "system": "/nix/store/rghhw421gc3s6691hjqd6dq1q371c7qi-nixos-system-atlas-26.11.20260823.56c02bc",
+    "typedb": {
+      "version": "3.13.0",
+      "binary": "/nix/store/g9hwrllc0d4gqmdwyjggv674kf0jdm7x-typedb-3.13.0/bin/typedb-server",
+      "binarySha256": "f2eda580af8a386f25d68d82bcd2984fa3b03b5f330b12a5c12a6bc88d2db3b8",
+      "config": "/nix/store/wf5b890gnh2zllp622a7d4p4br07pfyc-typedb-config.yml",
+      "configSha256": "8f8169ce6f39fbed899bcd567d0e5fb29a65d2b133861572012e4bf16f2ef022",
+      "rocksdbCache": "1gb",
+      "rocksdbWriteBuffers": "512mb",
+      "mvccCleanupEnabled": false,
+      "packagedSchemaVersionReportedByReadiness": 4,
+      "baselineAndCandidateSchemaSourceSha256": "ba2e69bd00849c79faff3f4861c14f41b1497e975ffc94f94ccea7ebe826b54c",
+      "completeAppliedSchemaFingerprint": null,
+      "canixReadiness": "ready",
+      "defaultDemoReadiness": "pending: no active build for repo"
+    }
+  },
+  "corpora": {
+    "canixCommittedPolicyScope": {
+      "archive": "canix-corpus.tar",
+      "archiveSha256": "e1b54a89d07dd8fac441ea5ad55d9deb0de147a567048831b61fb1c1b01839cf",
+      "sourcePaths": ["flake", "cli", "home", "lib", "pkgs", "root", "website", "docs/src/design", "docs/src/guides", "docs/src/operations", "docs/src/reference"],
+      "sourceRevision": "d4586fb6cd1da86be3f57f84da7f93aeea298263",
+      "compilerCapture": false,
+      "inference": false
+    },
+    "smallIndexerFixture": {
+      "archive": "smoke-corpus.tar",
+      "archiveSha256": "dd502a05528987c3027da3d1e8cfcf930e80ff2f99d428bd8e2628d54734c157",
+      "sourceRevision": "7313e6e5feaf6f50dad9595d74aeaa691c556a24",
+      "sourcePath": "fixtures/indexer-smoke",
+      "measuredInS01": false
+    },
+    "workspaceInventory": {
+      "file": "selection.json",
+      "projectCount": 247,
+      "snapshotEligibleCount": 242,
+      "allEligibleSourceBytesFrozen": false,
+      "fullWorkspaceQualification": "not-run"
+    },
+    "historicalLargeWorkload": {
+      "provenance": "prior investigation; not reproduced by S01",
+      "reportedFacts": 1186553,
+      "reportedFiles": 14459,
+      "reportedParseErrors": 1517,
+      "reproducibleSourceInventory": null
+    }
+  },
+  "offlineComparison": {
+    "backend": "memory",
+    "arguments": ["run", "canix-corpus", "--repo", "s01-canix", "--max-candidates", "40", "--no-decisions"],
+    "perProcessScope": { "memoryHighBytes": 1073741824, "memoryMaxBytes": 2147483648, "memorySwapMaxBytes": 0, "cpuQuotaPercent": 200 },
+    "baseline": {
+      "binaryIdentity": "installed.chaosboxCanix",
+      "completedAt": "2026-10-16T13:35:46Z",
+      "peakRssKiB": 754616,
+      "elapsedSeconds": 3.08,
+      "userSeconds": 2.90,
+      "systemSeconds": 0.17,
+      "majorPageFaults": 3,
+      "minorPageFaults": 196665,
+      "fileSystemInputBlocks": 3912,
+      "fileSystemOutputBlocks": 70224,
+      "exitCode": 0
+    },
+    "candidate": {
+      "binaryIdentity": "sources.memoryCandidate",
+      "completedAt": "2026-10-16T13:35:58Z",
+      "peakRssKiB": 340792,
+      "elapsedSeconds": 2.96,
+      "userSeconds": 2.56,
+      "systemSeconds": 0.26,
+      "majorPageFaults": 17,
+      "minorPageFaults": 91892,
+      "fileSystemInputBlocks": 42000,
+      "fileSystemOutputBlocks": 70224,
+      "exitCode": 0
+    },
+    "output": {
+      "byteIdentical": true,
+      "bytesPerExport": 35952413,
+      "sha256": "78b2a22ffe28ad445578063604479dfcde8016ef278065c35d76504f41fd60b5",
+      "buildId": "build:760ac5e00503",
+      "generation": 1,
+      "snapshot": "snap:5f76b151537a",
+      "nodes": 65872,
+      "edges": 45946,
+      "capturedFiles": 1721,
+      "heuristicFiles": 216,
+      "omittedFiles": 1621,
+      "parseErrors": 0,
+      "structuralRelations": 45946,
+      "decisionRelations": 0
+    }
+  },
+  "liveReads": {
+    "repo": "canix",
+    "observedBuildId": "build:8ac2e28136c3",
+    "observedGeneration": 3,
+    "observedSnapshot": "snap:cba2b1e91c07",
+    "graphStatusCapturedAt": "2026-10-16T13:33:46Z",
+    "capturedFiles": 1714,
+    "structuralRelations": 45815,
+    "heuristicFiles": 210,
+    "omittedFiles": 1614,
+    "parseErrors": 0,
+    "compilerCoverage": null,
+    "catalogCoverage": null,
+    "exportCaps": { "nodes": 10000, "edges": 20000 },
+    "checkoutFreshnessVerified": false,
+    "mcpSearch": {
+      "capturedAt": "2026-10-16T13:40:36.786Z",
+      "arguments": { "repo": "canix", "query": "RuntimeManifest", "limit": 5 },
+      "elapsedMilliseconds": 1328,
+      "serializedResultUtf8Bytes": 2300,
+      "results": 5,
+      "definitionId": "ent:574d2717a6af",
+      "definitionFile": "cli/crates/canix-foundation/src/runtime.rs",
+      "definitionStartLine": 17,
+      "observedSnapshot": "snap:cba2b1e91c07",
+      "provenance": "managed MCP tool observation in S01 session; serialization size is not wire bytes or tokens"
+    },
+    "boundedContext": {
+      "arguments": { "repo": "canix", "query": "RuntimeManifest", "depth": 2, "maxNodes": 10, "maxChars": 6000 },
+      "mcpOutcome": "consumer: export truncated at 10000 nodes; narrow the repo",
+      "freshCliOutcome": "query navigation failed: consumer: export truncated at 10000 nodes; narrow the repo",
+      "freshCliElapsedSeconds": 15.66,
+      "freshCliPeakRssKiB": 94336,
+      "freshCliExitCode": 1,
+      "freshCliOutputBytes": 0,
+      "freshCliMetrics": "context.metrics"
+    }
+  },
+  "liveResources": {
+    "typedbSystemdCapturedAt": "2026-10-16T13:33:49Z",
+    "serviceStartedAt": "2026-10-15T11:23:16Z",
+    "pid": 3067,
+    "memoryCurrentBytes": 7341191168,
+    "memoryPeakBytes": 21069094912,
+    "memorySwapCurrentBytes": 23359582208,
+    "ioReadBytesSinceServiceStart": 36342735872,
+    "ioWriteBytesSinceServiceStart": 1282472673280,
+    "memoryHigh": "infinity",
+    "memoryMax": "infinity",
+    "memorySwapMax": "infinity",
+    "cgroupBreakdownCapturedAt": "2026-10-16T13:34:21Z",
+    "anonBytes": 3587751936,
+    "fileBytes": 1107288064,
+    "kernelBytes": 2815606784,
+    "zswapBytes": 2722478888,
+    "zswappedBytes": 7351914496,
+    "processSmapsAndIo": "permission-denied",
+    "databaseDiskUsage": "permission-denied",
+    "attribution": "observational, non-simultaneous counters; includes other work and compressed swap, not process RSS or workload deltas",
+    "hostMemoryCapturedAt": "2026-10-16T13:42:06Z",
+    "hostAvailableMemoryBytes": 35402043392,
+    "hostSwapUsedBytes": 40179482624,
+    "hostSwapTotalBytes": 41184194560,
+    "backgroundUnits": "snapshot was running earlier and inactive at final capture; decisions unit failed"
+  },
+  "acceptance": {
+    "absoluteRamBudget": null,
+    "ioBudget": null,
+    "latencyBudget": null,
+    "automaticContextTokenBudget": null,
+    "sessionQualityMeasured": false,
+    "productionStackMemoryQualified": false,
+    "nextGate": "S01b: resource attribution and agreed acceptance criteria before major storage/schema implementation"
+  }
+}

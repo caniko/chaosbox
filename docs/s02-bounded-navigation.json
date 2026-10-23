@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "id": "s02-atlas-20261016",
+  "status": "qualified-existing-source-and-published-candidate",
+  "installedConsumerPromoted": false,
+  "evidence": {
+    "directory": "/data/scratch/tmp/opencode/chaosbox-s02-20261016",
+    "manifest": "SHA256SUMS",
+    "manifestSha256": "1f2ea2feb8aba017d8b92a8fa7cbe36f6058dcfae76d84cd38536d42da7ec611",
+    "artifactCount": 153,
+    "retention": "retain or relocate with checksum verification; includes the stopped disposable database"
+  },
+  "sources": {
+    "canonicalHead": "42f0e64fddd50f612516e39e82d5c2ea4d2ead45",
+    "canonicalDirty": true,
+    "sourceManifest": "source-tested.sha256",
+    "sourceManifestSha256": "54cdb82ae47898dc72a9c7320f339a4c2a282ec5ef852cc9334a55aa81f1c0d1",
+    "trackedPatch": "chaosbox-tested.patch",
+    "trackedPatchSha256": "25381a7a30167a7fccacac92984810fb507f6be856708f894bbbd0b7af58363d",
+    "onlyCodeChange": "crates/chaosbox/tests/navigation_live.rs",
+    "existingFixRevision": "4d109369527f058201cb3e6a0f52d043366df34a",
+    "existingLargeGraphRegressionRevision": "e8326c125fa45a9554e259afb775fc07b4143a06",
+    "publishedCandidateRevision": "7313e6e5feaf6f50dad9595d74aeaa691c556a24",
+    "publishedAndCanonicalNavigationSourceSha256": "6d04a41c804e172012b0344b7fa881b69908296ab4351e9a0c47e3dec5544589",
+    "canixHeadAtEntry": "5c845bc0a7038bb3ee43acc5713e1eca57b723e2"
+  },
+  "binaries": {
+    "installed": {
+      "path": "/nix/store/aamrc152yl781cs8fy5nrk1nzgip19a7-chaosbox-0.1.0/bin/.chaosbox-wrapped",
+      "sha256": "7f4aa0f7b301b27e1677f6af29510cb653fce15c2e3cdd2b3c12f9d3853a6878",
+      "declaredPin": "9d6c81d202aa5e9b4e0a513161891e8a4ff01e96",
+      "declaredPinContainsBoundedFix": true,
+      "actualBuildSourceVerified": false,
+      "deriver": "/nix/store/30j385xd35d2q7sr4ymsxadv0xs0y233-chaosbox-0.1.0.drv"
+    },
+    "published": {
+      "path": "/nix/store/kg922178hx87ydnxn2nilmyiplaa5qyj-chaosbox-0.1.0/bin/chaosbox",
+      "sha256": "05a47a01429de41c52427041bf84ab609c844d3b3294a0b43a9b3cda0793f94e",
+      "profile": "production release; same bytes as S01"
+    },
+    "canonical": {
+      "path": "/data/nvme0/can/canix/projects/repos/owned/chaosbox/target/debug/chaosbox",
+      "sha256": "ac6270537c778009f74ead08a28dbf9cb20ba6db21b321bf6a3fd701b755c443",
+      "profile": "native dev, unoptimized with debuginfo"
+    },
+    "regressionTest": {
+      "sourceSha256": "9007e7b768b4c5a943177e95a4cb39bd5091cf01d0e683c10e600ecb668ea749",
+      "binarySha256": "e010a98387177a01b6e25a21c0b9b2527152ed87cb56546776e35b496e4f7a10"
+    }
+  },
+  "recordedRequest": {
+    "repo": "canix",
+    "query": "RuntimeManifest",
+    "depth": 2,
+    "maxNodes": 10,
+    "maxChars": 6000,
+    "buildId": "build:8ac2e28136c3",
+    "generation": 3,
+    "snapshots": ["snap:cba2b1e91c07"],
+    "canonical": {"exitCode": 0, "elapsedSeconds": 1.46, "peakRssKiB": 28980},
+    "published": {"exitCode": 0, "elapsedSeconds": 0.93, "peakRssKiB": 14988},
+    "output": {
+      "canonicalAndPublishedByteIdentical": true,
+      "sha256": "fd56f20814c7cd9358e8f4a971b9ee5b6b52278adc9c480ab3a87638ec594525",
+      "nodes": 10,
+      "links": 5,
+      "packetCharacters": 4994,
+      "truncated": true,
+      "exhaustive": false,
+      "definitionId": "ent:574d2717a6af",
+      "definitionSource": "cli/crates/canix-foundation/src/runtime.rs:17",
+      "allNodeSourceSpansMatchPinnedTypeDbRows": true,
+      "freshMcpPacketEqualsCli": true
+    },
+    "clientExperimentBounds": {"memoryHighBytes": 536870912, "memoryMaxBytes": 1073741824, "memorySwapMaxBytes": 0, "cpuQuotaPercent": 200},
+    "exclusiveServerMeasurement": false,
+    "coldCacheControlled": false,
+    "timingSamplesPerBinary": 1,
+    "numericResourceLimitsAgreed": false
+  },
+  "regressions": {
+    "installedExpectedFailure": {"exitCode": 101, "failedTests": 1, "error": "query navigation failed: consumer: export truncated at 10000 nodes; narrow the repo"},
+    "publishedLiveTests": {"passed": 2, "ignored": 0},
+    "canonicalLiveContextTest": {"passed": 1, "ignored": 0},
+    "graphAndReaderTests": {"passed": 10, "ignored": 0},
+    "memoryNavigationTest": {"passed": 1, "ignored": 0},
+    "requiredDisposableConformance": {"passed": 1, "ignored": 0, "requireTypeDb": true},
+    "clippyWarningsDenied": "pass",
+    "treefmt": "pass",
+    "diffCheck": "pass"
+  },
+  "offlineParity": {
+    "scope": "same S01 frozen complete Canix corpus, memory backend, no inference",
+    "sourceRevision": "d4586fb6cd1da86be3f57f84da7f93aeea298263",
+    "archiveSha256": "e1b54a89d07dd8fac441ea5ad55d9deb0de147a567048831b61fb1c1b01839cf",
+    "byteIdenticalToS01": true,
+    "bytes": 35952413,
+    "sha256": "78b2a22ffe28ad445578063604479dfcde8016ef278065c35d76504f41fd60b5",
+    "nodes": 65872,
+    "edges": 45946,
+    "buildId": "build:760ac5e00503",
+    "generation": 1,
+    "snapshots": ["snap:5f76b151537a"],
+    "canonicalDebugPeakRssKiB": 356340,
+    "canonicalDebugElapsedSeconds": 21.50,
+    "releasePerformanceComparison": false
+  },
+  "disposableServer": {
+    "version": "3.13.0",
+    "address": "127.0.0.1:21729",
+    "productionAddress": "127.0.0.1:1729",
+    "separateStorage": true,
+    "stoppedAfterTest": true,
+    "peakCgroupBytes": 154562560,
+    "swapBytes": 0,
+    "memoryMaxBytes": 4294967296
+  },
+  "preservation": {
+    "foreignChaosboxTrackedDiffSha256": "5b7da061ac7690d4d387f1f478e08d2336041822b4523c59ff5cd91f4ac013b4",
+    "canixIndexAtEntrySha256": "32ae1fa38d8b9da9d4f8bee4ec91ae93339f1d77bdffa8cd7871cf441b85c659",
+    "canixIndexFinalObservationSha256": "420044960c48c0e857b1a9f84d3d395bb54c256b79733a9888d81c83e6a8372d",
+    "canixIndexConcurrentChange": "five Pink Raven storage-test files were staged by other work; S02 performed no index writes",
+    "liveStatusEqualToS01": true,
+    "productionDatabaseMigration": false,
+    "productionServiceRestart": false,
+    "activation": false,
+    "pinChange": false,
+    "commit": false
+  },
+  "handoff": {
+    "next": "S03a",
+    "s01bAllocationHistoryGate": "still-open",
+    "consumerPromotion": "S25 exact-source and executable reconciliation; installed MCP still fails",
+    "installedDerivationInspection": "tool authorization denied; exact installed source remains unknown"
+  }
+}
