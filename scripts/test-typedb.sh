@@ -241,7 +241,9 @@ cargo test -p chaosbox --test compiler -- --ignored
 
 echo "== consumer queries =="
 chaosbox query status --repo test
-chaosbox query search main --repo test | head -c 400
+# Write first, then truncate: a closed pipe makes the CLI exit 101 on EPIPE.
+chaosbox query search main --repo test >"$WORK/search.json"
+head -c 400 "$WORK/search.json"
 echo
 
 echo "== zero-model structural publication and fresh-process refresh =="
