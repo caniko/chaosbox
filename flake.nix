@@ -193,7 +193,7 @@
               doInstallCheck = true;
               installCheckPhase = ''
                 runHook preInstallCheck
-                CHAOSBOX_TEST_BIN="$out/bin/chaosbox" node --test plugins/chaosbox-compaction/test/runtime.test.mjs
+                CHAOSBOX_TEST_BIN="$out/bin/chaosbox" node --test plugins/standalone.test.mjs plugins/chaosbox-compaction/test/runtime.test.mjs
                 runHook postInstallCheck
               '';
             }

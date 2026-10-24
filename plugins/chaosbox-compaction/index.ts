@@ -1,7 +1,7 @@
-import { Plugin } from "@opencode/plugin";
+import type { Plugin } from "@opencode/plugin";
 import { coordinator, subprocess } from "./runtime.mjs";
 
-export default Plugin.define({
+export default {
   id: "chaosbox-compaction",
   async setup(ctx) {
     const memory = coordinator(
@@ -97,4 +97,4 @@ export default Plugin.define({
       await observation;
     };
   },
-});
+} satisfies Plugin.Plugin;

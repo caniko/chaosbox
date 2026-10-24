@@ -68,9 +68,16 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
             snap.scope.join(",")
         }
     );
+    let endpoints: std::collections::BTreeSet<&str> = cands
+        .iter()
+        .flat_map(|candidate| [candidate.from_entity.as_str(), candidate.to_entity.as_str()])
+        .collect();
+    // Decision lookup needs only the bounded catalog's endpoints, not a second
+    // owned copy of every entity in the uncapped structural graph.
     let entities: BTreeMap<_, _> = ext
         .entities
         .iter()
+        .filter(|entity| endpoints.contains(entity.id.as_str()))
         .map(|e| (e.id.clone(), e.clone()))
         .collect();
     let mat = Materialization::default();
@@ -299,8 +306,16 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         .await
     {
         Ok(build) => {
-            let v = chaosbox::export_json(&build);
-            println!("{}", serde_json::to_string(&v).unwrap());
+            use std::io::Write as _;
+            let mut output = std::io::BufWriter::new(std::io::stdout().lock());
+            if let Err(error) = chaosbox::write_export_json(&build, &mut output) {
+                eprintln!("export: {error}");
+                return 1;
+            }
+            if let Err(error) = writeln!(output).and_then(|()| output.flush()) {
+                eprintln!("export: {error}");
+                return 1;
+            }
             0
         }
         Err(e) => {

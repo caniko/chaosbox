@@ -1,7 +1,7 @@
-import { Plugin } from "@opencode/plugin";
+import type { Plugin } from "@opencode/plugin";
 import { acquireTracker } from "./runtime.mjs";
 
-export default Plugin.define({
+export default {
   id: "chaosbox-scratch",
   async setup(ctx) {
     const { tracker, release } = await acquireTracker(ctx.options ?? {});
@@ -90,4 +90,4 @@ export default Plugin.define({
     });
     return async () => { controller.abort(); await observation; await release(); };
   },
-});
+} satisfies Plugin.Plugin;
