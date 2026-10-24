@@ -190,8 +190,9 @@ fn handle_fixture() -> (PagedOnly, Arc<Observations>, String, String, String) {
     // The final relationship in backend order is deliberately beyond two pages.
     let late = build.edges.last_key_value().unwrap().1.to.clone();
     let mut inner = MemoryReader::new();
-    inner.set_active(REPO, &build.id);
+    let build_id = build.id.clone();
     inner.insert_build(build);
+    inner.set_active(REPO, &build_id);
     let observations = Arc::new(Observations::default());
     (
         PagedOnly {

@@ -104,11 +104,14 @@ struct PagesOnly {
 
 fn handle(f: &Fixture, first: bool, missing: bool) -> PagesOnly {
     let mut reader = MemoryReader::new();
+    // Publish both generations (publishing is `set_active`); the pointer ends
+    // on the old one, which only the first page may consult.
+    reader.insert_build(f.new.clone());
+    reader.set_active(REPO, &f.new.id);
     if !missing {
         reader.insert_build(f.old.clone());
     }
-    reader.insert_build(f.new.clone());
-    if first {
+    if first || !missing {
         reader.set_active(REPO, &f.old.id);
     }
     // Resumption must work even when the active pointer is absent.

@@ -138,9 +138,12 @@ impl GraphQueries for CountsOnly {
 async fn explain_preserves_exact_counts_without_relationship_collections() {
     let (old, build, hub, isolated) = fixture();
     let mut memory = MemoryReader::new();
+    let (old_id, build_id) = (old.id.clone(), build.id.clone());
     memory.insert_build(old);
-    memory.set_active(REPO, &build.id);
     memory.insert_build(build);
+    // Publishing is `set_active`; the old generation stays readable by pin.
+    memory.set_active(REPO, &old_id);
+    memory.set_active(REPO, &build_id);
     check_counts(&memory, &hub, &isolated).await;
     let reader = GraphReader::pinned(
         CountsOnly {
