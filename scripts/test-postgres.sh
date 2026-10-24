@@ -32,6 +32,22 @@ bin psql -XAtq -h "$WORK" -p "$PORT" -U chaosbox_test -d postgres -c 'CREATE DAT
 export CHAOSBOX_DB_BACKEND=postgres
 export CHAOSBOX_DATABASE_URL="host=$WORK port=$PORT user=chaosbox_test dbname=test_postgres"
 
+# Qualify the binary under test, never whichever chaosbox is on PATH: an
+# installed release would answer for an older schema. The packaged runner
+# sets this.
+if [ -z "${CHAOSBOX_TEST_BIN:-}" ]; then
+  cargo build --locked -p chaosbox --bin chaosbox
+  CHAOSBOX_TEST_BIN="$(cargo metadata --locked --format-version 1 --no-deps |
+    grep -o '"target_directory":"[^"]*"' | cut -d'"' -f4)/debug/chaosbox"
+fi
+test -x "$CHAOSBOX_TEST_BIN" || {
+  echo "CHAOSBOX_TEST_BIN is not executable: $CHAOSBOX_TEST_BIN" >&2
+  exit 1
+}
+export CHAOSBOX_TEST_BIN
+echo "== binary under test: $CHAOSBOX_TEST_BIN =="
+chaosbox() { "$CHAOSBOX_TEST_BIN" "$@"; }
+
 echo "== pending before migration =="
 if chaosbox db check --json --repo test 2>/dev/null; then
   echo "check must be pending before migration" >&2
@@ -50,7 +66,7 @@ chaosbox db check --json --repo test
 
 echo "== hermetic live PostgreSQL tests (no skip is allowed here) =="
 cargo test --workspace --offline -- --ignored live_pg_
-CHAOSBOX_TEST_BIN="$(command -v chaosbox)" node --test plugins/chaosbox-compaction/test/*.test.mjs
+node --test plugins/chaosbox-compaction/test/*.test.mjs
 
 echo "== consumer queries =="
 chaosbox query status --repo test

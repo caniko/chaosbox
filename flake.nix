@@ -4,6 +4,9 @@
   inputs = {
     # Qualified shared Rust, database lifecycle and documentation infrastructure.
     harbor.url = "git+https://github.com/caniko/harbor.git?ref=feat/harbor-monorepo-components&rev=7d99eb50c52d0a941e2996b97c469b32a7657ef4";
+    # Harbor uses simit only for its own CI shell; its pinned tooling chain still
+    # locks retired forge hosts (see host-pinning), so stub it out.
+    harbor.inputs.simit.follows = "";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
     # Evaluation/runtime qualification of the portable Home Manager module.
@@ -194,12 +197,16 @@
           test-postgres = pkgs.writeShellApplication {
             name = "chaosbox-test-postgres";
             runtimeInputs = [
-              chaosbox
               postgresql
               pkgs.nodejs
               pkgs.python3
             ];
-            text = builtins.readFile ./scripts/test-postgres.sh;
+            # The source runner builds the binary under test; the packaged
+            # runner qualifies its own binary.
+            text = ''
+              export CHAOSBOX_TEST_BIN="''${CHAOSBOX_TEST_BIN:-${pkgs.lib.getExe chaosbox}}"
+            ''
+            + builtins.readFile ./scripts/test-postgres.sh;
           };
         in
         {
@@ -264,10 +271,13 @@
             (harbor.lib.rust.mkDevShell {
               inherit pkgs cross;
               inherit (toolchain) craneLib;
-              # postgresql: disposable clusters for `-- --ignored live_pg_`.
+              # postgresql: disposable clusters for `-- --ignored live_pg_`;
+              # test-postgres.sh also drives Node plugin tests and Python checks.
               packages = [
                 pkgs.cargo-nextest
                 postgresql
+                pkgs.nodejs
+                pkgs.python3
                 (treefmt system pkgs).wrapper
               ];
             }).overrideAttrs
