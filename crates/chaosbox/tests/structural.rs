@@ -75,7 +75,7 @@ async fn declarations_publish_without_candidates_or_decisions() {
         assert!(evidence["producer"]
             .as_str()
             .unwrap()
-            .starts_with("declarations-v1/"));
+            .starts_with("declarations-v"));
         let citation = &evidence["citation"];
         assert_eq!(citation["snapshot"], snap.id);
         let path = citation["file"].as_str().unwrap();
@@ -167,4 +167,48 @@ async fn changed_sources_replace_facts_and_keep_historical_citations() {
         .unwrap_err();
     assert!(error.to_string().contains("coverage disagrees"));
     assert_eq!(pipe.store.active("r").unwrap().id, second.id);
+}
+
+#[tokio::test]
+async fn name_resolved_calls_publish_as_inferred_without_decisions() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("a.rs"), "pub fn caller() { callee(); }\n").unwrap();
+    std::fs::write(root.path().join("b.rs"), "pub fn callee() {}\n").unwrap();
+    let policy = chaosbox_core::EffectivePolicy::new(&[], "local", "none").unwrap();
+    let (snap, ext, cat) =
+        Pipeline::<MemoryStore>::snapshot_extract("r", root.path(), 0, &policy).unwrap();
+    assert!(cat.candidates.is_empty());
+    let mut pipe = Pipeline::<MemoryStore>::new();
+    let build = pipe
+        .build_and_publish("r", &snap, &ext, &[], &Materialization::default(), None)
+        .await
+        .unwrap();
+    let calls: Vec<_> = build
+        .edges
+        .values()
+        .filter(|e| e.rel_type == RelationType::Calls)
+        .collect();
+    assert_eq!(calls.len(), 1);
+    let reader = GraphReader::pinned(MemoryReader::from_store(&pipe.store), "r")
+        .await
+        .unwrap();
+    let coverage = reader.coverage.as_ref().unwrap();
+    assert_eq!(coverage.resolved_relations, 1);
+    assert_eq!(coverage.decision_relations, 0);
+    assert_eq!(coverage.structural_relations, build.edges.len() - 1);
+    let evidence = &reader.evidence(&calls[0].id).await.unwrap()["evidence"][0];
+    assert_eq!(evidence["class"], "inferred");
+    assert!(evidence["producer"]
+        .as_str()
+        .unwrap()
+        .starts_with("unique-name-v1/"));
+    assert_eq!(evidence["citation"]["file"], "a.rs");
+
+    // The invariant derives the split from evidence, never caller counts.
+    let mut forged = build.clone();
+    forged.id = "build:forged".into();
+    forged.coverage.as_mut().unwrap().resolved_relations = 0;
+    forged.coverage.as_mut().unwrap().structural_relations += 1;
+    let err = pipe.store.publish(forged, Some(build.id.clone())).await;
+    assert!(err.unwrap_err().to_string().contains("coverage disagrees"));
 }

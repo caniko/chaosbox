@@ -357,8 +357,10 @@ impl TypeDbStore {
         build: &GraphBuild,
         digest: &str,
     ) -> Result<(), StoreError> {
-        let navigation =
-            chaosbox_core::navigation::summarize_build(build).map_err(StoreError::Query)?;
+        let navigation = chaosbox_core::navigation::summarize_build(build, |rel| {
+            self.staging.edge_class(&build.id, rel)
+        })
+        .map_err(StoreError::Query)?;
         let navigation =
             serde_json::to_string(&navigation).map_err(|e| StoreError::Query(e.to_string()))?;
         self.flush_repository(&build.repo).await?;
