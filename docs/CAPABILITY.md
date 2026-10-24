@@ -88,8 +88,16 @@ described in the new book chapters are not yet implemented.
   mirrors the store supersedure rule
 - Worker leases: claim/heartbeat/reclaim with injected clocks and generation
   guards; stale holders recognizable (backend persistence pending)
+- Graph analytics (`leiden-v1`, CLI + MCP `stats`/`community`/`report`):
+  deterministic Leiden communities with labels, cohesion and modularity,
+  `--resolution` recomputation (Graphify `--resolution`/`--cluster-only`),
+  god nodes, scored surprising connections and suggested questions that name
+  the read answering them; every item cites entity/relation ids, and
+  `query report` renders Graphify's `GRAPH_REPORT.md` with runnable reads.
+  Context seeding drops short terms and function words (Graphify rule). See
+  `docs/src/graph-navigation.md`.
 - Shared read-only queries (search/lookup/neighbors/path/evidence/status/diff/
-  export/explain), deterministic + Graphify-compatible export,
+  export/explain/context/stats/community/report), deterministic + Graphify-compatible export,
   backend-backed `GraphReader` with per-request active-build pinning and
   capped projections. Full MCP handshake (`initialize` negotiation, paginated
   `tools/list` with `inputSchema`, validated `tools/call`, JSON-RPC errors);
@@ -171,6 +179,9 @@ described in the new book chapters are not yet implemented.
   embeddings, `ext::ai`, rerankers, neural OCR/transcription, generative
   summaries/labels/dedup/query-repair, arbitrary query escape hatches,
   single giant graph JSON storage, endpoint-to-endpoint multi-links
+- Hyperedges: Graphify only produces them through LLM semantic extraction;
+  there is no deterministic source, so they stay out (issue #10 closes with
+  deterministic communities instead)
 
 The proposed session extension keeps that evidence boundary: deterministically
 rendered, Jev-selected continuation checkpoints are derived artifacts, not source
@@ -184,11 +195,9 @@ under an explicit admission policy; it does not turn fluent summaries into facts
 - Decision-cache reuse/invalidation live proof (the Gel integration gate was
   removed with the backend; TypeDB is the authoritative write path)
 - Live Jev quality runs (adapter + `--live-jev` ready; needs operator key file)
-- Broader language coverage (grammar parsing beyond the current path set),
-  communities/hyperedges materialization. Hyperedges are **in scope** for the
-  stats/communities work (issue #10), not deferred to the capability backlog;
-  only the grammar expansion is out of scope there.
-- Remaining build statistics in `status` (node/edge counts, candidate omissions,
+- Broader language coverage (grammar parsing beyond the current path set)
+- Remaining build statistics in `status` (candidate omissions,
   catalog/rubric/model provenance recorded at publish; needs schema work —
-  tracked in the chaosbox issue tracker), bounded NL `query ask`, workspace
-  aggregate build, stats/communities read surface
+  tracked in the chaosbox issue tracker; node/edge counts are in `stats`),
+  bounded NL `query ask` (`context` covers Graphify's lexical `query`),
+  workspace aggregate build and graph merging

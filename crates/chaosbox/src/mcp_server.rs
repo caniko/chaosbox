@@ -113,17 +113,30 @@ pub(super) fn mcp_tool_defs() -> Vec<serde_json::Value> {
         ),
         mcp_tool(
             "stats",
-            "Deterministic counts, degree hubs and weak connectivity groups (not semantic clusters).",
-            serde_json::json!({"limit":{"type":"integer","minimum":1,"maximum":200}}),
+            "Counts, deterministic Leiden communities (labels, cohesion), god nodes, surprising connections and questions that each name the read answering them. Every item cites entity/relation ids.",
+            serde_json::json!({"limit":{"type":"integer","minimum":1,"maximum":200},"resolution":RESOLUTION_SCHEMA()}),
             Vec::<&str>::new(),
         ),
         mcp_tool(
             "community",
-            "Build-bound weak connectivity group, with explicit omitted members.",
-            serde_json::json!({"id":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":200}}),
+            "One Leiden community of the pinned build (label, cohesion, members), with explicit omitted members.",
+            serde_json::json!({"id":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":200},"resolution":RESOLUTION_SCHEMA()}),
             vec!["id"],
         ),
+        mcp_tool(
+            "report",
+            "Markdown architecture report (communities, god nodes, surprising connections, suggested questions), each item with the read that verifies it.",
+            serde_json::json!({"resolution":RESOLUTION_SCHEMA()}),
+            Vec::<&str>::new(),
+        ),
     ]
+}
+
+/// Leiden resolution: 1.0 (default) is classic modularity, larger values
+/// give smaller communities. Non-default values recompute from the export.
+#[allow(non_snake_case)]
+fn RESOLUTION_SCHEMA() -> serde_json::Value {
+    serde_json::json!({"type":"number","minimum":0.01,"maximum":10,"default":1.0})
 }
 
 // properties/required move into the schema json! below, which the
@@ -257,6 +270,7 @@ async fn mcp_call_tool_connected(
             | "context"
             | "stats"
             | "community"
+            | "report"
     ) {
         return mcp_error(
             id,
@@ -359,6 +373,22 @@ async fn mcp_call_tool_connected(
             );
         }
     }
+    if matches!(name, "stats" | "community" | "report")
+        && args
+            .get("resolution")
+            .is_some_and(|value| !value.as_f64().is_some_and(|r| (0.01..=10.0).contains(&r)))
+    {
+        return mcp_error(
+            id,
+            -32602,
+            "resolution must be a number in 0.01..10".into(),
+            None,
+        );
+    }
+    let resolution = args
+        .get("resolution")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(chaosbox_core::navigation::DEFAULT_RESOLUTION);
     if name == "context"
         && args["query"]
             .as_str()
@@ -426,15 +456,23 @@ async fn mcp_call_tool_connected(
             .await
             .map_err(|e| e.to_string()),
         "stats" => reader
-            .stats(integer(args.get("limit"), 10))
+            .stats_at(integer(args.get("limit"), 10), resolution)
             .await
             .map_err(|e| e.to_string()),
         "community" => reader
-            .community(
+            .community_at(
                 args["id"].as_str().unwrap_or_default(),
                 integer(args.get("limit"), 100),
+                resolution,
             )
             .await
+            .map_err(|e| e.to_string()),
+        "report" => reader
+            .report(resolution)
+            .await
+            .map(
+                |markdown| serde_json::json!({"build_id": reader.build_id(), "markdown": markdown}),
+            )
             .map_err(|e| e.to_string()),
         "explain" => {
             let eid = args["id"].as_str().unwrap_or_default();

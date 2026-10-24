@@ -22,12 +22,56 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
             })
             .await
         }
-        QueryCmd::Stats { repo, limit } => {
-            run_navigation(async { AnyReader::connect(&repo).await?.stats(limit).await }).await
+        QueryCmd::Stats {
+            repo,
+            limit,
+            resolution,
+        } => {
+            run_navigation(async {
+                AnyReader::connect(&repo)
+                    .await?
+                    .stats_at(limit, resolution)
+                    .await
+            })
+            .await
         }
-        QueryCmd::Community { id, repo, limit } => {
-            run_navigation(async { AnyReader::connect(&repo).await?.community(&id, limit).await })
-                .await
+        QueryCmd::Community {
+            id,
+            repo,
+            limit,
+            resolution,
+        } => {
+            run_navigation(async {
+                AnyReader::connect(&repo)
+                    .await?
+                    .community_at(&id, limit, resolution)
+                    .await
+            })
+            .await
+        }
+        QueryCmd::Report {
+            repo,
+            out,
+            resolution,
+        } => {
+            let report = async { AnyReader::connect(&repo).await?.report(resolution).await };
+            match report.await {
+                Ok(markdown) => emit("query report", &markdown, out.as_deref()),
+                Err(e) => consumer_err("query report", e),
+            }
+        }
+        QueryCmd::Evidence {
+            rel,
+            repo,
+            build_id,
+        } => {
+            run_navigation(async {
+                AnyReader::connect_at(&repo, build_id.as_deref())
+                    .await?
+                    .evidence(&rel)
+                    .await
+            })
+            .await
         }
         QueryCmd::Search { query, repo, limit } => {
             let reader = match Box::pin(AnyReader::connect(&repo)).await {
@@ -157,6 +201,35 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
             0
         }
     }
+}
+
+/// Print `text`, or replace `out` atomically with it.
+pub(super) fn emit(command: &str, text: &str, out: Option<&std::path::Path>) -> i32 {
+    let Some(path) = out else {
+        print!("{text}");
+        return 0;
+    };
+    match write_output(path, text.as_bytes()) {
+        Ok(()) => 0,
+        Err(e) => consumer_err(command, chaosbox::PipelineError::Consumer(e)),
+    }
+}
+
+/// Replace `path` atomically (temporary file in the same directory, fsync,
+/// rename) so a reader never sees a half-written report or export.
+pub(super) fn write_output(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write as _;
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => std::path::Path::new("."),
+    };
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+    temporary
+        .write_all(bytes)
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(|e| e.to_string())?;
+    temporary.persist(path).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 async fn run_navigation(

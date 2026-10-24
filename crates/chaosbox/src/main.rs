@@ -260,20 +260,48 @@ enum QueryCmd {
         #[arg(long, default_value_t = 12_000)]
         max_chars: usize,
     },
-    /// Deterministic statistics, degree hubs and weak connectivity groups.
+    /// Counts, Leiden communities, god nodes, surprising connections and
+    /// questions that name the read answering them.
     Stats {
         #[arg(long)]
         repo: String,
         #[arg(long, default_value_t = 10)]
         limit: usize,
+        /// Leiden resolution (larger = smaller communities). Non-default
+        /// values recompute from the export instead of publication analytics.
+        #[arg(long, default_value_t = chaosbox_core::navigation::DEFAULT_RESOLUTION)]
+        resolution: f64,
     },
-    /// Read a build-bound weak connectivity group, with visible omissions.
+    /// Read one Leiden community of the pinned build, with visible omissions.
     Community {
         id: String,
         #[arg(long)]
         repo: String,
         #[arg(long, default_value_t = 100)]
         limit: usize,
+        /// Leiden resolution the community id was listed under.
+        #[arg(long, default_value_t = chaosbox_core::navigation::DEFAULT_RESOLUTION)]
+        resolution: f64,
+    },
+    /// Markdown graph report (Graphify's `GRAPH_REPORT.md`), citing ids with
+    /// the reads that verify them.
+    Report {
+        #[arg(long)]
+        repo: String,
+        /// Write the report here (atomically) instead of stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        #[arg(long, default_value_t = chaosbox_core::navigation::DEFAULT_RESOLUTION)]
+        resolution: f64,
+    },
+    /// Claim evidence and source citations for one relationship.
+    Evidence {
+        rel: String,
+        #[arg(long)]
+        repo: String,
+        /// Read this exact published build instead of the current publication.
+        #[arg(long)]
+        build_id: Option<String>,
     },
     /// Substring search over entity names (sorted, bounded).
     Search {

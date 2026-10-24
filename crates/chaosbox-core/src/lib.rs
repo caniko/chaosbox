@@ -14,7 +14,9 @@ use thiserror::Error;
 pub mod compiler;
 pub mod coverage;
 pub mod intelligence;
+pub mod leiden;
 pub mod navigation;
+pub mod report;
 
 /// Hash `parts` with SHA-256, joined by `\0`, hex-encoded.
 #[must_use]
@@ -812,22 +814,6 @@ impl GraphBuild {
         }
         seen.remove(from);
         seen
-    }
-
-    /// Deterministic source-derived community label: top-level dir + kind mix.
-    /// Never generative: falls back to `community:<dir>` template.
-    #[must_use]
-    pub fn community_label(&self, member_ids: &[String]) -> String {
-        let mut dirs: BTreeSet<String> = BTreeSet::new();
-        for id in member_ids {
-            if let Some(e) = self.nodes.get(id) {
-                let dir = e.file.split('/').next().unwrap_or("root");
-                dirs.insert(dir.to_owned());
-            }
-        }
-        let mut v: Vec<String> = dirs.into_iter().collect();
-        v.sort();
-        format!("community:{}", v.join("+"))
     }
 }
 
