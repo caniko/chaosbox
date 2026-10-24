@@ -147,8 +147,9 @@ env vars are never read.
 - `docs/SESSION_INTELLIGENCE.md` — selective session knowledge, Jev admission,
   private artifacts and read-only context/evidence retrieval
 
-The docs-only mdBook uses [harbor-projects](https://github.com/caniko/harbor-projects),
-the renamed `github.com/caniko/harbor-docs` repository. Build with
+The docs-only mdBook uses [Harbor](https://github.com/caniko/harbor)'s
+`lib.docs` namespace. Rust toolchains and database lifecycle modules consume
+the same revision-qualified input. Build with
 `canix cache build .#docs`; `.#site` resolves to the same output. The
 `docs-summary` check verifies chapter coverage. Preview with `mdbook serve docs`
 inside the docs dev shell. This wires packaging, not hosted-site deployment.

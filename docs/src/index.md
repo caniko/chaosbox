@@ -40,8 +40,8 @@ bounded read operations; it does not execute inference or mutate the store.
 
 ## Build this book
 
-The flake uses `caniko/harbor-projects`, the current name of the requested
-`caniko/harbor-docs` library. `docs` and `site` are the same docs-only output;
+The flake uses `caniko/harbor`'s `lib.docs` namespace alongside its Rust and
+database components. `docs` and `site` are the same docs-only output;
 hosting/deployment is not configured by this change.
 
 ```sh
