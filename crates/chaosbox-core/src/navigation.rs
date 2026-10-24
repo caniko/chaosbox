@@ -662,6 +662,36 @@ pub fn summary_at(graph: &Value, limit: usize, resolution: f64) -> Result<Value,
     )
 }
 
+/// One community with complete membership, for exports that must place every
+/// node. Ids and labels match [`summary_at`] for the same graph.
+#[derive(Clone, Debug)]
+pub struct Community {
+    /// Build-bound community id.
+    pub id: String,
+    /// Deterministic `area · top hub` label.
+    pub label: String,
+    /// Member entity ids, ascending.
+    pub members: Vec<String>,
+}
+
+/// Complete Leiden partition of a node-link graph, largest community first.
+pub fn communities(graph: &Value, resolution: f64) -> Result<Vec<Community>, String> {
+    if !(0.01..=10.0).contains(&resolution) {
+        return Err("resolution must be 0.01..10".into());
+    }
+    let analysis = Analysis::new(graph, resolution)?;
+    Ok((0..analysis.members.len())
+        .map(|c| Community {
+            id: analysis.community_ids[c].clone(),
+            label: analysis.labels[c].clone(),
+            members: analysis.members[c]
+                .iter()
+                .map(|m| (*m).to_owned())
+                .collect(),
+        })
+        .collect())
+}
+
 /// Inspect a build-bound community from the bounded summary.
 pub fn community(graph: &Value, id: &str, limit: usize) -> Result<Value, String> {
     if !(1..=200).contains(&limit) {

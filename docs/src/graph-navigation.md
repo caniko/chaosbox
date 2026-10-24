@@ -95,3 +95,39 @@ export path. Large legacy builds need a normal snapshot refresh to publish
 their packet; migration alone does not rewrite historical evidence.
 
 The explicit export command retains its 10,000-node and 20,000-edge caps.
+
+## Exports
+
+```nu
+chaosbox query export --repo canix                                  # node-link JSON
+chaosbox query export --repo canix --format html --out graph.html   # interactive, offline
+chaosbox query export --repo canix --format mermaid --query "resolve names"
+chaosbox query export --repo canix --format graphml --out canix.graphml
+chaosbox query export --repo canix --format cypher --out canix.cypher
+chaosbox query export --repo canix --format wiki --out canix-wiki/
+chaosbox query export --repo canix --format html --community community:ID
+```
+
+Every format renders the bounded export (10,000 nodes / 20,000 edges), in
+canonical id order, so the same build always yields the same bytes. Outputs
+written with `--out` replace their target atomically. `--community` (an id
+from `query stats`, at the same `--resolution`) and `--query` (the bounded
+lexical context, depth 2, 200 nodes) narrow any format.
+
+- **json**: the reader's node-link export, now with `source_location` and the
+  relationship `scope` (`file` / `cross_file`) like the `run` export.
+- **html**: one self-contained file with no network access
+  (`default-src 'none'`): force layout, community colors, search, relationship
+  type filters (`contains`/`defines` hidden initially) and a panel with
+  `file:line` and clickable relationships. Labels are embedded as escaped JSON
+  and rendered with `textContent` only. Above 1,000 nodes it shows the 300
+  largest multi-member communities as single nodes instead of refusing.
+- **mermaid**: a fenced `flowchart` that GitHub, Forgejo and Obsidian render
+  natively, showing non-plumbing relationships; above 150 nodes it collapses
+  to communities.
+- **graphml**: for Gephi, yEd and Cytoscape, with community index and label.
+- **cypher**: idempotent `MERGE` statements for Neo4j (`cypher-shell <
+  canix.cypher`), relationship types from the closed vocabulary.
+- **wiki**: `index.md` plus one note per multi-member community, linked with
+  plain Markdown links so the folder works as an Obsidian vault and on any
+  forge. Single-node communities are listed in the index.

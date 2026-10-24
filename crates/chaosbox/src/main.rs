@@ -356,6 +356,22 @@ enum QueryCmd {
     Export {
         #[arg(long, default_value = "demo")]
         repo: String,
+        /// json (default), html, mermaid, graphml, cypher or wiki.
+        #[arg(long, value_enum, default_value_t = chaosbox::export::Format::Json)]
+        format: chaosbox::export::Format,
+        /// Output file (a directory for `wiki`), replaced atomically; stdout
+        /// when omitted.
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Only this community (id from `query stats`).
+        #[arg(long, conflicts_with = "query")]
+        community: Option<String>,
+        /// Only the bounded lexical context of this query (depth 2, 200 nodes).
+        #[arg(long)]
+        query: Option<String>,
+        /// Leiden resolution for community colors, notes and `--community`.
+        #[arg(long, default_value_t = chaosbox_core::navigation::DEFAULT_RESOLUTION)]
+        resolution: f64,
     },
     /// Source-backed entity explanation (no generated prose).
     Explain {

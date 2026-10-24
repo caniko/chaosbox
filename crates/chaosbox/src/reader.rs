@@ -238,18 +238,31 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
                 serde_json::json!({
                     "id": e.entity_id, "label": e.name, "kind": e.kind,
                     "source_file": e.file, "qualified_name": e.qualified_name,
+                    "source_location": e.span.as_ref().map(|s| format!("L{}", s.start_line)),
                     "snapshot": e.snapshot, "span": e.span,
                     "compiler": e.compiler,
                 })
             })
             .collect();
         nodes.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+        // Every producer stores `file` scope exactly when both endpoints share
+        // a file, so the scope is derived rather than read back.
+        let files: std::collections::BTreeMap<&str, &str> = entities
+            .iter()
+            .map(|e| (e.entity_id.as_str(), e.file.as_str()))
+            .collect();
         let mut links: Vec<serde_json::Value> = rels
             .iter()
             .map(|r| {
+                let (from, to) = (&r.from_entity.entity_id, &r.to_entity.entity_id);
+                let scope = if files.get(from.as_str()) == files.get(to.as_str()) {
+                    "file"
+                } else {
+                    "cross_file"
+                };
                 serde_json::json!({
-                    "id": r.rel_id, "source": r.from_entity.entity_id,
-                    "target": r.to_entity.entity_id, "rel_type": r.rel_type,
+                    "id": r.rel_id, "source": from, "target": to,
+                    "rel_type": r.rel_type, "scope": scope,
                 })
             })
             .collect();

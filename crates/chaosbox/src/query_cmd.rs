@@ -155,17 +155,51 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
                 Err(e) => consumer_err("query path", e),
             }
         }
-        QueryCmd::Export { repo } => {
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
-                Ok(r) => r,
+        QueryCmd::Export {
+            repo,
+            format,
+            out,
+            community,
+            query,
+            resolution,
+        } => {
+            let graph = async { AnyReader::connect(&repo).await?.export().await };
+            let rendered = match graph.await {
+                Ok(graph) => chaosbox::export::render(
+                    &graph,
+                    format,
+                    community.as_deref(),
+                    query.as_deref(),
+                    resolution,
+                    &repo,
+                ),
                 Err(e) => return consumer_err("query export", e),
             };
-            match reader.export().await {
-                Ok(v) => {
-                    println!("{}", serde_json::to_string(&v).unwrap());
-                    0
+            let files = match rendered {
+                Ok(files) => files,
+                Err(e) => {
+                    return consumer_err("query export", chaosbox::PipelineError::Consumer(e))
                 }
-                Err(e) => consumer_err("query export", e),
+            };
+            if format != chaosbox::export::Format::Wiki {
+                return emit("query export", &files[0].1, out.as_deref());
+            }
+            let Some(dir) = out else {
+                return consumer_err(
+                    "query export",
+                    chaosbox::PipelineError::Consumer("wiki export requires --out DIR".into()),
+                );
+            };
+            let written = std::fs::create_dir_all(&dir)
+                .map_err(|e| e.to_string())
+                .and_then(|()| {
+                    files
+                        .iter()
+                        .try_for_each(|(name, text)| write_output(&dir.join(name), text.as_bytes()))
+                });
+            match written {
+                Ok(()) => 0,
+                Err(e) => consumer_err("query export", chaosbox::PipelineError::Consumer(e)),
             }
         }
         QueryCmd::Explain { id, repo, build_id } => {

@@ -94,6 +94,10 @@ described in the new book chapters are not yet implemented.
   god nodes, scored surprising connections and suggested questions that name
   the read answering them; every item cites entity/relation ids, and
   `query report` renders Graphify's `GRAPH_REPORT.md` with runnable reads.
+  Exports (`query export --format html|mermaid|graphml|cypher|wiki`): offline
+  interactive HTML, Mermaid, GraphML, Cypher and a Markdown/Obsidian wiki,
+  byte-reproducible, narrowed by `--community` or `--query`, collapsing to
+  communities instead of refusing large graphs.
   Context seeding drops short terms and function words (Graphify rule). See
   `docs/src/graph-navigation.md`.
 - Shared read-only queries (search/lookup/neighbors/path/evidence/status/diff/
