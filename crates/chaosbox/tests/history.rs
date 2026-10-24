@@ -49,21 +49,17 @@ fn preserves_role_text_completed_results_and_exact_original() {
 
 #[test]
 fn never_guesses_unknown_operations_or_settlement_times() {
-    assert!(
-        recover_draft(
-            json!({"id":"msg_x","type":"shell","status":"running"}),
-            &"a".repeat(64),
-            100
-        )
-        .is_err()
-    );
-    assert!(
-        recover_draft(
-            json!({"id":"msg_x","type":"assistant","time":{"created":200},"content":[]}),
-            &"a".repeat(64),
-            100
-        )
-        .is_err()
-    );
+    assert!(recover_draft(
+        json!({"id":"msg_x","type":"shell","status":"running"}),
+        &"a".repeat(64),
+        100
+    )
+    .is_err());
+    assert!(recover_draft(
+        json!({"id":"msg_x","type":"assistant","time":{"created":200},"content":[]}),
+        &"a".repeat(64),
+        100
+    )
+    .is_err());
     assert!(recover_draft(json!({"id":"msg_x","type":"assistant","time":{"created":0},"content":[{"type":"tool","state":{"status":"mystery"}}]}),&"a".repeat(64),100).is_err());
 }

@@ -98,13 +98,11 @@ async fn live_reader_keeps_last_good_and_refuses_unvalidated_current_views() {
     let preserved = reader.query("intelligence_context", &args).await.unwrap();
     assert_eq!(preserved["snapshot"], good["snapshot"]);
     assert_eq!(preserved["degraded"], true);
-    assert!(
-        reader
-            .query(
-                "intelligence_context",
-                &json!({"repo":"canix","query":"sync","scope":"private:other"})
-            )
-            .await
-            .is_err()
-    );
+    assert!(reader
+        .query(
+            "intelligence_context",
+            &json!({"repo":"canix","query":"sync","scope":"private:other"})
+        )
+        .await
+        .is_err());
 }

@@ -91,12 +91,10 @@ fn protobuf_references_have_exact_unicode_spans_and_stable_global_anchors() {
     assert_eq!(refs[0].text, "foo");
     assert_eq!(refs[0].span.byte_start, 16);
     assert_eq!(refs[0].span.start_col, 14); // Unicode scalars, 1-based
-    assert!(
-        !output
-            .facts
-            .iter()
-            .any(|f| f.rel_type == RelationType::Calls)
-    );
+    assert!(!output
+        .facts
+        .iter()
+        .any(|f| f.rel_type == RelationType::Calls));
     let original = &output.entities[0];
     fs::write(dir.path().join("unrelated.ts"), "export const x = 1;\n").unwrap();
     let next = Receipt::seal(
@@ -136,14 +134,12 @@ fn receipts_reject_source_config_index_and_scope_drift() {
     let snapshot = Snapshot::capture("demo", dir.path()).unwrap();
     assert!(normalize(&snapshot, &receipt, b"bad index").is_err());
     fs::write(dir.path().join("a.ts"), "foo();\n").unwrap();
-    assert!(
-        normalize(
-            &Snapshot::capture("demo", dir.path()).unwrap(),
-            &receipt,
-            &bytes
-        )
-        .is_err()
-    );
+    assert!(normalize(
+        &Snapshot::capture("demo", dir.path()).unwrap(),
+        &receipt,
+        &bytes
+    )
+    .is_err());
 }
 
 #[test]
@@ -333,12 +329,10 @@ fn real_unresolved_typescript_index_never_promotes_symbol_information_to_definit
     assert!(!unresolved.is_empty());
     for entity in unresolved {
         assert_eq!(entity.kind, chaosbox_core::EntityKind::Symbol);
-        assert!(
-            !output
-                .facts
-                .iter()
-                .any(|f| f.from == entity.id || f.to == entity.id)
-        );
+        assert!(!output
+            .facts
+            .iter()
+            .any(|f| f.from == entity.id || f.to == entity.id));
     }
     assert_eq!(output.coverage.typecheck, "unknown");
 }
@@ -392,12 +386,10 @@ fn scoped_receipts_normalize_scopes_and_track_config_additions_and_deletions() {
     let inputs = AnalysisInputs::capture("demo", dir.path(), &["src/".into()], &[]).unwrap();
     assert_eq!(inputs.scope, ["src"]);
     assert_eq!(inputs.sources.len(), 1);
-    assert!(
-        inputs
-            .configuration
-            .iter()
-            .any(|f| f.path == "tsconfig.json")
-    );
+    assert!(inputs
+        .configuration
+        .iter()
+        .any(|f| f.path == "tsconfig.json"));
     let bytes = index(dir.path()).write_to_bytes().unwrap();
     let receipt = Receipt::seal(inputs, settings(), &bytes).unwrap();
     let output = normalize(
@@ -407,21 +399,17 @@ fn scoped_receipts_normalize_scopes_and_track_config_additions_and_deletions() {
     )
     .unwrap();
     assert_eq!(output.coverage.references, 0);
-    assert!(
-        output
-            .coverage
-            .files
-            .iter()
-            .any(|f| f.file == "src/main.ts" && f.status == "omitted_by_indexer")
-    );
-    assert!(
-        normalize(
-            &Snapshot::capture("demo", dir.path()).unwrap(),
-            &receipt,
-            &bytes
-        )
-        .is_err()
-    );
+    assert!(output
+        .coverage
+        .files
+        .iter()
+        .any(|f| f.file == "src/main.ts" && f.status == "omitted_by_indexer"));
+    assert!(normalize(
+        &Snapshot::capture("demo", dir.path()).unwrap(),
+        &receipt,
+        &bytes
+    )
+    .is_err());
     fs::write(dir.path().join("tsconfig.extra.json"), "{}\n").unwrap();
     assert!(receipt.verify(dir.path()).is_err());
     fs::remove_file(dir.path().join("tsconfig.extra.json")).unwrap();

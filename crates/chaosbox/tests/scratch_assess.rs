@@ -177,31 +177,27 @@ async fn failure_is_durable_and_successful_command_is_not_completion_proof() {
         satisfied: true,
         fail: true,
     };
-    assert!(
-        ledger
-            .assess(
-                &mut judge,
-                "test",
-                &root,
-                std::slice::from_ref(&path),
-                budget()
-            )
-            .await
-            .is_err()
-    );
+    assert!(ledger
+        .assess(
+            &mut judge,
+            "test",
+            &root,
+            std::slice::from_ref(&path),
+            budget()
+        )
+        .await
+        .is_err());
     judge.fail = false;
-    assert!(
-        ledger
-            .assess(
-                &mut judge,
-                "test",
-                &root,
-                std::slice::from_ref(&path),
-                budget()
-            )
-            .await
-            .is_err()
-    );
+    assert!(ledger
+        .assess(
+            &mut judge,
+            "test",
+            &root,
+            std::slice::from_ref(&path),
+            budget()
+        )
+        .await
+        .is_err());
     assert_eq!(judge.calls, 1, "failure must not be retried silently");
     let mut retry = budget();
     retry.retry = true;
@@ -258,8 +254,8 @@ async fn concurrent_release_invalidates_the_inflight_hold_without_blocking_captu
 }
 
 #[tokio::test]
-async fn uncertain_classification_keeps_original_work_evidence_visible_and_never_recommends_release()
- {
+async fn uncertain_classification_keeps_original_work_evidence_visible_and_never_recommends_release(
+) {
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path().join("scratch");
     let path = root.join("patch");
@@ -311,22 +307,18 @@ async fn budgets_survive_restart_and_link_assertions_never_become_verified_recei
     };
     let mut cap = budget();
     cap.requests = 1;
-    assert!(
-        ledger
-            .assess(&mut judge, "test", &root, std::slice::from_ref(&path), cap)
-            .await
-            .is_err()
-    );
+    assert!(ledger
+        .assess(&mut judge, "test", &root, std::slice::from_ref(&path), cap)
+        .await
+        .is_err());
     assert_eq!(judge.calls, 1);
     drop(ledger);
     let mut ledger = Ledger::open(&work, "private:can").unwrap();
     cap.retry = true;
-    assert!(
-        ledger
-            .assess(&mut judge, "test", &root, std::slice::from_ref(&path), cap)
-            .await
-            .is_err()
-    );
+    assert!(ledger
+        .assess(&mut judge, "test", &root, std::slice::from_ref(&path), cap)
+        .await
+        .is_err());
     assert_eq!(judge.calls, 1);
     ledger.record(&serde_json::from_value::<Request>(json!({"version":1,"scope":"private:can","host":"test","root":root,"events":[
         {"kind":"link","id":"commit","path":path,"identity":chaosbox::scratch::identity(&path,&root).unwrap(),"category":"commit","reference":"commit:abc","description":"Claims integration"}

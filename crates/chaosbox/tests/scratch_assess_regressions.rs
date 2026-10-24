@@ -299,19 +299,17 @@ async fn cancelled_dispatch_survives_restart_and_requires_explicit_retry() {
         judge.calls, 2,
         "interrupted completion must not silently retry"
     );
-    assert!(
-        fixture
-            .assess(
-                &mut judge,
-                Budget {
-                    requests: 2,
-                    retry: true,
-                    ..budget()
-                }
-            )
-            .await
-            .is_err()
-    );
+    assert!(fixture
+        .assess(
+            &mut judge,
+            Budget {
+                requests: 2,
+                retry: true,
+                ..budget()
+            }
+        )
+        .await
+        .is_err());
     assert_eq!(
         judge.calls, 2,
         "interrupted dispatch still consumes its reservation"
@@ -359,18 +357,16 @@ async fn corrupted_success_cache_is_revalidated_before_completion_retry() {
             [&damaged],
         )
         .unwrap();
-        assert!(
-            fixture
-                .assess(
-                    &mut judge,
-                    Budget {
-                        retry: true,
-                        ..budget()
-                    }
-                )
-                .await
-                .is_err()
-        );
+        assert!(fixture
+            .assess(
+                &mut judge,
+                Budget {
+                    retry: true,
+                    ..budget()
+                }
+            )
+            .await
+            .is_err());
         assert_eq!(
             judge.calls, 2,
             "damaged cache cannot start completion inference"
@@ -528,18 +524,16 @@ async fn high_confidence_with_low_selected_probability_retains_unresolved_source
 async fn insufficient_token_budget_never_dispatches_or_reserves_a_request() {
     let mut fixture = Fixture::new();
     let mut judge = Judge::default();
-    assert!(
-        fixture
-            .assess(
-                &mut judge,
-                Budget {
-                    input_tokens: 1,
-                    ..budget()
-                }
-            )
-            .await
-            .is_err()
-    );
+    assert!(fixture
+        .assess(
+            &mut judge,
+            Budget {
+                input_tokens: 1,
+                ..budget()
+            }
+        )
+        .await
+        .is_err());
     assert_eq!(judge.calls, 0);
     assert_eq!(
         fixture.ledger.assessment_status().unwrap()["states"],
@@ -575,19 +569,17 @@ async fn failed_token_reservations_survive_restart_and_exhaust_a_retry_budget() 
         .sum();
     let work = fixture.work.clone();
     fixture.ledger = Ledger::open(&work, "private:test").unwrap();
-    assert!(
-        fixture
-            .assess(
-                &mut judge,
-                Budget {
-                    input_tokens: spent,
-                    retry: true,
-                    ..budget()
-                }
-            )
-            .await
-            .is_err()
-    );
+    assert!(fixture
+        .assess(
+            &mut judge,
+            Budget {
+                input_tokens: spent,
+                retry: true,
+                ..budget()
+            }
+        )
+        .await
+        .is_err());
     assert_eq!(
         judge.calls, 2,
         "failed completion tokens cannot be reclaimed for a retry"

@@ -72,12 +72,10 @@ async fn declarations_publish_without_candidates_or_decisions() {
     for edge in build.edges.values() {
         let rows = reader.evidence(&edge.id).await.unwrap();
         let evidence = &rows["evidence"][0];
-        assert!(
-            evidence["producer"]
-                .as_str()
-                .unwrap()
-                .starts_with("declarations-v1/")
-        );
+        assert!(evidence["producer"]
+            .as_str()
+            .unwrap()
+            .starts_with("declarations-v1/"));
         let citation = &evidence["citation"];
         assert_eq!(citation["snapshot"], snap.id);
         let path = citation["file"].as_str().unwrap();
@@ -141,12 +139,10 @@ async fn changed_sources_replace_facts_and_keep_historical_citations() {
     assert_eq!(pinned.search("before", 10).await.unwrap().len(), 1);
     assert_eq!(reader.search("after", 10).await.unwrap().len(), 1);
     for rel in first.edges.keys() {
-        assert!(
-            reader.evidence(rel).await.unwrap()["evidence"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(reader.evidence(rel).await.unwrap()["evidence"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
     assert_eq!(pipe.store.get(&first.id).unwrap(), first);
     let err = pipe

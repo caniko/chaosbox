@@ -205,13 +205,11 @@ pub fn context(
             continue;
         }
         record["canonical_id"] = json!(canonical[&id]);
-        record["equivalent_items"] = json!(
-            canonical
-                .iter()
-                .filter(|(_, c)| *c == &canonical[&id])
-                .map(|(id, _)| id)
-                .collect::<Vec<_>>()
-        );
+        record["equivalent_items"] = json!(canonical
+            .iter()
+            .filter(|(_, c)| *c == &canonical[&id])
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>());
         record["reconciliation"] = serde_json::to_value(
             view.relationships
                 .iter()

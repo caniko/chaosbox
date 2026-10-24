@@ -21,16 +21,17 @@
   config,
   lib,
   ...
-}: let
-  inherit
-    (lib)
+}:
+let
+  inherit (lib)
     mkEnableOption
     mkIf
     mkOption
     types
     ;
   cfg = config.services.chaosbox;
-in {
+in
+{
   options.services.chaosbox = {
     enable = mkEnableOption "Chaosbox TypeDB-backed deployment via harbor-db";
 
@@ -84,7 +85,7 @@ in {
 
     runtimeUnits = mkOption {
       type = types.listOf types.str;
-      default = [];
+      default = [ ];
       description = "Runtime units gated behind a successful migration (e.g. workers/readers). Empty until Chaosbox ships them as units; runtime credentials must then be a separate least-privilege role, never the migration credential.";
     };
   };
@@ -119,7 +120,7 @@ in {
     services.harbor-db.projects.chaosbox = {
       enable = true;
       description = "Chaosbox TypeDB schema migration";
-      path = [cfg.package];
+      path = [ cfg.package ];
       environment.CHAOSBOX_DB_BACKEND = "typedb";
       environment.CHAOSBOX_TYPEDB_ADDR = "${cfg.serverHost}:${toString cfg.serverPort}";
       environment.CHAOSBOX_TYPEDB_USER = cfg.username;
@@ -147,11 +148,11 @@ in {
           ];
           credentialEnvironment.CHAOSBOX_TYPEDB_PASSWORD_FILE = "typedb-password";
         };
-        after = ["typedb.service"];
-        requires = ["typedb.service"];
+        after = [ "typedb.service" ];
+        requires = [ "typedb.service" ];
       };
       inherit (cfg) runtimeUnits;
-      serviceConfig.ReadWritePaths = [cfg.stateDir];
+      serviceConfig.ReadWritePaths = [ cfg.stateDir ];
     };
   };
 }

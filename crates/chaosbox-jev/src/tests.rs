@@ -5,13 +5,11 @@ use super::*;
 #[test]
 fn production_client_rejects_provider_model_and_endpoint_overrides() {
     for model in ["jev-latest", "jev-9.9.9", "other-provider", "fixture-test"] {
-        assert!(
-            JevClient::new(JevPolicy {
-                model: model.into(),
-                ..JevPolicy::default()
-            })
-            .is_err()
-        );
+        assert!(JevClient::new(JevPolicy {
+            model: model.into(),
+            ..JevPolicy::default()
+        })
+        .is_err());
     }
     for endpoint in [
         "http://api.typesafe.ai/v1/systemone",
@@ -19,13 +17,11 @@ fn production_client_rejects_provider_model_and_endpoint_overrides() {
         "http://127.0.0.1:4321/v1/systemone",
         "https://api.typesafe.ai/v1/systemone?proxy=1",
     ] {
-        assert!(
-            JevClient::new(JevPolicy {
-                endpoint: endpoint.into(),
-                ..JevPolicy::default()
-            })
-            .is_err()
-        );
+        assert!(JevClient::new(JevPolicy {
+            endpoint: endpoint.into(),
+            ..JevPolicy::default()
+        })
+        .is_err());
     }
     assert!(JevClient::new(JevPolicy::default()).is_ok());
 }
@@ -41,10 +37,13 @@ fn fixture_identity_cannot_masquerade_as_live_jev() {
         },
     };
     assert!(validate_response(&response, &BTreeMap::new(), &BTreeMap::new()).is_err());
-    assert!(
-        validate_response_for_model(&response, &BTreeMap::new(), &BTreeMap::new(), FIXTURE_MODEL)
-            .is_ok()
-    );
+    assert!(validate_response_for_model(
+        &response,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        FIXTURE_MODEL
+    )
+    .is_ok());
     for (requested, returned) in [
         ("", ""),
         ("other", "other"),

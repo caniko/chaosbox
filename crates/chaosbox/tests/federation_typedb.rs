@@ -112,22 +112,18 @@ async fn historical_reads_reauthorize(mut store: TypeDbStore) {
     );
     let current = publish(&mut store, &next, Some(&original)).await;
     assert_ne!(current, original);
-    assert!(
-        Backend::Typedb
-            .snapshot("private:can", &original)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        Backend::Typedb
-            .current("private:can")
-            .await
-            .unwrap()
-            .bundle
-            .records
-            .is_empty()
-    );
+    assert!(Backend::Typedb
+        .snapshot("private:can", &original)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(Backend::Typedb
+        .current("private:can")
+        .await
+        .unwrap()
+        .bundle
+        .records
+        .is_empty());
     let evidence = Request::Evidence {
         handle: handle.clone(),
         max_chars: 12_000,
@@ -167,12 +163,10 @@ async fn historical_reads_reauthorize(mut store: TypeDbStore) {
     let Reply::Context(packet) = reader.query("can", &context).await.unwrap() else {
         panic!("context required")
     };
-    assert!(
-        packet
-            .records
-            .iter()
-            .all(|record| record.id != old.records[0].id)
-    );
+    assert!(packet
+        .records
+        .iter()
+        .all(|record| record.id != old.records[0].id));
 }
 
 async fn missing_history_is_unavailable(reader: &Reader<Backend>, mut handle: Handle) {

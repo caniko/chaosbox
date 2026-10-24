@@ -46,11 +46,9 @@ fn fixture() -> (Snapshot, chaosbox_extract::Extraction) {
 #[tokio::test]
 async fn compiler_facts_publish_with_zero_budget_and_retain_anchors_and_citations() {
     let (snapshot, extraction) = fixture();
-    assert!(
-        chaosbox_extract::build_candidates(&extraction, 0)
-            .candidates
-            .is_empty()
-    );
+    assert!(chaosbox_extract::build_candidates(&extraction, 0)
+        .candidates
+        .is_empty());
     let mut pipe = Pipeline::<MemoryStore>::new();
     let build = pipe
         .build_and_publish(
@@ -71,13 +69,11 @@ async fn compiler_facts_publish_with_zero_budget_and_retain_anchors_and_citation
         extraction.compiler
     );
     let exported = reader.export().await.unwrap();
-    assert!(
-        exported["nodes"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|node| node["compiler"]["anchor"].is_string())
-    );
+    assert!(exported["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["compiler"]["anchor"].is_string()));
     for edge in build
         .edges
         .values()
@@ -103,8 +99,8 @@ async fn compiler_facts_publish_with_zero_budget_and_retain_anchors_and_citation
     assert!(pipe.store.export_staged().decisions.is_empty());
     let mut tampered = extraction.clone();
     tampered.compiler.as_mut().unwrap().references += 1;
-    assert!(
-        pipe.build_and_publish(
+    assert!(pipe
+        .build_and_publish(
             "compiler",
             &snapshot,
             &tampered,
@@ -113,8 +109,7 @@ async fn compiler_facts_publish_with_zero_budget_and_retain_anchors_and_citation
             Some(build.id.clone())
         )
         .await
-        .is_err()
-    );
+        .is_err());
     assert_eq!(pipe.store.active("compiler").unwrap().id, build.id);
 }
 
@@ -173,10 +168,8 @@ async fn compiler_facts_survive_fresh_typedb_readback() {
         evidence["evidence"][0]["citation"]["span"],
         serde_json::to_value(&build.nodes[&edge.from].span).unwrap()
     );
-    assert!(
-        evidence["evidence"][0]["producer"]
-            .as_str()
-            .unwrap()
-            .starts_with("scip-receipt-v1/")
-    );
+    assert!(evidence["evidence"][0]["producer"]
+        .as_str()
+        .unwrap()
+        .starts_with("scip-receipt-v1/"));
 }

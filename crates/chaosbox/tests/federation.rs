@@ -167,12 +167,10 @@ async fn evidence_is_snapshot_pinned_and_rechecks_current_grants() {
     };
     assert_eq!(evidence.record.handle.snapshot, handle.snapshot);
     assert!(!evidence.evidence.is_empty());
-    assert!(
-        evidence
-            .receipts
-            .iter()
-            .all(|receipt| receipt.state_omitted)
-    );
+    assert!(evidence
+        .receipts
+        .iter()
+        .all(|receipt| receipt.state_omitted));
     reader.policy.grants.clear();
     assert_eq!(
         reader.query("can", &evidence_request).await.unwrap_err(),
@@ -226,11 +224,9 @@ async fn raw_receipts_and_unshared_relationships_never_cross_the_boundary() {
             ),
         ],
     );
-    assert!(
-        serde_json::to_string(&bundle.assessments)
-            .unwrap()
-            .contains("SECRET-PROJECT-B")
-    );
+    assert!(serde_json::to_string(&bundle.assessments)
+        .unwrap()
+        .contains("SECRET-PROJECT-B"));
     let reader = Reader::new(
         policy("dejana", SharingMode::AllAdmitted, vec![]),
         Source::new(bundle),
@@ -542,12 +538,10 @@ fn mcp_exposes_and_executes_snapshot_bound_federation_tools() {
         .iter()
         .find(|tool| tool["name"] == "intelligence_evidence")
         .unwrap();
-    assert!(
-        evidence["inputSchema"]["required"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("handle"))
-    );
+    assert!(evidence["inputSchema"]["required"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!("handle")));
     let packet: serde_json::Value =
         serde_json::from_str(replies[2]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(packet["sources"][0]["identity"]["owner"], "can");

@@ -108,28 +108,24 @@ fn an_elapsed_time_limit_is_partial_admission_evidence() {
 #[test]
 fn invalid_limits_and_scope_roots_fail_closed() {
     let root = tempfile::tempdir().unwrap();
-    assert!(
-        source_inventory(
-            root.path(),
-            &[],
-            InventoryLimits {
-                maximum_entries: 0,
-                ..limits()
-            }
-        )
-        .is_err()
-    );
-    assert!(
-        source_inventory(
-            root.path(),
-            &[],
-            InventoryLimits {
-                timeout: Duration::ZERO,
-                ..limits()
-            }
-        )
-        .is_err()
-    );
+    assert!(source_inventory(
+        root.path(),
+        &[],
+        InventoryLimits {
+            maximum_entries: 0,
+            ..limits()
+        }
+    )
+    .is_err());
+    assert!(source_inventory(
+        root.path(),
+        &[],
+        InventoryLimits {
+            timeout: Duration::ZERO,
+            ..limits()
+        }
+    )
+    .is_err());
     for scope in ["missing", "../outside", "/outside"] {
         assert!(source_inventory(root.path(), &[scope.to_owned()], limits()).is_err());
     }

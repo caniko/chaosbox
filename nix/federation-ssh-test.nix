@@ -4,7 +4,8 @@
   homeManager,
   chaosboxPackage,
   federationTestTools,
-}: let
+}:
+let
   root = "/var/lib/chaosbox-federation-test";
   project = "git:github.com/caniko/chaosbox";
   keys = import "${pkgs.path}/nixos/tests/ssh-keys.nix" pkgs;
@@ -29,13 +30,12 @@
       public = keys.snakeOilEd25519PublicKey;
     };
   };
-  homes = pkgs.lib.genAttrs ["can" "dejana"] (
-    owner: let
-      peer =
-        if owner == "can"
-        then "dejana"
-        else "can";
-    in {
+  homes = pkgs.lib.genAttrs [ "can" "dejana" ] (
+    owner:
+    let
+      peer = if owner == "can" then "dejana" else "can";
+    in
+    {
       home.stateVersion = "26.05";
       programs.chaosbox.federation = {
         enable = true;
@@ -68,76 +68,76 @@
           identity.owner = peer;
           host = "fixture";
           identityFile = "${root}/${owner}/query-key";
-          projects = [project];
+          projects = [ project ];
         };
-        authorizedKeys.${peer} = [queryKeys.${peer}.public];
+        authorizedKeys.${peer} = [ queryKeys.${peer}.public ];
       };
     }
   );
 in
-  pkgs.testers.nixosTest {
-    name = "chaosbox-federation-ssh";
-    nodes.machine = {
-      imports = [
-        homeManager.nixosModules.home-manager
-        ./federation-nixos.nix
+pkgs.testers.nixosTest {
+  name = "chaosbox-federation-ssh";
+  nodes.machine = {
+    imports = [
+      homeManager.nixosModules.home-manager
+      ./federation-nixos.nix
+    ];
+    system.stateVersion = "26.05";
+    virtualisation.memorySize = 1536;
+    services.openssh = {
+      enable = true;
+      ports = [ 2222 ];
+      hostKeys = [
+        {
+          path = "/etc/ssh/ssh_host_ed25519_key";
+          type = "ed25519";
+        }
       ];
-      system.stateVersion = "26.05";
-      virtualisation.memorySize = 1536;
-      services.openssh = {
-        enable = true;
-        ports = [2222];
-        hostKeys = [
-          {
-            path = "/etc/ssh/ssh_host_ed25519_key";
-            type = "ed25519";
-          }
-        ];
-        settings = {
-          PasswordAuthentication = false;
-          KbdInteractiveAuthentication = false;
-        };
+      settings = {
+        PasswordAuthentication = false;
+        KbdInteractiveAuthentication = false;
       };
-      environment.etc."ssh/ssh_host_ed25519_key" = {
-        source = hostPrivateKey;
-        mode = "0600";
-      };
-      users.users = pkgs.lib.genAttrs ["can" "dejana"] (owner: {
-        isNormalUser = true;
-        home = "${root}/${owner}";
-        hashedPassword = "";
-      });
-      home-manager = {
-        useGlobalPkgs = true;
-        useUserPackages = true;
-        sharedModules = [./federation-home.nix];
-        users = homes;
-      };
-      services.chaosbox.federation.enable = true;
-      environment.systemPackages = [
-        pkgs.python3
-        pkgs.openssh
-        pkgs.util-linux
-      ];
     };
-    testScript = ''
-      machine.succeed(
-          "python3 ${../scripts/test-federation-gates.py} "
-          "--ssh-gate ${../scripts/test-federation-ssh.py} "
-          "--typedb-gate ${../scripts/test-typedb-federation.sh} -v"
-      )
-      machine.wait_for_unit("sshd.service")
-      machine.wait_for_open_port(2222)
-      for owner in ("can", "dejana"):
-          machine.wait_for_unit(f"home-manager-{owner}.service")
-      machine.succeed("install -m 600 -o can ${queryKeys.can.private} ${root}/can/query-key")
-      machine.succeed("install -m 600 -o dejana ${queryKeys.dejana.private} ${root}/dejana/query-key")
-      command = (
-          "python3 ${../scripts/test-federation-ssh.py} --root ${root} "
-          "--fixtures ${federationTestTools}/fixtures "
-      )
-      machine.succeed(command + "--phase connected")
-      machine.succeed("systemctl stop sshd.service")
-      machine.succeed(command + "--phase outage")
-    '';
-  }
+    environment.etc."ssh/ssh_host_ed25519_key" = {
+      source = hostPrivateKey;
+      mode = "0600";
+    };
+    users.users = pkgs.lib.genAttrs [ "can" "dejana" ] (owner: {
+      isNormalUser = true;
+      home = "${root}/${owner}";
+      hashedPassword = "";
+    });
+    home-manager = {
+      useGlobalPkgs = true;
+      useUserPackages = true;
+      sharedModules = [ ./federation-home.nix ];
+      users = homes;
+    };
+    services.chaosbox.federation.enable = true;
+    environment.systemPackages = [
+      pkgs.python3
+      pkgs.openssh
+      pkgs.util-linux
+    ];
+  };
+  testScript = ''
+    machine.succeed(
+        "python3 ${../scripts/test-federation-gates.py} "
+        "--ssh-gate ${../scripts/test-federation-ssh.py} "
+        "--typedb-gate ${../scripts/test-typedb-federation.sh} -v"
+    )
+    machine.wait_for_unit("sshd.service")
+    machine.wait_for_open_port(2222)
+    for owner in ("can", "dejana"):
+        machine.wait_for_unit(f"home-manager-{owner}.service")
+    machine.succeed("install -m 600 -o can ${queryKeys.can.private} ${root}/can/query-key")
+    machine.succeed("install -m 600 -o dejana ${queryKeys.dejana.private} ${root}/dejana/query-key")
+    command = (
+        "python3 ${../scripts/test-federation-ssh.py} --root ${root} "
+        "--fixtures ${federationTestTools}/fixtures "
+    )
+    machine.succeed(command + "--phase connected")
+    machine.succeed("systemctl stop sshd.service")
+    machine.succeed(command + "--phase outage")
+  '';
+}

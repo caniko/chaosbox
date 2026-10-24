@@ -56,12 +56,10 @@ async fn version_mismatch_is_reported_with_exact_member_builds_and_scoped_constr
     assert!(artifact.impact("private:other", "response", 4, 20).is_err());
     let endpoint = &artifact.endpoints["response"];
     assert_eq!(endpoint.build, artifact.members["provider"].build.id);
-    assert!(
-        artifact.members["provider"]
-            .build
-            .nodes
-            .contains_key(&endpoint.entity)
-    );
+    assert!(artifact.members["provider"]
+        .build
+        .nodes
+        .contains_key(&endpoint.entity));
 }
 
 fn git(root: &Path, args: &[&str]) -> String {
@@ -196,14 +194,12 @@ async fn artifact_roundtrip_is_private_create_only_and_scope_checked() {
     .await
     .unwrap();
     let before = fs::read(&output).unwrap();
-    assert!(
-        run(Command::Capture {
-            spec: recipe,
-            output: output.clone()
-        })
-        .await
-        .is_err()
-    );
+    assert!(run(Command::Capture {
+        spec: recipe,
+        output: output.clone()
+    })
+    .await
+    .is_err());
     assert_eq!(fs::read(&output).unwrap(), before);
     let result = run(Command::Impact {
         artifact: output.clone(),
@@ -293,11 +289,9 @@ async fn overlapping_source_quotes_are_ambiguous() {
     )
     .unwrap();
     spec.endpoints.get_mut("response").unwrap().quote = "aaa".into();
-    assert!(
-        capture(spec)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("not unique")
-    );
+    assert!(capture(spec)
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("not unique"));
 }

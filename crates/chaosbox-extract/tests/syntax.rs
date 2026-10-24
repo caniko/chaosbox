@@ -67,12 +67,10 @@ function scope() { const arrow = 1; }
             RelationType::Defines | RelationType::Contains
         )));
         let candidates = build_candidates(&ext, 100);
-        assert!(
-            candidates
-                .candidates
-                .iter()
-                .all(|c| !matches!(c.rel_type, RelationType::Defines | RelationType::Contains))
-        );
+        assert!(candidates
+            .candidates
+            .iter()
+            .all(|c| !matches!(c.rel_type, RelationType::Defines | RelationType::Contains)));
     }
 }
 

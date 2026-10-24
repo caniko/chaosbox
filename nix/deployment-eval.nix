@@ -12,7 +12,8 @@
   chaosboxModule,
   chaosboxPackage,
   typedbPackage,
-}: let
+}:
+let
   dummySecret = ../fixtures/eval-test-password;
   eval = import "${pkgs.path}/nixos/lib/eval-config.nix" {
     inherit (pkgs) system;
@@ -55,22 +56,21 @@
     {
       name = "contract-commands";
       assertion =
-        schema.runner.args
-        == [
+        schema.runner.args == [
           "db"
           "migrate"
           "--json"
           "--repo"
           "demo"
         ]
-        && schema.runner.checkArgs
-        == [
-          "db"
-          "check"
-          "--json"
-          "--repo"
-          "demo"
-        ]
+        &&
+          schema.runner.checkArgs == [
+            "db"
+            "check"
+            "--json"
+            "--repo"
+            "demo"
+          ]
         && schema.runner.credentialEnvironment.CHAOSBOX_TYPEDB_PASSWORD_FILE == "typedb-password";
       message = "schema runner must invoke the v2 contract commands with credential-file delivery";
     }
@@ -98,14 +98,15 @@
   ];
   failed = builtins.filter (check: !check.assertion) checks;
 in
-  if failed == []
-  # A trivial derivation: the assertions above already threw at evaluation
-  # time on any mismatch, so reaching the builder means the composition
-  # renders. CI builds this as part of nix flake check.
-  then
-    pkgs.runCommand "chaosbox-deployment-eval" {}
+if
+  failed == [ ]
+# A trivial derivation: the assertions above already threw at evaluation
+# time on any mismatch, so reaching the builder means the composition
+# renders. CI builds this as part of nix flake check.
+then
+  pkgs.runCommand "chaosbox-deployment-eval" { }
     ''echo "chaosbox deployment composition renders: ${toString (builtins.length checks)} checks" > $out''
-  else
-    throw "chaosbox deployment eval failed: ${
-      lib.concatStringsSep ", " (map (check: "${check.name}: ${check.message}") failed)
-    }"
+else
+  throw "chaosbox deployment eval failed: ${
+    lib.concatStringsSep ", " (map (check: "${check.name}: ${check.message}") failed)
+  }"
