@@ -1,4 +1,5 @@
-//! Materialize certified syntax/compiler observations without model decisions.
+//! Materialize certified syntax/compiler observations and deterministic
+//! name-resolution results (INFERRED) without model decisions.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -98,8 +99,48 @@ fn valid_fact_endpoints(
             (RelationType::Defines, EntityKind::Definition)
                 | (RelationType::Contains, EntityKind::Module)
         );
+    // Syntactic nesting and rationale annotations: certified like declarations.
+    let annotation = from.file == to.file
+        && to.span == fact.span
+        && matches!(
+            (&fact.rel_type, &from.kind, &to.kind),
+            (
+                RelationType::Contains,
+                EntityKind::Definition,
+                EntityKind::Definition
+            ) | (
+                RelationType::Contains,
+                EntityKind::File | EntityKind::Definition,
+                EntityKind::Rationale
+            )
+        );
+    // Name-resolved observations cite the use site in the source's own file.
+    let resolved = fact.span.file == from.file
+        && matches!(
+            (&fact.rel_type, &from.kind, &to.kind),
+            (
+                RelationType::Calls,
+                EntityKind::File | EntityKind::Definition,
+                EntityKind::Definition
+            ) | (
+                RelationType::Implements | RelationType::Inherits,
+                EntityKind::Definition,
+                EntityKind::Definition
+            ) | (
+                RelationType::References,
+                EntityKind::File | EntityKind::Rationale,
+                EntityKind::File
+            )
+        );
     if from.compiler.is_none() && to.compiler.is_none() {
-        return declaration;
+        return if fact.resolved {
+            resolved
+        } else {
+            declaration || annotation
+        };
+    }
+    if fact.resolved {
+        return false;
     }
     let Some(coverage) = &extraction.compiler else {
         return false;
@@ -176,7 +217,11 @@ pub(crate) async fn publish_facts<S: Store>(
     for (relation_id, fact) in observations {
         let evidence = Evidence {
             id: build.edges[&relation_id].evidence_ids[0].clone(),
-            class: EvidenceClass::Extracted,
+            class: if fact.resolved {
+                EvidenceClass::Inferred
+            } else {
+                EvidenceClass::Extracted
+            },
             supports: true,
             text: fact.text.clone(),
             span: Some(fact.span.clone()),

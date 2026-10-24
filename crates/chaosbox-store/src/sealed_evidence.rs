@@ -9,6 +9,21 @@ use crate::{EvidenceRow, MemoryStore, SourceCitation, StoreError};
 /// Maximum publication-sealed evidence JSON bytes per relationship.
 pub const SEALED_EVIDENCE_BYTES_MAX: usize = 1024 * 1024;
 
+/// One relationship's evidence class for analytics. Rejected decisions
+/// survive as contradicting rows, so any contradiction or ambiguous support
+/// is `ambiguous`; otherwise the weakest supporting class wins.
+fn edge_class(rows: &[EvidenceRow]) -> &'static str {
+    if rows.iter().any(|r| !r.supports || r.class == "ambiguous") {
+        "ambiguous"
+    } else if rows.iter().any(|r| r.class == "inferred") {
+        "inferred"
+    } else if rows.is_empty() {
+        "unknown"
+    } else {
+        "extracted"
+    }
+}
+
 struct Counter(usize);
 
 impl std::io::Write for Counter {
@@ -36,6 +51,13 @@ impl MemoryStore {
             }
         }
         Ok(())
+    }
+
+    /// Sealed evidence class of one build relationship for publication
+    /// analytics; `None` for unsealed builds.
+    #[must_use]
+    pub fn edge_class(&self, build: &str, rel: &str) -> Option<&'static str> {
+        self.sealed_evidence(build, rel).ok().map(edge_class)
     }
 
     /// Complete immutable evidence rows for one build's relationship, captured

@@ -209,6 +209,8 @@ export CHAOSBOX_TYPEDB_DATABASE=test-typedb
 # a live test that cannot connect, authenticates badly, fails to migrate or
 # fails conformance must FAIL. It must never report those as a passing skip.
 export CHAOSBOX_REQUIRE_TYPEDB=1
+# Qualification queries must not append to the operator's usage ledger.
+export CHAOSBOX_QUERY_LOG=off
 
 echo "== mandatory TypeDB federation gate (no skips, no inference) =="
 bash "$(dirname "${BASH_SOURCE[0]}")/test-typedb-federation.sh" "$WORK/federation-test.log"

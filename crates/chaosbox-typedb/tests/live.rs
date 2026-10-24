@@ -641,6 +641,7 @@ async fn direct_fact_citations_and_coverage_survive_a_fresh_reader() {
         }],
         structural_relations: 1,
         decision_relations: 0,
+        resolved_relations: 0,
     });
     store.publish(build.clone(), None).await.unwrap();
     assert_eq!(store.stats().decisions, 0);

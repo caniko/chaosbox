@@ -6,7 +6,7 @@ mod identity;
 mod persistence;
 mod projection;
 mod reconcile;
-mod settings;
+pub(crate) mod settings;
 mod sources;
 pub mod transport;
 mod worker;

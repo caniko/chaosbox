@@ -14,24 +14,67 @@ particular compiled or evaluated configuration.
 | TypeScript / TSX / MTS / CTS | Named functions/signatures, classes, interfaces, aliases, enums, methods, identifier variable declarations (including arrow-function bindings) | tree-sitter 0.25.10 + tree-sitter-typescript 0.23.2 |
 | Nix | Static identifier attribute-path assignments in sets and `let` expressions | rnix 0.14.0 |
 
-Each producer identity also contains `declarations-v1`, the interpretation
-contract. Grammar dependencies are exact-pinned. Changing the certified subset
-requires a contract-version bump.
+Each producer identity also contains the interpretation contract:
+`declarations-v2` for Rust/TS (v1 plus syntactic nesting and rationale
+annotations, below) and `declarations-v1` for Nix. Grammar dependencies are
+exact-pinned. Changing the certified subset requires a contract-version bump.
+
+`declarations-v2` additionally certifies:
+
+- **Syntactic nesting**: `contains` from a declaration to a declaration nested
+  inside its syntax node (Rust `mod`/`trait`/`fn` bodies, TS class members,
+  locals). Rust `impl` methods are not nested under their type: finding the
+  type is name resolution.
+- **Rationale annotations**: a comment line opening with `NOTE`, `WHY`,
+  `TODO`, `FIXME`, `HACK`, `SAFETY`, `XXX` or `ponytail` (optionally
+  `MARKER(scope):`) becomes a `rationale` entity spanning marker to end of
+  line, with `contains` from the next declaration (skipping comments,
+  attributes and decorators), else the enclosing declaration, else the file.
+  Prose that merely mentions a marker mid-line is not an annotation.
 
 Definitions point from the containing **file** to each declaration occurrence.
 Repeated names retain separate source occurrences; a shared display name is not
 lexical resolution or cross-revision identity. Macro expansion, Rust feature
 selection, compiler symbols, TS destructuring, Nix dynamic/quoted attributes,
-`inherit`, and module evaluation are outside this subset. Imports and identifier
-matches remain uncertified proposals. Python, JavaScript, Markdown and text
-retain their existing heuristic path.
+`inherit`, and module evaluation are outside this subset. Imports and lexical
+mentions remain uncertified proposals; call and heritage sites resolve only
+under the separate INFERRED contract below. Python, JavaScript, Markdown and
+text retain their existing heuristic path.
 
 Any syntax error withholds all certified facts for that file and reports
 `parse_error`; the captured file remains visible. `parsed` means that the
 documented subset ran successfully, not that every possible fact was extracted.
 Comments, literal text and unexpanded Rust macro input cannot become certified
-declarations. Nix string interpolations and TS template interpolations can
+declarations (marked comments become annotations, never declarations). Nix string interpolations and TS template interpolations can
 contain real expressions; those expressions are traversed normally.
+
+## Resolved relations (INFERRED, no decisions)
+
+Graphify labels name-matched calls EXTRACTED. Chaosbox does not: a unique
+lexical match is evidence, not proof, so these relationships publish with
+INFERRED evidence, a producer, and the exact use-site span, and never create
+model decisions.
+
+| Producer | Relationship | Rule |
+| --- | --- | --- |
+| `unique-name-v1/<syntax producer>` | `calls` (enclosing declaration or file → definition) | Rust `f()`, `a::f()`, `f::<T>()`, `self.f()`; TS `f()`, `this.f()`, `new C()` |
+| same | `inherits` / `implements` | TS `extends` / `implements` / interface `extends`; Rust `impl Trait for Type` (type resolved in the same file) |
+| `citations-v1` | `references` (rationale or Markdown file → document) | `ADR-12`, `RFC 9110` → the unique captured `adr-0012*`, `rfc9110*`, or `0012-*` under `adr(s)/`, `decisions/`, `rfc(s)/` |
+
+Resolution indexes non-compiler definitions per language. A target resolves
+when it is unique in the use site's file, otherwise when unique in the whole
+snapshot. `self.`/`this.`/`Self::`/`self::` sites resolve within their file
+only. `Owner::name` requires `name` unique in the uniquely resolved owner's
+file, or unique among module files named like the owner, so `String::new`
+and `Vec::with_capacity` stay unresolved. Method calls on other receivers
+(`x.len()`), calls inside macro input, recursion and ambiguous names are
+never resolved; receiver typing is SCIP's job. External RFCs without a
+captured document get no node (the text stays searchable on the rationale).
+**A missing `calls` edge never means nothing calls a symbol.**
+
+Ambiguous sites are skipped rather than proposed to Jev; add a `call-site`
+candidate reason (never `structural`, which materializes EXTRACTED) when a
+consenting repository needs them adjudicated.
 
 ## Evidence and publication
 
@@ -54,6 +97,14 @@ Schema v3 adds optional `producer` and `coverage-json` attributes. Run
 `chaosbox db migrate` before using the new reader with an existing database.
 Old rows survive migration; missing provenance/coverage is reported as unknown.
 No entity-ID migration is part of this slice.
+
+Coverage `resolved_relations` counts the INFERRED tier separately. Publication
+derives every bucket from retained evidence: `structural_relations` (+ compiler
++ catalog) must equal edges whose evidence is all producer-backed EXTRACTED,
+`resolved_relations` those all producer-backed INFERRED, and
+`decision_relations` the rest. Decision evidence never carries a producer, so
+the no-decisions refresh gate, which reads only `decision_relations`, treats
+resolved builds as structural and refreshes them freely.
 
 Build coverage records the file-level producer/outcome, certified relation
 count and decision-backed relation count. It applies to the captured source

@@ -38,6 +38,7 @@ pub fn all_relation_types() -> Vec<String> {
         "references",
         "calls",
         "implements",
+        "inherits",
         "links_to",
         "mentions",
     ]
@@ -88,6 +89,17 @@ pub fn validate_build_id(build_id: &str) -> Result<(), PipelineError> {
         ));
     }
     Ok(())
+}
+
+/// Outcome of resolving a user-supplied entity id or name.
+#[derive(Debug)]
+pub enum Resolution {
+    /// Exactly one entity: the id itself, or a unique exact name.
+    Entity(Box<chaosbox_store::EntityRow>),
+    /// Several exact matches, or a saturated search: choose by id.
+    Ambiguous(Vec<chaosbox_store::EntityRow>),
+    /// No entity has this id or exact name; substring matches as hints.
+    Unknown(Vec<chaosbox_store::EntityRow>),
 }
 
 /// Backend read-only queries. One build id is pinned per reader from the
@@ -209,6 +221,30 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
         Ok((out, inc))
     }
 
+    /// Resolve an entity id, or an exact name or qualified name (Graphify
+    /// accepts labels). A full search page without an exact match is
+    /// ambiguous, never "absent": the name may sit beyond the page.
+    pub async fn resolve(&self, name: &str) -> Result<Resolution, PipelineError> {
+        if let Some(row) = self.lookup(name).await? {
+            return Ok(Resolution::Entity(Box::new(row)));
+        }
+        if name.starts_with("ent:") {
+            return Ok(Resolution::Unknown(Vec::new()));
+        }
+        let rows = self.search(name, 200).await?;
+        let mut exact: Vec<_> = rows
+            .iter()
+            .filter(|r| r.name == name || r.qualified_name == name)
+            .cloned()
+            .collect();
+        Ok(match exact.len() {
+            1 => Resolution::Entity(Box::new(exact.remove(0))),
+            0 if rows.len() < 200 => Resolution::Unknown(rows.into_iter().take(10).collect()),
+            0 => Resolution::Ambiguous(rows.into_iter().take(20).collect()),
+            _ => Resolution::Ambiguous(exact.into_iter().take(20).collect()),
+        })
+    }
+
     /// Deterministic export of the pinned build; truncation errors honestly.
     pub async fn export(&self) -> Result<serde_json::Value, PipelineError> {
         let entities = self
@@ -237,18 +273,31 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
                 serde_json::json!({
                     "id": e.entity_id, "label": e.name, "kind": e.kind,
                     "source_file": e.file, "qualified_name": e.qualified_name,
+                    "source_location": e.span.as_ref().map(|s| format!("L{}", s.start_line)),
                     "snapshot": e.snapshot, "span": e.span,
                     "compiler": e.compiler,
                 })
             })
             .collect();
         nodes.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+        // Every producer stores `file` scope exactly when both endpoints share
+        // a file, so the scope is derived rather than read back.
+        let files: std::collections::BTreeMap<&str, &str> = entities
+            .iter()
+            .map(|e| (e.entity_id.as_str(), e.file.as_str()))
+            .collect();
         let mut links: Vec<serde_json::Value> = rels
             .iter()
             .map(|r| {
+                let (from, to) = (&r.from_entity.entity_id, &r.to_entity.entity_id);
+                let scope = if files.get(from.as_str()) == files.get(to.as_str()) {
+                    "file"
+                } else {
+                    "cross_file"
+                };
                 serde_json::json!({
-                    "id": r.rel_id, "source": r.from_entity.entity_id,
-                    "target": r.to_entity.entity_id, "rel_type": r.rel_type,
+                    "id": r.rel_id, "source": from, "target": to,
+                    "rel_type": r.rel_type, "scope": scope,
                 })
             })
             .collect();

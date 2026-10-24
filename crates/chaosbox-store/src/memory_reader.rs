@@ -36,7 +36,9 @@ impl MemoryReader {
             .map(|build| {
                 (
                     build.id.clone(),
-                    chaosbox_core::navigation::summarize_build(build),
+                    chaosbox_core::navigation::summarize_build(build, |rel| {
+                        store.edge_class(&build.id, rel)
+                    }),
                 )
             })
             .collect();
@@ -54,7 +56,7 @@ impl MemoryReader {
         self.published.remove(&build.id);
         self.navigation.insert(
             build.id.clone(),
-            chaosbox_core::navigation::summarize_build(&build),
+            chaosbox_core::navigation::summarize_build(&build, |_| None),
         );
         self.builds.insert(build.id.clone(), build);
     }
