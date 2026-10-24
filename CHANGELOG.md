@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- TypeDB publication flushes content-keyed rows (spans, entities,
+  relationships, memberships, file versions, candidates, evidence) in chunks of
+  256 per write transaction, probing each key first, instead of committing one
+  transaction per row. A canix-sized build drops from roughly 300k commits to
+  about 1.2k; a chunk that meets a rival's duplicate or conflict replays through
+  the per-row path, so first-write-wins semantics are unchanged. The redundant
+  per-edge sealed-evidence read-back is gone; the publication swing still
+  verifies the complete membership set.
+- Snapshot capture skips files under a source extension that are not valid
+  UTF-8 and reports them as `unreadable` instead of failing the whole run.
+  Explicit file selections still refuse them.
+- `no active build for repo` names the next action and carries
+  `data.code = "no_active_build"` on MCP errors; TypeDB `[REX1]` read
+  interruptions explain the read timeout and server-restart causes.
 - Reject malformed pre-bounding truncation metadata and preserve string-valued
   tool output exactly when reconstructing source-custodied checkpoints. The
   global plugin example now uses native project resolution instead of a fixed repo.

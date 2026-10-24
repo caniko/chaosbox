@@ -201,6 +201,7 @@ impl Capture {
                     bytes: source.len() as u64,
                 }],
                 contents: BTreeMap::from([(FILE.into(), source)]),
+                unreadable: Vec::new(),
             },
             spans,
             texts,

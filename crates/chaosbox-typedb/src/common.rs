@@ -75,6 +75,15 @@ pub(crate) fn is_conflict(e: &typedb_driver::Error) -> bool {
 pub(crate) fn driver_error(e: typedb_driver::Error) -> StoreError {
     match &e {
         typedb_driver::Error::Connection(_) => StoreError::Connection(e.to_string()),
+        // The server closed the transaction under the running query: the
+        // read exceeded `READ_TIMEOUT` under load or the server restarted.
+        // Observed in production as a bare "[REX1] ... concurrent
+        // transaction close"; name the cause so a caller retries later
+        // instead of treating it as a schema or query bug.
+        _ if e.code() == "REX1" => StoreError::Query(format!(
+            "[REX1] transaction closed before the query finished (read timeout {}s under backend load, or server restart); retry later: {e}",
+            READ_TIMEOUT.as_secs()
+        )),
         _ => StoreError::Query(format!("[{}] {e}", e.code())),
     }
 }

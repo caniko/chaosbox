@@ -77,6 +77,18 @@ pub enum PipelineError {
     Consumer(String),
 }
 
+/// Consumer error for a repository name with no published active build.
+/// Names the next action: agents hit this most often with a guessed repo key
+/// and otherwise read it as a dead end.
+#[must_use]
+pub fn no_active_build(repo: &str) -> PipelineError {
+    PipelineError::Consumer(format!(
+        "no active build for repo {repo}: nothing is published under this name; \
+         list registered names with `chaosbox db inventory`, or index the checkout with \
+         `chaosbox run <path> --repo {repo} --no-decisions`"
+    ))
+}
+
 /// Assemble evidence deterministically from a decision: ids and texts are
 /// pure functions of (decision, entity), so cache reuse rebuilds
 /// byte-identical rows and puts stay idempotent. Single choke point —

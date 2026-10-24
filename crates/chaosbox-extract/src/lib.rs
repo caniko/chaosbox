@@ -85,6 +85,11 @@ pub struct Snapshot {
     pub files: Vec<FileVersion>,
     /// File texts by repository-relative path.
     pub contents: BTreeMap<String, String>,
+    /// Selected files excluded because they are not valid UTF-8. They are
+    /// never interpreted (like unsupported extensions) and never enter the
+    /// snapshot identity; listed so the omission stays observable.
+    #[serde(default)]
+    pub unreadable: Vec<String>,
 }
 
 /// Validate explicit repository-relative source scope entries.
@@ -171,9 +176,16 @@ impl Snapshot {
     ) -> Result<Self, ExtractError> {
         let mut files = Vec::new();
         let mut contents = BTreeMap::new();
+        let mut unreadable = Vec::new();
         let selection = inventory::visit_selected(root, scope, include, None, |path, relative| {
-            let text =
-                std::fs::read_to_string(path).map_err(|e| ExtractError::Io(e.to_string()))?;
+            let bytes = std::fs::read(path).map_err(|e| ExtractError::Io(e.to_string()))?;
+            let Ok(text) = String::from_utf8(bytes) else {
+                // Binary bytes under a source extension (one such file used
+                // to fail whole repository captures). Skip and report; a
+                // parser can certify nothing about it anyway.
+                unreadable.push(relative.to_owned());
+                return Ok(());
+            };
             files.push(FileVersion {
                 path: relative.to_owned(),
                 sha256: sha256_hex(&[&text]),
@@ -202,6 +214,7 @@ impl Snapshot {
             scope,
             files,
             contents,
+            unreadable,
         })
     }
 

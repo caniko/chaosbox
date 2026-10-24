@@ -132,7 +132,7 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
             .active_build(repo)
             .await
             .map_err(|e| PipelineError::Consumer(format!("active build: {e}")))?
-            .ok_or_else(|| PipelineError::Consumer(format!("no active build for repo {repo}")))?;
+            .ok_or_else(|| crate::no_active_build(repo))?;
         Ok(Self::from_header(handle, repo, build))
     }
 
