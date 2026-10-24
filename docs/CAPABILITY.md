@@ -98,6 +98,12 @@ described in the new book chapters are not yet implemented.
   interactive HTML, Mermaid, GraphML, Cypher and a Markdown/Obsidian wiki,
   byte-reproducible, narrowed by `--community` or `--query`, collapsing to
   communities instead of refusing large graphs.
+- Agent and git integration (`docs/src/agent-integration.md`): `install` /
+  `uninstall` for Claude Code, OpenCode and Codex (MCP registration plus a
+  guidance block, never clobbering foreign or managed files), `hook install`
+  for background refresh on commit/merge/branch switch, `watch`, name-or-id
+  entity arguments with exit codes 3 (ambiguous) and 4 (absent), and a local
+  JSONL usage ledger for every CLI query and MCP call.
   Context seeding drops short terms and function words (Graphify rule). See
   `docs/src/graph-navigation.md`.
 - Shared read-only queries (search/lookup/neighbors/path/evidence/status/diff/

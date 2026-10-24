@@ -516,3 +516,26 @@ fn exclusion_narrows_capture_and_identity() {
         );
     }
 }
+
+#[test]
+fn source_fingerprint_tracks_selected_files_only() {
+    let (_d, root) = tmp_repo(&[("a.rs", "fn a() {}\n"), ("gen/b.rs", "fn b() {}\n")]);
+    let first = source_fingerprint(&root, &[], &[]).unwrap();
+    assert_eq!(first, source_fingerprint(&root, &[], &[]).unwrap());
+    std::fs::write(root.join("gen/b.rs"), "fn b() { b(); }\n").unwrap();
+    let edited = source_fingerprint(&root, &[], &[]).unwrap();
+    assert_ne!(first, edited, "a write changes the fingerprint");
+    let excluded = source_fingerprint(&root, &[], &["gen/**".into()]).unwrap();
+    std::fs::write(root.join("gen/b.rs"), "fn b() {}\n// edit\n").unwrap();
+    assert_eq!(
+        excluded,
+        source_fingerprint(&root, &[], &["gen/**".into()]).unwrap(),
+        "excluded files never wake watch"
+    );
+    std::fs::write(root.join("notes.bin"), [0u8, 1, 2]).unwrap();
+    assert_eq!(
+        excluded,
+        source_fingerprint(&root, &[], &["gen/**".into()]).unwrap(),
+        "unsupported files never wake watch"
+    );
+}

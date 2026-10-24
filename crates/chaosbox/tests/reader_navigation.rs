@@ -415,3 +415,42 @@ async fn analytics_cite_sealed_evidence_and_recompute_resolution() {
         "byte-reproducible"
     );
 }
+
+#[tokio::test]
+async fn names_resolve_uniquely_or_report_candidates() {
+    use chaosbox::Resolution;
+    let mut build = GraphBuild::new("res", vec!["snap1".into()], 1);
+    let mut beta = String::new();
+    for (file, name) in [
+        ("a.rs", "Alpha"),
+        ("b.rs", "Alpha"),
+        ("a.rs", "Beta"),
+        ("a.rs", "Gamma"),
+    ] {
+        let e = entity("res", "snap1", file, name, EntityKind::Definition);
+        if name == "Beta" {
+            beta.clone_from(&e.id);
+        }
+        build.add_node(e).unwrap();
+    }
+    let reader = pinned_reader(build, "res").await;
+    assert!(
+        matches!(reader.resolve("Beta").await.unwrap(), Resolution::Entity(r) if r.entity_id == beta)
+    );
+    assert!(
+        matches!(reader.resolve(&beta).await.unwrap(), Resolution::Entity(r) if r.name == "Beta")
+    );
+    assert!(
+        matches!(reader.resolve("Alpha").await.unwrap(), Resolution::Ambiguous(c) if c.len() == 2)
+    );
+    assert!(
+        matches!(reader.resolve("Gam").await.unwrap(), Resolution::Unknown(s) if s.len() == 1),
+        "a substring is a hint, never a match"
+    );
+    assert!(
+        matches!(reader.resolve("Delta").await.unwrap(), Resolution::Unknown(s) if s.is_empty())
+    );
+    assert!(
+        matches!(reader.resolve("ent:missing").await.unwrap(), Resolution::Unknown(s) if s.is_empty())
+    );
+}

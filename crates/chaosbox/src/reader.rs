@@ -91,6 +91,17 @@ pub fn validate_build_id(build_id: &str) -> Result<(), PipelineError> {
     Ok(())
 }
 
+/// Outcome of resolving a user-supplied entity id or name.
+#[derive(Debug)]
+pub enum Resolution {
+    /// Exactly one entity: the id itself, or a unique exact name.
+    Entity(Box<chaosbox_store::EntityRow>),
+    /// Several exact matches, or a saturated search: choose by id.
+    Ambiguous(Vec<chaosbox_store::EntityRow>),
+    /// No entity has this id or exact name; substring matches as hints.
+    Unknown(Vec<chaosbox_store::EntityRow>),
+}
+
 /// Backend read-only queries. One build id is pinned per reader from the
 /// active-build pointer or an exact published build; readers never mutate,
 /// migrate, or load Jev credentials.
@@ -208,6 +219,30 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
             .await
             .map_err(|e| PipelineError::Consumer(e.to_string()))?;
         Ok((out, inc))
+    }
+
+    /// Resolve an entity id, or an exact name or qualified name (Graphify
+    /// accepts labels). A full search page without an exact match is
+    /// ambiguous, never "absent": the name may sit beyond the page.
+    pub async fn resolve(&self, name: &str) -> Result<Resolution, PipelineError> {
+        if let Some(row) = self.lookup(name).await? {
+            return Ok(Resolution::Entity(Box::new(row)));
+        }
+        if name.starts_with("ent:") {
+            return Ok(Resolution::Unknown(Vec::new()));
+        }
+        let rows = self.search(name, 200).await?;
+        let mut exact: Vec<_> = rows
+            .iter()
+            .filter(|r| r.name == name || r.qualified_name == name)
+            .cloned()
+            .collect();
+        Ok(match exact.len() {
+            1 => Resolution::Entity(Box::new(exact.remove(0))),
+            0 if rows.len() < 200 => Resolution::Unknown(rows.into_iter().take(10).collect()),
+            0 => Resolution::Ambiguous(rows.into_iter().take(20).collect()),
+            _ => Resolution::Ambiguous(exact.into_iter().take(20).collect()),
+        })
     }
 
     /// Deterministic export of the pinned build; truncation errors honestly.

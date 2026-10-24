@@ -36,7 +36,7 @@ mod tests;
 
 pub use candidates::{CandidateCatalog, build_candidates};
 pub use extractors::{Extraction, StructuralFact, extract_file, report_unsupported};
-pub use inventory::{InventoryLimits, SourceInventory, source_inventory};
+pub use inventory::{InventoryLimits, SourceInventory, source_fingerprint, source_inventory};
 
 use crate::extractors::is_supported;
 use crate::paths::resolve_nix_imports;

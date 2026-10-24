@@ -32,13 +32,13 @@ mod pipeline_cmd;
 mod postgres_cmd;
 mod query_cmd;
 mod reader_cmd;
+mod setup_cmd;
 
 use backend_cmd::{
     AnyReader, Backend, RunSpend, active_publishes_relations, backend, consumer_err,
     db_check_typedb, run_migrate_typedb, typedb_config_from_env, typedb_publication_chain,
 };
 use mcp_server::serve_mcp;
-use pipeline_cmd::run_pipeline_with;
 use query_cmd::run_query;
 
 #[derive(Debug, Parser)]
@@ -154,60 +154,27 @@ enum Command {
     /// decisions only with --fixture-decisions, for disposable/test graphs;
     /// entities-only with --no-decisions, which reuses cached decisions and
     /// spends nothing).
-    Run {
-        path: PathBuf,
-        /// Optional artifact directory from `compiler capture`.
-        #[arg(long)]
-        compiler: Option<PathBuf>,
-        #[arg(long, default_value = "demo")]
-        repo: String,
-        #[arg(long, default_value_t = 200)]
-        max_candidates: usize,
-        /// Explicit source scope (see `snapshot --source-paths`).
-        #[arg(long = "source-paths")]
-        source_paths: Vec<String>,
-        /// Exclusion glob (see `snapshot --exclude`). Part of the snapshot id
-        /// and policy digest; with `--compiler` the receipt's snapshot no
-        /// longer matches, so that combination fails closed.
-        #[arg(long = "exclude")]
-        exclude: Vec<String>,
-        /// Privacy class for this run: `local` (private fleet only) or
-        /// `private` (no external inference ever). Unknown values fail
-        /// closed. Part of the decision cache identity.
-        #[arg(long, default_value = "local")]
-        privacy: String,
-        /// External inference grant for this run: `none` (no provider) or
-        /// `typesafe-jev` (Typesafe Jev for this repository alone).
-        /// Granting a provider never relaxes a privacy classification.
-        /// Part of the decision cache identity; `run --live-jev` additionally
-        /// requires `local` + `typesafe-jev` together.
-        #[arg(long, default_value = "none")]
-        inference: String,
-        /// Use the live Jev API (needs `CHAOSBOX_JEV_API_KEY_FILE`) instead of
-        /// the deterministic fixture. Real inference, real spend.
-        #[arg(long, default_value_t = false, conflicts_with = "no_decisions")]
-        live_jev: bool,
-        /// Accept deterministic fixture decisions (every choice `accept`) for
-        /// a disposable or test graph. Fixture graphs are never authoritative:
-        /// decisions are recorded under the `fixture-test` model identity.
-        #[arg(long, default_value_t = false, conflicts_with = "no_decisions")]
-        fixture_decisions: bool,
-        /// Publish entities and certified syntax facts without new inference.
-        /// Valid paid inferences are reused; uncached candidates stay pending.
-        /// Structural-only builds can refresh freely. A decision-bearing or
-        /// legacy active build is kept (exit 4, `coverage:` diagnostic) when
-        /// current candidates lack reusable decisions. No Jev requests or
-        /// fixture accept-all decisions are made.
-        #[arg(long, default_value_t = false)]
-        no_decisions: bool,
-        /// Live-Jev spend guards (defaults = `JevPolicy::default`).
-        #[arg(long)]
-        max_requests: Option<u32>,
-        #[arg(long)]
-        max_input_tokens: Option<u64>,
-        #[arg(long)]
-        max_retries: Option<u32>,
+    Run(RunArgs),
+    /// Re-run `run` whenever the captured sources change: cheap metadata
+    /// polling, confirmed by the content-addressed snapshot id. Ctrl+C stops.
+    Watch {
+        #[command(flatten)]
+        run: RunArgs,
+        /// Seconds between source checks.
+        #[arg(long, default_value_t = 5)]
+        interval_secs: u64,
     },
+    /// Keep the graph fresh from git hooks (post-commit, post-checkout,
+    /// post-merge), preserving any existing hook content.
+    Hook {
+        #[command(subcommand)]
+        action: setup_cmd::HookCmd,
+    },
+    /// Register the read-only MCP server and agent guidance for Claude Code,
+    /// `OpenCode` or Codex (user-wide, or `--project`).
+    Install(setup_cmd::InstallArgs),
+    /// Remove exactly what `install` added.
+    Uninstall(setup_cmd::InstallArgs),
     /// Query helpers (read-only; TypeDB-backed, shared with MCP).
     Query {
         #[command(subcommand)]
@@ -246,7 +213,65 @@ enum Command {
     },
 }
 
-#[derive(Debug, Subcommand)]
+/// Arguments shared by `run` and `watch`.
+#[derive(Debug, clap::Args)]
+struct RunArgs {
+    path: PathBuf,
+    /// Optional artifact directory from `compiler capture`.
+    #[arg(long)]
+    compiler: Option<PathBuf>,
+    #[arg(long, default_value = "demo")]
+    repo: String,
+    #[arg(long, default_value_t = 200)]
+    max_candidates: usize,
+    /// Explicit source scope (see `snapshot --source-paths`).
+    #[arg(long = "source-paths")]
+    source_paths: Vec<String>,
+    /// Exclusion glob (see `snapshot --exclude`). Part of the snapshot id
+    /// and policy digest; with `--compiler` the receipt's snapshot no
+    /// longer matches, so that combination fails closed.
+    #[arg(long = "exclude")]
+    exclude: Vec<String>,
+    /// Privacy class for this run: `local` (private fleet only) or
+    /// `private` (no external inference ever). Unknown values fail
+    /// closed. Part of the decision cache identity.
+    #[arg(long, default_value = "local")]
+    privacy: String,
+    /// External inference grant for this run: `none` (no provider) or
+    /// `typesafe-jev` (Typesafe Jev for this repository alone).
+    /// Granting a provider never relaxes a privacy classification.
+    /// Part of the decision cache identity; `run --live-jev` additionally
+    /// requires `local` + `typesafe-jev` together.
+    #[arg(long, default_value = "none")]
+    inference: String,
+    /// Use the live Jev API (needs `CHAOSBOX_JEV_API_KEY_FILE`) instead of
+    /// the deterministic fixture. Real inference, real spend.
+    #[arg(long, default_value_t = false, conflicts_with = "no_decisions")]
+    live_jev: bool,
+    /// Accept deterministic fixture decisions (every choice `accept`) for
+    /// a disposable or test graph. Fixture graphs are never authoritative:
+    /// decisions are recorded under the `fixture-test` model identity.
+    #[arg(long, default_value_t = false, conflicts_with = "no_decisions")]
+    fixture_decisions: bool,
+    /// Publish entities and certified syntax facts without new inference.
+    /// Valid paid inferences are reused; uncached candidates stay pending.
+    /// Structural-only builds can refresh freely. A decision-bearing or
+    /// legacy active build is kept (exit 4, `coverage:` diagnostic) when
+    /// current candidates lack reusable decisions. No Jev requests or
+    /// fixture accept-all decisions are made.
+    #[arg(long, default_value_t = false)]
+    no_decisions: bool,
+    /// Live-Jev spend guards (defaults = `JevPolicy::default`).
+    #[arg(long)]
+    max_requests: Option<u32>,
+    #[arg(long)]
+    max_input_tokens: Option<u64>,
+    #[arg(long)]
+    max_retries: Option<u32>,
+}
+
+#[derive(Debug, Subcommand, serde::Serialize)]
+#[serde(tag = "tool", rename_all = "snake_case")]
 enum QueryCmd {
     /// Bounded lexical graph context, with source and relationship identities.
     Context {
@@ -598,117 +623,22 @@ async fn main() {
                 }
             }
         }
-        Command::Run {
-            path,
-            compiler,
-            repo,
-            max_candidates,
-            source_paths,
-            exclude,
-            privacy,
-            inference,
-            live_jev,
-            fixture_decisions,
-            no_decisions,
-            max_requests,
-            max_input_tokens,
-            max_retries,
-        } => {
-            let policy = match effective_policy(&source_paths, &exclude, &privacy, &inference) {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("run failed: {e}");
-                    std::process::exit(1);
-                }
-            };
-            // Live spend of this run. Every exit prints it exactly once (via
-            // `usage`), so a batching caller can debit what this repository
-            // dispatched even when the run dies before it publishes.
-            let spend = RunSpend::default();
-            let usage = || {
-                if live_jev {
-                    // Stable parseable spend line: `canix chaosbox sync`
-                    // budgets a whole batch against what this run dispatched.
-                    eprintln!(
-                        "usage: requests={} input_tokens={}",
-                        spend.requests.load(Ordering::Relaxed),
-                        spend.tokens.load(Ordering::Relaxed)
-                    );
-                }
-            };
-            let code = match backend() {
-                Backend::Memory => {
-                    run_pipeline_with(
-                        Pipeline::<MemoryStore>::new(),
-                        &path,
-                        &repo,
-                        max_candidates,
-                        &policy,
-                        live_jev,
-                        fixture_decisions,
-                        no_decisions,
-                        max_requests,
-                        max_input_tokens,
-                        max_retries,
-                        None,
-                        &spend,
-                        compiler.as_deref(),
-                    )
-                    .await
-                }
-                Backend::Typedb => {
-                    let config = match typedb_config_from_env() {
-                        Ok(c) => c,
-                        Err(e) => {
-                            eprintln!("typedb config: {e}");
-                            usage();
-                            std::process::exit(1);
-                        }
-                    };
-                    let mut store = TypeDbStore::new(config.clone());
-                    if let Err(e) = Box::pin(store.migrate()).await {
-                        eprintln!("typedb migrate: {e}");
-                        usage();
-                        std::process::exit(1);
-                    }
-                    // Fresh processes start at generation zero: chain off the
-                    // live active build so repeat runs publish gen+1 with the
-                    // right predecessor instead of failing the guard.
-                    let (expected_predecessor, starting_generation) =
-                        match Box::pin(typedb_publication_chain(&config, &repo)).await {
-                            Ok(v) => v,
-                            Err(e) => {
-                                eprintln!("typedb publication chain: {e}");
-                                usage();
-                                std::process::exit(1);
-                            }
-                        };
-                    run_pipeline_with(
-                        Pipeline {
-                            store,
-                            generation: starting_generation,
-                        },
-                        &path,
-                        &repo,
-                        max_candidates,
-                        &policy,
-                        live_jev,
-                        fixture_decisions,
-                        no_decisions,
-                        max_requests,
-                        max_input_tokens,
-                        max_retries,
-                        expected_predecessor,
-                        &spend,
-                        compiler.as_deref(),
-                    )
-                    .await
-                }
-            };
-            usage();
-            std::process::exit(code);
+        Command::Hook { action } => std::process::exit(setup_cmd::hook(&action)),
+        Command::Install(args) => std::process::exit(setup_cmd::install(&args, false)),
+        Command::Uninstall(args) => std::process::exit(setup_cmd::install(&args, true)),
+        Command::Run(args) => std::process::exit(Box::pin(pipeline_cmd::run_cmd(&args)).await),
+        Command::Watch { run, interval_secs } => {
+            std::process::exit(Box::pin(pipeline_cmd::watch(&run, interval_secs)).await)
         }
-        Command::Query { q } => std::process::exit(Box::pin(run_query(q)).await),
+        Command::Query { q } => {
+            // Usage ledger: tool, arguments, exit code and latency per query.
+            let started = std::time::Instant::now();
+            let args = serde_json::to_value(&q).unwrap_or_default();
+            let code = Box::pin(run_query(q)).await;
+            let tool = args["tool"].as_str().unwrap_or_default();
+            chaosbox::query_log::record("cli", tool, &args, started, i64::from(code), None);
+            std::process::exit(code)
+        }
         Command::Reader { admission } => {
             if let Err(error) = Box::pin(reader_cmd::serve(&admission)).await {
                 eprintln!(

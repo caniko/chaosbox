@@ -198,3 +198,36 @@ pub(crate) fn visit_selected(
     result.complete = true;
     Ok(result)
 }
+
+/// Cheap change detector for `watch`: a hash of `(path, length, mtime)` over
+/// exactly the files a capture would select. Equal fingerprints skip
+/// re-reading sources; callers confirm a change with the snapshot id.
+pub fn source_fingerprint(
+    root: &Path,
+    scope: &[String],
+    exclude: &[String],
+) -> Result<String, ExtractError> {
+    let exclude = crate::validate_exclude(exclude)?;
+    let mut entries = Vec::new();
+    visit_selected(
+        root,
+        scope,
+        &exclude,
+        is_supported,
+        None,
+        |path, relative| {
+            let metadata =
+                std::fs::symlink_metadata(path).map_err(|e| ExtractError::Io(e.to_string()))?;
+            let modified = metadata
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            entries.push(format!("{relative}:{}:{modified}", metadata.len()));
+            Ok(())
+        },
+    )?;
+    Ok(chaosbox_core::sha256_hex(
+        &entries.iter().map(String::as_str).collect::<Vec<_>>(),
+    ))
+}

@@ -87,6 +87,10 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
             }
         }
         QueryCmd::Lookup { id, repo, build_id } => {
+            let id = match Box::pin(resolve_arg(&repo, build_id.as_deref(), &id)).await {
+                Ok(id) => id,
+                Err(code) => return code,
+            };
             let reader = match Box::pin(AnyReader::connect_at(&repo, build_id.as_deref())).await {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query lookup", e),
@@ -109,7 +113,7 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
             build_id,
             direction,
         } => {
-            let query = chaosbox::NeighborhoodQuery {
+            let mut query = chaosbox::NeighborhoodQuery {
                 id,
                 repo,
                 direction,
@@ -118,6 +122,22 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
                 build_id,
                 rel_types: rel_types.or_else(|| rel.map(|name| vec![name])),
             };
+            // Validate before any backend work; a continuation cursor already
+            // pins the exact entity, otherwise a name resolves to one id.
+            if let Err(error) = query.clone().prepare() {
+                return consumer_err("query neighbors", error);
+            }
+            if query.cursor.is_none() {
+                let resolved = Box::pin(resolve_arg(
+                    &query.repo,
+                    query.build_id.as_deref(),
+                    &query.id,
+                ));
+                match resolved.await {
+                    Ok(id) => query.id = id,
+                    Err(code) => return code,
+                }
+            }
             let query = match query.prepare() {
                 Ok(query) => query,
                 Err(error) => return consumer_err("query neighbors", error),
@@ -136,12 +156,22 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
             repo,
             max_hops,
         } => {
-            let query = chaosbox::PathQuery {
+            let mut query = chaosbox::PathQuery {
                 repo,
                 from,
                 to,
                 max_hops,
             };
+            // Validate before any backend work, then resolve name endpoints.
+            if let Err(error) = query.clone().prepare() {
+                return consumer_err("query path", error);
+            }
+            for endpoint in [&mut query.from, &mut query.to] {
+                match Box::pin(resolve_arg(&query.repo, None, endpoint)).await {
+                    Ok(id) => *endpoint = id,
+                    Err(code) => return code,
+                }
+            }
             let query = match query.prepare() {
                 Ok(query) => query,
                 Err(error) => return consumer_err("query path", error),
@@ -203,6 +233,10 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
             }
         }
         QueryCmd::Explain { id, repo, build_id } => {
+            let id = match Box::pin(resolve_arg(&repo, build_id.as_deref(), &id)).await {
+                Ok(id) => id,
+                Err(code) => return code,
+            };
             let reader = match Box::pin(AnyReader::connect_at(&repo, build_id.as_deref())).await {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query explain", e),
@@ -234,6 +268,39 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
             );
             0
         }
+    }
+}
+
+/// CLI entity argument. Ids pass through untouched (a missing id stays a
+/// `null` result, exit 0); a name must resolve to exactly one entity, else
+/// the candidates print with Graphify's exit codes: 3 ambiguous, 4 absent.
+async fn resolve_arg(repo: &str, build_id: Option<&str>, value: &str) -> Result<String, i32> {
+    if value.starts_with("ent:") {
+        return Ok(value.to_owned());
+    }
+    let resolved = async {
+        AnyReader::connect_at(repo, build_id)
+            .await?
+            .resolve(value)
+            .await
+    };
+    match resolved.await {
+        Ok(chaosbox::Resolution::Entity(row)) => Ok(row.entity_id),
+        Ok(chaosbox::Resolution::Ambiguous(candidates)) => {
+            println!(
+                "{}",
+                serde_json::json!({"status":"ambiguous","name":value,"candidates":candidates})
+            );
+            Err(3)
+        }
+        Ok(chaosbox::Resolution::Unknown(suggestions)) => {
+            println!(
+                "{}",
+                serde_json::json!({"status":"not_found","name":value,"suggestions":suggestions})
+            );
+            Err(4)
+        }
+        Err(e) => Err(consumer_err("query resolve", e)),
     }
 }
 

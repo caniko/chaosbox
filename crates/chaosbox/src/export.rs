@@ -24,7 +24,8 @@ fn str_of<'a>(value: &'a Value, key: &str) -> &'a str {
 }
 
 /// `query export --format`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Format {
     /// Node-link JSON (Graphify-compatible outline).
     Json,
