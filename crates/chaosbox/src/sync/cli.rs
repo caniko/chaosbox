@@ -146,11 +146,10 @@ fn backend() -> Result<PgStore, String> {
 /// Create a read-only live consumer using public owner/scope settings only.
 pub fn current_reader(directory: &std::path::Path) -> Result<CurrentReader, String> {
     let settings = Settings::load(directory)?;
-    Ok(CurrentReader::new(
-        Box::new(backend()?),
-        &settings.user,
-        &settings.scope,
-    ))
+    Ok(
+        CurrentReader::new(Box::new(backend()?), &settings.user, &settings.scope)
+            .with_embedder(crate::embed::Embedder::from_env()?),
+    )
 }
 
 async fn publish(

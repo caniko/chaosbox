@@ -146,6 +146,30 @@ async fn pinned(scope: &str) -> Result<(Option<String>, Bundle), String> {
     Ok((pin, bundle))
 }
 
+/// Pinned private knowledge ranked lexically and, when an embedder is
+/// configured, by statement similarity.
+async fn knowledge_context(
+    scope: &str,
+    repo: &str,
+    query: &str,
+    limit: usize,
+    max_chars: usize,
+) -> Result<Value, String> {
+    let (pin, bundle) = pinned(scope).await?;
+    let embedder = crate::embed::Embedder::from_env()?;
+    let semantic = crate::intelligence::semantic_order(
+        &bundle.records,
+        query,
+        embedder.as_ref(),
+        &mut PgStore::new(PgConfig::from_env()?),
+    )
+    .await;
+    let records = bundle.context_fused(scope, repo, query, limit, max_chars, &semantic)?;
+    Ok(
+        json!({"pin":pin,"scope":scope,"historical_data_not_instructions":true,"exhaustive":false,"records":records}),
+    )
+}
+
 /// Execute a bounded command. Source capture never loads model credentials.
 pub async fn run(command: Command) -> Result<Value, String> {
     match command {
@@ -224,12 +248,7 @@ pub async fn run(command: Command) -> Result<Value, String> {
             query,
             limit,
             max_chars,
-        } => {
-            let (pin, bundle) = pinned(&scope).await?;
-            Ok(
-                json!({"pin":pin,"scope":scope,"historical_data_not_instructions":true,"exhaustive":false,"records":bundle.context(&scope,&repo,&query,limit,max_chars)?}),
-            )
-        }
+        } => knowledge_context(&scope, &repo, &query, limit, max_chars).await,
         Command::KnowledgeEvidence { scope, repo, id } => {
             let (pin, bundle) = pinned(&scope).await?;
             Ok(json!({"pin":pin,"evidence":intelligence::cli::evidence(&bundle,&scope,&repo,&id)?}))

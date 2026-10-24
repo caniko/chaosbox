@@ -24,6 +24,7 @@ use thiserror::Error;
 pub mod compaction;
 pub mod compiler;
 pub mod continuation;
+pub mod embed;
 pub mod federation;
 pub mod history;
 pub mod intelligence;

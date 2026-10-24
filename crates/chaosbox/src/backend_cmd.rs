@@ -164,7 +164,14 @@ impl AnyReader {
         repo: &str,
         build_id: Option<&str>,
     ) -> Result<Self, PipelineError> {
-        Ok(Self(GraphReader::selected(handle, repo, build_id).await?))
+        // A malformed embedding configuration fails loudly; an unreachable
+        // endpoint only degrades search and context to lexical.
+        let embedder = chaosbox::embed::Embedder::from_env().map_err(PipelineError::Consumer)?;
+        Ok(Self(
+            GraphReader::selected(handle, repo, build_id)
+                .await?
+                .with_embedder(embedder),
+        ))
     }
 
     /// Acquire credentials only after shared preparation has validated the query.

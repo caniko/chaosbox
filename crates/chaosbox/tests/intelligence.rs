@@ -785,3 +785,38 @@ async fn labelled_live_intelligence_pilot() {
         "quality gate failed for labelled cases: {mismatches:?}"
     );
 }
+
+#[test]
+fn semantic_order_admits_records_without_word_overlap_but_never_widens_access() {
+    let c = candidate(
+        "m1",
+        "We must preserve direnv removals at the subprocess boundary.",
+        "user",
+    );
+    let mut bundle = Bundle::new("private:can");
+    let response = answer(&c, &bundle, "novel");
+    assess(&c, &mut bundle, response).unwrap();
+    let id = bundle.records[0].id.clone();
+    let query = "environment variables dropped when spawning children";
+    assert!(bundle
+        .context("private:can", "canix", query, 5, 12_000)
+        .unwrap()
+        .is_empty());
+    let fused = bundle
+        .context_fused(
+            "private:can",
+            "canix",
+            query,
+            5,
+            12_000,
+            &[id.clone(), "unknown".into()],
+        )
+        .unwrap();
+    assert_eq!(fused.len(), 1);
+    assert_eq!(fused[0]["id"], id);
+    // Repository eligibility still applies to semantic candidates.
+    assert!(bundle
+        .context_fused("private:can", "unrelated", query, 5, 12_000, &[id])
+        .unwrap()
+        .is_empty());
+}

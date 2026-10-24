@@ -17,6 +17,8 @@ struct ContextGraph {
     priority: Vec<String>,
     edge_reads: usize,
     truncated: bool,
+    /// Whether embedded nearest neighbours contributed seeds.
+    semantic: bool,
 }
 
 impl ContextGraph {
@@ -63,7 +65,13 @@ impl ContextGraph {
                 .then_with(|| a.entity_id.cmp(&b.entity_id))
         });
         graph.truncated |= candidates.len() > max_nodes;
-        for row in candidates.into_iter().take(max_nodes) {
+        let mut lists = vec![candidates];
+        if let Some(nearest) = reader.semantic(&query, max_nodes).await {
+            graph.semantic = true;
+            lists.push(nearest);
+        }
+        let candidates = super::rrf(lists, |e| e.entity_id.as_str(), max_nodes);
+        for row in candidates {
             graph.priority.push(row.entity_id.clone());
             graph.nodes.insert(row.entity_id.clone(), row);
         }
@@ -127,9 +135,14 @@ impl ContextGraph {
         max_chars: usize,
     ) -> Result<Value, PipelineError> {
         loop {
+            let algorithm = if self.semantic {
+                "bounded-hybrid-bfs-v1"
+            } else {
+                "bounded-lexical-bfs-v2"
+            };
             let packet = json!({
                 "build_id":reader.build_id,"generation":reader.generation,"snapshots":reader.snapshots,
-                "algorithm":"bounded-lexical-bfs-v2","direction":"both","truncated":self.truncated,"exhaustive":false,
+                "algorithm":algorithm,"semantic":self.semantic,"direction":"both","truncated":self.truncated,"exhaustive":false,
                 "nodes":self.nodes.values().map(entity_projection).collect::<Vec<_>>(),
                 "links":self.edges.values().filter(|r| self.nodes.contains_key(&r.from_entity.entity_id) && self.nodes.contains_key(&r.to_entity.entity_id))
                     .map(|r| json!({"id":r.rel_id,"source":r.from_entity.entity_id,"target":r.to_entity.entity_id,"rel_type":r.rel_type})).collect::<Vec<_>>(),

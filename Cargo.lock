@@ -183,6 +183,7 @@ dependencies = [
  "fs2",
  "hex",
  "protobuf",
+ "reqwest",
  "ring",
  "rusqlite",
  "scip",

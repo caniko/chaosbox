@@ -591,6 +591,14 @@ async fn main() {
                             std::process::exit(1);
                         }
                     };
+                    let embedder = match chaosbox::embed::Embedder::from_env() {
+                        Ok(e) => e,
+                        Err(e) => {
+                            eprintln!("embedding config: {e}");
+                            usage();
+                            std::process::exit(1);
+                        }
+                    };
                     let mut store = PgStore::new(config.clone());
                     if let Err(e) = Box::pin(store.migrate()).await {
                         eprintln!("postgres migrate: {e}");
@@ -609,7 +617,7 @@ async fn main() {
                                 std::process::exit(1);
                             }
                         };
-                    run_pipeline_with(
+                    let code = run_pipeline_with(
                         Pipeline {
                             store,
                             generation: starting_generation,
@@ -628,7 +636,23 @@ async fn main() {
                         &spend,
                         compiler.as_deref(),
                     )
-                    .await
+                    .await;
+                    // Derived vectors never change the run's verdict; the
+                    // next run continues an unfinished backlog.
+                    if let Some(embedder) = embedder {
+                        let mut store = PgStore::new(config);
+                        match Box::pin(chaosbox::embed::backfill(
+                            &mut store,
+                            &embedder,
+                            chaosbox::embed::BACKFILL_BUDGET,
+                        ))
+                        .await
+                        {
+                            Ok(stored) => eprintln!("embeddings: stored={stored}"),
+                            Err(e) => eprintln!("embeddings deferred: {e}"),
+                        }
+                    }
+                    code
                 }
             };
             usage();
