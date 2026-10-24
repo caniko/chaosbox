@@ -99,6 +99,13 @@ async fn matching_cancel_and_eof_close_real_acquisition_sockets() {
         .await
         .unwrap()
         .unwrap();
+    // Prove a real connector owns the socket before cancelling it: a loaded
+    // build sandbox can otherwise cancel before the startup message is written.
+    let mut startup = [0_u8; 1];
+    tokio::time::timeout(Duration::from_secs(10), socket.read_exact(&mut startup))
+        .await
+        .expect("real connector never wrote its startup message")
+        .unwrap();
     // JSON-RPC string and numeric IDs are distinct. A ping proves that the
     // unrelated cancellation has been consumed while the connector is pending.
     client
@@ -116,15 +123,10 @@ async fn matching_cancel_and_eof_close_real_acquisition_sockets() {
     let cancelled = client.receive().await;
     assert_eq!(cancelled["id"], 7);
     assert_eq!(cancelled["error"]["code"], -32800);
-    let mut bytes = Vec::new();
-    tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut bytes))
+    tokio::time::timeout(Duration::from_secs(2), socket.read_to_end(&mut Vec::new()))
         .await
         .expect("cancelled acquisition socket stayed open")
         .unwrap();
-    assert!(
-        !bytes.is_empty(),
-        "real connector never wrote its startup message"
-    );
     client.path(json!("next")).await;
     let (mut socket, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
         .await
