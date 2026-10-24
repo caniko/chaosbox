@@ -1,6 +1,7 @@
 # Summary
 
 - [Chaosbox](index.md)
+- [Storage and semantic retrieval](storage.md)
 - [Storage lifecycle integration](storage-lifecycle.md)
 - [Selective intelligence](intelligence.md)
 - [Same-user peer sync](peer-sync.md)
@@ -22,5 +23,5 @@
 - [Compiler indexer feasibility](indexer-feasibility.md)
 - [Reviewed workspace impact pilot](workspace-impact.md)
 - [Source baseline](baseline.md)
-- [TypeDB cutover record](cutover.md)
+- [Backend cutover record](cutover.md)
 - [Engineering handoff](handoff.md)

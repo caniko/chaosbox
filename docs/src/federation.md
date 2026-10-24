@@ -54,7 +54,7 @@ Place this operator-owned JSON in `~/.config/chaosbox/provider.json` for `can`:
       }
     ]
   },
-  "backend": { "kind": "typedb" }
+  "backend": { "kind": "postgres" }
 }
 ```
 
@@ -74,14 +74,15 @@ A selected-record grant looks like this. Omitting `mode` means `selected`:
 }
 ```
 
-`typedb` reads the existing private session-knowledge generations. Its
-`CHAOSBOX_TYPEDB_*` connection and password-file settings belong to the provider
-process. Provision a separate usable backend identity/credential for each owner;
-an installed CLI or Unix account alone is not a provisioned provider. Federation
-uses `TypeDbReader` and read transactions for both current and historical
-knowledge. A missing database is unavailable and stays absent. Federation does
-not provision database users or migrate schemas; publisher creation and migration
-remain separate operator operations.
+`postgres` reads the existing private session-knowledge generations. Its
+`CHAOSBOX_DATABASE_URL` belongs to the provider process (unix socket or loopback;
+peer authentication as the owner). Provision a separate database and role for
+each owner; an installed CLI or Unix account alone is not a provisioned
+provider. Federation uses `PgReader` read-only sessions for both current and
+historical knowledge. A missing database is unavailable and stays absent.
+Federation does not provision database roles or migrate schemas; publisher
+creation and migration remain separate operator operations. Federation ranking
+stays lexical (no embedding queries).
 
 Reviewed bundle artifacts work without a database:
 
@@ -96,7 +97,7 @@ Reviewed bundle artifacts work without a database:
 Use this object as `backend`. `history` is optional and contains immutable
 `<bundle-digest>.json` artifacts (and any referenced receipt sidecars). Without
 history, drill-down succeeds only while that exact artifact is still current.
-TypeDB historical reads use the original scoped knowledge-build id, without
+PostgreSQL historical reads use the original scoped knowledge-build id, without
 advancing the current pointer. Raw session archives are not served.
 
 Update policy files atomically and keep them writable only by their owner or
@@ -117,7 +118,7 @@ restrict,command="/etc/profiles/per-user/dejana/bin/chaosbox-canix federation --
 ```
 
 Deploy that entry through the fleet's SSH configuration. The wrapper must carry
-`dejana`'s backend settings. Keep password files provider-local. Restrict
+`dejana`'s backend settings. Keep the database connection provider-local. Restrict
 forwarding, PTYs and shell access for the query key. Configure the SSH alias
 with its dedicated `IdentityFile` and `IdentitiesOnly=yes`.
 
@@ -271,11 +272,8 @@ Import Fleetix's topology module when using its source/value selection:
     # owner defaults to home.username; scope defaults to private:<owner>.
     fleetix.enable = true;
     backend = {
-      kind = "typedb";
-      address = "127.0.0.1:1729";
-      username = "chaosbox-can";
-      database = "chaosbox";
-      passwordFile = "/run/agenix/chaosbox-can-password";
+      kind = "postgres";
+      databaseUrl = "host=/run/postgresql dbname=chaosbox_can";
     };
     projects."git:github.com/caniko/chaosbox" = {
       repo = "chaosbox";
@@ -297,7 +295,7 @@ Import Fleetix's topology module when using its source/value selection:
 Public-key files must contain a single raw key line; a trailing newline is accepted.
 Credential and private-key options accept runtime absolute string paths outside
 the Nix store. The module never reads their contents during evaluation. The
-example requires independently provisioned database users/password files and
+example requires an independently provisioned per-owner database and role and
 dedicated query keys; it does not create them.
 
 For each peer, `host` selects the Fleetix host. `route` selects `network.lanIp`,
@@ -389,25 +387,20 @@ cargo test -p chaosbox --locked
 node --test plugins/chaosbox-intelligence/test/*.test.mjs
 python3 scripts/test-federation-gates.py -v
 canix repo eval .#checks.x86_64-linux.federation-home.drvPath
-bash scripts/test-typedb.sh --federation-only
+cargo test -p chaosbox --test federation_pg --locked -- --ignored live_pg_
 ```
 
 The federation tests cover eligibility-before-ranking, selected defaults,
 unauthorized projects/callers, grant revocation, exact historical drill-down,
 receipt-context isolation, local-first plus peer queries, shared budgets,
 provenance grouping, peer failure, deadlines and actual CLI/MCP wire contracts.
-The federation-only command provisions an isolated TypeDB server and explicitly
-runs `federation_typedb` with `CHAOSBOX_REQUIRE_TYPEDB=1`. It verifies that current
-and historical reads cannot create missing databases, that foreign scopes are
-invisible, that exact historical evidence resolves without advancing the current
-pointer, and that revoked or withheld records remain denied. The native test is
-ignored in ordinary unit runs, which do not provision a server. The local runner
-also requires exactly one passed test with no failures or skips; an unmatched
-test-name filter cannot report a successful gate.
-
-The `typedb-integration` NixOS gate runs the same compiled regression against the
-packaged TypeDB server and requires one passed test with no skips. Connection,
-authentication, schema and assertion failures fail this mandatory hosted gate.
+The `live_pg_` federation test starts its own disposable PostgreSQL cluster. It
+verifies that current and historical reads cannot create missing databases, that
+foreign scopes are invisible, that exact historical evidence resolves without
+advancing the current pointer, and that revoked or withheld records remain
+denied. It is ignored in ordinary unit runs; the hermetic `postgres-live` Nix
+check runs every `live_pg_` test inside the build sandbox, where connection,
+schema and assertion failures fail the gate.
 
 The `federation-home` check evaluates standalone and integrated Home Manager,
 selected defaults, revocation, rejected routes/grants, and NixOS key installation,
@@ -426,12 +419,12 @@ attribution and evidence, exact historical reads, rejected caller/project/comman
 changes, grant revocation, withheld-record denial, one flushed response followed
 by exit while stdin remains open, and local results during an SSH outage. It also
 checks that reads preserve the authoritative bundle bytes and historical artifacts.
-Its driver regressions cover zero/ignored tests, partial or unterminated frames,
+Its driver regressions cover partial or unterminated frames,
 extra frames and stalled exits. One deadline bounds the entire SSH response read
 and process exit, including a partial frame that never reaches a newline.
 
 `simit.toml` declares the package, unit, strict lint, scratch-plugin,
-federation-home, intelligence-plugin, typedb-integration and federation-ssh
-installables in the generated hosted Nix matrix. A completed green matrix
+federation-home, intelligence-plugin, postgres-live, postgres-integration and
+federation-ssh installables in the generated hosted Nix matrix. A completed green matrix
 qualifies that immutable producer source; enrollment and consumer activation need
 their own source/pin and runtime receipts.

@@ -2,8 +2,8 @@
 
 Chaosbox exchanges signed intelligence, bounded source capsules, lifecycle
 assessments, and Jev reconciliation receipts between enrolled hosts. Each host
-keeps its authoritative event ledger and current read snapshot in its own TypeDB
-database. Configured peers are contacted automatically by `chaosbox sync serve`;
+keeps its authoritative event ledger and current read snapshot in its own
+PostgreSQL database. Configured peers are contacted automatically by `chaosbox sync serve`;
 SSH aliases can point to LAN or VPN addresses. A peer can relay another enrolled
 device's events, so the enrollment host does not need to stay online.
 
@@ -51,15 +51,12 @@ chaosbox sync peer --target can@other-host --device OTHER_DEVICE_PUBLIC_KEY
 
 SSH uses batch authentication, verified host keys, and the fixed remote command
 `chaosbox sync exchange`. The remote command must find the Chaosbox binary and its
-operator-configured TypeDB environment. For a dedicated SSH key, a restricted
+operator-configured database connection. For a dedicated SSH key, a restricted
 authorized-key command can invoke a local wrapper:
 
 ```sh
 #!/bin/sh
-export CHAOSBOX_TYPEDB_ADDR=127.0.0.1:1729
-export CHAOSBOX_TYPEDB_USER=chaosbox
-export CHAOSBOX_TYPEDB_DATABASE=chaosbox
-export CHAOSBOX_TYPEDB_PASSWORD_FILE=/private/path/typedb-password
+export CHAOSBOX_DATABASE_URL='host=/run/postgresql dbname=chaosbox'
 exec /absolute/path/chaosbox sync exchange
 ```
 
@@ -71,9 +68,8 @@ peer and the original author of every relayed event.
 
 ## Publish and run
 
-Configure the existing `CHAOSBOX_TYPEDB_ADDR`, `CHAOSBOX_TYPEDB_USER`,
-`CHAOSBOX_TYPEDB_DATABASE`, and `CHAOSBOX_TYPEDB_PASSWORD_FILE` variables on each
-host. Apply the packaged additive schema before starting sync:
+Configure `CHAOSBOX_DATABASE_URL` (unix socket or loopback; peer authentication)
+on each host. Apply the packaged additive schema before starting sync:
 
 ```sh
 chaosbox db migrate --json
@@ -171,9 +167,12 @@ empty packet is not evidence of exhaustive recall.
 Events are immutable, content-addressed, signed, and causally parented. Duplicate
 delivery is idempotent. Missing parents remain staged and retain the last good
 snapshot. Receipt histories merge deterministically; a concurrent withholding
-head remains effective until a later reassessment accounts for it. TypeDB stages
-immutable views before a transactional predecessor-guarded pointer swing. Hash
-identity collisions fail instead of overwriting history.
+head remains effective until a later reassessment accounts for it. PostgreSQL
+inserts the immutable view and swings the predecessor-guarded pointer in one
+transaction under a per-owner/scope advisory lock. Hash identity collisions fail
+instead of overwriting history. Publishing a view also records its statements as
+embedding inputs; with an embedding endpoint configured, the live reader's
+`intelligence_context` ranks by statement similarity as well as word overlap.
 
 Limits are explicit: 4 MiB per event, 10,000 events and 64 MiB serialized event
 history per scope, 64 MiB current snapshot, 200 events per page, and 12 MiB per
@@ -183,7 +182,8 @@ explicit scopes rather than silently truncating it. Transfer resumes by comparin
 durable event inventories after reconnecting, without a central cursor or hub.
 
 Verification uses `cargo test --workspace`, the sync tests, plugin Node tests,
-Clippy, treefmt, and `scripts/test-typedb.sh`. The disposable TypeDB gate exercises
+Clippy, treefmt, and the hermetic `live_pg_` tests (`cargo test --workspace --
+--ignored live_pg_`, each on a disposable PostgreSQL cluster). They exercise
 signed-event persistence and live-reader refresh in addition to isolation,
 pagination, collision, restart, and publication-race checks.
 The multi-peer transport test also injects a receiver outage after a committed

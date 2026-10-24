@@ -194,7 +194,7 @@ publication. Failed batches must leave the last good knowledge build active.
 ## Storage and privacy
 
 Large transcripts, outputs, attachments and checkpoints belong in a private
-content-addressed artifact archive. TypeDB holds identities, provenance,
+content-addressed artifact archive. PostgreSQL holds identities, provenance,
 applicability, decisions and relationships; it should not become a dump of
 hundreds of gigabytes of logs. Full digests identify archived content and
 transform inputs; preserve native runtime IDs as namespaced aliases.
@@ -206,9 +206,17 @@ boundary. Credentials remain out of prompts, logs, summaries and published
 evidence. Do not retain a reusable intelligence item whose usefulness depends on
 revealing a credential value.
 
-Do not revive a second authoritative backend for this feature. Reuse TypeDB and
-the existing publication contracts, with explicit schema changes for session
-provenance and scoped knowledge.
+Do not revive a second authoritative backend for this feature. Reuse the
+PostgreSQL backend and the existing publication contracts, with explicit schema
+changes for session provenance and scoped knowledge.
+
+Superseded in 0.2.0: this section previously named TypeDB as the backend to
+reuse. TypeDB provided only keyed upserts, joins, a compare-and-swap pointer and
+one-hop reads while costing 13–14 G RSS plus 23–25 G swap, about 1 TB written
+per 43 h and REX1 read failures, so the operator replaced it with PostgreSQL +
+pgvector. Statement embeddings now rank knowledge retrieval (MCP
+current-snapshot `intelligence_context`, `compaction context`) alongside word
+overlap; they are derived data and never admit, evidence or publish knowledge.
 
 ## Useful during an LLM session
 
