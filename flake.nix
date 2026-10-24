@@ -4,6 +4,9 @@
   inputs = {
     # Qualified shared Rust, database lifecycle and documentation infrastructure.
     harbor.url = "git+https://github.com/caniko/harbor.git?ref=feat/harbor-monorepo-components&rev=7d99eb50c52d0a941e2996b97c469b32a7657ef4";
+    # Harbor uses simit only for its own CI shell; its pinned tooling chain still
+    # locks retired forge hosts (see host-pinning), so stub it out.
+    harbor.inputs.simit.follows = "";
     # TEMPORARY TypeDB packages until NixOS/nixpkgs#565068 merges: the
     # GitHub-maintained PR merge (NixOS/nixpkgs#565068), pinned to the
     # verified merge 26996c2a9 that review-gha built green (typedb,
