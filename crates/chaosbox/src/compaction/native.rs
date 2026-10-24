@@ -146,6 +146,12 @@ fn assistant(raw: &Value) -> Result<bool, String> {
                     return Err("duplicate native tool call".into());
                 }
                 let state = part.get("state").ok_or("native tool lacks state")?;
+                if state
+                    .pointer("/metadata/truncated")
+                    .is_some_and(|truncated| !truncated.is_boolean())
+                {
+                    return Err("native tool truncation must be a boolean".into());
+                }
                 match string(state, "status")? {
                     "streaming" | "pending" | "running" => settled = false,
                     "completed" => {
@@ -215,8 +221,7 @@ fn tool_content(content: &Value) -> Result<(), String> {
 pub(super) fn complete_result(raw: &Value) -> Result<(), String> {
     if raw
         .pointer("/result/metadata/truncated")
-        .and_then(Value::as_bool)
-        == Some(true)
+        .is_some_and(|truncated| truncated != &Value::Bool(false))
         || raw.pointer("/result/metadata/outputPath").is_some()
     {
         return Err("tool was bounded before capture; complete output lacks custody".into());

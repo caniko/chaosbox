@@ -568,9 +568,15 @@ pub async fn add(settings: &Settings, request: Invocation) -> Result<Value, Stri
             } else {
                 "unknown"
             });
-            // Save observed execution before any optional metadata work. A failure
-            // to enrich/settle never erases the native outcome or returned path.
-            ledger.executed(&request.id, &receipt)?;
+            // Save execution before optional metadata. If this table rejects
+            // the write, try canonical settlement while the receipt is available.
+            // Never rerun the store operation to recover evidence.
+            if let Err(error) = ledger.executed(&request.id, &receipt) {
+                receipt["journal_warning"] = json!(error);
+                return ledger.settle(&request.id, &receipt).map_err(|error| {
+                    format!("execution evidence could not be persisted: {error}; observed_receipt={receipt}")
+                });
+            }
             if let Some(path) = receipt["objects"][0]["path"].as_str().map(String::from) {
                 let mut query = vec!["path-info".into(), "--json".into()];
                 query.extend(base_args(settings));
@@ -596,7 +602,9 @@ pub async fn add(settings: &Settings, request: Invocation) -> Result<Value, Stri
             }
         }
     }
-    ledger.settle(&request.id, &receipt)
+    ledger
+        .settle(&request.id, &receipt)
+        .map_err(|error| format!("settlement failed: {error}; observed_receipt={receipt}"))
 }
 
 fn valid_store_path(path: &str) -> bool {

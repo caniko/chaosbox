@@ -2,6 +2,74 @@
 use std::{fs, path::Path};
 use chaosbox::nix::{AddMode, Invocation, Ledger, Settings};
 
+#[tokio::test]
+async fn rejected_execution_write_settles_the_native_receipt_without_reexecution() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join("input"),
+        "survive first receipt write failure",
+    )
+    .unwrap();
+    let mut config = settings(temp.path());
+    drop(Ledger::open(&config).unwrap());
+    let database = rusqlite::Connection::open(config.work.join("nix.sqlite")).unwrap();
+    database.execute_batch("CREATE TRIGGER fail_execution BEFORE INSERT ON executions BEGIN SELECT RAISE(ABORT, 'fixture execution write failure'); END;").unwrap();
+    let request = invocation(
+        temp.path(),
+        "retain execution evidence",
+        "execution-write-failure",
+    );
+    let receipt = chaosbox::nix::add(&config, request.clone()).await.unwrap();
+    assert_eq!(receipt["outcome"], "succeeded");
+    assert!(receipt["objects"][0]["path"].is_string());
+    assert!(receipt["journal_warning"]
+        .as_str()
+        .unwrap()
+        .contains("fixture execution"));
+    let evidence = Ledger::read(&config)
+        .unwrap()
+        .evidence("fixture", &request.id)
+        .unwrap();
+    assert_eq!(evidence["settled"], true);
+    assert_eq!(evidence["receipt"], receipt);
+    fs::remove_file(&request.path).unwrap();
+    config.nix = "/no-such-executable".into();
+    assert_eq!(chaosbox::nix::add(&config, request).await.unwrap(), receipt);
+}
+
+#[tokio::test]
+async fn total_receipt_write_failure_reports_observed_evidence_and_blocks_reexecution() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(
+        temp.path().join("input"),
+        "retain evidence when both tables reject writes",
+    )
+    .unwrap();
+    let config = settings(temp.path());
+    drop(Ledger::open(&config).unwrap());
+    let database = rusqlite::Connection::open(config.work.join("nix.sqlite")).unwrap();
+    database.execute_batch("CREATE TRIGGER fail_execution BEFORE INSERT ON executions BEGIN SELECT RAISE(ABORT, 'fixture execution write failure'); END; CREATE TRIGGER fail_settlement BEFORE INSERT ON settlements BEGIN SELECT RAISE(ABORT, 'fixture settlement write failure'); END;").unwrap();
+    let request = invocation(
+        temp.path(),
+        "report unpersisted outcome",
+        "all-writes-failed",
+    );
+    let error = chaosbox::nix::add(&config, request.clone())
+        .await
+        .unwrap_err();
+    let receipt: serde_json::Value =
+        serde_json::from_str(error.split_once("observed_receipt=").unwrap().1).unwrap();
+    assert_eq!(receipt["outcome"], "succeeded");
+    assert!(receipt["objects"][0]["path"]
+        .as_str()
+        .unwrap()
+        .starts_with("/nix/store/"));
+    assert!(chaosbox::nix::add(&config, request)
+        .await
+        .unwrap_err()
+        .contains("operation unresolved"));
+}
+
 fn settings(root: &Path) -> Settings {
     Settings {
         work: root.join("ledger"),

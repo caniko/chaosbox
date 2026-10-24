@@ -1,6 +1,7 @@
 # Summary
 
 - [Chaosbox](index.md)
+- [Storage lifecycle integration](storage-lifecycle.md)
 - [Selective intelligence](intelligence.md)
 - [Same-user peer sync](peer-sync.md)
 - [Project-scoped federation](federation.md)

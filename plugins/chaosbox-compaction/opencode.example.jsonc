@@ -6,7 +6,6 @@
       "options": {
         "work": "/absolute/private/chaosbox-memory",
         "scope": "private:can",
-        "repo": "chaosbox",
         "liveAssessment": true,
         "publish": true,
         "maxRequests": 1000,

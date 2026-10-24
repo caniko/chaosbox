@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Reject malformed pre-bounding truncation metadata and preserve string-valued
+  tool output exactly when reconstructing source-custodied checkpoints. The
+  global plugin example now uses native project resolution instead of a fixed repo.
 - Session-research validators reject malformed top-level input types with
   `TypeError`, including non-object portfolio and reproduction inventories.
 - Global OpenCode session custody binds each archive capture and retrieval to

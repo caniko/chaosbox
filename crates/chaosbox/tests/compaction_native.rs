@@ -89,6 +89,108 @@ fn a_truncated_early_result_is_custody_but_not_complete_output() {
 }
 
 #[test]
+fn malformed_truncation_markers_never_authorize_complete_tool_output() {
+    for truncated in [
+        json!("true"),
+        json!("false"),
+        json!(null),
+        json!(0),
+        json!({}),
+    ] {
+        let dir = private_dir();
+        let mut journal = Journal::open(dir.path(), "private:test").unwrap();
+        let mut early = settlement();
+        early["result"]["metadata"]["truncated"] = truncated;
+        journal.capture(&capture(vec![early])).unwrap();
+        let receipt = journal
+            .capture(&capture(vec![user(), assistant()]))
+            .unwrap();
+        assert!(journal.plan(&receipt.id, 8000).is_err());
+        assert_eq!(journal.pending().unwrap().len(), 2);
+    }
+}
+
+#[test]
+fn string_output_settlements_preserve_exact_text_in_the_checkpoint() {
+    let dir = private_dir();
+    let mut journal = Journal::open(dir.path(), "private:test").unwrap();
+    let mut early = settlement();
+    let text = "Actual output: \"quoted\"\nsecond line\\path";
+    early["result"].as_object_mut().unwrap().remove("content");
+    early["result"]["output"] = json!(text);
+    early["result"]["metadata"]["truncated"] = json!(false);
+    journal.capture(&capture(vec![early])).unwrap();
+    let receipt = journal
+        .capture(&capture(vec![user(), assistant()]))
+        .unwrap();
+    let plan = journal.plan(&receipt.id, 8000).unwrap();
+    let projected: Value = plan
+        .summary
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|record| record["id"] == "msg_assistant")
+        .unwrap();
+    assert_eq!(projected["content"][0]["state"]["content"][0]["text"], text);
+    assert_eq!(journal.verify_plan(&plan.id).unwrap(), plan);
+}
+
+#[test]
+fn malformed_embedded_tool_truncation_never_enters_custody() {
+    for status in ["completed", "error"] {
+        for truncated in [
+            json!("true"),
+            json!("false"),
+            json!(null),
+            json!(0),
+            json!({}),
+            json!([]),
+        ] {
+            let dir = private_dir();
+            let mut journal = Journal::open(dir.path(), "private:test").unwrap();
+            let mut record = assistant();
+            let state = &mut record["content"][0]["state"];
+            state["status"] = json!(status);
+            if status == "error" {
+                state["error"] = json!({"message":"shell failed"});
+            }
+            state["metadata"]["truncated"] = truncated;
+            assert!(journal.capture(&capture(vec![user(), record])).is_err());
+            assert!(journal.pending().unwrap().is_empty());
+        }
+    }
+}
+
+#[test]
+fn complete_embedded_tool_output_can_be_planned_without_an_early_result() {
+    for status in ["completed", "error"] {
+        for truncated in [None, Some(false)] {
+            let dir = private_dir();
+            let mut journal = Journal::open(dir.path(), "private:test").unwrap();
+            let mut record = assistant();
+            let state = &mut record["content"][0]["state"];
+            state["status"] = json!(status);
+            state["content"] = json!([{"type":"text","text":"Complete embedded output"}]);
+            if status == "error" {
+                state["error"] = json!({"message":"shell failed"});
+            }
+            match truncated {
+                Some(value) => state["metadata"]["truncated"] = json!(value),
+                None => {
+                    state["metadata"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("truncated");
+                }
+            }
+            let receipt = journal.capture(&capture(vec![user(), record])).unwrap();
+            let plan = journal.plan(&receipt.id, 8000).unwrap();
+            assert!(plan.summary.contains("Complete embedded output"));
+            assert_eq!(journal.verify_plan(&plan.id).unwrap(), plan);
+        }
+    }
+}
+
+#[test]
 fn the_checkpoint_uses_the_complete_outcome_instead_of_a_bounded_preview() {
     let dir = private_dir();
     let mut journal = Journal::open(dir.path(), "private:test").unwrap();

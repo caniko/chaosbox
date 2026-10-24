@@ -1,6 +1,6 @@
 //! In-memory [`GraphQueries`](crate::GraphQueries) fake used by conformance tests.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chaosbox_core::GraphBuild;
 
@@ -14,6 +14,7 @@ use crate::rows::{BuildRow, EntityRow, EvidenceRow, RelRow, entity_row, rel_row}
 #[derive(Default)]
 pub struct MemoryReader {
     builds: BTreeMap<String, GraphBuild>,
+    published: BTreeSet<String>,
     active: BTreeMap<String, String>,
     evidence: BTreeMap<(String, String), Vec<EvidenceRow>>,
     navigation: BTreeMap<String, Result<serde_json::Value, String>>,
@@ -41,14 +42,16 @@ impl MemoryReader {
             .collect();
         Self {
             builds: store.builds.clone(),
+            published: store.builds.keys().cloned().collect(),
             active: store.active.clone(),
             evidence: store.sealed.clone(),
             navigation,
         }
     }
 
-    /// Insert a build (indexed by its id).
+    /// Stage a build (indexed by its id); insertion alone is not publication.
     pub fn insert_build(&mut self, build: GraphBuild) {
+        self.published.remove(&build.id);
         self.navigation.insert(
             build.id.clone(),
             chaosbox_core::navigation::summarize_build(&build),
@@ -56,8 +59,16 @@ impl MemoryReader {
         self.builds.insert(build.id.clone(), build);
     }
 
-    /// Point a repository at one of the inserted builds.
+    /// Publish an inserted build and point its repository at it. Previously
+    /// published builds remain available for pinned historical reads.
     pub fn set_active(&mut self, repo: &str, build_id: &str) {
+        if self
+            .builds
+            .get(build_id)
+            .is_some_and(|build| build.repo == repo)
+        {
+            self.published.insert(build_id.to_owned());
+        }
         self.active.insert(repo.to_owned(), build_id.to_owned());
     }
 
@@ -128,7 +139,7 @@ impl GraphQueries for MemoryReader {
         Ok(self
             .builds
             .get(build_id)
-            .filter(|b| b.repo == repo)
+            .filter(|b| b.repo == repo && self.published.contains(build_id))
             .map(|b| {
                 let mut snapshots = b.snapshot_ids.clone();
                 snapshots.sort();

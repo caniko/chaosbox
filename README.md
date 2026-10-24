@@ -10,7 +10,7 @@ Native Rust fork/rewrite of [Graphify](https://github.com/Graphify-Labs/graphify
 deterministic code-graph extraction, bounded Jev decisions, TypeDB-backed
 versioned graph builds, read-only CLI/MCP consumers.
 
-Deployment storage contracts are described in [Storage lifecycle integration](docs/storage-lifecycle.md).
+Deployment storage contracts are described in [Storage lifecycle integration](docs/src/storage-lifecycle.md).
 
 Pipeline: `source snapshot -> certified syntax facts + bounded candidates ->
 optional Jev decisions -> validated evidence/claims -> policy build ->
@@ -93,7 +93,7 @@ build can refresh without any model coverage. A decision-bearing or legacy
 build keeps the conservative exit-4 guard when current candidates lack reusable
 decisions. See the [certified fact contract](docs/STRUCTURAL_FACTS.md) for the
 exact syntax subset, citation format, coverage limits, and regression baseline.
-Existing TypeDB databases need `chaosbox db migrate` for additive schema v5.
+Existing TypeDB databases need `chaosbox db migrate` to reach the current schema.
 Run-bound readers additionally require a newly published, source-complete sealed
 build; migration cannot establish the evidence closure of legacy versions. See
 [`docs/READ_VIEWS.md`](docs/READ_VIEWS.md).
