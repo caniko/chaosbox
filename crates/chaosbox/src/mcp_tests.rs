@@ -2,6 +2,15 @@
 
 use super::mcp_server::{mcp_args, mcp_call_tool, mcp_tool_defs};
 
+/// Signals when a pending backend future is dropped.
+struct Guard(tokio::sync::watch::Sender<bool>);
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
+    }
+}
+
 #[test]
 fn tool_defs_are_read_only_with_schemas() {
     let defs = mcp_tool_defs();
@@ -142,7 +151,7 @@ async fn path_rejects_malformed_arguments_before_credentials() {
         ("max_hops", json!(true)),
         ("max_hops", json!(null)),
         ("max_hops", json!([])),
-        ("max_hops", json!(18446744073709551615_u64)),
+        ("max_hops", json!(u64::MAX)),
         ("repo", json!(" ")),
         ("repo", json!("x".repeat(257))),
         ("from", json!(" ")),
@@ -381,12 +390,6 @@ async fn ordinary_transport_drops_pending_reads_on_eof_oversize_and_closed_outpu
         let (mut output, receiver) = tokio::io::duplex(1);
         let (started, start) = tokio::sync::oneshot::channel();
         let (dropped, mut drop_rx) = tokio::sync::watch::channel(false);
-        struct Guard(tokio::sync::watch::Sender<bool>);
-        impl Drop for Guard {
-            fn drop(&mut self) {
-                self.0.send_replace(true);
-            }
-        }
         let serving = async {
             exchange(
                 &mut Frames::new(input),
@@ -503,12 +506,6 @@ async fn ordinary_slow_output_keeps_one_deadline_and_drops_the_active_read() {
     let (mut output, _unread) = tokio::io::duplex(1);
     let (started, start) = tokio::sync::oneshot::channel();
     let (dropped, mut drop_rx) = tokio::sync::watch::channel(false);
-    struct Guard(tokio::sync::watch::Sender<bool>);
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            self.0.send_replace(true);
-        }
-    }
     let serving = async {
         exchange(
             &mut Frames::new(input),
