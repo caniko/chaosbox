@@ -103,6 +103,8 @@
             craneLib.filterCargoSources path type
             || pkgs.lib.hasSuffix ".tql" (toString path)
             || pkgs.lib.hasSuffix ".sql" (toString path)
+            # The offline HTML export template (include_str! in export.rs).
+            || toString path == toString ./crates/chaosbox/src/export.html
             || pkgs.lib.hasPrefix (toString ./plugins + "/") (toString path)
             || pkgs.lib.hasPrefix (toString ./fixtures + "/") (toString path);
         };
