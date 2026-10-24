@@ -51,6 +51,8 @@
 - `no active build for repo` names the next action and carries
   `data.code = "no_active_build"` on MCP errors; TypeDB `[REX1]` read
   interruptions explain the read timeout and server-restart causes.
+- Nix deployment and federation checks import existing package-set paths
+  directly so cold, read-only flake qualification does not need a new store copy.
 - Reject malformed pre-bounding truncation metadata and preserve string-valued
   tool output exactly when reconstructing source-custodied checkpoints. The
   global plugin example now uses native project resolution instead of a fixed repo.
@@ -75,6 +77,9 @@
 
 ### Changed
 
+- Rust, database and documentation infrastructure now consume one qualified
+  Harbor monorepo input. Database service identities remain `services.harbor-db`,
+  and the default development shell includes its configured treefmt wrapper.
 - The continuation design now requires Jev-selected records and deterministic
   source-backed rendering, replacing the earlier generative-model contract.
 - Session research uses pinned Typesafe Jev choices for extraction, reviewed
