@@ -130,6 +130,11 @@ enum Command {
         /// change.
         #[arg(long = "source-paths")]
         source_paths: Vec<String>,
+        /// Exclusion glob (gitignore syntax, repeatable); `.chaosboxignore`
+        /// files are always honored. Non-empty exclusions are part of the
+        /// snapshot id.
+        #[arg(long = "exclude")]
+        exclude: Vec<String>,
     },
     /// Extract deterministic facts + candidates.
     Extract {
@@ -141,6 +146,9 @@ enum Command {
         /// Explicit source scope (see `snapshot --source-paths`).
         #[arg(long = "source-paths")]
         source_paths: Vec<String>,
+        /// Exclusion glob (see `snapshot --exclude`).
+        #[arg(long = "exclude")]
+        exclude: Vec<String>,
     },
     /// Run the full pipeline (live Jev decisions by default; fixture
     /// decisions only with --fixture-decisions, for disposable/test graphs;
@@ -158,6 +166,11 @@ enum Command {
         /// Explicit source scope (see `snapshot --source-paths`).
         #[arg(long = "source-paths")]
         source_paths: Vec<String>,
+        /// Exclusion glob (see `snapshot --exclude`). Part of the snapshot id
+        /// and policy digest; with `--compiler` the receipt's snapshot no
+        /// longer matches, so that combination fails closed.
+        #[arg(long = "exclude")]
+        exclude: Vec<String>,
         /// Privacy class for this run: `local` (private fleet only) or
         /// `private` (no external inference ever). Unknown values fail
         /// closed. Part of the decision cache identity.
@@ -363,6 +376,19 @@ enum DbCmd {
     },
 }
 
+/// Validated run policy: scope, consent and exclusion globs fail closed together.
+fn effective_policy(
+    source_paths: &[String],
+    exclude: &[String],
+    privacy: &str,
+    inference: &str,
+) -> Result<chaosbox_core::EffectivePolicy, String> {
+    let exclude = chaosbox_extract::validate_exclude(exclude).map_err(|e| e.to_string())?;
+    chaosbox_core::EffectivePolicy::new(source_paths, privacy, inference)
+        .map(|policy| policy.with_exclude(exclude))
+        .map_err(|e| e.to_string())
+}
+
 // Long dispatch function; splitting it apart is the owning session's
 // refactor. Allowed to keep CI unblocked.
 #[allow(clippy::too_many_lines)]
@@ -483,12 +509,14 @@ async fn main() {
             path,
             repo,
             source_paths,
-        } => match Snapshot::capture_scoped(&repo, &path, &source_paths) {
+            exclude,
+        } => match Snapshot::capture_excluding(&repo, &path, &source_paths, &exclude) {
             Ok(s) => println!(
-                r#"{{"snapshot":"{}","files":{},"scope":{}}}"#,
+                r#"{{"snapshot":"{}","files":{},"scope":{},"exclude":{}}}"#,
                 s.id,
                 s.files.len(),
                 serde_json::to_string(&s.scope).unwrap(),
+                serde_json::to_string(&exclude).unwrap(),
             ),
             Err(e) => {
                 eprintln!("snapshot failed: {e}");
@@ -500,8 +528,9 @@ async fn main() {
             repo,
             max_candidates,
             source_paths,
+            exclude,
         } => {
-            let policy = match chaosbox_core::EffectivePolicy::new(&source_paths, "local", "none") {
+            let policy = match effective_policy(&source_paths, &exclude, "local", "none") {
                 Ok(p) => p,
                 Err(e) => {
                     eprintln!("extract failed: {e}");
@@ -510,13 +539,14 @@ async fn main() {
             };
             match Pipeline::<MemoryStore>::snapshot_extract(&repo, &path, max_candidates, &policy) {
                 Ok((snap, ext, cat)) => println!(
-                    r#"{{"snapshot":"{}","entities":{},"candidates":{},"selected":{},"omitted":{},"scope":{}}}"#,
+                    r#"{{"snapshot":"{}","entities":{},"candidates":{},"selected":{},"omitted":{},"scope":{},"exclude":{}}}"#,
                     snap.id,
                     ext.entities.len(),
                     cat.candidates.len(),
                     cat.selected.values().sum::<u64>(),
                     serde_json::to_string(&cat.omitted).unwrap(),
                     serde_json::to_string(&snap.scope).unwrap(),
+                    serde_json::to_string(&policy.exclude).unwrap(),
                 ),
                 Err(e) => {
                     eprintln!("extract failed: {e}");
@@ -530,6 +560,7 @@ async fn main() {
             repo,
             max_candidates,
             source_paths,
+            exclude,
             privacy,
             inference,
             live_jev,
@@ -539,14 +570,13 @@ async fn main() {
             max_input_tokens,
             max_retries,
         } => {
-            let policy =
-                match chaosbox_core::EffectivePolicy::new(&source_paths, &privacy, &inference) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        eprintln!("run failed: {e}");
-                        std::process::exit(1);
-                    }
-                };
+            let policy = match effective_policy(&source_paths, &exclude, &privacy, &inference) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("run failed: {e}");
+                    std::process::exit(1);
+                }
+            };
             // Live spend of this run. Every exit prints it exactly once (via
             // `usage`), so a batching caller can debit what this repository
             // dispatched even when the run dies before it publishes.

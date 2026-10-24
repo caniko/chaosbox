@@ -406,41 +406,42 @@ impl Store for MemoryStore {
         if let Some(coverage) = &build.coverage {
             // The no-decisions refresh gate trusts this distinction. Derive
             // it from retained provenance, never solely from caller counts.
-            let structural = build
-                .edges
-                .values()
-                .filter(|edge| {
-                    !edge.evidence_ids.is_empty()
-                        && edge.evidence_ids.iter().all(|id| {
-                            self.evidence.get(id).is_some_and(|evidence| {
-                                evidence.producer.is_some()
-                                    && evidence.supports
-                                    && evidence.class == chaosbox_core::EvidenceClass::Extracted
+            // Direct (producer-backed, supporting) edges, by evidence class:
+            // certified syntax/compiler/catalog facts are EXTRACTED,
+            // deterministic name resolution is INFERRED. Decision evidence
+            // never carries a producer.
+            let direct = |class: chaosbox_core::EvidenceClass, producer: Option<&str>| {
+                build
+                    .edges
+                    .values()
+                    .filter(|edge| {
+                        !edge.evidence_ids.is_empty()
+                            && edge.evidence_ids.iter().all(|id| {
+                                self.evidence.get(id).is_some_and(|evidence| {
+                                    evidence.producer.is_some()
+                                        && producer
+                                            .is_none_or(|p| evidence.producer.as_deref() == Some(p))
+                                        && evidence.supports
+                                        && evidence.class == class
+                                })
                             })
-                        })
-                })
-                .count();
+                    })
+                    .count()
+            };
+            let structural = direct(chaosbox_core::EvidenceClass::Extracted, None);
+            let resolved = direct(chaosbox_core::EvidenceClass::Inferred, None);
+            let catalog = direct(
+                chaosbox_core::EvidenceClass::Extracted,
+                Some("postgres-catalog-v1"),
+            );
             let compiler = coverage
                 .compiler
                 .as_ref()
                 .map_or(0, chaosbox_core::compiler::CompilerCoverage::relations);
-            let catalog = build
-                .edges
-                .values()
-                .filter(|edge| {
-                    !edge.evidence_ids.is_empty()
-                        && edge.evidence_ids.iter().all(|id| {
-                            self.evidence.get(id).is_some_and(|evidence| {
-                                evidence.producer.as_deref() == Some("postgres-catalog-v1")
-                                    && evidence.supports
-                                    && evidence.class == chaosbox_core::EvidenceClass::Extracted
-                            })
-                        })
-                })
-                .count();
             if coverage.catalog.as_ref().map_or(0, |c| c.relations) != catalog
                 || coverage.structural_relations + compiler + catalog != structural
-                || coverage.decision_relations != build.edges.len() - structural
+                || coverage.resolved_relations != resolved
+                || coverage.decision_relations != build.edges.len() - structural - resolved
                 || coverage.files.iter().map(|file| file.facts).sum::<usize>()
                     != coverage.structural_relations
             {

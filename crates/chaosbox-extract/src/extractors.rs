@@ -7,9 +7,9 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 pub(crate) fn is_supported(path: &str) -> bool {
-    const EXTS: [&str; 14] = [
-        "rs", "py", "js", "ts", "jsx", "tsx", "mts", "cts", "mjs", "cjs", "nix", "md", "markdown",
-        "txt",
+    const EXTS: [&str; 16] = [
+        "rs", "py", "pyi", "js", "ts", "jsx", "tsx", "mts", "cts", "mjs", "cjs", "nix", "md",
+        "markdown", "mdx", "txt",
     ];
     match path.rsplit('.').next() {
         // Case-insensitive like the extractor below; a lone ".md" still
@@ -64,8 +64,9 @@ pub struct Extraction {
     pub compiler: Option<chaosbox_core::compiler::CompilerCoverage>,
 }
 
-/// One source-backed syntax observation. Only containment and declarations
-/// are certified by the current extraction contract (no name resolution).
+/// One source-backed observation. Certified facts (containment, declarations,
+/// syntactic nesting, rationale annotations) are EXTRACTED; `resolved` facts
+/// are deterministic name-resolution results published as INFERRED evidence.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StructuralFact {
     /// Source entity id.
@@ -80,6 +81,9 @@ pub struct StructuralFact {
     pub text: String,
     /// Parser/grammar/contract version.
     pub producer: String,
+    /// Name-resolved (INFERRED) rather than syntax-certified (EXTRACTED).
+    #[serde(default)]
+    pub resolved: bool,
 }
 
 fn line_col(text: &str, byte: usize) -> (u32, u32) {
@@ -113,11 +117,21 @@ pub(crate) fn span_of(text: &str, file: &str, byte_start: usize, byte_end: usize
     }
 }
 
-/// Extract one file deterministically.
+/// Extract one file deterministically. Call/heritage sites need the whole
+/// snapshot to resolve, so single-file extraction never resolves names.
 #[must_use]
 pub fn extract_file(repo: &str, snapshot: &str, path: &str, text: &str) -> Extraction {
-    if let Some(extraction) = crate::syntax::extract(repo, snapshot, path, text) {
-        return extraction;
+    extract_with_sites(repo, snapshot, path, text).0
+}
+
+pub(crate) fn extract_with_sites(
+    repo: &str,
+    snapshot: &str,
+    path: &str,
+    text: &str,
+) -> (Extraction, Vec<crate::syntax::Site>) {
+    if let Some(extracted) = crate::syntax::extract(repo, snapshot, path, text) {
+        return extracted;
     }
     let mut entities = Vec::new();
     let mut refs = Vec::new();
@@ -134,7 +148,7 @@ pub fn extract_file(repo: &str, snapshot: &str, path: &str, text: &str) -> Extra
     entities.push(file_entity);
 
     let ext_lower = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    if ext_lower == "md" || ext_lower == "markdown" {
+    if matches!(ext_lower.as_str(), "md" | "markdown" | "mdx") {
         extract_markdown(
             repo,
             snapshot,
@@ -167,7 +181,7 @@ pub fn extract_file(repo: &str, snapshot: &str, path: &str, text: &str) -> Extra
             &mut refs,
         );
     }
-    Extraction {
+    let extraction = Extraction {
         entities,
         explicit_refs: refs,
         facts: Vec::new(),
@@ -178,7 +192,8 @@ pub fn extract_file(repo: &str, snapshot: &str, path: &str, text: &str) -> Extra
             status: chaosbox_core::coverage::SyntaxStatus::Heuristic,
             facts: 0,
         }],
-    }
+    };
+    (extraction, Vec::new())
 }
 
 fn extract_code(

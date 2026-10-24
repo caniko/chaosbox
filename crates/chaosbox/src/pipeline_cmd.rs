@@ -51,9 +51,10 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         cat.cap,
         serde_json::to_string(&cat.omitted).unwrap(),
     );
+    let resolved = ext.facts.iter().filter(|f| f.resolved).count();
     eprintln!(
-        "structural: facts={} files={} parse_errors={}",
-        ext.facts.len(),
+        "structural: facts={} resolved={resolved} files={} parse_errors={}",
+        ext.facts.len() - resolved,
         ext.coverage.len(),
         ext.coverage
             .iter()

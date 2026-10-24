@@ -18,8 +18,18 @@ described in the new book chapters are not yet implemented.
   Rust/TypeScript/TSX use pinned tree-sitter grammars; Nix uses rnix. Certified
   declaration and file/module containment facts publish without model decisions
   or candidate slots. Syntax failures withhold direct facts with explicit
-  coverage. Imports/name matches remain proposals; see `STRUCTURAL_FACTS.md`
-  for the exact subset (no compiler resolution or Nix evaluation).
+  coverage. Rust/TS `declarations-v2` also certifies syntactic nesting and
+  marked rationale comments (`NOTE:`/`WHY:`/`TODO:`/`SAFETY:`/`ponytail:`…).
+  Rust/TS `calls`, `inherits` and `implements`, plus ADR/RFC citations to
+  captured documents, publish as INFERRED resolved relations (unique lexical
+  match, exact use-site span, no model decisions, own `resolved_relations`
+  coverage bucket). Imports and other name matches remain proposals; see
+  `STRUCTURAL_FACTS.md` for the exact subset (no compiler resolution or Nix
+  evaluation).
+- Exclusion: `.chaosboxignore` (gitignore syntax) is always honored, and
+  repeatable `--exclude` globs on `snapshot`/`extract`/`run` narrow capture.
+  Non-empty exclusions join the snapshot id and policy digest, so narrowing is
+  never silent; unrestricted captures keep their historical ids.
 - Optional SCIP protobuf ingestion: operator-only capture with source/configuration
   receipts, exact occurrence ranges, package-qualified/global and scoped-local
   anchors, explicit resolved references and implementation links. Compiler facts
@@ -48,7 +58,9 @@ described in the new book chapters are not yet implemented.
   incompatible installed binaries fail before reserving an inference attempt.
   Offline fixture decisions have their own explicit `fixture-test` identity;
   the live client never accepts that identity.
-- Evidence classes EXTRACTED/INFERRED/AMBIGUOUS (confidence never upgrades);
+- Evidence classes EXTRACTED/INFERRED/AMBIGUOUS (confidence never upgrades;
+  INFERRED comes from accepted decisions or from deterministic name
+  resolution, distinguishable by the resolver's producer identity);
   below-floor confidence abstains (recorded, never retried); responder faults
   become recorded `Failed` decisions with catch-and-continue (fault text never
   copied into evidence); `Failed` rows are supersedable once, other outcomes

@@ -38,6 +38,7 @@ pub fn all_relation_types() -> Vec<String> {
         "references",
         "calls",
         "implements",
+        "inherits",
         "links_to",
         "mentions",
     ]
