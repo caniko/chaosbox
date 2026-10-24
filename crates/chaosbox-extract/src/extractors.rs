@@ -129,7 +129,7 @@ pub(crate) fn extract_with_sites(
     snapshot: &str,
     path: &str,
     text: &str,
-) -> (Extraction, Vec<crate::syntax::Site>) {
+) -> (Extraction, crate::syntax::Uses) {
     if let Some(extracted) = crate::syntax::extract(repo, snapshot, path, text) {
         return extracted;
     }
@@ -193,7 +193,7 @@ pub(crate) fn extract_with_sites(
             facts: 0,
         }],
     };
-    (extraction, Vec::new())
+    (extraction, crate::syntax::Uses::default())
 }
 
 fn extract_code(

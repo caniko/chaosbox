@@ -14,7 +14,7 @@ use regex::Regex;
 
 use crate::{
     extractors::span_of,
-    syntax::{Site, SiteFrom},
+    syntax::{SiteFrom, Uses},
     Snapshot, StructuralFact,
 };
 
@@ -51,51 +51,59 @@ fn unique<'a>(mut it: impl Iterator<Item = &'a Entity>) -> Option<&'a Entity> {
 /// `Owner::name` requires `name` to be unique in the (uniquely resolved)
 /// owner's file, or else unique among module files named like the owner
 /// (`src/owner.rs`, `src/owner/mod.rs`). That keeps `String::new` and
-/// `Vec::with_capacity` unresolved.
-pub(crate) fn names(sites: &[Site], entities: &[Entity], facts: &mut Vec<StructuralFact>) {
-    let mut index: BTreeMap<(bool, &str), Vec<&Entity>> = BTreeMap::new();
+/// `Vec::with_capacity` unresolved. Calls only target callable declarations
+/// and heritage only types, so `Err(..)` never resolves to `type Err`.
+pub(crate) fn names(uses: &Uses, entities: &[Entity], facts: &mut Vec<StructuralFact>) {
+    let (mut any, mut callable, mut types) = (Index::new(), Index::new(), Index::new());
     for e in entities {
         if e.kind == EntityKind::Definition && e.compiler.is_none() {
             if let Some(rust) = language(&e.file) {
-                index.entry((rust, e.name.as_str())).or_default().push(e);
+                let key = (rust, e.name.as_str());
+                any.entry(key).or_default().push(e);
+                if uses.callable.contains(&e.id) {
+                    callable.entry(key).or_default().push(e);
+                }
+                if uses.types.contains(&e.id) {
+                    types.entry(key).or_default().push(e);
+                }
             }
         }
     }
-    let pick = |rust: bool, name: &str, file: &str, local: bool| -> Option<&Entity> {
-        let all = index.get(&(rust, name))?;
-        let here: Vec<_> = all.iter().filter(|e| e.file == file).collect();
-        match here.as_slice() {
-            [one] => Some(**one),
-            [] if !local && all.len() == 1 => Some(all[0]),
-            _ => None,
-        }
-    };
     let mut done = seen(facts);
-    for site in sites {
+    for site in &uses.sites {
         let file = site.span.file.as_str();
+        let targets = if site.rel == RelationType::Calls {
+            &callable
+        } else {
+            &types
+        };
         let to = match site.qualifier.as_deref() {
-            None | Some("crate" | "super") => pick(site.rust, &site.name, file, site.local),
-            Some("self" | "Self") => pick(site.rust, &site.name, file, true),
-            Some(owner) => index.get(&(site.rust, site.name.as_str())).and_then(|all| {
-                pick(site.rust, owner, file, false)
-                    .and_then(|owner_def| {
-                        unique(all.iter().copied().filter(|e| e.file == owner_def.file))
-                    })
-                    .or_else(|| {
-                        unique(
-                            all.iter()
-                                .copied()
-                                .filter(|e| module_name(&e.file) == Some(owner)),
-                        )
-                    })
-            }),
+            None | Some("crate" | "super") => {
+                pick(targets, site.rust, &site.name, file, site.local)
+            }
+            Some("self" | "Self") => pick(targets, site.rust, &site.name, file, true),
+            Some(owner) => targets
+                .get(&(site.rust, site.name.as_str()))
+                .and_then(|all| {
+                    pick(&any, site.rust, owner, file, false)
+                        .and_then(|owner_def| {
+                            unique(all.iter().copied().filter(|e| e.file == owner_def.file))
+                        })
+                        .or_else(|| {
+                            unique(
+                                all.iter()
+                                    .copied()
+                                    .filter(|e| module_name(&e.file) == Some(owner)),
+                            )
+                        })
+                }),
         };
         let Some(to) = to else {
             continue;
         };
         let from = match &site.from {
             SiteFrom::Entity(id) => id.clone(),
-            SiteFrom::Name(name) => match pick(site.rust, name, file, true) {
+            SiteFrom::Name(name) => match pick(&types, site.rust, name, file, true) {
                 Some(e) => e.id.clone(),
                 None => continue,
             },
@@ -112,6 +120,25 @@ pub(crate) fn names(sites: &[Site], entities: &[Entity], facts: &mut Vec<Structu
             producer: format!("unique-name-v1/{}", site.producer),
             resolved: true,
         });
+    }
+}
+
+type Index<'a> = BTreeMap<(bool, &'a str), Vec<&'a Entity>>;
+
+/// Unique in `file`, else (unless `local`) unique in the whole index.
+fn pick<'a>(
+    index: &Index<'a>,
+    rust: bool,
+    name: &str,
+    file: &str,
+    local: bool,
+) -> Option<&'a Entity> {
+    let all = index.get(&(rust, name))?;
+    let here: Vec<_> = all.iter().filter(|e| e.file == file).collect();
+    match here.as_slice() {
+        [one] => Some(**one),
+        [] if !local && all.len() == 1 => Some(all[0]),
+        _ => None,
     }
 }
 

@@ -292,7 +292,7 @@ pub fn extract_snapshot(snapshot: &Snapshot) -> Extraction {
     let mut refs = Vec::new();
     let mut facts = Vec::new();
     let mut coverage = Vec::new();
-    let mut sites = Vec::new();
+    let mut uses = syntax::Uses::default();
     let mut paths: Vec<&String> = snapshot.contents.keys().collect();
     paths.sort();
     for path in paths {
@@ -302,10 +302,12 @@ pub fn extract_snapshot(snapshot: &Snapshot) -> Extraction {
         refs.extend(one.explicit_refs);
         facts.extend(one.facts);
         coverage.extend(one.coverage);
-        sites.extend(found);
+        uses.sites.extend(found.sites);
+        uses.callable.extend(found.callable);
+        uses.types.extend(found.types);
     }
     resolve_nix_imports(snapshot, &mut entities, &mut refs);
-    resolve::names(&sites, &entities, &mut facts);
+    resolve::names(&uses, &entities, &mut facts);
     resolve::citations(snapshot, &entities, &mut facts);
     Extraction {
         entities,

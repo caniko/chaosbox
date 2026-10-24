@@ -418,6 +418,11 @@ fn name_resolution_is_unique_inferred_and_cites_use_sites() {
         ("src/other.rs", "pub fn dup() {}\npub fn caller() { dup(); }\n"),
         ("src/third.rs", "pub fn dup() {}\n"),
         ("src/fourth.rs", "pub fn call_dup() { dup(); }\n"),
+        // `Err(..)` must not resolve to an associated `type Err`.
+        (
+            "src/parse.rs",
+            "pub struct P;\nimpl std::str::FromStr for P {\n    type Err = ();\n    fn from_str(_: &str) -> Result<Self, ()> { Err(()) }\n}\n",
+        ),
         (
             "web/app.ts",
             "// NOTE(arch): see ADR-12 for why\nexport class Base {}\nexport interface Named { name(): string }\n\

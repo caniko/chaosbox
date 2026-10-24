@@ -54,12 +54,22 @@ pub(crate) struct Site {
     pub producer: &'static str,
 }
 
+/// One file's use sites plus the declarations each site kind may target.
+#[derive(Debug, Default)]
+pub(crate) struct Uses {
+    pub sites: Vec<Site>,
+    /// Definitions a call may name: functions, methods, constructors.
+    pub callable: BTreeSet<String>,
+    /// Definitions a heritage clause or impl may name: types and traits.
+    pub types: BTreeSet<String>,
+}
+
 pub(crate) fn extract(
     repo: &str,
     snapshot: &str,
     path: &str,
     text: &str,
-) -> Option<(Extraction, Vec<Site>)> {
+) -> Option<(Extraction, Uses)> {
     let ext = path.rsplit('.').next()?.to_ascii_lowercase();
     let producer = match ext.as_str() {
         "rs" => RUST,
@@ -85,7 +95,7 @@ pub(crate) fn extract(
         pass.lexical_proposals();
     } else {
         // A rejected file certifies nothing, so it resolves nothing either.
-        pass.sites.clear();
+        pass.uses = Uses::default();
     }
     pass.out.coverage.push(FileCoverage {
         file: path.to_owned(),
@@ -97,7 +107,7 @@ pub(crate) fn extract(
         },
         facts: pass.out.facts.len(),
     });
-    Some((pass.out, pass.sites))
+    Some((pass.out, pass.uses))
 }
 
 struct Pass<'a> {
@@ -110,7 +120,7 @@ struct Pass<'a> {
     mentions: BTreeSet<String>,
     /// Enclosing declarations as `(end byte, entity id)`, innermost last.
     scopes: Vec<(usize, String)>,
-    sites: Vec<Site>,
+    uses: Uses,
     rust: bool,
     out: Extraction,
 }
@@ -141,7 +151,7 @@ impl<'a> Pass<'a> {
             file_id: file.id.clone(),
             mentions: BTreeSet::new(),
             scopes: Vec::new(),
-            sites: Vec::new(),
+            uses: Uses::default(),
             rust: false,
             out: Extraction {
                 compiler: None,
@@ -186,8 +196,9 @@ impl<'a> Pass<'a> {
 
     /// `scope_end` (the declaration node's end) enables syntactic nesting;
     /// Nix passes `None`: its attribute paths are not scoped here.
-    fn definition(&mut self, range: Range<usize>, scope_end: Option<usize>) {
+    fn definition(&mut self, range: Range<usize>, scope_end: Option<usize>) -> String {
         let entity = self.def_entity(range);
+        let id = entity.id.clone();
         self.fact(&entity, RelationType::Defines);
         if let Some(end) = scope_end {
             if let Some((_, parent)) = self.scopes.last() {
@@ -197,6 +208,42 @@ impl<'a> Pass<'a> {
             self.scopes.push((end, entity.id.clone()));
         }
         self.out.entities.push(entity);
+        id
+    }
+
+    /// Record which declarations calls and heritage clauses may resolve to,
+    /// so `Err(..)` never resolves to an associated `type Err`.
+    fn classify(&mut self, node_kind: &str, id: String) {
+        if matches!(
+            node_kind,
+            "function_item"
+                | "function_signature_item"
+                | "struct_item"
+                | "function_declaration"
+                | "generator_function_declaration"
+                | "function_signature"
+                | "method_definition"
+                | "method_signature"
+                | "class_declaration"
+                | "abstract_class_declaration"
+                | "variable_declarator"
+        ) {
+            self.uses.callable.insert(id.clone());
+        }
+        if matches!(
+            node_kind,
+            "struct_item"
+                | "enum_item"
+                | "trait_item"
+                | "type_item"
+                | "union_item"
+                | "class_declaration"
+                | "abstract_class_declaration"
+                | "interface_declaration"
+                | "type_alias_declaration"
+        ) {
+            self.uses.types.insert(id);
+        }
     }
 
     fn enclosing(&self) -> String {
@@ -250,7 +297,7 @@ impl<'a> Pass<'a> {
         if text.is_empty() || matches!(text, "self" | "Self" | "super" | "crate") {
             return;
         }
-        self.sites.push(Site {
+        self.uses.sites.push(Site {
             rel,
             from,
             name: text.to_owned(),
@@ -423,7 +470,8 @@ impl<'a> Pass<'a> {
             }
             let name = declaration_name(node, rust);
             if let Some(name) = name {
-                self.definition(name.byte_range(), Some(node.end_byte()));
+                let id = self.definition(name.byte_range(), Some(node.end_byte()));
+                self.classify(node.kind(), id);
             }
             self.uses(node);
             if node.kind() == "use_declaration" {
