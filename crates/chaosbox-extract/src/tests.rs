@@ -400,3 +400,31 @@ fn overlapping_scopes_dedup() {
     paths.sort_unstable();
     assert_eq!(paths, ["a/b/y.rs", "a/x.rs"]);
 }
+
+#[test]
+fn definitions_and_headings_carry_bounded_text() {
+    let text_of = |path: &str, src: &str, name: &str| {
+        extract_file("r", "s", path, src)
+            .entities
+            .into_iter()
+            .find(|e| e.name == name)
+            .and_then(|e| e.text)
+    };
+    let rust = "use x;\n\n/// Swing the pointer.\n#[must_use]\npub fn swing(\n    a: u8,\n) -> u8 {\n    a\n}\n";
+    assert_eq!(
+        text_of("a.rs", rust, "swing").as_deref(),
+        Some("/// Swing the pointer.\n#[must_use]\npub fn swing(\n    a: u8,\n) -> u8 {\n    a\n}")
+    );
+    let md = "# Top\n\n## Storage\n\nPostgres holds builds.\nTwo lines.\n\nLater text.\n## Next\n";
+    assert_eq!(
+        text_of("d.md", md, "Storage").as_deref(),
+        Some("## Storage\n\nPostgres holds builds.\nTwo lines.")
+    );
+    assert_eq!(
+        text_of("d.md", "# Top\n## Next\n", "Top").as_deref(),
+        Some("# Top")
+    );
+    let long = format!("fn big() {{ {} }}\n", "é".repeat(2000));
+    let capped = text_of("b.rs", &long, "big").unwrap();
+    assert!(capped.len() <= crate::extractors::ENTITY_TEXT_MAX && capped.starts_with("fn big()"));
+}

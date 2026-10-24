@@ -17,7 +17,7 @@ pub trait Responder: Send + Sync {
     ) -> Result<SystemOneResponse, String>;
 }
 
-/// Deterministic fixture responder for tests and `test-typedb`.
+/// Deterministic fixture responder for tests and `test-postgres`.
 pub struct FixtureResponder {
     /// When true every Choice answer is `accept`; otherwise `none`.
     pub accept_all: bool,

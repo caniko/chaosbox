@@ -11,6 +11,7 @@ pub struct CurrentReader {
     user: String,
     scope: String,
     last: Option<View>,
+    embedder: Option<crate::embed::Embedder>,
     degraded: bool,
 }
 
@@ -23,8 +24,15 @@ impl CurrentReader {
             user: user.into(),
             scope: scope.into(),
             last: None,
+            embedder: None,
             degraded: false,
         }
+    }
+    /// Rank context by statement embeddings too; lexical when absent.
+    #[must_use]
+    pub fn with_embedder(mut self, embedder: Option<crate::embed::Embedder>) -> Self {
+        self.embedder = embedder;
+        self
     }
     async fn refresh(&mut self) -> Result<&View, String> {
         let result = async {
@@ -83,12 +91,20 @@ impl CurrentReader {
             "intelligence_context" => {
                 let a: Context = serde_json::from_value(args.clone())
                     .map_err(|_| "invalid context arguments")?;
+                let semantic = crate::intelligence::semantic_order(
+                    &view.bundle.records,
+                    &a.query,
+                    self.embedder.as_ref(),
+                    &mut *self.store,
+                )
+                .await;
                 context(
                     &view,
                     &a.repo,
                     &a.query,
                     a.limit.unwrap_or(5),
                     a.max_chars.unwrap_or(12000),
+                    &semantic,
                 )?
             }
             "intelligence_evidence" => {
@@ -135,21 +151,23 @@ impl CurrentReader {
     }
 }
 
-/// Bounded query projection with deduplicated recommendations and visible disputes.
+/// Bounded query projection with deduplicated recommendations and visible
+/// disputes; `semantic` is an embedding-similarity order (may be empty).
 pub fn context(
     view: &View,
     repo: &str,
     query: &str,
     limit: usize,
     max_chars: usize,
+    semantic: &[String],
 ) -> Result<Value, String> {
     view.validate()?;
     if !(1..=20).contains(&limit) {
         return Err("context limit 1..20".into());
     }
-    let source = view
-        .bundle
-        .context(&view.bundle.scope, repo, query, 20, max_chars)?;
+    let source =
+        view.bundle
+            .context_fused(&view.bundle.scope, repo, query, 20, max_chars, semantic)?;
     let mut hidden = BTreeSet::new();
     let mut disputed = BTreeSet::new();
     for relation in &view.relationships {

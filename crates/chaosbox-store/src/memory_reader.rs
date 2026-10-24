@@ -9,7 +9,7 @@ use crate::queries::{GraphQueries, NeighborhoodDirection};
 use crate::rows::{BuildRow, EntityRow, EvidenceRow, RelRow, entity_row, rel_row};
 
 /// In-memory [`GraphQueries`] fake: same method surface and ordering as the
-/// live path, so conformance tests prove parity. The `TypeDB` reader runs the
+/// live path, so conformance tests prove parity. The PostgreSQL reader runs the
 /// same suite against a live server (see `check_conformance`).
 #[derive(Default)]
 pub struct MemoryReader {
@@ -165,15 +165,22 @@ impl GraphQueries for MemoryReader {
     ) -> Result<Vec<EntityRow>, StoreError> {
         let needle = unescape_like(like).to_lowercase();
         let limit = usize::try_from(limit.max(0)).expect("limit fits in usize");
-        Ok(self
+        let mut hits: Vec<EntityRow> = self
             .members(build_id)
             .into_iter()
             .filter(|e| {
                 e.name.to_lowercase().contains(&needle)
                     || e.qualified_name.to_lowercase().contains(&needle)
             })
-            .take(limit)
-            .collect())
+            .collect();
+        // Exact name, then name prefix, then any substring; the stable sort
+        // keeps qualified-name order within each rank.
+        hits.sort_by_key(|e| {
+            let name = e.name.to_lowercase();
+            u8::from(name != needle) + u8::from(!name.starts_with(&needle))
+        });
+        hits.truncate(limit);
+        Ok(hits)
     }
 
     async fn entity_by_id(

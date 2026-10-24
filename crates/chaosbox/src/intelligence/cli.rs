@@ -277,7 +277,7 @@ fn write_new(path: &Path, value: &impl serde::Serialize) -> Result<(), String> {
 }
 
 /// Execute an explicit command. No knowledge bundle is auto-published into
-/// `TypeDB` and no raw transcript is deleted or rewritten.
+/// PostgreSQL and no raw transcript is deleted or rewritten.
 pub async fn run(command: Command) -> Result<serde_json::Value, String> {
     match command {
         Command::Extract {

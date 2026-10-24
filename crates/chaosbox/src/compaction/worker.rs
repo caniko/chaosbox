@@ -22,12 +22,12 @@ pub struct Budget {
 }
 
 impl Journal {
-    /// Publish the durable outbox into `TypeDB`. Interrupted pointer updates are
+    /// Publish the durable outbox into PostgreSQL. Interrupted pointer updates are
     /// reconciled by content identity; a rival predecessor is never overwritten.
     pub async fn publish_pending(
         &mut self,
         root: &Path,
-        store: &mut chaosbox_typedb::store::TypeDbStore,
+        store: &mut chaosbox_pg::store::PgStore,
     ) -> Result<String, String> {
         let mut lease = private_database(root, "worker.sqlite")?;
         let _guard = lease
@@ -54,7 +54,7 @@ impl Journal {
         Ok(id)
     }
 
-    /// Last fully committed local knowledge generation, also the `TypeDB` outbox.
+    /// Last fully committed local knowledge generation, also the PostgreSQL outbox.
     pub fn bundle(&self) -> Result<Bundle, String> {
         let raw: Option<String> = self
             .db

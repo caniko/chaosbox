@@ -114,6 +114,10 @@ pub struct Entity {
     /// Optional compiler identity; syntax/legacy occurrences retain their ids.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compiler: Option<compiler::SymbolIdentity>,
+    /// Bounded declaration text (leading docs plus the item) for semantic
+    /// retrieval; not part of the identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 impl Entity {
@@ -151,6 +155,7 @@ impl Entity {
             span,
             aliases: Vec::new(),
             compiler: None,
+            text: None,
         }
     }
 }

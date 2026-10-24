@@ -59,7 +59,7 @@ impl MemoryStore {
     }
 
     /// Canonical identity of the complete submitted graph and evidence closure.
-    /// `TypeDB` binds the staging build to this value before any membership writes.
+    /// PostgreSQL stores it on the build header and compares it on every retry.
     pub fn publication_digest(&self, build: &GraphBuild) -> Result<String, StoreError> {
         let encode_error = |error: serde_json::Error| StoreError::Invariant(error.to_string());
         let claims = self.claims_by_relation();

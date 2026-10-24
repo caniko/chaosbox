@@ -150,6 +150,18 @@ impl Journal {
         }
         let mut db = private_database(root, "memory.sqlite")?;
         db.execute_batch(include_str!("schema.sql")).map_err(err)?;
+        // Chaosbox 0.2 publishes into a fresh PostgreSQL store: a predecessor
+        // recorded for the retired TypeDB backend names nothing there and
+        // would block the first publication. Forget it exactly once.
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(err)?;
+        if version < 1 {
+            db.execute_batch(
+                "BEGIN IMMEDIATE; DELETE FROM publication; PRAGMA user_version = 1; COMMIT;",
+            )
+            .map_err(err)?;
+        }
         let tx = db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(err)?;

@@ -1,5 +1,5 @@
 {
-  description = "Chaosbox - native Rust code-graph pipeline (TypeDB-backed)";
+  description = "Chaosbox - native Rust code-graph pipeline (PostgreSQL + pgvector)";
 
   inputs = {
     # Qualified shared Rust, database lifecycle and documentation infrastructure.
@@ -7,14 +7,6 @@
     # Harbor uses simit only for its own CI shell; its pinned tooling chain still
     # locks retired forge hosts (see host-pinning), so stub it out.
     harbor.inputs.simit.follows = "";
-    # TEMPORARY TypeDB packages until NixOS/nixpkgs#565068 merges: the
-    # GitHub-maintained PR merge (NixOS/nixpkgs#565068), pinned to the
-    # verified merge 26996c2a9 that review-gha built green (typedb,
-    # typedb-console, nixosTests.typedb). The bare PR head carries a stale
-    # base toolchain (rustc 1.89; the driver needs 1.98) and cannot build.
-    # Binaries substitute from the review cache; otherwise CI builds locally.
-    # Removal: drop this input, use pkgs.typedb from nixpkgs.
-    nixpkgs-typedb.url = "git+https://github.com/NixOS/nixpkgs.git?rev=26996c2a9def51106563a8983abe3617c76b2db7";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     crane.url = "github:ipetkov/crane";
     # Evaluation/runtime qualification of the portable Home Manager module.
@@ -35,7 +27,6 @@
       treefmt-nix,
       home-manager,
       nixpkgs,
-      nixpkgs-typedb,
       ...
     }:
     let
@@ -57,11 +48,9 @@
           f {
             inherit system pkgs toolchain;
             inherit (toolchain) craneLib;
-            # Temporary TypeDB packages (see nixpkgs-typedb input): the
-            # same nixpkgs revision that carries the packaging PR, so the
-            # service module and the binaries agree. Substituted from the
-            # fleet cache, never built here.
-            typedbPkgs = import nixpkgs-typedb { inherit system; };
+            # Server build for disposable live tests: the same major version
+            # and extension the deployment module enables.
+            postgresql = pkgs.postgresql_18.withPackages (ps: [ ps.pgvector ]);
           }
         );
       treefmt =
@@ -76,7 +65,7 @@
           programs.rustfmt.edition = "2021";
           programs.taplo.enable = true;
         }).config.build;
-      # Cargo source plus the non-Cargo trees Rust embeds (TypeQL schema
+      # Cargo source plus the non-Cargo trees Rust embeds (SQL schemas
       # via include_str! or files read at test time (fixtures/)).
       # cleanCargoSource alone strips them and breaks nix builds while
       # cargo works.
@@ -90,7 +79,6 @@
           filter =
             path: type:
             craneLib.filterCargoSources path type
-            || pkgs.lib.hasSuffix ".tql" (toString path)
             || pkgs.lib.hasSuffix ".sql" (toString path)
             || pkgs.lib.hasPrefix (toString ./plugins + "/") (toString path)
             || pkgs.lib.hasPrefix (toString ./fixtures + "/") (toString path);
@@ -118,13 +106,14 @@
         {
           pkgs,
           craneLib,
+          postgresql,
           ...
         }:
         let
           commonArgs = {
             src = workspaceSrc { inherit pkgs craneLib; };
             pname = "chaosbox";
-            version = "0.1.0";
+            version = "0.2.0";
             strictDeps = true;
             # Workspace provenance tests use disposable Git repositories.
             # `cargo test` execs pinned session tools through a node
@@ -199,45 +188,25 @@
           db-migrate = pkgs.writeShellApplication {
             name = "chaosbox-db-migrate";
             # Migration runs through the driver inside chaosbox (no CLI
-            # tooling needed); connection arrives via environment + the
-            # credential file at runtime, never ambient PATH.
+            # tooling needed); the connection arrives via
+            # CHAOSBOX_DATABASE_URL at runtime, never ambient PATH.
             runtimeInputs = [ chaosbox ];
             text = ''exec ${pkgs.lib.getExe chaosbox} db migrate --json "$@"'';
           };
-          test-typedb = pkgs.writeShellApplication {
-            name = "chaosbox-test-typedb";
+          # Disposable-cluster integration gate, run from a source checkout.
+          test-postgres = pkgs.writeShellApplication {
+            name = "chaosbox-test-postgres";
             runtimeInputs = [
+              postgresql
               pkgs.nodejs
               pkgs.python3
             ];
-            # The source runner builds the binary under test and finds its
-            # helper beside itself; the packaged runner qualifies its own
-            # binary and binds that helper to its immutable path.
+            # The source runner builds the binary under test; the packaged
+            # runner qualifies its own binary.
             text = ''
               export CHAOSBOX_TEST_BIN="''${CHAOSBOX_TEST_BIN:-${pkgs.lib.getExe chaosbox}}"
             ''
-            +
-              builtins.replaceStrings
-                [
-                  ''"$(dirname "''${BASH_SOURCE[0]}")/test-typedb-federation.sh"''
-                ]
-                [ "${./scripts/test-typedb-federation.sh}" ]
-                (builtins.readFile ./scripts/test-typedb.sh);
-          };
-          # Local TypeDB bootstrap for single-host pilots: generates
-          # credentials once, converges passwords over the loopback
-          # console, ensures the application user + database. Tested by
-          # the typedb-bootstrap check below; consumed by host modules.
-          typedb-bootstrap = pkgs.writeShellApplication {
-            name = "typedb-bootstrap";
-            runtimeInputs = [
-              pkgs.bash
-              pkgs.coreutils
-              pkgs.gnugrep
-              pkgs.openssl
-              pkgs.util-linux
-            ];
-            text = builtins.readFile ./nix/typedb-bootstrap.sh;
+            + builtins.readFile ./scripts/test-postgres.sh;
           };
         in
         {
@@ -246,8 +215,7 @@
             docs
             db-check
             db-migrate
-            test-typedb
-            typedb-bootstrap
+            test-postgres
             ;
           default = chaosbox;
           site = docs;
@@ -276,9 +244,9 @@
             type = "app";
             program = "${pkgs.lib.getExe P.db-migrate}";
           };
-          test-typedb = {
+          test-postgres = {
             type = "app";
-            program = "${pkgs.lib.getExe P.test-typedb}";
+            program = "${pkgs.lib.getExe P.test-postgres}";
           };
         }
       );
@@ -288,7 +256,7 @@
           pkgs,
           toolchain,
           system,
-          typedbPkgs,
+          postgresql,
           ...
         }:
         let
@@ -303,29 +271,19 @@
             (harbor.lib.rust.mkDevShell {
               inherit pkgs cross;
               inherit (toolchain) craneLib;
+              # postgresql: disposable clusters for `-- --ignored live_pg_`;
+              # test-postgres.sh also drives Node plugin tests and Python checks.
               packages = [
                 pkgs.cargo-nextest
+                postgresql
+                pkgs.nodejs
+                pkgs.python3
                 (treefmt system pkgs).wrapper
               ];
             }).overrideAttrs
               (_: {
                 CHAOSBOX_TEST_NIX = pkgs.lib.getExe pkgs.nix;
               });
-          # Live TypeDB work (db migrate, backend tests, test-typedb.sh):
-          # server + Console from the temporary packages. Opt-in so the
-          # default shell (and every CI gate using it) never builds them;
-          # binaries substitute from the fleet cache once review publishes.
-          typedb = harbor.lib.rust.mkDevShell {
-            inherit pkgs cross;
-            inherit (toolchain) craneLib;
-            # test-typedb.sh also drives Node plugin tests and stdlib Python checks.
-            packages = [
-              typedbPkgs.typedb
-              typedbPkgs.typedb-console
-              pkgs.nodejs
-              pkgs.python3
-            ];
-          };
           docs = pkgs.mkShell { packages = [ pkgs.mdbook ]; };
         }
       );
@@ -336,7 +294,7 @@
         {
           pkgs,
           craneLib,
-          typedbPkgs,
+          postgresql,
           ...
         }:
         let
@@ -344,7 +302,7 @@
           commonArgs = {
             inherit src;
             pname = "chaosbox";
-            version = "0.1.0";
+            version = "0.2.0";
             strictDeps = true;
             # Same test dependencies as the package build: Node for session
             # tools, Git for provenance fixtures, SSH for bounded transport tests.
@@ -376,6 +334,17 @@
             }
           );
           unit = craneLib.cargoTest (commonArgs // { inherit cargoArtifacts; });
+          # Backend contract tests against disposable PostgreSQL clusters,
+          # one per test on a private socket inside the build sandbox.
+          postgres-live = craneLib.cargoTest (
+            commonArgs
+            // {
+              inherit cargoArtifacts;
+              pnameSuffix = "-postgres-live";
+              nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ postgresql ];
+              cargoTestExtraArgs = "-- --ignored live_pg_";
+            }
+          );
           nix-plugin =
             pkgs.runCommand "chaosbox-nix-plugin"
               {
@@ -417,10 +386,8 @@
           packaging = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
           deployment-eval = pkgs.callPackage ./nix/deployment-eval.nix {
             harborDbModule = harbor.nixosModules.database-default;
-            typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
             chaosboxModule = self.nixosModules.chaosbox;
             chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
-            typedbPackage = typedbPkgs.typedb;
           };
           federation-home =
             let
@@ -447,29 +414,15 @@
                   --chaosbox ${pkgs.lib.getExe self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox}
                 echo "Home Manager federation renders and SSH remains query-key isolated" > "$out"
               '';
-          typedb-integration = pkgs.callPackage ./nix/typedb-vm-test.nix {
-            inherit federationTestTools;
+          postgres-integration = pkgs.callPackage ./nix/postgres-vm-test.nix {
             harborDbModule = harbor.nixosModules.database-default;
-            typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
             chaosboxModule = self.nixosModules.chaosbox;
             chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
-            typedbPackage = typedbPkgs.typedb;
-            typedbConsolePackage = typedbPkgs.typedb-console;
           };
           federation-ssh = pkgs.callPackage ./nix/federation-ssh-test.nix {
             inherit federationTestTools;
             homeManager = home-manager;
             chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
-          };
-          # Full bootstrap lifecycle against the packaged server: empty
-          # install, credential rotation, app auth, permissions, reboot,
-          # interruption recovery, mismatch handling, non-default names.
-          typedb-bootstrap-test = pkgs.callPackage ./nix/typedb-bootstrap-test.nix {
-            typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
-            bootstrapPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.typedb-bootstrap;
-            chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
-            typedbPackage = typedbPkgs.typedb;
-            typedbConsolePackage = typedbPkgs.typedb-console;
           };
           # Fail if flake inputs ever point at the retired Codeberg/Codefloe
           # mirrors again (fleet migrated to github.com/caniko/*).

@@ -1,7 +1,7 @@
 //! Opt-in read-only qualification against one explicitly selected live build.
 
 use chaosbox_store::GraphQueries;
-use chaosbox_typedb::{store::TypeDbConfig, reader::TypeDbReader};
+use chaosbox_pg::{reader::PgReader, PgConfig};
 
 /// Exercise the selected executable, not whichever launcher happens to be on PATH.
 async fn native(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_json::Value> {
@@ -62,7 +62,7 @@ async fn native(args: &[&str], requests: &[serde_json::Value]) -> Vec<serde_json
 }
 
 #[tokio::test]
-#[ignore = "read-only recorded Canix case; requires explicit credentials and CHAOSBOX_NAVIGATION_BUILD"]
+#[ignore = "read-only recorded Canix case; requires CHAOSBOX_DATABASE_URL and CHAOSBOX_NAVIGATION_BUILD"]
 async fn live_context_cli_and_mcp_share_bounded_source_graph() {
     use serde_json::json;
 
@@ -94,7 +94,7 @@ async fn live_context_cli_and_mcp_share_bounded_source_graph() {
     let nodes = packet["nodes"].as_array().unwrap();
     assert!(!nodes.is_empty() && nodes.len() <= 10);
     assert!(nodes.iter().any(|n| n["label"] == "RuntimeManifest"));
-    let mut reader = TypeDbReader::new(TypeDbConfig::from_env().unwrap());
+    let mut reader = PgReader::new(PgConfig::from_env().unwrap());
     reader.connect().await.unwrap();
     let header = reader.active_build("canix").await.unwrap().unwrap();
     assert_eq!(
@@ -143,10 +143,10 @@ async fn live_context_cli_and_mcp_share_bounded_source_graph() {
 }
 
 #[tokio::test]
-#[ignore = "requires explicit TypeDB credentials and CHAOSBOX_NAVIGATION_BUILD; performs reads only"]
+#[ignore = "requires CHAOSBOX_DATABASE_URL and CHAOSBOX_NAVIGATION_BUILD; performs reads only"]
 async fn live_neighborhood_limits_ordering_and_membership() {
     let build = std::env::var("CHAOSBOX_NAVIGATION_BUILD").unwrap();
-    let mut reader = TypeDbReader::new(TypeDbConfig::from_env().unwrap());
+    let mut reader = PgReader::new(PgConfig::from_env().unwrap());
     reader.connect().await.unwrap();
     let edge = reader
         .build_relationships(&build, 1)

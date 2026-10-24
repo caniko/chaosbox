@@ -9,8 +9,8 @@ use chaosbox_core::{
 
 use crate::StoreError;
 
-/// Storage abstraction: implemented by the `TypeDB` backend
-/// (`chaosbox-typedb`) over the live server, or by [`MemoryStore`] for
+/// Storage abstraction: implemented by the PostgreSQL backend
+/// (`chaosbox-pg`) over the live server, or by [`MemoryStore`] for
 /// tests and environments without a server.
 /// Mutating methods are async because the live backend needs network IO;
 /// file versions must be registered with [`Store::ensure_snapshot_files`]
@@ -107,7 +107,7 @@ pub struct MemoryStore {
 }
 
 /// Staged write-ahead contents for backends that flush at publication
-/// (`TypeDB` port): everything the staging [`MemoryStore`] validated, in
+/// (PostgreSQL): everything the staging [`MemoryStore`] validated, in
 /// deterministic key order, ready for idempotent row inserts.
 #[derive(Clone, Debug, Default)]
 pub struct StagedData {

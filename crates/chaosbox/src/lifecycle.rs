@@ -9,7 +9,7 @@ use super::{Serialize, Deserialize};
 pub struct LifecycleReport {
     /// Contract version (currently 2).
     pub contract_version: u32,
-    /// Storage backend label (`typedb`).
+    /// Storage backend label (`postgres`).
     pub backend: String,
     /// Operation name (`db check`, `db migrate`).
     pub operation: String,
@@ -26,15 +26,15 @@ pub struct LifecycleReport {
 
 impl LifecycleReport {
     /// Shared builder (contract v2): the envelope carries the pinned
-    /// `TypeDB` version the schema targets.
+    /// PostgreSQL version the schema targets.
     fn report(operation: &str, status: &str, detail: serde_json::Value) -> Self {
         Self {
             contract_version: 2,
-            backend: "typedb".into(),
+            backend: "postgres".into(),
             operation: operation.into(),
             status: status.into(),
-            schema_version: chaosbox_typedb::SCHEMA_VERSION,
-            pinned: chaosbox_typedb::TYPEDB_PINNED.into(),
+            schema_version: chaosbox_pg::SCHEMA_VERSION,
+            pinned: chaosbox_pg::POSTGRES_PINNED.into(),
             detail,
         }
     }

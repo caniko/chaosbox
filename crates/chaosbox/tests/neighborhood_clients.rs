@@ -9,6 +9,17 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 #[path = "support/neighborhood.rs"]
 mod fixture;
 use fixture::{DEGREE, Fixture, REPO, anchored, fixture, projection};
+#[path = "../../chaosbox-pg/tests/support/server.rs"]
+mod server;
+
+thread_local! {
+    /// Disposable database of the live test on this thread; spawned clients use it.
+    static DATABASE_URL: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+fn database_url() -> String {
+    DATABASE_URL.with_borrow(|url| url.clone().expect("live test starts its server first"))
+}
 
 fn binary() -> std::ffi::OsString {
     std::env::var_os("CHAOSBOX_TEST_BIN").unwrap_or_else(|| env!("CARGO_BIN_EXE_chaosbox").into())
@@ -24,7 +35,7 @@ async fn cli_validates_paging_before_credentials() {
         let output = tokio::process::Command::new(binary())
             .args(["query", "neighbors", "ent:hub", "--repo", "demo"])
             .args(args)
-            .env_remove("CHAOSBOX_TYPEDB_PASSWORD_FILE")
+            .env_remove("CHAOSBOX_DATABASE_URL")
             .env_remove("CHAOSBOX_JEV_API_KEY_FILE")
             .kill_on_drop(true)
             .output()
@@ -37,7 +48,7 @@ async fn cli_validates_paging_before_credentials() {
             "{text}; {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(!text.contains("PASSWORD_FILE"));
+        assert!(!text.contains("CHAOSBOX_DATABASE_URL"));
     }
 }
 
@@ -60,7 +71,7 @@ async fn cli_validates_exact_publications_before_credentials() {
                     "--build-id",
                     &build,
                 ])
-                .env_remove("CHAOSBOX_TYPEDB_PASSWORD_FILE")
+                .env_remove("CHAOSBOX_DATABASE_URL")
                 .env_remove("CHAOSBOX_JEV_API_KEY_FILE")
                 .kill_on_drop(true)
                 .output()
@@ -73,7 +84,7 @@ async fn cli_validates_exact_publications_before_credentials() {
                 "{text}; {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            assert!(!text.contains("PASSWORD_FILE"));
+            assert!(!text.contains("CHAOSBOX_DATABASE_URL"));
         }
     }
 }
@@ -94,6 +105,7 @@ impl Mcp {
         let mut child = tokio::process::Command::new(binary)
             .arg("mcp")
             .env_remove("CHAOSBOX_JEV_API_KEY_FILE")
+            .env("CHAOSBOX_DATABASE_URL", database_url())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -209,6 +221,7 @@ async fn cli_query_output(name: &str, args: &Value) -> std::process::Output {
         Duration::from_secs(30),
         command
             .env_remove("CHAOSBOX_JEV_API_KEY_FILE")
+            .env("CHAOSBOX_DATABASE_URL", database_url())
             .kill_on_drop(true)
             .output(),
     )
@@ -262,7 +275,7 @@ async fn identical_followup(client: &mut Mcp, name: &str, args: &Value) -> Value
 }
 
 async fn historical_fixture(
-    store: &mut chaosbox_typedb::store::TypeDbStore,
+    store: &mut chaosbox_pg::store::PgStore,
 ) -> (GraphBuild, GraphBuild, Value) {
     use chaosbox_core::{
         Entity, EntityKind, Evidence, EvidenceClass, Relation, RelationScope, RelationType,
@@ -398,23 +411,19 @@ async fn expand_historical(client: &mut Mcp, old: &GraphBuild, endpoint: &str) {
 }
 
 #[tokio::test]
-#[ignore = "requires disposable s02b4_* TypeDB, CHAOSBOX_REQUIRE_TYPEDB=1 and CHAOSBOX_CURSOR_TEST_BIN"]
-async fn disposable_clients_hydrate_and_expand_exact_historical_publications() {
-    use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
-    assert_eq!(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref(), Ok("1"));
-    let config = TypeDbConfig::from_env().unwrap();
-    assert!(config.database.starts_with("s02b4_"));
-    let mut store = TypeDbStore::new(config);
+#[ignore = "disposable PostgreSQL with pgvector (initdb/pg_ctl/psql)"]
+async fn live_pg_clients_hydrate_and_expand_exact_historical_publications() {
+    use chaosbox_pg::{store::PgStore, PgConfig};
+    let server = server::Server::start();
+    DATABASE_URL.set(Some(server.url()));
+    let mut store = PgStore::new(PgConfig::new(server.url()).unwrap());
     store.migrate().await.unwrap();
     let (old, new, evidence) = historical_fixture(&mut store).await;
     let hub = old.nodes.values().find(|node| node.name == "hub").unwrap();
     let root = json!({"repo":REPO,"id":hub.id,"limit":1});
-    let mut legacy = Mcp::start_binary(
-        std::env::var_os("CHAOSBOX_CURSOR_TEST_BIN").expect("retained version-1 cursor producer"),
-    )
-    .await;
-    let legacy_page = legacy.page(&root).await;
-    legacy.stop().await;
+    // Pre-0.2 version-1 cursor producers only read TypeDB; a fresh current
+    // client stands in, and an unrequested build scope must still be absent.
+    let legacy_page = fresh_page(&root).await;
     let cursor = legacy_page["next_cursor"].as_str().unwrap();
     assert!(serde_json::from_str::<Value>(cursor).unwrap()["scope"]
         .get("build_id")
@@ -637,17 +646,13 @@ async fn check_cursor_rejections(client: &mut Mcp, f: &Fixture, original_cursor:
 }
 
 #[tokio::test]
-#[ignore = "requires an explicit disposable s02b3_* TypeDB database and CHAOSBOX_REQUIRE_TYPEDB=1"]
-async fn disposable_clients_enumerate_exact_historical_pages() {
-    use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
+#[ignore = "disposable PostgreSQL with pgvector (initdb/pg_ctl/psql)"]
+async fn live_pg_clients_enumerate_exact_historical_pages() {
+    use chaosbox_pg::{store::PgStore, PgConfig};
 
-    assert_eq!(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref(), Ok("1"));
-    let config = TypeDbConfig::from_env().unwrap();
-    assert!(
-        config.database.starts_with("s02b3_"),
-        "use a fresh disposable s02b3_* database"
-    );
-    let mut store = TypeDbStore::new(config);
+    let server = server::Server::start();
+    DATABASE_URL.set(Some(server.url()));
+    let mut store = PgStore::new(PgConfig::new(server.url()).unwrap());
     store.migrate().await.unwrap();
     for (snapshot, repo) in [("s-pages", REPO), ("s-other", "pages-other")] {
         store

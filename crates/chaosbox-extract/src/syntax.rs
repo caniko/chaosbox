@@ -8,7 +8,10 @@ use chaosbox_core::{
     Entity, EntityKind, RelationType,
 };
 
-use crate::{extractors::span_of, Extraction, StructuralFact};
+use crate::{
+    extractors::{item_text, span_of},
+    Extraction, StructuralFact,
+};
 
 // Exact dependency versions are pinned in Cargo.toml. Bump the contract version
 // whenever the declaration subset or its interpretation changes.
@@ -118,9 +121,9 @@ impl<'a> Pass<'a> {
         self.out.entities.push(module);
     }
 
-    fn definition(&mut self, range: Range<usize>) {
+    fn definition(&mut self, range: Range<usize>, item: Range<usize>) {
         let name = &self.text[range.clone()];
-        let entity = Entity::new(
+        let mut entity = Entity::new(
             EntityKind::Definition,
             self.repo,
             self.snapshot,
@@ -129,6 +132,7 @@ impl<'a> Pass<'a> {
             &format!("{}::{name}", self.path),
             span_of(self.text, self.path, range.start, range.end),
         );
+        entity.text = item_text(self.text, item.start, item.end);
         self.fact(&entity, RelationType::Defines);
         self.out.entities.push(entity);
     }
@@ -190,7 +194,7 @@ impl<'a> Pass<'a> {
             let node = cursor.node();
             let name = declaration_name(node, rust);
             if let Some(name) = name {
-                self.definition(name.byte_range());
+                self.definition(name.byte_range(), node.byte_range());
             }
             if node.kind() == "use_declaration" {
                 if let Some(target) = node.child_by_field_name("argument") {
@@ -243,8 +247,11 @@ impl<'a> Pass<'a> {
                         // dynamic attributes, inherit and lambda parameters wait
                         // for a scope-aware resolver.
                         if path.children().all(|n| n.kind() == NODE_IDENT) {
-                            let range = path.text_range();
-                            self.definition(usize::from(range.start())..usize::from(range.end()));
+                            let name = path.text_range();
+                            self.definition(
+                                usize::from(name.start())..usize::from(name.end()),
+                                range.clone(),
+                            );
                         }
                     }
                 }

@@ -16,7 +16,7 @@ These are logical modules, not six new crates:
 | --- | --- | --- |
 | `session-ingest` | Adopt verified snapshots and capture source records | Snapshot identities and validation |
 | `session-reconcile` | Deduplicate, recover verified truncation, retain variants | Deterministic evidence handling |
-| `session-knowledge` | Candidate admission, consolidation and repository links | Core claims, Jev decisions, TypeDB |
+| `session-knowledge` | Candidate admission, consolidation and repository links | Core claims, Jev decisions, PostgreSQL |
 | `session-checkpoint` | Validated continuation views | Budgets, identities and resumable tasks |
 | `session-transfer` | Runtime conversion/export and completeness accounting | Native OpenCode facilities plus validation |
 | `session-query` | Bounded continuation/context and evidence retrieval | Shared read-only CLI/MCP consumers |
@@ -25,7 +25,10 @@ Start with ingestion and reconciliation. Establish knowledge admission on a
 representative pilot before scaling checkpoint generation and runtime transfer.
 Add at most one focused session-processing crate if needed to isolate SQLite and
 runtime-adapter dependencies from the graph core. No separate service, provider
-framework, embeddings platform or UI is required for this delivery.
+framework or UI is required for this delivery. (Until 0.2.0 this also excluded
+an embeddings platform; 0.2.0 ranks retrieval with vectors from an existing
+loopback embedding endpoint stored in PostgreSQL + pgvector, which replaced
+TypeDB. Delivery does not depend on it: retrieval degrades to lexical.)
 
 ## Adopt evidence already collected
 

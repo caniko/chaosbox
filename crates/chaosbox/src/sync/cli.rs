@@ -4,7 +4,7 @@ use clap::Subcommand;
 use serde_json::{Value, json};
 use chaosbox_core::sha256_hex;
 use chaosbox_store::ReplicaStore;
-use chaosbox_typedb::store::{TypeDbStore, TypeDbConfig};
+use chaosbox_pg::store::{PgStore, PgConfig};
 use chaosbox_jev::{JevClient, JevPolicy};
 use super::{
     settings, identity, Authority, Grant, Identity, Publication, SignedEvent, Payload, transport,
@@ -139,22 +139,21 @@ pub enum Command {
     },
 }
 
-fn backend() -> Result<TypeDbStore, String> {
-    Ok(TypeDbStore::new(TypeDbConfig::from_env()?))
+fn backend() -> Result<PgStore, String> {
+    Ok(PgStore::new(PgConfig::from_env()?))
 }
 
 /// Create a read-only live consumer using public owner/scope settings only.
 pub fn current_reader(directory: &std::path::Path) -> Result<CurrentReader, String> {
     let settings = Settings::load(directory)?;
-    Ok(CurrentReader::new(
-        Box::new(backend()?),
-        &settings.user,
-        &settings.scope,
-    ))
+    Ok(
+        CurrentReader::new(Box::new(backend()?), &settings.user, &settings.scope)
+            .with_embedder(crate::embed::Embedder::from_env()?),
+    )
 }
 
 async fn publish(
-    store: &mut TypeDbStore,
+    store: &mut PgStore,
     settings: &Settings,
     identity: &Identity,
     publication: Publication,
@@ -175,7 +174,7 @@ async fn publish(
     Ok(json!({"snapshot":view.digest,"records":view.bundle.records.len(),"reused":already}))
 }
 
-async fn contact(store: &mut TypeDbStore, settings: &Settings, identity: &Identity) -> Value {
+async fn contact(store: &mut PgStore, settings: &Settings, identity: &Identity) -> Value {
     let mut reports = Vec::new();
     for peer in &settings.peers {
         let result = transport::connect(store, identity, &settings.scope, peer).await;
@@ -185,7 +184,7 @@ async fn contact(store: &mut TypeDbStore, settings: &Settings, identity: &Identi
 }
 
 async fn assess(
-    store: &mut TypeDbStore,
+    store: &mut PgStore,
     settings: &Settings,
     identity: &Identity,
     budget: ReconcileBudget,
@@ -479,7 +478,7 @@ async fn status(settings: &Settings) -> Result<Value, String> {
 }
 
 async fn cycle(
-    store: &mut TypeDbStore,
+    store: &mut PgStore,
     settings: &Settings,
     identity: &Identity,
     budget: Option<&ReconcileBudget>,
@@ -507,7 +506,7 @@ async fn cycle(
 }
 
 async fn serve(
-    store: &mut TypeDbStore,
+    store: &mut PgStore,
     settings: &Settings,
     identity: &Identity,
     interval: u64,

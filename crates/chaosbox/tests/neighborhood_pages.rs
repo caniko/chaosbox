@@ -8,6 +8,8 @@ use serde_json::json;
 #[path = "support/neighborhood.rs"]
 mod fixture;
 use fixture::{DEGREE, REPO, Fixture, anchored, fixture, projection};
+#[path = "../../chaosbox-pg/tests/support/server.rs"]
+mod server;
 
 async fn page(
     reader: &impl GraphQueries,
@@ -273,21 +275,14 @@ async fn reference_directional_pages_are_complete_bounded_and_filtered() {
 }
 
 #[tokio::test]
-#[ignore = "requires an explicit disposable s02b1_* TypeDB database and CHAOSBOX_REQUIRE_TYPEDB=1"]
-async fn disposable_directional_pages_match_the_complete_fixture() {
+#[ignore = "disposable PostgreSQL with pgvector (initdb/pg_ctl/psql)"]
+async fn live_pg_directional_pages_match_the_complete_fixture() {
     use chaosbox_core::SnapshotFile;
+    use chaosbox_pg::{reader::PgReader, store::PgStore, PgConfig};
     use chaosbox_store::Store;
-    use chaosbox_typedb::{
-        reader::TypeDbReader,
-        store::{TypeDbConfig, TypeDbStore},
-    };
-    assert_eq!(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref(), Ok("1"));
-    let config = TypeDbConfig::from_env().unwrap();
-    assert!(
-        config.database.starts_with("s02b1_"),
-        "use a disposable s02b1_* database"
-    );
-    let mut store = TypeDbStore::new(config.clone());
+    let server = server::Server::start();
+    let config = PgConfig::new(server.url()).unwrap();
+    let mut store = PgStore::new(config.clone());
     store.migrate().await.unwrap();
     for (snapshot, repo) in [("s-pages", REPO), ("s-other", "pages-other")] {
         store
@@ -311,7 +306,7 @@ async fn disposable_directional_pages_match_the_complete_fixture() {
             .await
             .unwrap();
     }
-    let mut reader = TypeDbReader::new(config);
+    let mut reader = PgReader::new(config);
     reader.connect().await.unwrap();
     check_pages(&reader, &fixture).await;
 }

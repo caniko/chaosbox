@@ -174,12 +174,9 @@ let
       ssh_config = cfg.sshConfigFile;
     }) cfg.peers;
   };
-  environment = lib.optionalAttrs (cfg.backend.kind == "typedb") {
-    CHAOSBOX_DB_BACKEND = "typedb";
-    CHAOSBOX_TYPEDB_ADDR = cfg.backend.address;
-    CHAOSBOX_TYPEDB_USER = cfg.backend.username;
-    CHAOSBOX_TYPEDB_DATABASE = cfg.backend.database;
-    CHAOSBOX_TYPEDB_PASSWORD_FILE = cfg.backend.passwordFile;
+  environment = lib.optionalAttrs (cfg.backend.kind == "postgres") {
+    CHAOSBOX_DB_BACKEND = "postgres";
+    CHAOSBOX_DATABASE_URL = cfg.backend.databaseUrl;
   };
   runtimePackage = pkgs.writeShellApplication {
     name = "chaosbox-federation";
@@ -254,7 +251,7 @@ in
     backend = {
       kind = option (types.enum [
         "bundle"
-        "typedb"
+        "postgres"
       ]) "bundle" "Owner-local source adapter.";
       path =
         option (types.nullOr absolutePath) null
@@ -262,16 +259,9 @@ in
       history =
         option (types.nullOr absolutePath) null
           "Optional digest-addressed immutable bundle history directory.";
-      address = option types.nonEmptyStr "127.0.0.1:1729" "Provider-local TypeDB address.";
-      username =
-        option (types.nullOr types.nonEmptyStr) null
-          "Dedicated TypeDB application username (required for typedb).";
-      database =
-        option types.nonEmptyStr "chaosbox"
-          "TypeDB database holding private knowledge generations.";
-      passwordFile =
-        option (types.nullOr secretFile) null
-          "Runtime credential-file reference outside the Nix store (required for typedb); contents are never read during evaluation.";
+      databaseUrl =
+        option types.nonEmptyStr "host=/run/postgresql dbname=chaosbox"
+          "Provider-local PostgreSQL connection (unix socket or loopback; peer authentication as the owner).";
     };
     fleetix = {
       enable = mkEnableOption "Fleetix topology-backed SSH routes and enrolled host keys";
@@ -350,15 +340,8 @@ in
       }
       {
         assertion =
-          cfg.backend.kind != "typedb"
-          || (
-            cfg.backend.username != null
-            && cfg.backend.username != "admin"
-            && cfg.backend.passwordFile != null
-            && cfg.backend.path == null
-            && cfg.backend.history == null
-          );
-        message = "Chaosbox TypeDB federation requires an application username and passwordFile, and no bundle paths.";
+          cfg.backend.kind != "postgres" || (cfg.backend.path == null && cfg.backend.history == null);
+        message = "Chaosbox PostgreSQL federation takes no bundle paths.";
       }
       {
         assertion = builtins.length (lib.attrNames cfg.peers) <= 8;

@@ -671,10 +671,10 @@ fn actual_mcp_process_serves_intelligence_without_database_or_model_credentials(
     let mut child = Command::new(env!("CARGO_BIN_EXE_chaosbox"))
         .args(["mcp", "--intelligence"])
         .arg(&path)
-        .env("CHAOSBOX_DB_BACKEND", "typedb")
+        .env("CHAOSBOX_DB_BACKEND", "postgres")
         .env(
-            "CHAOSBOX_TYPEDB_PASSWORD_FILE",
-            "/nonexistent-test-credential",
+            "CHAOSBOX_DATABASE_URL",
+            "host=/nonexistent-test-socket dbname=chaosbox",
         )
         .env("CHAOSBOX_JEV_API_KEY_FILE", "/nonexistent-test-credential")
         .stdin(Stdio::piped())
@@ -784,4 +784,39 @@ async fn labelled_live_intelligence_pilot() {
         mismatches.is_empty(),
         "quality gate failed for labelled cases: {mismatches:?}"
     );
+}
+
+#[test]
+fn semantic_order_admits_records_without_word_overlap_but_never_widens_access() {
+    let c = candidate(
+        "m1",
+        "We must preserve direnv removals at the subprocess boundary.",
+        "user",
+    );
+    let mut bundle = Bundle::new("private:can");
+    let response = answer(&c, &bundle, "novel");
+    assess(&c, &mut bundle, response).unwrap();
+    let id = bundle.records[0].id.clone();
+    let query = "environment variables dropped when spawning children";
+    assert!(bundle
+        .context("private:can", "canix", query, 5, 12_000)
+        .unwrap()
+        .is_empty());
+    let fused = bundle
+        .context_fused(
+            "private:can",
+            "canix",
+            query,
+            5,
+            12_000,
+            &[id.clone(), "unknown".into()],
+        )
+        .unwrap();
+    assert_eq!(fused.len(), 1);
+    assert_eq!(fused[0]["id"], id);
+    // Repository eligibility still applies to semantic candidates.
+    assert!(bundle
+        .context_fused("private:can", "unrelated", query, 5, 12_000, &[id])
+        .unwrap()
+        .is_empty());
 }

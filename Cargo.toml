@@ -5,7 +5,7 @@ members = [
   "crates/chaosbox-extract",
   "crates/chaosbox-jev",
   "crates/chaosbox-store",
-  "crates/chaosbox-typedb",
+  "crates/chaosbox-pg",
   "crates/chaosbox",
 ]
 default-members = [
@@ -13,12 +13,12 @@ default-members = [
   "crates/chaosbox-extract",
   "crates/chaosbox-jev",
   "crates/chaosbox-store",
-  "crates/chaosbox-typedb",
+  "crates/chaosbox-pg",
   "crates/chaosbox",
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -27,13 +27,12 @@ homepage = "https://github.com/caniko/chaosbox"
 documentation = "https://github.com/caniko/chaosbox#readme"
 
 [workspace.dependencies]
-chaosbox-core = { version = "0.1.0", path = "crates/chaosbox-core" }
-chaosbox-extract = { version = "0.1.0", path = "crates/chaosbox-extract" }
-chaosbox-jev = { version = "0.1.0", path = "crates/chaosbox-jev" }
-chaosbox-store = { version = "0.1.0", path = "crates/chaosbox-store" }
-chaosbox-typedb = { version = "0.1.0", path = "crates/chaosbox-typedb" }
-typedb-driver = "3.12"
-futures = "0.3"
+chaosbox-core = { version = "0.2.0", path = "crates/chaosbox-core" }
+chaosbox-extract = { version = "0.2.0", path = "crates/chaosbox-extract" }
+chaosbox-jev = { version = "0.2.0", path = "crates/chaosbox-jev" }
+chaosbox-store = { version = "0.2.0", path = "crates/chaosbox-store" }
+chaosbox-pg = { version = "0.2.0", path = "crates/chaosbox-pg" }
+tokio-postgres = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

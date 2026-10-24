@@ -2,11 +2,14 @@
 
 Chaosbox is a native Rust repository-intelligence pipeline: source snapshots,
 deterministic extraction, bounded Jev decisions, validated evidence and claims,
-versioned publication, and read-only CLI/MCP retrieval. TypeDB is its
-authoritative backend; the Gel implementation was removed and its shared
-abstractions now live in `chaosbox-store`. `db check`, `db migrate`, MCP and
-queries always target TypeDB; `run` publishes through TypeDB only with
-`CHAOSBOX_DB_BACKEND=typedb` (in-memory otherwise).
+versioned publication, and read-only CLI/MCP retrieval. PostgreSQL with
+pgvector (`chaosbox-pg`) is its authoritative backend; the Gel and TypeDB
+implementations were removed and their shared abstractions live in
+`chaosbox-store`. `db check`, `db migrate`, MCP and queries always connect
+through `CHAOSBOX_DATABASE_URL`; `run` publishes to PostgreSQL only with
+`CHAOSBOX_DB_BACKEND=postgres` (in-memory otherwise). Search and context fuse
+lexical matches with embedding nearest neighbours when an embedding endpoint is
+configured; see [Storage and semantic retrieval](storage.md).
 
 ## Direction: retain intelligence, not noise
 

@@ -18,12 +18,12 @@ complete evidence closure to an immutable digest; evidence and its citations are
 sealed per build-edge membership. A missing recorded version blocks recovery
 instead of silently switching to a newer build.
 
-TypeDB's current schema includes publication digests, sealed membership evidence
-and canonical claim payloads. `chaosbox db migrate` applies additive schema
-updates, but cannot prove the complete references of an existing unsealed build
-or claim. Publish a new build identity with complete source evidence for run-bound
-reads. Legacy published builds remain available to operator membership diffs, but
-cannot authorize run-bound reads.
+The PostgreSQL schema stores publication digests, sealed per-relationship
+evidence and canonical claim payloads; a build row exists only once its complete
+sealed membership committed. `chaosbox db migrate` applies additive schema
+updates, but cannot prove the complete references of a build published without
+them. Publish a new build identity with complete source evidence for run-bound
+reads.
 Sealed evidence has a publication ceiling of 1,000 rows and 1 MiB per relationship.
 The reader additionally applies the admitted graph and evidence budgets.
 
@@ -77,7 +77,8 @@ selection does not relocate native stdio MCP.
 The reader's local gates exercise foreign/missing builds, exact version pinning,
 source and transitive-evidence scope, identity mismatch, operation denial,
 expiry/revocation, malformed arguments/cursors, pagination, byte and traversal
-budgets, and cancellation. Live TypeDB conformance is a separate gate.
+budgets, and cancellation. Live PostgreSQL conformance is the separate
+`live_pg_` gate.
 
 Deployment additionally requires Paperclip/Hermes admission, conversation and
 checkpoint isolation, A→B→A and scope-narrowing tests, direct shell/endpoint/config
@@ -105,8 +106,8 @@ chaosbox reader --admission /run/connector/approved-run/read-view.json
 The admission JSON is a serialized version-1 `ReadView`. It must be a regular
 file, private to and owned by the connector's process identity, at most 128 KiB.
 The connector must keep the file and all parent directories outside worker
-writes. The process uses its existing `CHAOSBOX_TYPEDB_*` configuration only
-during admission. It loads no Jev credentials and exposes no ingestion tools.
+writes. The process uses its existing `CHAOSBOX_DATABASE_URL` only during
+admission. It loads no Jev credentials and exposes no ingestion tools.
 
 The Linux connector supplies FIFO stdin/stdout pipes; the launcher uses
 nonblocking descriptors so pending I/O cannot leave blocking read/write threads.
@@ -129,6 +130,9 @@ integration, the controller must resolve actual grants, enforce direct-route
 isolation, and provide the conversation/recovery lifecycle described above.
 
 ## Qualification status — 2026-09-30
+
+Historical record against the TypeDB backend, which 0.2.0 replaced with
+PostgreSQL; the TypeDB crate and gates named below no longer exist.
 
 The isolated reader worktree passed:
 

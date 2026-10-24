@@ -1,7 +1,7 @@
 # Source-custodied session compaction
 
 Chaosbox now has a private, durable custody coordinator, a deferred intelligence
-worker, TypeDB publication and an OpenCode V2 adapter. Rust owns capture validation,
+worker, PostgreSQL publication and an OpenCode V2 adapter. Rust owns capture validation,
 settled-record selection, checkpoint bounds, pruning dispositions and recovery.
 The runtime extension is integrated against Canix's OpenCode pin
 `047c74ec64ca6029f93be4bb4d1f5797c8838b9a` on the local `chaosbox-custody` branch.
@@ -22,7 +22,7 @@ The runtime extension is integrated against Canix's OpenCode pin
    already marked truncated cannot establish complete output custody.
 5. Independently assess reusable intelligence and continuation relevance using
    pinned Jev. Publication uses the existing admission/consolidation policy.
-6. Publish immutable TypeDB knowledge generations through a scope-specific,
+6. Publish immutable PostgreSQL knowledge generations through a scope-specific,
    compare-and-swap predecessor pointer. Cross-session readers pin that generation.
 
 The archive keeps exact native JSON values and all captured variants. JSON
@@ -55,8 +55,11 @@ cargo build --locked -p chaosbox
 chaosbox db migrate --json
 ```
 
-The backend uses `CHAOSBOX_TYPEDB_ADDR`, `CHAOSBOX_TYPEDB_USER`,
-`CHAOSBOX_TYPEDB_DATABASE` and `CHAOSBOX_TYPEDB_PASSWORD_FILE`. Live assessment
+The backend uses `CHAOSBOX_DATABASE_URL` (unix socket or loopback; peer
+authentication). With `CHAOSBOX_EMBED_URL`/`CHAOSBOX_EMBED_MODEL` set,
+`compaction context` also ranks by statement similarity. On first open under
+0.2.0 each journal forgets its TypeDB-era publication predecessor once, so the
+first PostgreSQL publication starts a fresh chain. Live assessment
 uses Chaosbox's existing pinned Jev credential handling. The adapter does not
 read credentials or call the inference endpoint itself.
 
@@ -74,7 +77,7 @@ each session's canonical project root through the native runtime, including
 worktrees. An explicit `repo` remains available for project-local configuration.
 Use the same archive root for a private scope
 across sessions and repositories. `liveAssessment: true` authorizes background
-Jev assessment; `publish: true` enables the TypeDB outbox. Compaction itself needs
+Jev assessment; `publish: true` enables the PostgreSQL outbox. Compaction itself needs
 neither live inference nor database connectivity.
 
 ### OpenCode runtime handoff
@@ -157,7 +160,7 @@ Capture stdin has the versioned shape:
   the full-payload `session-pruning-v2` identity required by this verifier.
 - Workers share a separate SQLite write lease; capture is not blocked by network
   dispatch. Kernel/process cleanup releases the lease after crashes.
-- A publication interrupted after the TypeDB commit reconciles by content hash.
+- A publication interrupted after the PostgreSQL commit reconciles by content hash.
   A competing scope publisher changing the predecessor produces a conflict;
   the outbox is retained and no newer generation is overwritten.
 - The archive tool pages exact source fields with Unicode character offsets.
@@ -193,12 +196,11 @@ candidate extraction, independent admission/pruning, changed-anchor restoration
 and persistent failed-attempt budgets. `compaction_native.rs` additionally tests
 malformed native records, Rust settlement selection, bounded-preview reconciliation,
 Unicode budget refusal, stored-plan tampering and lost-custody refusal.
-The required-server test proves
-cross-session TypeDB publication, duplicate consolidation and fresh-handle reads.
-
-`scripts/test-typedb.sh` runs that test and the backend's pinned-publication,
-idempotency and predecessor guards against a disposable TypeDB 3.13.0 server.
-The adapter's `node --test` suite verifies fail-closed reduction and fixed-scope
+The `live_pg_` test proves
+cross-session PostgreSQL publication, duplicate consolidation and fresh-handle reads
+on its own disposable cluster; the backend's pinned-publication, idempotency and
+predecessor guards run in the `chaosbox-pg` live suite (`cargo test --workspace
+-- --ignored live_pg_`). The adapter's `node --test` suite verifies fail-closed reduction and fixed-scope
 command dispatch. OpenCode's compaction suites exercise manual, automatic,
 native and overflow paths with the extension enabled or absent.
 
@@ -215,5 +217,6 @@ root OpenCode lint/type checks and documentation build; all six adapter tests
 (including real Rust subprocess recovery); native-host loading/typechecking;
 and the disposable TypeDB gate with 19 backend tests and required-server
 cross-session publication. Rust formatting passes through treefmt with the
-repository's edition-2021 configuration.
+repository's edition-2021 configuration. (That record predates 0.2.0, which
+replaced the TypeDB backend with PostgreSQL.)
 Runtime package consumption and activation are still required for ordinary sessions.

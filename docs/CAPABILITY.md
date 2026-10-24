@@ -9,7 +9,7 @@ described in the new book chapters are not yet implemented.
 - Session-intelligence staging: bounded JSONL proposals with native provenance,
   typed Jev admission/consolidation, private immutable artifacts and decision
   cache replay, scoped CLI and opt-in read-only MCP context/evidence tools.
-  This does not yet publish session knowledge into TypeDB or replace the
+  This does not yet publish session knowledge into PostgreSQL or replace the
   migration/compaction scripts; see `SESSION_INTELLIGENCE.md`.
 
 - Snapshot (content-addressed, repo-scoped), deterministic extraction for
@@ -54,15 +54,17 @@ described in the new book chapters are not yet implemented.
   copied into evidence); `Failed` rows are supersedable once, other outcomes
   immutable
 - Storage seams: `Pipeline` generic over `Store`, `GraphReader` generic over
-  `GraphQueries` (live `TypeDbReader` + in-memory fake + conformance suite
-  proving parity); all reads scoped to the pinned build (leakage-tested),
-  LIKE wildcards escaped
-- Write path (graph half): `Store::put_*` stages in `MemoryStore` and the
-  publication flush writes snapshots, files, entities (+spans),
-  relationships, memberships, builds with a generation-guarded pointer
-  swing (concurrent publisher wins; idempotent retry; last-good stays
-  active on failure); `Store` is async end-to-end;
-  decision/evidence/claim flushing waits for the candidate chain (Round 3)
+  `GraphQueries` (live `PgReader` + in-memory fake + read and write
+  conformance suites proving parity); all reads scoped to the pinned build
+  (leakage-tested), LIKE wildcards escaped
+- Write path (graph half): `Store::put_*` stages in `MemoryStore`; publication
+  writes the build header (digest, node/edge counts), entities, memberships,
+  relationships with sealed evidence, audit rows and the pointer upsert in one
+  PostgreSQL transaction under a per-repository advisory lock (predecessor and
+  generation checked live; a rival loses the lock or sees the moved pointer;
+  exact retries compare the stored digest; last-good stays active on failure).
+  Published rows are immutable (`ON CONFLICT DO NOTHING`); `Store` is async
+  end-to-end
 - Decisions, evidence, and claims persist in-pipeline: `decide()` writes each
   record as produced; `build_and_publish()` assembles one claim per
   materialized relation (same-triple rejections as contradicting evidence);
@@ -90,29 +92,39 @@ described in the new book chapters are not yet implemented.
   and fails before spending when they exceed `max_requests` (default mismatch:
   200 candidates vs 100 requests now fails fast instead of burning budget and
   dying at publish)
-- TypeDB write-through decisions: `put_decision`/`put_evidence` persist each
-  paid decision (and its evidence) in a short transaction as produced, so a
-  dead worker or a budget failure later in the run loses no completed
-  inference; publish-time flush stays idempotent and readers pin builds, so
-  unwritten-then-written rows stay invisible until the pointer swings
-- TypeDB backend (`chaosbox-typedb`, authoritative): TypeQL schema mirroring
-  the domain with typed relations/roles (`relationship`, memberships,
-  occurrences, claim evidence), stable ids as `@key`s, deterministic relation
-  keys, epoch-millis timestamps; centralized literal encoder (adversarial
-  tests); staging-validated flush with CNT9 idempotency and bounded transient
-  retries; single-transaction pointer swing re-validating predecessor and
-  generation live (exactly-once publication proven with concurrent
-  publishers); uncertain-commit reconciliation by durable-state re-read;
-  read-tx mutation rejection; `TypeDbReader` implements `GraphQueries` and
-  passes the reference conformance suite unchanged (fold-column `contains`
-  search preserving `ilike`, server-side ordering, build pinning)
-- `db check`/`db migrate` contract v2 JSON for the TypeDB path (same exit
-  mapping: 0 ready, 2 pending, 1 error); backend switch via
-  `CHAOSBOX_DB_BACKEND`, credentials via `CHAOSBOX_TYPEDB_PASSWORD_FILE`
+- Durable-first decisions: `put_decision`/`put_inference` persist each paid
+  answer in one statement as produced (decision replaced only when its cache
+  key changed or it recorded a failure; inferences first-write-wins), then
+  stage the durable winner, so a dead worker or a budget failure later in the
+  run loses no completed inference
+- PostgreSQL backend (`chaosbox-pg`, PostgreSQL 18 + pgvector): idempotent
+  `schema.sql` applied by `db migrate` under an advisory lock; payloads stored
+  as exact `text` (digests, claims, replica bodies and sealed evidence compare
+  byte for byte); key/sort columns use the "C" collation (SQL order equals
+  Rust order); search folds in Rust and matches with `strpos`, ranked exact
+  name, name prefix, substring; uncertain commits reconciled by durable-state
+  re-read; readers run single statements on immutable rows over a read-only
+  session (no reads interrupted by publication). `PgReader` passes the
+  reference conformance suite; hermetic `live_pg_*` tests start disposable
+  clusters (`cargo test --workspace -- --ignored live_pg_`, Nix
+  `postgres-live`, VM `postgres-integration`)
+- `db check`/`db migrate` contract v2 JSON (exit mapping: 0 ready, 2 pending,
+  1 error); `run` publishes with `CHAOSBOX_DB_BACKEND=postgres`; every database
+  command connects through `CHAOSBOX_DATABASE_URL` (unix socket or loopback
+  only; no password files, peer authentication on Atlas)
+- Semantic retrieval: definitions, symbols and headings carry bounded
+  declaration text (leading docs plus the item, 1 KB); their texts and
+  knowledge/replica statements are stored content-addressed, and `run`
+  backfills vectors (halfvec 1024) from a loopback OpenAI-compatible endpoint
+  (`CHAOSBOX_EMBED_URL`, `CHAOSBOX_EMBED_MODEL`) within 120 s. Vectors never
+  enter publication. `search`/`context` fuse lexical and nearest-neighbour
+  ranks (RRF); MCP current-snapshot `intelligence_context` and `compaction
+  context` fuse word overlap with statement similarity. Any embedding failure
+  degrades to lexical retrieval
 - Status freshness/provenance: `query status` (CLI + MCP) reports the pinned
   build's `status` and `snapshots` (sorted snapshot-id fingerprint, so
   consumers can detect a build that no longer matches its sources) alongside
-  repo/build/generation/export caps; the in-memory and TypeDB backends fill
+  repo/build/generation/export caps; the in-memory and PostgreSQL backends fill
   it, readers whose projection predates the field report an empty list
 - Schema v3 retains per-file syntax coverage, direct/decision relation counts,
   and parser provenance. Entity projections expose spans; relationship evidence
@@ -138,6 +150,11 @@ described in the new book chapters are not yet implemented.
   EdgeQL assets, and Gel CI jobs deleted; shared abstractions relocated to
   `chaosbox-store` (`Store`/`GraphQueries` traits, `MemoryStore`, conformance
   suite)
+- TypeDB backend removed (0.2.0): `chaosbox-typedb`, `schema.tql`,
+  `typedb-bootstrap`, the TypeDB VM tests and the `nixpkgs-typedb` pin deleted.
+  Fresh start, no data migration: graphs re-derive on the next snapshot,
+  knowledge republishes from the `memory.sqlite` outbox (a one-time journal
+  migration forgets the TypeDB-era predecessor), replicas re-sync
 - Vertical slice test: snapshot -> extract -> fixture Jev -> publish -> query ->
   change/delete source -> incremental replacement build
 - Release tooling (generated by simit, drift-checked by `simit init ci --check`
@@ -148,17 +165,25 @@ described in the new book chapters are not yet implemented.
   Publication is manual (`workflow_dispatch`) and must follow the dependency
   tiers, because each crate's dry-run resolves its workspace dependencies from
   crates.io: **`chaosbox-core` → `chaosbox-extract` / `chaosbox-jev` /
-  `chaosbox-store` → `chaosbox-typedb` → `chaosbox`**. The workflows do not
+  `chaosbox-store` → `chaosbox-pg` → `chaosbox`**. The workflows do not
   encode this order; publishing out of tier fails the dry-run rather than
   publishing a broken set. Still required before the first release:
-  `CRATES_IO_API_TOKEN` on the repository and one annotated tag at `0.1.0`.
+  `CRATES_IO_API_TOKEN` on the repository and one annotated tag at `0.2.0`.
 
 ## Intentionally removed (vs Graphify)
 
 - From the code-evidence pipeline: Python execution, NetworkX, LLM-harness extraction/labeling/repair/enrichment,
-  embeddings, `ext::ai`, rerankers, neural OCR/transcription, generative
+  `ext::ai`, rerankers, neural OCR/transcription, generative
   summaries/labels/dedup/query-repair, arbitrary query escape hatches,
   single giant graph JSON storage, endpoint-to-endpoint multi-links
+
+Embeddings were listed here until 0.2.0. They now rank retrieval only
+(search/context seeds and knowledge context); they never create facts,
+evidence or relationships, and publication never depends on them. This
+supersedes the earlier exclusion: TypeDB provided only keyed upserts, joins, a
+compare-and-swap pointer and one-hop reads while costing 13–14 G RSS plus
+23–25 G swap, about 1 TB written per 43 h and REX1 read failures, so the
+operator chose PostgreSQL + pgvector with semantic retrieval for 0.2.0.
 
 The proposed session extension keeps that evidence boundary: deterministically
 rendered, Jev-selected continuation checkpoints are derived artifacts, not source
@@ -169,8 +194,8 @@ under an explicit admission policy; it does not turn fluent summaries into facts
 
 - Live proof: VM test realization (needs a build-capable session),
   write/read conformance in-guest, cache-reuse demo
-- Decision-cache reuse/invalidation live proof (the Gel integration gate was
-  removed with the backend; TypeDB is the authoritative write path)
+- Decision-cache reuse/invalidation live proof (the Gel and TypeDB gates were
+  removed with their backends; PostgreSQL is the authoritative write path)
 - Live Jev quality runs (adapter + `--live-jev` ready; needs operator key file)
 - Broader language coverage (grammar parsing beyond the current path set),
   communities/hyperedges materialization. Hyperedges are **in scope** for the

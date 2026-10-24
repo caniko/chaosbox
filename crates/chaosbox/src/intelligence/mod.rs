@@ -1,6 +1,6 @@
 //! Selective session intelligence: bounded proposals, typed Jev assessment,
 //! deterministic admission, and read-only artifact retrieval. Bundles are
-//! private, immutable staging/export artifacts, not automatic `TypeDB` imports.
+//! private, immutable staging/export artifacts, not automatic PostgreSQL imports.
 
 mod assess;
 pub mod cli;
@@ -201,6 +201,21 @@ impl Bundle {
         limit: usize,
         max_chars: usize,
     ) -> Result<Vec<serde_json::Value>, String> {
+        self.context_fused(scope, repo, query, limit, max_chars, &[])
+    }
+
+    /// [`Self::context`] fused with record ids already ordered by embedding
+    /// similarity, best first (see [`semantic_order`]). Eligibility filters
+    /// apply to both lists; an empty order is purely lexical.
+    pub fn context_fused(
+        &self,
+        scope: &str,
+        repo: &str,
+        query: &str,
+        limit: usize,
+        max_chars: usize,
+        semantic: &[String],
+    ) -> Result<Vec<serde_json::Value>, String> {
         self.validate()?;
         if scope != self.scope {
             return Err("intelligence scope mismatch".into());
@@ -212,27 +227,41 @@ impl Bundle {
         {
             return Err("context requires a query, limit 1..20, and max-chars 256..32000".into());
         }
-        // ponytail: bounded lexical retrieval, not semantic ranking. Measure
-        // missed useful results before introducing embeddings or a reranker.
+        let eligible = |r: &&Intelligence| {
+            !matches!(
+                r.status,
+                IntelligenceStatus::Superseded | IntelligenceStatus::Withheld
+            ) && r.repositories.iter().any(|p| p == repo)
+        };
         let tokens = words(query);
-        let mut ranked: Vec<_> = self
+        let mut lexical: Vec<_> = self
             .records
             .iter()
-            .filter(|r| {
-                !matches!(
-                    r.status,
-                    IntelligenceStatus::Superseded | IntelligenceStatus::Withheld
-                ) && r.repositories.iter().any(|p| p == repo)
-            })
+            .filter(eligible)
             .filter_map(|r| {
                 let overlap = words(&r.statement).intersection(&tokens).count();
                 (overlap > 0).then_some((overlap, r))
             })
             .collect();
-        ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
+        lexical.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
+        let by_id: std::collections::BTreeMap<&str, &Intelligence> = self
+            .records
+            .iter()
+            .filter(eligible)
+            .map(|r| (r.id.as_str(), r))
+            .collect();
+        let nearest = semantic
+            .iter()
+            .filter_map(|id| by_id.get(id.as_str()).copied())
+            .collect();
+        let ranked = crate::reader::rrf(
+            vec![lexical.into_iter().map(|(_, r)| r).collect(), nearest],
+            |r| r.id.as_str(),
+            usize::MAX,
+        );
         let mut result = Vec::new();
         let mut used = 0;
-        for (_, record) in ranked {
+        for record in ranked {
             let mut citations = vec![location(&record.evidence[0])];
             if record.evidence.len() > 1 {
                 citations.push(location(record.evidence.last().ok_or("missing evidence")?));
@@ -261,6 +290,43 @@ impl Bundle {
         }
         Ok(result)
     }
+}
+
+/// Record ids ordered by embedding similarity of their statements to
+/// `query`, best first, for [`Bundle::context_fused`]. Empty whenever semantic
+/// ranking is unavailable (no embedder, endpoint down, statements not yet
+/// embedded): retrieval then stays lexical.
+pub async fn semantic_order(
+    records: &[Intelligence],
+    query: &str,
+    embedder: Option<&crate::embed::Embedder>,
+    store: &mut dyn chaosbox_store::ReplicaStore,
+) -> Vec<String> {
+    // ponytail: uncalibrated similarity floor that keeps off-topic decisions
+    // out of a small context; tune it from measured queries on the real model.
+    const FLOOR: f64 = 0.3;
+    let Some(embedder) = embedder else {
+        return Vec::new();
+    };
+    let Ok(vector) = embedder.query(query).await else {
+        return Vec::new();
+    };
+    let mut ids: std::collections::BTreeMap<String, Vec<&str>> = std::collections::BTreeMap::new();
+    for record in records {
+        ids.entry(chaosbox_pg::text_sha256(&record.statement))
+            .or_default()
+            .push(&record.id);
+    }
+    let shas: Vec<String> = ids.keys().cloned().collect();
+    let Ok(mut scores) = store.rank_texts(&embedder.key(), &vector, &shas).await else {
+        return Vec::new();
+    };
+    scores.retain(|(_, score)| *score >= FLOOR);
+    scores.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    scores
+        .iter()
+        .flat_map(|(sha, _)| ids[sha].iter().map(|id| (*id).to_owned()))
+        .collect()
 }
 
 fn location(e: &chaosbox_core::intelligence::SessionEvidence) -> serde_json::Value {

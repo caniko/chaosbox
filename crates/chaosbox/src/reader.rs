@@ -93,7 +93,7 @@ pub fn validate_build_id(build_id: &str) -> Result<(), PipelineError> {
 /// Backend read-only queries. One build id is pinned per reader from the
 /// active-build pointer or an exact published build; readers never mutate,
 /// migrate, or load Jev credentials.
-/// Generic over [`chaosbox_store::GraphQueries`] with `TypeDbReader` as the
+/// Generic over [`chaosbox_store::GraphQueries`] with `PgReader` as the
 /// live backend and [`chaosbox_store::MemoryReader`] for tests.
 pub struct GraphReader<R> {
     handle: R,
@@ -110,6 +110,34 @@ pub struct GraphReader<R> {
     pub snapshots: Vec<String>,
     /// Processing coverage pinned with the build; unknown for legacy builds.
     pub coverage: Option<chaosbox_core::coverage::BuildCoverage>,
+    /// Query embedder for semantic seeds; lexical-only when absent.
+    embedder: Option<crate::embed::Embedder>,
+}
+
+/// Reciprocal rank fusion (k = 60) of ranked lists, best first. Ties keep
+/// the earlier list's order, so a single list passes through unchanged.
+pub(crate) fn rrf<T>(lists: Vec<Vec<T>>, key: impl Fn(&T) -> &str, limit: usize) -> Vec<T> {
+    let mut fused: std::collections::HashMap<String, (f64, usize, T)> =
+        std::collections::HashMap::new();
+    let mut seen = 0;
+    for list in lists {
+        for (rank, item) in list.into_iter().enumerate() {
+            #[allow(clippy::cast_precision_loss)]
+            let score = 1.0 / (61.0 + rank as f64);
+            let slot = fused.entry(key(&item).to_owned()).or_insert_with(|| {
+                seen += 1;
+                (0.0, seen, item)
+            });
+            slot.0 += score;
+        }
+    }
+    let mut ranked: Vec<_> = fused.into_values().collect();
+    ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    ranked
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, item)| item)
+        .collect()
 }
 
 impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
@@ -160,21 +188,52 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
             status: build.status,
             snapshots: build.snapshots,
             coverage: build.coverage,
+            embedder: None,
         }
     }
 
-    /// Bounded substring search over the pinned build's entity names.
-    /// LIKE wildcards in the query are escaped: they match literally.
+    /// Enable semantic seeds for `search` and `context`.
+    #[must_use]
+    pub fn with_embedder(mut self, embedder: Option<crate::embed::Embedder>) -> Self {
+        self.embedder = embedder;
+        self
+    }
+
+    /// Nearest embedded entities of the pinned build, or `None` when
+    /// semantic retrieval is unavailable (no embedder, endpoint down or
+    /// slow, backend without vectors): callers then stay lexical.
+    async fn semantic(&self, query: &str, limit: usize) -> Option<Vec<chaosbox_store::EntityRow>> {
+        let embedder = self.embedder.as_ref().filter(|_| limit > 0)?;
+        let vector = embedder.query(query).await.ok()?;
+        self.handle
+            .nearest_entities(
+                &self.build_id,
+                &embedder.key(),
+                &vector,
+                i64::try_from(limit).unwrap_or(i64::MAX),
+            )
+            .await
+            .ok()
+    }
+
+    /// Bounded search over the pinned build: literal substring matches
+    /// (LIKE wildcards escaped, exact and prefix names first) fused with the
+    /// nearest embedded entities when semantic retrieval is available.
     pub async fn search(
         &self,
         query: &str,
         limit: i64,
     ) -> Result<Vec<chaosbox_store::EntityRow>, PipelineError> {
         let like = format!("%{}%", escape_like(query));
-        self.handle
+        let lexical = self
+            .handle
             .search_entities(&self.build_id, &like, limit)
             .await
-            .map_err(|e| PipelineError::Consumer(e.to_string()))
+            .map_err(|e| PipelineError::Consumer(e.to_string()))?;
+        let n = usize::try_from(limit.max(0)).unwrap_or(usize::MAX);
+        let mut lists = vec![lexical];
+        lists.extend(self.semantic(query, n).await);
+        Ok(rrf(lists, |e| e.entity_id.as_str(), n))
     }
 
     /// Typed entity lookup within the pinned build.
@@ -362,5 +421,20 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
             "added_nodes": added_nodes, "removed_nodes": removed_nodes,
             "added_edges": added_edges, "removed_edges": removed_edges,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rank_fusion_rewards_agreement_and_keeps_a_lone_list_unchanged() {
+        let ids = |v: &[&'static str]| v.to_vec();
+        let lexical = ids(&["exact", "prefix", "substring"]);
+        assert_eq!(super::rrf(vec![lexical.clone()], |s| s, 10), lexical);
+        let fused = super::rrf(vec![lexical, ids(&["semantic", "substring"])], |s| s, 3);
+        // Found by both lists outranks either list's sole first hit; ties
+        // keep the lexical list first.
+        assert_eq!(fused, ["substring", "exact", "semantic"]);
+        assert!(super::rrf(vec![ids(&["a"])], |s| s, 0).is_empty());
     }
 }

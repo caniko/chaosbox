@@ -8,16 +8,29 @@ compiler/cutover plan in `tasks/plan.md` and `tasks/todo.md`.
 
 Make ordinary OpenCode sessions cheaper in RAM, I/O and model context while
 preserving complete source-backed discovery and cross-project traversal through
-Chaosbox MCP. Keep TypeDB authoritative for graph/admitted-knowledge queries and
-the existing SQLite custody engine authoritative for original session records.
-Reuse existing engines before introducing new components.
+Chaosbox MCP. Keep PostgreSQL (`chaosbox-pg`, with pgvector) authoritative for
+graph/admitted-knowledge queries and the existing SQLite custody engine
+authoritative for original session records. Reuse existing engines before
+introducing new components.
 
 Preserve facts, selected repositories, deterministic legacy identities, exact
 source evidence, scope boundaries, publication validation and recovery. A smaller
 returned context may be bounded; it must not conceal a smaller indexed corpus.
-Do not add a mandatory graph/vector/cache backend. New architecture release,
-consumer pin changes and activation are separate task scopes, not consequences of
-creating this plan. S26 is explicitly non-activating.
+Embeddings rank retrieval only and are never mandatory: every reader degrades to
+lexical results without them. Do not add a further graph/vector/cache backend.
+New architecture release, consumer pin changes and activation are separate task
+scopes, not consequences of creating this plan. S26 is explicitly non-activating.
+
+Superseded 2026-10-24 (0.2.0): this plan originally kept TypeDB authoritative and
+forbade a vector backend. TypeDB provided only keyed upserts, joins, a
+compare-and-swap pointer and one-hop reads while costing 13–14 G RSS plus
+23–25 G swap, about 1 TB written per 43 h and REX1 read failures, so the operator
+chose PostgreSQL + pgvector with semantic retrieval. Evidence and workcards below
+that name TypeDB are historical; where a remaining workcard (S05.3, S06, S08,
+S18, S22b) names TypeDB persistence or policy, read it as the PostgreSQL backend.
+Real backend acceptance now uses the hermetic `live_pg_` tests
+(`cargo test --workspace -- --ignored live_pg_`), each on its own disposable
+cluster.
 
 ## Starting evidence
 
@@ -262,9 +275,9 @@ commands/results, immutable evidence locations/digests, unresolved issues and th
 next workcard. Tests must exercise the owning invariant; do not run the full
 workspace after every small edit. Use approved direnv, bounded Cargo jobs and
 treefmt. Native workers use two Cargo jobs, a 4 GiB memory ceiling and no swap;
-these execution limits are not production resource acceptance. Real TypeDB
-acceptance uses the existing disposable server gate with
-`CHAOSBOX_REQUIRE_TYPEDB`; a skipped server test is not evidence.
+these execution limits are not production resource acceptance. Real backend
+acceptance uses the hermetic `live_pg_` tests on disposable PostgreSQL clusters;
+a skipped or unselected live test is not evidence.
 
 Later workcards are bounded scopes, not permission to guess APIs or rewrite
 uninspected code. Resolve their exact focused test names and file set at entry.
