@@ -207,12 +207,16 @@
           test-typedb = pkgs.writeShellApplication {
             name = "chaosbox-test-typedb";
             runtimeInputs = [
-              chaosbox
               pkgs.nodejs
+              pkgs.python3
             ];
-            # The source runner finds its helper beside itself; the packaged
-            # runner lives in bin/, so bind that helper to its immutable path.
-            text =
+            # The source runner builds the binary under test and finds its
+            # helper beside itself; the packaged runner qualifies its own
+            # binary and binds that helper to its immutable path.
+            text = ''
+              export CHAOSBOX_TEST_BIN="''${CHAOSBOX_TEST_BIN:-${pkgs.lib.getExe chaosbox}}"
+            ''
+            +
               builtins.replaceStrings
                 [
                   ''"$(dirname "''${BASH_SOURCE[0]}")/test-typedb-federation.sh"''
@@ -314,9 +318,12 @@
           typedb = harbor.lib.rust.mkDevShell {
             inherit pkgs cross;
             inherit (toolchain) craneLib;
+            # test-typedb.sh also drives Node plugin tests and stdlib Python checks.
             packages = [
               typedbPkgs.typedb
               typedbPkgs.typedb-console
+              pkgs.nodejs
+              pkgs.python3
             ];
           };
           docs = pkgs.mkShell { packages = [ pkgs.mdbook ]; };
