@@ -50,6 +50,8 @@ impl Snapshot {
             scope: selected,
             files,
             contents,
+            // Explicit selections fail loudly above instead of skipping.
+            unreadable: Vec::new(),
         })
     }
 }

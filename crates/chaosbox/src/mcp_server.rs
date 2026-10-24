@@ -113,17 +113,30 @@ pub(super) fn mcp_tool_defs() -> Vec<serde_json::Value> {
         ),
         mcp_tool(
             "stats",
-            "Deterministic counts, degree hubs and weak connectivity groups (not semantic clusters).",
-            serde_json::json!({"limit":{"type":"integer","minimum":1,"maximum":200}}),
+            "Counts, deterministic Leiden communities (labels, cohesion), god nodes, surprising connections and questions that each name the read answering them. Every item cites entity/relation ids.",
+            serde_json::json!({"limit":{"type":"integer","minimum":1,"maximum":200},"resolution":RESOLUTION_SCHEMA()}),
             Vec::<&str>::new(),
         ),
         mcp_tool(
             "community",
-            "Build-bound weak connectivity group, with explicit omitted members.",
-            serde_json::json!({"id":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":200}}),
+            "One Leiden community of the pinned build (label, cohesion, members), with explicit omitted members.",
+            serde_json::json!({"id":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":200},"resolution":RESOLUTION_SCHEMA()}),
             vec!["id"],
         ),
+        mcp_tool(
+            "report",
+            "Markdown architecture report (communities, god nodes, surprising connections, suggested questions), each item with the read that verifies it.",
+            serde_json::json!({"resolution":RESOLUTION_SCHEMA()}),
+            Vec::<&str>::new(),
+        ),
     ]
+}
+
+/// Leiden resolution: 1.0 (default) is classic modularity, larger values
+/// give smaller communities. Non-default values recompute from the export.
+#[allow(non_snake_case)]
+fn RESOLUTION_SCHEMA() -> serde_json::Value {
+    serde_json::json!({"type":"number","minimum":0.01,"maximum":10,"default":1.0})
 }
 
 // properties/required move into the schema json! below, which the
@@ -257,6 +270,7 @@ async fn mcp_call_tool_connected(
             | "context"
             | "stats"
             | "community"
+            | "report"
     ) {
         return mcp_error(
             id,
@@ -290,11 +304,21 @@ async fn mcp_call_tool_connected(
         })
         .transpose();
     let build_id = match build_id {
-        Ok(build_id) => build_id,
+        Ok(build_id) => build_id.map(str::to_owned),
         Err(error) => return mcp_error(id, -32602, error, None),
     };
+    let (repo, build_id) = (repo.to_owned(), build_id);
+    let (repo, build_id) = (repo.as_str(), build_id.as_deref());
+    let mut args = args;
     // Continuation selects its historical publication before any active pin.
     if name == "neighbors" {
+        // Validate before any backend work, then resolve a name argument.
+        if let Err(error) = prepare_neighborhood(args.clone()) {
+            return mcp_error(id, -32602, error, None);
+        }
+        if let Err(error) = resolve_names(id, name, repo, build_id, &mut args, connection).await {
+            return error;
+        }
         let query = match prepare_neighborhood(args) {
             Ok(query) => query,
             Err(error) => return mcp_error(id, -32602, error, None),
@@ -311,9 +335,18 @@ async fn mcp_call_tool_connected(
         };
     }
     if name == "path" {
-        let query = serde_json::from_value::<chaosbox::PathQuery>(serde_json::Value::Object(args))
-            .map_err(|error| error.to_string())
-            .and_then(|query| query.prepare().map_err(|error| error.to_string()));
+        let prepare = |args: serde_json::Map<String, Value>| {
+            serde_json::from_value::<chaosbox::PathQuery>(Value::Object(args))
+                .map_err(|error| error.to_string())
+                .and_then(|query| query.prepare().map_err(|error| error.to_string()))
+        };
+        if let Err(error) = prepare(args.clone()) {
+            return mcp_error(id, -32602, error, None);
+        }
+        if let Err(error) = resolve_names(id, name, repo, build_id, &mut args, connection).await {
+            return error;
+        }
+        let query = prepare(args);
         let query = match query {
             Ok(query) => query,
             Err(error) => return mcp_error(id, -32602, error, None),
@@ -359,6 +392,22 @@ async fn mcp_call_tool_connected(
             );
         }
     }
+    if matches!(name, "stats" | "community" | "report")
+        && args
+            .get("resolution")
+            .is_some_and(|value| !value.as_f64().is_some_and(|r| (0.01..=10.0).contains(&r)))
+    {
+        return mcp_error(
+            id,
+            -32602,
+            "resolution must be a number in 0.01..10".into(),
+            None,
+        );
+    }
+    let resolution = args
+        .get("resolution")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(chaosbox_core::navigation::DEFAULT_RESOLUTION);
     if name == "context"
         && args["query"]
             .as_str()
@@ -370,6 +419,9 @@ async fn mcp_call_tool_connected(
             "context query must be 1..2048 bytes".into(),
             None,
         );
+    }
+    if let Err(error) = resolve_names(id, name, repo, build_id, &mut args, connection).await {
+        return error;
     }
     let reader = match async {
         AnyReader::pin(AnyReader::handle_cached(connection).await?, repo, build_id).await
@@ -426,15 +478,23 @@ async fn mcp_call_tool_connected(
             .await
             .map_err(|e| e.to_string()),
         "stats" => reader
-            .stats(integer(args.get("limit"), 10))
+            .stats_at(integer(args.get("limit"), 10), resolution)
             .await
             .map_err(|e| e.to_string()),
         "community" => reader
-            .community(
+            .community_at(
                 args["id"].as_str().unwrap_or_default(),
                 integer(args.get("limit"), 100),
+                resolution,
             )
             .await
+            .map_err(|e| e.to_string()),
+        "report" => reader
+            .report(resolution)
+            .await
+            .map(
+                |markdown| serde_json::json!({"build_id": reader.build_id(), "markdown": markdown}),
+            )
             .map_err(|e| e.to_string()),
         "explain" => {
             let eid = args["id"].as_str().unwrap_or_default();
@@ -592,7 +652,8 @@ pub(super) async fn serve_mcp(
                 }
             }
             "tools/call" => {
-                if initialized {
+                let started = std::time::Instant::now();
+                let result = if initialized {
                     let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     if name == "workspace_impact" {
                         graph = None;
@@ -658,7 +719,9 @@ pub(super) async fn serve_mcp(
                     }
                 } else {
                     mcp_error(&id, -32600, "server not initialized".to_owned(), None)
-                }
+                };
+                log_tool_call(&params, started, &result);
+                result
             }
             _ => mcp_error(
                 &id,
@@ -673,6 +736,78 @@ pub(super) async fn serve_mcp(
     }
     let _ = all_relation_types;
     Ok(())
+}
+
+/// Graphify accepts labels where Chaosbox wants ids: entity arguments that
+/// are not ids resolve to exactly one entity in place. Ambiguous names fail
+/// with their candidates; ids and unknown names pass through unchanged, so
+/// a miss keeps each tool's historical result.
+async fn resolve_names(
+    id: &Value,
+    name: &str,
+    repo: &str,
+    build_id: Option<&str>,
+    args: &mut serde_json::Map<String, Value>,
+    connection: &mut Option<TypeDbReader>,
+) -> Result<(), Value> {
+    let keys: &[&str] = match name {
+        "lookup" | "explain" => &["id"],
+        "neighbors" if !args.contains_key("cursor") => &["id"],
+        "path" => &["from", "to"],
+        _ => &[],
+    };
+    let names: Vec<(&str, String)> = keys
+        .iter()
+        .filter_map(|key| {
+            let value = args.get(*key)?.as_str()?;
+            (!value.starts_with("ent:")).then(|| (*key, value.to_owned()))
+        })
+        .collect();
+    if names.is_empty() {
+        return Ok(());
+    }
+    let reader =
+        async { AnyReader::pin(AnyReader::handle_cached(connection).await?, repo, build_id).await }
+            .await
+            .map_err(|e| mcp_backend_error(id, name, &e))?;
+    for (key, value) in names {
+        match reader.resolve(&value).await {
+            Ok(chaosbox::Resolution::Entity(row)) => {
+                args.insert(key.to_owned(), Value::String(row.entity_id));
+            }
+            Ok(chaosbox::Resolution::Ambiguous(candidates)) => {
+                return Err(mcp_error(
+                    id,
+                    -32602,
+                    format!("{key} {value:?} matches several entities; pass one id"),
+                    Some(serde_json::json!({"code":"ambiguous","candidates":candidates})),
+                ));
+            }
+            Ok(chaosbox::Resolution::Unknown(_)) => {}
+            Err(e) => return Err(mcp_backend_error(id, name, &e)),
+        }
+    }
+    Ok(())
+}
+
+/// Usage ledger for one `tools/call`: JSON-RPC errors keep their (negative)
+/// code; successful payloads are re-parsed for build, size and count.
+fn log_tool_call(params: &Value, started: std::time::Instant, result: &Value) {
+    let name = params["name"].as_str().unwrap_or_default();
+    let code = result["error"]["code"].as_i64().unwrap_or(0);
+    // ponytail: re-parses the response text; hand the Value through if this
+    // ever shows up in a profile.
+    let payload = result["result"]["content"][0]["text"]
+        .as_str()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok());
+    chaosbox::query_log::record(
+        "mcp",
+        name,
+        &params["arguments"],
+        started,
+        code,
+        payload.as_ref(),
+    );
 }
 
 fn mcp_output() -> std::io::Result<Box<dyn AsyncWrite + Unpin>> {
@@ -1014,13 +1149,14 @@ fn mcp_backend_error(
     name: &str,
     error: &impl std::fmt::Display,
 ) -> serde_json::Value {
-    let report = LifecycleReport::error(&format!("mcp {name}"), &error.to_string());
-    mcp_error(
-        id,
-        -32603,
-        error.to_string(),
-        Some(serde_json::json!(report)),
-    )
+    let message = error.to_string();
+    let mut data = serde_json::json!(LifecycleReport::error(&format!("mcp {name}"), &message));
+    // Machine-readable class for the one failure agents must act on
+    // differently (index or pick another repo key) instead of retrying.
+    if message.contains("no active build for repo") {
+        data["code"] = serde_json::json!("no_active_build");
+    }
+    mcp_error(id, -32603, message, Some(data))
 }
 
 fn integer(value: Option<&serde_json::Value>, default: usize) -> usize {

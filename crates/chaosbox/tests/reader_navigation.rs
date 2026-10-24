@@ -343,3 +343,114 @@ async fn no_cross_build_member_leak() {
     assert_eq!(stats["edges"], json!(1));
     assert_eq!(stats["generation"], json!(2));
 }
+
+#[tokio::test]
+async fn analytics_cite_sealed_evidence_and_recompute_resolution() {
+    use chaosbox::{Materialization, Pipeline};
+    use chaosbox_store::MemoryStore;
+    let root = tempfile::tempdir().unwrap();
+    for (path, text) in [
+        (
+            "core/a.rs",
+            "pub fn hub() {}\npub fn one() { hub(); }\npub fn two() { hub(); }\npub fn three() { hub(); }\n",
+        ),
+        ("app/b.rs", "pub fn edge() { hub(); }\n"),
+    ] {
+        let path = root.path().join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, text).unwrap();
+    }
+    let policy = chaosbox_core::EffectivePolicy::new(&[], "local", "none").unwrap();
+    let (snap, ext, _) =
+        Pipeline::<MemoryStore>::snapshot_extract("r", root.path(), 0, &policy).unwrap();
+    let mut pipe = Pipeline::<MemoryStore>::new();
+    pipe.build_and_publish("r", &snap, &ext, &[], &Materialization::default(), None)
+        .await
+        .unwrap();
+    let reader = GraphReader::pinned(MemoryReader::from_store(&pipe.store), "r")
+        .await
+        .unwrap();
+
+    let stats = reader.stats(20).await.unwrap();
+    assert_eq!(stats["algorithm"], "leiden-v1");
+    assert_eq!(stats["edge_classes"]["inferred"], 4);
+    assert_eq!(stats["god_nodes"][0]["label"], "hub");
+    assert_eq!(stats["god_nodes"][0]["inferred_edges"], 4);
+    assert!(stats["communities"][0]["label"]
+        .as_str()
+        .unwrap()
+        .contains(" · "));
+    let surprise = stats["surprises"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["source_label"] == "edge")
+        .expect("cross-area call is surprising");
+    assert!(surprise["why"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|w| w.as_str().unwrap().starts_with("crosses areas")));
+    let rel = surprise["rel_id"].as_str().unwrap();
+    assert_eq!(
+        reader.evidence(rel).await.unwrap()["evidence"][0]["class"],
+        "inferred"
+    );
+    let questions = stats["questions"].as_array().unwrap();
+    assert!(questions.iter().all(|q| q["args"]["repo"] == "r"));
+    assert!(questions.iter().any(|q| q["kind"] == "verify_inferred"));
+
+    // Non-default resolution recomputes from the export for the same build.
+    let fine = reader.stats_at(20, 5.0).await.unwrap();
+    assert_eq!(fine["resolution"], 5.0);
+    assert_eq!(fine["build_id"], stats["build_id"]);
+    assert!(reader.stats_at(20, 0.0).await.is_err());
+
+    let report = reader.report(1.0).await.unwrap();
+    assert!(report.contains("## God nodes"));
+    assert!(report.contains(&format!("`chaosbox query evidence {rel} --repo r`")));
+    assert_eq!(
+        report,
+        reader.report(1.0).await.unwrap(),
+        "byte-reproducible"
+    );
+}
+
+#[tokio::test]
+async fn names_resolve_uniquely_or_report_candidates() {
+    use chaosbox::Resolution;
+    let mut build = GraphBuild::new("res", vec!["snap1".into()], 1);
+    let mut beta = String::new();
+    for (file, name) in [
+        ("a.rs", "Alpha"),
+        ("b.rs", "Alpha"),
+        ("a.rs", "Beta"),
+        ("a.rs", "Gamma"),
+    ] {
+        let e = entity("res", "snap1", file, name, EntityKind::Definition);
+        if name == "Beta" {
+            beta.clone_from(&e.id);
+        }
+        build.add_node(e).unwrap();
+    }
+    let reader = pinned_reader(build, "res").await;
+    assert!(
+        matches!(reader.resolve("Beta").await.unwrap(), Resolution::Entity(r) if r.entity_id == beta)
+    );
+    assert!(
+        matches!(reader.resolve(&beta).await.unwrap(), Resolution::Entity(r) if r.name == "Beta")
+    );
+    assert!(
+        matches!(reader.resolve("Alpha").await.unwrap(), Resolution::Ambiguous(c) if c.len() == 2)
+    );
+    assert!(
+        matches!(reader.resolve("Gam").await.unwrap(), Resolution::Unknown(s) if s.len() == 1),
+        "a substring is a hint, never a match"
+    );
+    assert!(
+        matches!(reader.resolve("Delta").await.unwrap(), Resolution::Unknown(s) if s.is_empty())
+    );
+    assert!(
+        matches!(reader.resolve("ent:missing").await.unwrap(), Resolution::Unknown(s) if s.is_empty())
+    );
+}

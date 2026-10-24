@@ -14,7 +14,9 @@ use thiserror::Error;
 pub mod compiler;
 pub mod coverage;
 pub mod intelligence;
+pub mod leiden;
 pub mod navigation;
+pub mod report;
 
 /// Hash `parts` with SHA-256, joined by `\0`, hex-encoded.
 #[must_use]
@@ -88,6 +90,9 @@ pub enum EntityKind {
     Link,
     /// A Markdown inline code mention.
     CodeMention,
+    /// A marked source comment (`NOTE:`, `WHY:`, `SAFETY:`, ...): an
+    /// annotation of nearby code, never a declaration.
+    Rationale,
 }
 
 /// A possible entity: identity separate from occurrences/labels.
@@ -170,8 +175,11 @@ pub enum RelationType {
     References,
     /// A call from one symbol to another.
     Calls,
-    /// Explicit compiler-reported implementation (implementor -> interface).
+    /// Implementation (implementor -> interface): compiler-reported, or
+    /// name-resolved from a syntax heritage clause (INFERRED).
     Implements,
+    /// Class/interface inheritance (child -> parent), name-resolved (INFERRED).
+    Inherits,
     /// A Markdown link target.
     LinksTo,
     /// A Markdown code mention of a symbol.
@@ -533,9 +541,21 @@ pub struct EffectivePolicy {
     pub privacy: String,
     /// External inference grant: `none` or `typesafe-jev`.
     pub inference: String,
+    /// Validated exclusion globs (gitignore syntax), sorted and deduped.
+    /// Part of the identity only when non-empty, so unrestricted policies
+    /// keep their historical digests.
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 impl EffectivePolicy {
+    /// Attach (already validated) exclusion globs.
+    #[must_use]
+    pub fn with_exclude(mut self, exclude: Vec<String>) -> Self {
+        self.exclude = exclude;
+        self
+    }
+
     /// Build a policy, normalizing the scope (sorted, deduped) and
     /// validating the privacy/inference tokens fail-closed.
     pub fn new(scope: &[String], privacy: &str, inference: &str) -> Result<Self, ValidationError> {
@@ -556,14 +576,21 @@ impl EffectivePolicy {
             scope: scope_vec,
             privacy: privacy.to_owned(),
             inference: inference.to_owned(),
+            exclude: Vec::new(),
         })
     }
 
-    /// Content identity of the policy: scope + privacy + inference.
-    /// Changing any of them changes every decision cache key.
+    /// Content identity of the policy: scope + privacy + inference (+ any
+    /// exclusions). Changing any of them changes every decision cache key.
     #[must_use]
     pub fn digest(&self) -> String {
-        sha256_hex(&[&self.scope.join(","), &self.privacy, &self.inference])
+        let scope = self.scope.join(",");
+        if self.exclude.is_empty() {
+            sha256_hex(&[&scope, &self.privacy, &self.inference])
+        } else {
+            let exclude = self.exclude.join(",");
+            sha256_hex(&[&scope, &self.privacy, &self.inference, &exclude])
+        }
     }
 
     /// Whether live Jev inference may run under this policy: the `local`
@@ -787,22 +814,6 @@ impl GraphBuild {
         }
         seen.remove(from);
         seen
-    }
-
-    /// Deterministic source-derived community label: top-level dir + kind mix.
-    /// Never generative: falls back to `community:<dir>` template.
-    #[must_use]
-    pub fn community_label(&self, member_ids: &[String]) -> String {
-        let mut dirs: BTreeSet<String> = BTreeSet::new();
-        for id in member_ids {
-            if let Some(e) = self.nodes.get(id) {
-                let dir = e.file.split('/').next().unwrap_or("root");
-                dirs.insert(dir.to_owned());
-            }
-        }
-        let mut v: Vec<String> = dirs.into_iter().collect();
-        v.sort();
-        format!("community:{}", v.join("+"))
     }
 }
 

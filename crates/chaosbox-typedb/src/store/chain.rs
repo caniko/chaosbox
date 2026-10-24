@@ -13,6 +13,7 @@ use crate::common::{
 use crate::encode::{int_lit, str_lit};
 
 use super::TypeDbStore;
+use super::flush::{candidate_row, file_version_row};
 
 impl TypeDbStore {
     /// Flush staged runs, sets, candidates, decisions, inferences, evidence,
@@ -27,22 +28,33 @@ impl TypeDbStore {
         for (set_id, (run_id, catalog, rubric)) in staged.sets {
             self.flush_set(set_id, run_id, catalog, rubric).await?;
         }
-        for (set_id, cand) in staged.candidates.values() {
-            self.flush_candidate(set_id, cand).await?;
-        }
+        self.flush_keyed_rows(Box::new(
+            staged
+                .candidates
+                .values()
+                .map(|(set_id, cand)| Ok(candidate_row(set_id, cand))),
+        ))
+        .await?;
         for rec in staged.inferences.values() {
             self.flush_inference(rec).await?;
         }
         for d in staged.decisions.values() {
             self.flush_decision(d).await?;
         }
-        for ((snapshot_id, path), (sha, bytes)) in staged.files {
-            self.flush_file_version(snapshot_id, path, sha, *bytes)
-                .await?;
-        }
-        for e in staged.evidence.values() {
-            self.flush_evidence(e).await?;
-        }
+        self.flush_keyed_rows(Box::new(staged.files.iter().map(
+            |((snapshot_id, path), (sha, bytes))| file_version_row(snapshot_id, path, sha, *bytes),
+        )))
+        .await?;
+        // Evidence was already written durable-first by `put_evidence`; the
+        // probes make this pass a read per row instead of a failed commit.
+        self.flush_keyed_rows(Box::new(
+            staged
+                .evidence
+                .values()
+                .flat_map(Self::evidence_rows)
+                .map(Ok),
+        ))
+        .await?;
         for c in staged.claims.values() {
             self.flush_claim(c).await?;
         }
