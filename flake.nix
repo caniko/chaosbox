@@ -2,12 +2,8 @@
   description = "Chaosbox - native Rust code-graph pipeline (TypeDB-backed)";
 
   inputs = {
-    harbor-rs.url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=7a3328e186258dca31f9801227bc4e6fd8db4f36";
-    # Deployment/lifecycle infrastructure (TypeDB backend, server module,
-    # readiness gates). Qualified storage release (harbor-db#8 and #9 merged); previously the
-    # reviewed typedb-backend branch. Never a local path.
-    harbor-db.url = "github:caniko/harbor-db/99aca6956890ca347a06fe73ca93bbe22fa72368";
-    harbor-db.inputs.nixpkgs.follows = "nixpkgs";
+    # Qualified shared Rust, database lifecycle and documentation infrastructure.
+    harbor.url = "git+https://github.com/caniko/harbor.git?ref=feat/harbor-monorepo-components&rev=7d99eb50c52d0a941e2996b97c469b32a7657ef4";
     # TEMPORARY TypeDB packages until NixOS/nixpkgs#565068 merges: the
     # GitHub-maintained PR merge (NixOS/nixpkgs#565068), pinned to the
     # verified merge 26996c2a9 that review-gha built green (typedb,
@@ -23,14 +19,6 @@
       url = "github:nix-community/home-manager/0560d64401a6d5370732a69d08bc4a6b135962d9";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    harbor-meta.follows = "harbor-rs/harbor-meta";
-    # github:caniko/harbor-docs redirects to the renamed harbor-projects repo.
-    harbor-docs = {
-      url = "github:caniko/harbor-projects/627df187070815ae286bd2061a6d0c30eaf5d6d1";
-      inputs.nixpkgs.follows = "nixpkgs";
-      inputs.harbor-meta.follows = "harbor-meta";
-      inputs.treefmt-nix.follows = "treefmt-nix";
-    };
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -40,9 +28,7 @@
   outputs =
     {
       self,
-      harbor-db,
-      harbor-rs,
-      harbor-docs,
+      harbor,
       treefmt-nix,
       home-manager,
       nixpkgs,
@@ -58,9 +44,9 @@
           let
             pkgs = import nixpkgs {
               inherit system;
-              overlays = [ (import harbor-rs.inputs.rust-overlay) ];
+              overlays = [ (import harbor.inputs.rust-overlay) ];
             };
-            toolchain = harbor-rs.lib.mkToolchain {
+            toolchain = harbor.lib.rust.mkToolchain {
               inherit pkgs;
               toolchainProfile = "stable";
             };
@@ -198,7 +184,7 @@
               '';
             }
           );
-          docs = harbor-docs.lib.mkDocs {
+          docs = harbor.lib.docs.mkDocs {
             inherit pkgs;
             src = ./docs;
             pname = "chaosbox-docs";
@@ -299,18 +285,21 @@
           ...
         }:
         let
-          cross = harbor-rs.lib.mkCross { inherit pkgs system; };
+          cross = harbor.lib.rust.mkCross { inherit pkgs system; };
         in
-        (harbor-rs.lib.mkDevShells {
+        (harbor.lib.rust.mkDevShells {
           inherit pkgs cross;
           inherit (toolchain) craneLib;
         })
         // rec {
           default =
-            (harbor-rs.lib.mkDevShell {
+            (harbor.lib.rust.mkDevShell {
               inherit pkgs cross;
               inherit (toolchain) craneLib;
-              packages = [ pkgs.cargo-nextest ];
+              packages = [
+                pkgs.cargo-nextest
+                (treefmt system pkgs).wrapper
+              ];
             }).overrideAttrs
               (_: {
                 CHAOSBOX_TEST_NIX = pkgs.lib.getExe pkgs.nix;
@@ -319,7 +308,7 @@
           # server + Console from the temporary packages. Opt-in so the
           # default shell (and every CI gate using it) never builds them;
           # binaries substitute from the fleet cache once review publishes.
-          typedb = harbor-rs.lib.mkDevShell {
+          typedb = harbor.lib.rust.mkDevShell {
             inherit pkgs cross;
             inherit (toolchain) craneLib;
             packages = [
@@ -411,13 +400,13 @@
               '';
           doc = craneLib.cargoDoc (commonArgs // { inherit cargoArtifacts; });
           docs = self.packages.${pkgs.stdenv.hostPlatform.system}.docs;
-          docs-summary = harbor-docs.lib.mkSummaryCheck {
+          docs-summary = harbor.lib.docs.mkSummaryCheck {
             inherit pkgs;
             src = ./docs;
           };
           packaging = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
           deployment-eval = pkgs.callPackage ./nix/deployment-eval.nix {
-            harborDbModule = harbor-db.nixosModules.default;
+            harborDbModule = harbor.nixosModules.database-default;
             typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
             chaosboxModule = self.nixosModules.chaosbox;
             chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
@@ -450,7 +439,7 @@
               '';
           typedb-integration = pkgs.callPackage ./nix/typedb-vm-test.nix {
             inherit federationTestTools;
-            harborDbModule = harbor-db.nixosModules.default;
+            harborDbModule = harbor.nixosModules.database-default;
             typedbModule = "${nixpkgs-typedb}/nixos/modules/services/databases/typedb.nix";
             chaosboxModule = self.nixosModules.chaosbox;
             chaosboxPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;

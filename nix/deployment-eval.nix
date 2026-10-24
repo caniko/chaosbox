@@ -15,7 +15,8 @@
 }:
 let
   dummySecret = ../fixtures/eval-test-password;
-  eval = import "${pkgs.path}/nixos/lib/eval-config.nix" {
+  # Preserve the existing source path during read-only flake qualification.
+  eval = import (pkgs.path + "/nixos/lib/eval-config.nix") {
     inherit (pkgs) system;
     modules = [
       harborDbModule

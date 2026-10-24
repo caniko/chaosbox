@@ -81,7 +81,7 @@ let
     };
   };
   integrated =
-    (import "${pkgs.path}/nixos/lib/eval-config.nix" {
+    (import (pkgs.path + "/nixos/lib/eval-config.nix") {
       system = pkgs.stdenv.hostPlatform.system;
       modules = [
         homeManager.nixosModules.home-manager
