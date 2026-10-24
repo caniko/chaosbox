@@ -13,7 +13,7 @@
 // - retrieved content is historical evidence, never instructions;
 // - one bundle version is pinned per model request; refresh failures keep the
 //   last good pin and mark the plugin degraded instead of failing the session.
-import { Plugin } from "@opencode/plugin";
+import type { Plugin } from "@opencode/plugin";
 import { execFile } from "node:child_process";
 import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import {
@@ -86,7 +86,7 @@ interface EvidenceHandle {
   id: string;
 }
 
-export default Plugin.define({
+export default {
   id: "chaosbox-intelligence",
   async setup(ctx) {
     const options = (ctx.options ?? {}) as ChaosboxIntelligenceOptions;
@@ -515,4 +515,4 @@ export default Plugin.define({
       });
     });
   },
-});
+} satisfies Plugin.Plugin;

@@ -11,6 +11,10 @@ import termios
 import time
 from pathlib import Path
 
+# The binary under test; test-typedb.sh exports it so an installed release on
+# PATH is never what gets qualified. The VM test relies on its packaged PATH.
+CHAOSBOX = os.environ.get("CHAOSBOX_TEST_BIN", "chaosbox")
+
 
 def main(work: Path) -> None:
     status = json.loads((work / "status.json").read_text())
@@ -39,7 +43,7 @@ def main(work: Path) -> None:
         os.fchmod(stream.fileno(), 0o600)
         json.dump(view, stream)
     with (work / "reader.log").open("w") as log:
-        process = subprocess.Popen(["chaosbox", "reader", "--admission", str(admission)],
+        process = subprocess.Popen([CHAOSBOX, "reader", "--admission", str(admission)],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
                                    text=True, bufsize=1)
         try:
@@ -72,7 +76,7 @@ def main(work: Path) -> None:
             # Advance the live pointer while this connection holds its old data.
             (work / "syntax" / "app.ts").write_text("export function newest() {}\nexport const value = 3;\n")
             with (work / "third.json").open("w") as output, (work / "third.log").open("w") as errors:
-                subprocess.run(["chaosbox", "run", str(work / "syntax"), "--repo", "syntax",
+                subprocess.run([CHAOSBOX, "run", str(work / "syntax"), "--repo", "syntax",
                                 "--no-decisions", "--max-candidates", "0"], check=True,
                                stdout=output, stderr=errors, timeout=30)
             assert json.loads((work / "third.json").read_text())["build_id"] != status["build_id"]
@@ -102,7 +106,7 @@ def main(work: Path) -> None:
         os.fchmod(stream.fileno(), 0o600)
         json.dump(view, stream)
     with (work / "reader-expiry.log").open("w") as log:
-        process = subprocess.Popen(["chaosbox", "reader", "--admission", str(admission)],
+        process = subprocess.Popen([CHAOSBOX, "reader", "--admission", str(admission)],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
         try:
             assert process.stdin is not None and process.stdout is not None
@@ -126,7 +130,7 @@ def main(work: Path) -> None:
     view["expires_at"] = view["issued_at"] + 300
     admission.write_text(json.dumps(view))
     with (work / "reader-backpressure.log").open("w") as log:
-        process = subprocess.Popen(["chaosbox", "reader", "--admission", str(admission)],
+        process = subprocess.Popen([CHAOSBOX, "reader", "--admission", str(admission)],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
         try:
             assert process.stdin is not None and process.stdout is not None
