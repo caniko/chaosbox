@@ -1,16 +1,15 @@
-//! Mandatory disposable-server gate; ordinary unit runs do not provision a server.
+//! Disposable-PostgreSQL federation gate; ordinary unit runs do not provision a server.
 use std::collections::BTreeMap;
 use chaosbox::federation::{
     Backend, ContextRequest, ErrorCode, Grant, Handle, Identity, KnowledgeSource, Policy, Project,
     Reader, Reply, Request, SharingMode,
 };
 use chaosbox::intelligence::Bundle;
-use chaosbox_typedb::{
-    reader::TypeDbReader,
-    store::{TypeDbConfig, TypeDbStore},
-};
+use chaosbox_pg::{reader::PgReader, store::PgStore, PgConfig};
 #[path = "support/federation.rs"]
 mod fixture;
+#[path = "../../chaosbox-pg/tests/support/server.rs"]
+mod server;
 
 fn policy() -> Policy {
     Policy {
@@ -36,7 +35,7 @@ fn policy() -> Policy {
     }
 }
 
-async fn publish(store: &mut TypeDbStore, bundle: &Bundle, predecessor: Option<&str>) -> String {
+async fn publish(store: &mut PgStore, bundle: &Bundle, predecessor: Option<&str>) -> String {
     bundle.validate().unwrap();
     store
         .publish_knowledge(
@@ -49,34 +48,37 @@ async fn publish(store: &mut TypeDbStore, bundle: &Bundle, predecessor: Option<&
         .unwrap()
 }
 
-async fn missing_database_stays_absent(config: &TypeDbConfig) {
-    let mut missing = config.clone();
-    missing.database.push_str("_missing");
-    std::env::set_var("CHAOSBOX_TYPEDB_DATABASE", &missing.database);
-    assert!(TypeDbReader::new(missing.clone()).connect().await.is_err());
+async fn missing_database_stays_absent(url: &str) {
+    let missing_url = url.replace("dbname=chaosbox", "dbname=chaosbox_missing");
+    let missing = PgConfig::new(missing_url.clone()).unwrap();
+    std::env::set_var("CHAOSBOX_DATABASE_URL", &missing_url);
+    assert!(PgReader::new(missing.clone()).connect().await.is_err());
     assert_eq!(
-        Backend::Typedb.current("private:dejana").await.unwrap_err(),
+        Backend::Postgres
+            .current("private:dejana")
+            .await
+            .unwrap_err(),
         ErrorCode::Unavailable
     );
     assert!(
-        TypeDbReader::new(missing.clone()).connect().await.is_err(),
+        PgReader::new(missing.clone()).connect().await.is_err(),
         "context read created a database"
     );
     assert_eq!(
-        Backend::Typedb
+        Backend::Postgres
             .snapshot("private:dejana", &"a".repeat(64))
             .await
             .unwrap_err(),
         ErrorCode::Unavailable
     );
     assert!(
-        TypeDbReader::new(missing).connect().await.is_err(),
+        PgReader::new(missing).connect().await.is_err(),
         "historical read created a database"
     );
-    std::env::set_var("CHAOSBOX_TYPEDB_DATABASE", &config.database);
+    std::env::set_var("CHAOSBOX_DATABASE_URL", url);
 }
 
-async fn historical_reads_reauthorize(mut store: TypeDbStore) {
+async fn historical_reads_reauthorize(mut store: PgStore) {
     let old = fixture::bundle(
         "dejana",
         &[(
@@ -86,7 +88,7 @@ async fn historical_reads_reauthorize(mut store: TypeDbStore) {
         )],
     );
     let original = publish(&mut store, &old, None).await;
-    let mut reader = Reader::new(policy(), Backend::Typedb).unwrap();
+    let mut reader = Reader::new(policy(), Backend::Postgres).unwrap();
     let context = Request::Context(ContextRequest {
         project: "project-a".into(),
         query: "context citations".into(),
@@ -112,12 +114,12 @@ async fn historical_reads_reauthorize(mut store: TypeDbStore) {
     );
     let current = publish(&mut store, &next, Some(&original)).await;
     assert_ne!(current, original);
-    assert!(Backend::Typedb
+    assert!(Backend::Postgres
         .snapshot("private:can", &original)
         .await
         .unwrap()
         .is_none());
-    assert!(Backend::Typedb
+    assert!(Backend::Postgres
         .current("private:can")
         .await
         .unwrap()
@@ -187,21 +189,15 @@ async fn missing_history_is_unavailable(reader: &Reader<Backend>, mut handle: Ha
 }
 
 #[tokio::test]
-#[ignore = "run scripts/test-typedb.sh --federation-only against its disposable server"]
-async fn federation_typedb_is_read_only_scoped_and_snapshot_bound() {
-    assert_eq!(
-        std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref(),
-        Ok("1"),
-        "the server-present gate must forbid skips"
-    );
-    let mut config =
-        TypeDbConfig::from_env().expect("explicit disposable-server credentials required");
-    config.database = format!("t_federation_{}", std::process::id());
-    std::env::set_var("CHAOSBOX_TYPEDB_DATABASE", &config.database);
-    let mut store = TypeDbStore::new(config.clone());
-    // Authenticate and apply schema before checking the missing database: a
-    // broken connection/credential must never masquerade as a successful denial.
+#[ignore = "disposable PostgreSQL with pgvector (initdb/pg_ctl/psql)"]
+async fn live_pg_federation_is_read_only_scoped_and_snapshot_bound() {
+    let server = server::Server::start();
+    let url = server.url();
+    std::env::set_var("CHAOSBOX_DATABASE_URL", &url);
+    let mut store = PgStore::new(PgConfig::new(url.clone()).unwrap());
+    // Connect and apply schema before checking the missing database: a
+    // broken connection must never masquerade as a successful denial.
     store.migrate().await.unwrap();
-    missing_database_stays_absent(&config).await;
+    missing_database_stays_absent(&url).await;
     historical_reads_reauthorize(store).await;
 }

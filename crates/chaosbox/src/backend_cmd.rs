@@ -1,20 +1,20 @@
-//! Backend selection, `TypeDB` connection helpers, the pinned reader, and database commands.
+//! Backend selection, PostgreSQL connection helpers, the pinned reader, and database commands.
 
 use super::*;
 
-/// Pipeline store selection: `CHAOSBOX_DB_BACKEND=typedb` publishes through
-/// `TypeDB`; anything else runs the disposable in-memory store. Lifecycle
-/// and consumer commands always target `TypeDB`.
+/// Pipeline store selection: `CHAOSBOX_DB_BACKEND=postgres` publishes through
+/// PostgreSQL; anything else runs the disposable in-memory store. Lifecycle
+/// and consumer commands always target PostgreSQL.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Backend {
     Memory,
-    Typedb,
+    Postgres,
 }
 
 /// Resolve the pipeline store from the environment.
 pub(super) fn backend() -> Backend {
-    if std::env::var("CHAOSBOX_DB_BACKEND").as_deref() == Ok("typedb") {
-        Backend::Typedb
+    if std::env::var("CHAOSBOX_DB_BACKEND").as_deref() == Ok("postgres") {
+        Backend::Postgres
     } else {
         Backend::Memory
     }
@@ -32,27 +32,27 @@ pub(super) struct RunSpend {
     pub(super) tokens: std::sync::atomic::AtomicU64,
 }
 
-/// `TypeDB` connection from the environment. The password arrives via a
-/// credential file (never a value, flag, or log); only the file path
-/// appears in diagnostics.
-pub(super) fn typedb_config_from_env() -> Result<TypeDbConfig, String> {
-    TypeDbConfig::from_env()
+/// PostgreSQL connection from `CHAOSBOX_DATABASE_URL`: a unix socket or
+/// loopback address only. The string is never printed (it may carry a
+/// password).
+pub(super) fn pg_config_from_env() -> Result<PgConfig, String> {
+    PgConfig::from_env()
 }
 
 /// Live publication chain for one repo: (expected predecessor, starting
 /// generation) for a fresh process. Missing database or no active build
 /// means a fresh chain; anything else is a hard error, never a guess.
-pub(super) async fn typedb_publication_chain(
-    config: &TypeDbConfig,
+pub(super) async fn pg_publication_chain(
+    config: &PgConfig,
     repo: &str,
 ) -> Result<(Option<String>, u64), String> {
-    let mut reader = TypeDbReader::new(config.clone());
+    let mut reader = PgReader::new(config.clone());
     Box::pin(reader.connect())
         .await
-        .map_err(|e| format!("typedb connect: {e}"))?;
+        .map_err(|e| format!("postgres connect: {e}"))?;
     let active = Box::pin(reader.active_build(repo))
         .await
-        .map_err(|e| format!("typedb active build: {e}"))?;
+        .map_err(|e| format!("postgres active build: {e}"))?;
     chain_publication(active.map(|b| (b.build_id, b.generation)))
         .map_err(|e| format!("publication chain: {e}"))
 }
@@ -64,7 +64,7 @@ pub(super) async fn typedb_publication_chain(
 /// answer is known, and `Err(msg)` when it cannot be determined.
 ///
 /// The in-process staging store answers for the memory backend and for a
-/// same-process republish; a fresh `TypeDB` process has empty staging by
+/// same-process republish; a fresh PostgreSQL process has empty staging by
 /// design, so it probes the pinned active build through the query reader
 /// instead. Publication state is never inferred from an empty staging area:
 /// `Err` means "cannot tell" (unreachable backend, failed query), and
@@ -84,17 +84,17 @@ pub(super) async fn active_publishes_relations<S: chaosbox_store::Store>(
                 .map_or(!build.edges.is_empty(), |c| c.decision_relations > 0),
         ));
     }
-    if backend() != Backend::Typedb {
+    if backend() != Backend::Postgres {
         return Ok(Some(false));
     }
-    let config = typedb_config_from_env().map_err(|e| format!("typedb config: {e}"))?;
-    let mut handle = TypeDbReader::new(config);
+    let config = pg_config_from_env().map_err(|e| format!("postgres config: {e}"))?;
+    let mut handle = PgReader::new(config);
     Box::pin(handle.connect())
         .await
-        .map_err(|e| format!("typedb connect: {e}"))?;
+        .map_err(|e| format!("postgres connect: {e}"))?;
     let build = Box::pin(handle.active_build(repo))
         .await
-        .map_err(|e| format!("typedb active build: {e}"))?;
+        .map_err(|e| format!("postgres active build: {e}"))?;
     let Some(build) = build else {
         return Ok(None);
     };
@@ -105,44 +105,44 @@ pub(super) async fn active_publishes_relations<S: chaosbox_store::Store>(
     // whole relation set out of the store.
     let relations = Box::pin(handle.build_relationships(&build.build_id, 1))
         .await
-        .map_err(|e| format!("typedb relationships: {e}"))?;
+        .map_err(|e| format!("postgres relationships: {e}"))?;
     Ok(Some(!relations.is_empty()))
 }
 
-/// Consumer read surface over the live backend: a pinned `TypeDB` reader.
+/// Consumer read surface over the live backend: a pinned PostgreSQL reader.
 /// Credentials stay behind `connect`; MCP callers only see the closed
 /// read surface. Query methods deref through to the pinned reader.
-pub(super) struct AnyReader(GraphReader<TypeDbReader>);
+pub(super) struct AnyReader(GraphReader<PgReader>);
 
 pub(super) const NEIGHBORHOOD_DEFAULT_LIMIT: usize = 20;
 
 impl AnyReader {
-    async fn handle() -> Result<TypeDbReader, PipelineError> {
+    async fn handle() -> Result<PgReader, PipelineError> {
         Self::handle_cached(&mut None).await
     }
 
-    /// Reuse transport only, after rereading the operator's credential file.
+    /// Reuse a live session only, after rereading the operator configuration.
     /// The caller owns eviction and must not retain this slot after failure.
     pub(super) async fn handle_cached(
-        slot: &mut Option<TypeDbReader>,
-    ) -> Result<TypeDbReader, PipelineError> {
-        let config = typedb_config_from_env().map_err(PipelineError::Consumer)?;
+        slot: &mut Option<PgReader>,
+    ) -> Result<PgReader, PipelineError> {
+        let config = pg_config_from_env().map_err(PipelineError::Consumer)?;
         if let Some(handle) = slot
             .as_ref()
-            .filter(|handle| handle.matches_config(&config))
+            .filter(|handle| handle.matches_config(&config) && !handle.is_closed())
         {
             return Ok(handle.clone());
         }
         *slot = None;
-        let mut handle = TypeDbReader::new(config);
+        let mut handle = PgReader::new(config);
         Box::pin(handle.connect())
             .await
-            .map_err(|e| PipelineError::Consumer(format!("typedb connect: {e}")))?;
+            .map_err(|e| PipelineError::Consumer(format!("postgres connect: {e}")))?;
         *slot = Some(handle.clone());
         Ok(handle)
     }
 
-    /// Connect and pin the active build for `repo` on `TypeDB`.
+    /// Connect and pin the active build for `repo` on PostgreSQL.
     pub(super) async fn connect(repo: &str) -> Result<Self, PipelineError> {
         Self::connect_at(repo, None).await
     }
@@ -160,7 +160,7 @@ impl AnyReader {
 
     /// Pin a fresh publication on an existing transport, never a previous reader.
     pub(super) async fn pin(
-        handle: TypeDbReader,
+        handle: PgReader,
         repo: &str,
         build_id: Option<&str>,
     ) -> Result<Self, PipelineError> {
@@ -203,27 +203,27 @@ impl AnyReader {
 }
 
 impl std::ops::Deref for AnyReader {
-    type Target = GraphReader<TypeDbReader>;
+    type Target = GraphReader<PgReader>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
 }
 
-/// TypeDB-backed readiness: connectivity + schema probe + active build.
+/// PostgreSQL-backed readiness: connectivity + schema probe + active build.
 /// Reports contract v2; exit 0 ready, 2 pending, 1 otherwise.
-pub(super) async fn db_check_typedb(repo: &str) -> LifecycleReport {
-    let config = match typedb_config_from_env() {
+pub(super) async fn db_check_pg(repo: &str) -> LifecycleReport {
+    let config = match pg_config_from_env() {
         Ok(c) => c,
         Err(e) => return LifecycleReport::error("db check", &e),
     };
-    let mut reader = TypeDbReader::new(config);
+    let mut reader = PgReader::new(config);
     if let Err(e) = Box::pin(reader.connect()).await {
         // A missing database is the normal pre-migration state, not a
         // failure; anything else is an operational error.
         if e.to_string().contains("not found") {
             return LifecycleReport::pending("db check", "database not present");
         }
-        return LifecycleReport::error("db check", &format!("typedb connect: {e}"));
+        return LifecycleReport::error("db check", &format!("postgres connect: {e}"));
     }
     match Box::pin(reader.probe()).await {
         Err(e) => LifecycleReport::error("db check", &format!("probe: {e}")),
@@ -240,21 +240,21 @@ pub(super) async fn db_check_typedb(repo: &str) -> LifecycleReport {
     }
 }
 
-/// `TypeDB` migration: ensure the database and apply the packaged schema
+/// PostgreSQL migration: apply the packaged schema to the existing database
 /// idempotently through the driver, then verify schema readiness itself.
-pub(super) async fn run_migrate_typedb() -> Result<LifecycleReport, String> {
-    let config = typedb_config_from_env()?;
-    let mut store = TypeDbStore::new(config);
+pub(super) async fn run_migrate_pg() -> Result<LifecycleReport, String> {
+    let config = pg_config_from_env()?;
+    let mut store = PgStore::new(config);
     Box::pin(store.migrate())
         .await
-        .map_err(|e| format!("typedb migrate: {e}"))?;
+        .map_err(|e| format!("postgres migrate: {e}"))?;
     Ok(LifecycleReport {
         contract_version: 2,
-        backend: "typedb".into(),
+        backend: "postgres".into(),
         operation: "db migrate".into(),
         status: "ready".into(),
-        schema_version: chaosbox_typedb::SCHEMA_VERSION,
-        pinned: chaosbox_typedb::TYPEDB_PINNED.into(),
+        schema_version: chaosbox_pg::SCHEMA_VERSION,
+        pinned: chaosbox_pg::POSTGRES_PINNED.into(),
         detail: serde_json::json!({"applied": true}),
     })
 }
@@ -266,16 +266,16 @@ pub(super) fn consumer_err(op: &str, e: impl std::fmt::Display) -> i32 {
     1
 }
 
-/// Inspect retained headers/counts using the existing credential-file route.
-pub(super) async fn run_inventory_typedb(
+/// Inspect retained headers and recorded counts through the read-only route.
+pub(super) async fn run_inventory_pg(
     repo: String,
     limit: usize,
     after: Option<String>,
 ) -> Result<LifecycleReport, String> {
-    use chaosbox_typedb::reader::{InventoryQuery, INVENTORY_TIMEOUT};
+    use chaosbox_pg::reader::{InventoryQuery, INVENTORY_TIMEOUT};
     let query = InventoryQuery::new(repo, limit, after).map_err(|error| error.to_string())?;
     let page = tokio::time::timeout(INVENTORY_TIMEOUT, async {
-        let mut reader = TypeDbReader::new(typedb_config_from_env()?);
+        let mut reader = PgReader::new(pg_config_from_env()?);
         Box::pin(reader.connect())
             .await
             .map_err(|error| error.to_string())?;
@@ -288,11 +288,11 @@ pub(super) async fn run_inventory_typedb(
     .map_err(|_| "build inventory deadline exceeded")??;
     Ok(LifecycleReport {
         contract_version: 2,
-        backend: "typedb".into(),
+        backend: "postgres".into(),
         operation: "db inventory".into(),
         status: "ready".into(),
-        schema_version: chaosbox_typedb::SCHEMA_VERSION,
-        pinned: chaosbox_typedb::TYPEDB_PINNED.into(),
+        schema_version: chaosbox_pg::SCHEMA_VERSION,
+        pinned: chaosbox_pg::POSTGRES_PINNED.into(),
         detail: serde_json::json!({"contract":"chaosbox.build-inventory.v1", "page":page}),
     })
 }

@@ -1,4 +1,6 @@
 //! Crash, custody and pruning invariants on real private SQLite journals.
+#[path = "../../chaosbox-pg/tests/support/server.rs"]
+mod server;
 use chaosbox::compaction::{Capture, Journal};
 use serde_json::{json, Value};
 
@@ -395,13 +397,14 @@ async fn early_string_results_reconcile_to_one_native_tool_occurrence() {
 }
 
 #[tokio::test]
-#[ignore = "requires the disposable TypeDB gate, explicit credentials and migrated schema"]
-async fn private_cross_session_memory_publishes_and_recovers_from_database() {
+#[ignore = "disposable PostgreSQL with pgvector (initdb/pg_ctl/psql)"]
+async fn live_pg_private_cross_session_memory_publishes_and_recovers_from_database() {
     use chaosbox::compaction::Budget;
-    use chaosbox_typedb::store::{TypeDbStore, TypeDbConfig};
-    assert_eq!(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref(), Ok("1"));
-    let config = TypeDbConfig::from_env().unwrap();
-    let mut store = TypeDbStore::new(config.clone());
+    use chaosbox_pg::{store::PgStore, PgConfig};
+    let server = server::Server::start();
+    let config = PgConfig::new(server.url()).unwrap();
+    let mut store = PgStore::new(config.clone());
+    store.migrate().await.unwrap();
     let dir = private_dir();
     let scope = format!("private:compaction-test-{}", std::process::id());
     let mut journal = Journal::open(dir.path(), &scope).unwrap();
@@ -428,7 +431,7 @@ async fn private_cross_session_memory_publishes_and_recovers_from_database() {
         .await
         .unwrap();
     // Simulates a fresh session/process using the same authoritative database.
-    let mut reader = TypeDbStore::new(config);
+    let mut reader = PgStore::new(config);
     let (pin, raw) = reader.knowledge(&scope).await.unwrap().unwrap();
     assert_eq!(pin, id);
     let published: chaosbox::intelligence::Bundle = serde_json::from_str(&raw).unwrap();
@@ -474,4 +477,35 @@ async fn private_cross_session_memory_publishes_and_recovers_from_database() {
     assert_eq!(bundle.records.len(), 1);
     assert_eq!(bundle.records[0].evidence.len(), 2);
     assert_eq!(bundle.assessments.len(), 2);
+}
+
+#[test]
+fn typedb_era_publication_predecessor_is_forgotten_exactly_once() {
+    let dir = private_dir();
+    let scope = "private:migration";
+    drop(Journal::open(dir.path(), scope).unwrap());
+    let raw = || rusqlite::Connection::open(dir.path().join("memory.sqlite")).unwrap();
+    let predecessor = |db: &rusqlite::Connection| -> Option<String> {
+        db.query_row("SELECT predecessor FROM publication", [], |r| r.get(0))
+            .ok()
+    };
+    raw()
+        .execute_batch(
+            "INSERT INTO publication VALUES (1, 'typedb-generation'); PRAGMA user_version = 0;",
+        )
+        .unwrap();
+    drop(Journal::open(dir.path(), scope).unwrap());
+    assert_eq!(
+        predecessor(&raw()),
+        None,
+        "retired-backend predecessor survived"
+    );
+    raw()
+        .execute(
+            "INSERT INTO publication VALUES (1, 'postgres-generation')",
+            [],
+        )
+        .unwrap();
+    drop(Journal::open(dir.path(), scope).unwrap());
+    assert_eq!(predecessor(&raw()).as_deref(), Some("postgres-generation"));
 }

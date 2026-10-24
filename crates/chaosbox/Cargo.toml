@@ -24,7 +24,7 @@ chaosbox-core = { workspace = true }
 chaosbox-extract = { workspace = true }
 chaosbox-jev = { workspace = true }
 chaosbox-store = { workspace = true }
-chaosbox-typedb = { workspace = true }
+chaosbox-pg = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

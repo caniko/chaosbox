@@ -96,7 +96,7 @@ pub fn no_active_build(repo: &str) -> PipelineError {
 ///
 /// Identity is content-addressed: decision id + suffix + supports + class +
 /// snapshot + file + text. Two materializations with different outcomes or
-/// bindings never share an evidence id, so TypeDB/Memory first-write-wins
+/// bindings never share an evidence id, so PostgreSQL/Memory first-write-wins
 /// can never retain a stale row under a colliding id.
 fn assemble_evidence(
     decision: &Decision,

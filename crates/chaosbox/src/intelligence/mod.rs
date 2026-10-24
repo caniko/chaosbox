@@ -1,6 +1,6 @@
 //! Selective session intelligence: bounded proposals, typed Jev assessment,
 //! deterministic admission, and read-only artifact retrieval. Bundles are
-//! private, immutable staging/export artifacts, not automatic `TypeDB` imports.
+//! private, immutable staging/export artifacts, not automatic PostgreSQL imports.
 
 mod assess;
 pub mod cli;

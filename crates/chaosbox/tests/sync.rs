@@ -1,4 +1,6 @@
 //! Peer reconciliation must converge independently of delivery order.
+#[path = "../../chaosbox-pg/tests/support/server.rs"]
+mod server;
 use chaosbox::sync::{Identity, Publication, Replica, SignedEvent};
 use chaosbox::intelligence::{assess, extract, questions, Bundle};
 use chaosbox_jev::{
@@ -902,13 +904,13 @@ fn published_metadata_must_replay_from_the_retained_receipts() {
 }
 
 #[tokio::test]
-#[ignore = "requires disposable TypeDB; scripts/test-typedb.sh runs this gate"]
-async fn signed_history_and_live_consumers_survive_real_typedb_restarts() {
+#[ignore = "disposable PostgreSQL with pgvector (initdb/pg_ctl/psql)"]
+async fn live_pg_signed_history_and_live_consumers_survive_real_database_restarts() {
     use chaosbox::sync::{persist_event, publish_current, current::CurrentReader};
-    use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
-    let mut config = TypeDbConfig::from_env().unwrap();
-    config.database = format!("sync_live_{}", std::process::id());
-    let mut store = TypeDbStore::new(config.clone());
+    use chaosbox_pg::{store::PgStore, PgConfig};
+    let server = server::Server::start();
+    let config = PgConfig::new(server.url()).unwrap();
+    let mut store = PgStore::new(config.clone());
     store.migrate().await.unwrap();
     let (identity, _) = Identity::create("private:can").unwrap();
     let first = SignedEvent::publication(
@@ -927,7 +929,7 @@ async fn signed_history_and_live_consumers_survive_real_typedb_restarts() {
         .await
         .unwrap();
     let mut reader = CurrentReader::new(
-        Box::new(TypeDbStore::new(config.clone())),
+        Box::new(PgStore::new(config.clone())),
         &identity.user(),
         "private:can",
     );
@@ -955,7 +957,7 @@ async fn signed_history_and_live_consumers_survive_real_typedb_restarts() {
     assert_eq!(fresh["snapshot"], next.digest);
     assert_eq!(fresh["records"].as_array().unwrap().len(), 2);
     drop(store);
-    let mut reopened = TypeDbStore::new(config);
+    let mut reopened = PgStore::new(config);
     assert_eq!(
         publish_current(&mut reopened, &identity.user(), "private:can")
             .await

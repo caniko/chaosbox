@@ -1,5 +1,5 @@
 //! Explicit, offline RSS comparison against a previously built CLI. Neither
-//! process connects to `TypeDB` or performs inference. Set `CHAOSBOX_BASELINE_BIN`
+//! process connects to a database or performs inference. Set `CHAOSBOX_BASELINE_BIN`
 //! to compare the original implementation on exactly the same corpus. Override
 //! the generated fixture with `CHAOSBOX_MEMORY_CORPUS` for a read-only real tree.
 

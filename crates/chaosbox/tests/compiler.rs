@@ -1,4 +1,6 @@
 //! Compiler evidence reaches publication and readback without model decisions.
+#[path = "../../chaosbox-pg/tests/support/server.rs"]
+mod server;
 
 use chaosbox::{GraphReader, Materialization, Pipeline};
 use chaosbox_core::RelationType;
@@ -114,23 +116,13 @@ async fn compiler_facts_publish_with_zero_budget_and_retain_anchors_and_citation
 }
 
 #[tokio::test]
-#[ignore = "requires disposable TypeDB via scripts/test-typedb.sh"]
-async fn compiler_facts_survive_fresh_typedb_readback() {
-    use chaosbox_typedb::{
-        reader::TypeDbReader,
-        store::{TypeDbConfig, TypeDbStore},
-    };
+#[ignore = "disposable PostgreSQL with pgvector (initdb/pg_ctl/psql)"]
+async fn live_pg_compiler_facts_survive_fresh_database_readback() {
+    use chaosbox_pg::{reader::PgReader, store::PgStore, PgConfig};
     let (snapshot, extraction) = fixture();
-    let config = TypeDbConfig {
-        address: std::env::var("CHAOSBOX_TYPEDB_ADDR").unwrap(),
-        username: "admin".into(),
-        password: std::fs::read_to_string(std::env::var("CHAOSBOX_TYPEDB_PASSWORD_FILE").unwrap())
-            .unwrap()
-            .trim()
-            .into(),
-        database: format!("compiler_{}", std::process::id()),
-    };
-    let mut store = TypeDbStore::new(config.clone());
+    let server = server::Server::start();
+    let config = PgConfig::new(server.url()).unwrap();
+    let mut store = PgStore::new(config.clone());
     store.migrate().await.unwrap();
     let mut pipe = Pipeline {
         store,
@@ -147,7 +139,7 @@ async fn compiler_facts_survive_fresh_typedb_readback() {
         )
         .await
         .unwrap();
-    let mut backend = TypeDbReader::new(config);
+    let mut backend = PgReader::new(config);
     backend.connect().await.unwrap();
     let reader = GraphReader::pinned(backend, "compiler").await.unwrap();
     assert_eq!(

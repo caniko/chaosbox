@@ -93,7 +93,7 @@ pub fn validate_build_id(build_id: &str) -> Result<(), PipelineError> {
 /// Backend read-only queries. One build id is pinned per reader from the
 /// active-build pointer or an exact published build; readers never mutate,
 /// migrate, or load Jev credentials.
-/// Generic over [`chaosbox_store::GraphQueries`] with `TypeDbReader` as the
+/// Generic over [`chaosbox_store::GraphQueries`] with `PgReader` as the
 /// live backend and [`chaosbox_store::MemoryReader`] for tests.
 pub struct GraphReader<R> {
     handle: R,

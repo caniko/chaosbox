@@ -389,7 +389,7 @@ pub fn assess(
         return Ok(receipt);
     }
     // ponytail: cloning the bounded staging bundle gives atomic failure.
-    // Use a backend transaction when these records enter TypeDB publication.
+    // Use a backend transaction when these records enter backend publication.
     let mut next = bundle.clone();
     materialize(candidate, &mut next, &receipt, selected_kind)?;
     next.assessments.push(receipt.clone());

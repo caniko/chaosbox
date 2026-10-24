@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::Subcommand;
 use chaosbox_store::GraphQueries;
 use chaosbox::postgres::{Capture, collect, load_capture, publish, write_capture};
-use super::{TypeDbStore, typedb_config_from_env};
+use super::{PgStore, pg_config_from_env};
 
 #[derive(Debug, Subcommand)]
 pub(super) enum Command {
@@ -16,7 +16,7 @@ pub(super) enum Command {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Publish one source-bound receipt to `TypeDB`; no inference is involved.
+    /// Publish one source-bound receipt to PostgreSQL; no inference is involved.
     Publish {
         #[arg(long)]
         artifact: PathBuf,
@@ -27,7 +27,7 @@ pub(super) enum Command {
         #[arg(long)]
         schema: String,
     },
-    /// Collect current catalog, persist immutable evidence, and publish to `TypeDB`.
+    /// Collect current catalog, persist immutable evidence, and publish to PostgreSQL.
     Collect {
         #[arg(long)]
         database: String,
@@ -61,7 +61,7 @@ pub(super) async fn run(command: Command) -> Result<(), String> {
             if capture.catalog.database != database || capture.catalog.schema != schema {
                 return Err("PostgreSQL receipt does not match requested source".into());
             }
-            publish_typedb(&capture, &repo).await?;
+            publish_pg(&capture, &repo).await?;
         }
         Command::Collect {
             database,
@@ -79,7 +79,7 @@ pub(super) async fn run(command: Command) -> Result<(), String> {
             } else {
                 write_capture(&artifact, &capture).map_err(|e| e.to_string())?;
             }
-            publish_typedb(&capture, &repo).await?;
+            publish_pg(&capture, &repo).await?;
         }
     }
     Ok(())
@@ -91,9 +91,9 @@ fn report(capture: &Capture) -> serde_json::Value {
         "records":capture.catalog.records.len(),"omissions":capture.catalog.omissions,"exhaustive":false})
 }
 
-async fn publish_typedb(capture: &Capture, repo: &str) -> Result<(), String> {
-    let config = typedb_config_from_env()?;
-    let mut reader = chaosbox_typedb::reader::TypeDbReader::new(config.clone());
+async fn publish_pg(capture: &Capture, repo: &str) -> Result<(), String> {
+    let config = pg_config_from_env()?;
+    let mut reader = chaosbox_pg::reader::PgReader::new(config.clone());
     Box::pin(reader.connect())
         .await
         .map_err(|e| e.to_string())?;
@@ -118,7 +118,7 @@ async fn publish_typedb(capture: &Capture, repo: &str) -> Result<(), String> {
     let (predecessor, generation) =
         chaosbox::chain_publication(active.map(|build| (build.build_id, build.generation)))
             .map_err(|error| error.to_string())?;
-    let mut store = TypeDbStore::new(config);
+    let mut store = PgStore::new(config);
     let next = generation
         .checked_add(1)
         .ok_or("PostgreSQL publication generation exhausted")?;

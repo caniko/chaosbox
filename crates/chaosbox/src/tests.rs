@@ -503,7 +503,7 @@ fn capture_only_gate_keeps_the_active_query_view() {
         "assessing nothing is not coverage of a relation-bearing build"
     );
     assert!(
-        !capture_only_publishable(&Err("typedb connect: refused".to_owned()), 3, 3),
+        !capture_only_publishable(&Err("postgres connect: refused".to_owned()), 3, 3),
         "an unreadable active build is never replaced"
     );
 }

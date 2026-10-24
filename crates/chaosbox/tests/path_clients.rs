@@ -1,5 +1,8 @@
 //! Ordinary path clients validate before credentials and share traversal results.
 
+#[path = "../../chaosbox-pg/tests/support/server.rs"]
+mod server;
+
 use std::{process::Stdio, time::Duration};
 use chaosbox::{GraphReader, PathQuery};
 use chaosbox_core::{
@@ -35,7 +38,7 @@ async fn cli_validates_paths_before_credentials() {
                 "--max-hops",
                 hops,
             ])
-            .env_remove("CHAOSBOX_TYPEDB_PASSWORD_FILE")
+            .env_remove("CHAOSBOX_DATABASE_URL")
             .env_remove("CHAOSBOX_JEV_API_KEY_FILE")
             .kill_on_drop(true)
             .output()
@@ -44,7 +47,7 @@ async fn cli_validates_paths_before_credentials() {
         assert!(!output.status.success());
         let text = String::from_utf8(output.stdout).unwrap();
         assert!(text.contains("invalid path"), "{text}");
-        assert!(!text.contains("PASSWORD_FILE"), "{text}");
+        assert!(!text.contains("CHAOSBOX_DATABASE_URL"), "{text}");
     }
 }
 
@@ -169,20 +172,16 @@ async fn cli_path(args: &Value) -> Result<Value, String> {
 
 #[tokio::test]
 async fn ordinary_path_deadline_includes_a_stalled_connection() {
-    // A TCP listener that never speaks gRPC cannot complete TypeDB acquisition.
+    // A TCP listener that never answers cannot complete PostgreSQL startup.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let credentials = tempfile::tempdir().unwrap();
-    let password = credentials.path().join("test-password");
-    std::fs::write(&password, "disposable-test-password").unwrap();
+    let url = format!(
+        "host=127.0.0.1 port={} dbname=stalled user=stalled",
+        listener.local_addr().unwrap().port()
+    );
     let command = || {
         let mut command = tokio::process::Command::new(binary());
         command
-            .env(
-                "CHAOSBOX_TYPEDB_ADDR",
-                listener.local_addr().unwrap().to_string(),
-            )
-            .env("CHAOSBOX_TYPEDB_DATABASE", "s02c2_stalled")
-            .env("CHAOSBOX_TYPEDB_PASSWORD_FILE", &password)
+            .env("CHAOSBOX_DATABASE_URL", &url)
             .env_remove("CHAOSBOX_JEV_API_KEY_FILE");
         command
     };
@@ -399,20 +398,15 @@ async fn check_cases(client: &mut Mcp, f: &Fixture) -> usize {
 }
 
 #[tokio::test]
-#[ignore = "requires a fresh disposable s02c2_* TypeDB database and CHAOSBOX_REQUIRE_TYPEDB=1"]
-async fn disposable_path_clients_agree_and_repin_after_publication() {
-    use chaosbox_typedb::{
-        reader::TypeDbReader,
-        store::{TypeDbConfig, TypeDbStore},
-    };
+#[ignore = "disposable PostgreSQL with pgvector (initdb/pg_ctl/psql)"]
+async fn live_pg_path_clients_agree_and_repin_after_publication() {
+    use chaosbox_pg::{reader::PgReader, store::PgStore, PgConfig};
 
-    assert_eq!(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref(), Ok("1"));
-    let config = TypeDbConfig::from_env().unwrap();
-    assert!(
-        config.database.starts_with("s02c2_"),
-        "use a fresh disposable s02c2_* database"
-    );
-    let mut store = TypeDbStore::new(config.clone());
+    let server = server::Server::start();
+    // Fresh CLI and MCP children inherit the disposable database.
+    std::env::set_var("CHAOSBOX_DATABASE_URL", server.url());
+    let config = PgConfig::new(server.url()).unwrap();
+    let mut store = PgStore::new(config.clone());
     store.migrate().await.unwrap();
     for (snapshot, repo) in [("s-path-clients", REPO), ("s-path-other", "path-other")] {
         store
@@ -434,7 +428,7 @@ async fn disposable_path_clients_agree_and_repin_after_publication() {
     let mut other = GraphBuild::new("path-other", vec!["s-path-other".into()], 1);
     other.add_node(f.foreign.clone()).unwrap();
     store.publish(other, None).await.unwrap();
-    let mut handle = TypeDbReader::new(config.clone());
+    let mut handle = PgReader::new(config.clone());
     handle.connect().await.unwrap();
     let old = GraphReader::pinned(handle, REPO).await.unwrap();
     let mut client = Mcp::start().await;
@@ -458,7 +452,7 @@ async fn disposable_path_clients_agree_and_repin_after_publication() {
         old.path(&f.hub, &f.late_out, 1).await.unwrap(),
         Some(vec![f.hub.clone(), f.late_out.clone()])
     );
-    let mut handle = TypeDbReader::new(config.clone());
+    let mut handle = PgReader::new(config.clone());
     handle.connect().await.unwrap();
     let historical = GraphReader::published(handle, REPO, &f.build.id)
         .await
@@ -472,7 +466,7 @@ async fn disposable_path_clients_agree_and_repin_after_publication() {
         .prepare()
         .unwrap();
     let value = Box::pin(prepared.read(async {
-        let mut handle = TypeDbReader::new(config);
+        let mut handle = PgReader::new(config);
         handle
             .connect()
             .await

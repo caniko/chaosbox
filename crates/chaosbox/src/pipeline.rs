@@ -95,7 +95,7 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
     /// publication share one threshold source; the materialization identity
     /// covers every threshold, keeping raw decisions reusable.
     /// Every decision and its evidence is persisted to `store` as produced
-    /// (the `TypeDB` store writes decisions through to the server, so a dead
+    /// (the PostgreSQL store writes decisions through to the server, so a dead
     /// worker or a later budget failure loses nothing already paid for),
     /// so a dead worker loses nothing already decided. Claims are assembled
     /// later in [`Pipeline::build_and_publish`], where relation ids exist.

@@ -671,10 +671,10 @@ fn actual_mcp_process_serves_intelligence_without_database_or_model_credentials(
     let mut child = Command::new(env!("CARGO_BIN_EXE_chaosbox"))
         .args(["mcp", "--intelligence"])
         .arg(&path)
-        .env("CHAOSBOX_DB_BACKEND", "typedb")
+        .env("CHAOSBOX_DB_BACKEND", "postgres")
         .env(
-            "CHAOSBOX_TYPEDB_PASSWORD_FILE",
-            "/nonexistent-test-credential",
+            "CHAOSBOX_DATABASE_URL",
+            "host=/nonexistent-test-socket dbname=chaosbox",
         )
         .env("CHAOSBOX_JEV_API_KEY_FILE", "/nonexistent-test-credential")
         .stdin(Stdio::piped())
