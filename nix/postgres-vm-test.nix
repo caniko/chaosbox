@@ -115,8 +115,8 @@ pkgs.testers.nixosTest {
 
     # Reader acceptance: historical pinning, newer publication, revocation,
     # call exhaustion and expiry with observable transport output.
-    machine.succeed("mkdir -p /tmp/cbtest/reader/syntax && chown -R ${testDb}: /tmp/cbtest/reader")
-    machine.succeed("printf 'export function before() {}\\nexport const value = 1;\\n' > /tmp/cbtest/reader/syntax/app.ts")
+    # The smoke rewrites app.ts as ${testDb}, so chown after root creates it.
+    machine.succeed("mkdir -p /tmp/cbtest/reader/syntax && printf 'export function before() {}\\nexport const value = 1;\\n' > /tmp/cbtest/reader/syntax/app.ts && chown -R ${testDb}: /tmp/cbtest/reader")
     assert cb("chaosbox run /tmp/cbtest/reader/syntax --repo syntax --no-decisions --max-candidates 0")[0] == 0
     machine.succeed("printf 'export function after() {}\\nexport const value = 2;\\n' > /tmp/cbtest/reader/syntax/app.ts")
     assert cb("chaosbox run /tmp/cbtest/reader/syntax --repo syntax --no-decisions --max-candidates 0")[0] == 0
