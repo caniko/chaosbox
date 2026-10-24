@@ -4,13 +4,13 @@ import argparse
 import copy
 import json
 import os
-from pathlib import Path
 import pwd
 import selectors
 import shutil
 import signal
 import subprocess
 import time
+from pathlib import Path
 
 PROJECT = "git:github.com/caniko/chaosbox"
 OWNERS = ("can", "dejana")
@@ -19,7 +19,7 @@ OWNERS = ("can", "dejana")
 def run(owner, *args, **kwargs):
     return subprocess.run(
         ["runuser", "-u", owner, "--", *map(str, args)],
-        text=True, capture_output=True, timeout=20, **kwargs,
+        text=True, capture_output=True, timeout=20, check=kwargs.pop("check", False), **kwargs,
     )
 
 

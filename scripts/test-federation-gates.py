@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Small subprocess regressions for the federation qualification drivers."""
 import argparse
-from pathlib import Path
 import os
 import runpy
 import socket
@@ -11,6 +10,7 @@ import tempfile
 import threading
 import time
 import unittest
+from pathlib import Path
 
 REPLY = '{"result":{"status":"ok"}}\n'
 
@@ -30,7 +30,7 @@ class RustTestCount(unittest.TestCase):
                 ["bash", str(TYPEDB_GATE), str(root / "test.log")],
                 env=dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
                          TEST_SUMMARY=summary, TEST_EXIT=str(exit_code)),
-                text=True, capture_output=True, timeout=5,
+                text=True, capture_output=True, timeout=5, check=False,
             )
 
     def test_exactly_one_executed_test_passes(self):

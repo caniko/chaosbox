@@ -1,6 +1,6 @@
 //! Bounded candidate construction: selection plus truthful accounting.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, HashSet};
 
 use chaosbox_core::{Candidate, Entity, EntityKind, RelationType, deterministic_id};
 use serde::{Deserialize, Serialize};
@@ -39,19 +39,19 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Candi
     // Eight parameters are a smell the owning session should refactor
     // (e.g. a builder struct); allowed to keep this integration unblocked.
     #[allow(clippy::too_many_arguments)]
-    fn push(
+    fn push<'a>(
         cat: &mut CandidateCatalog,
-        seen: &mut BTreeSet<(String, String, String)>,
+        seen: &mut HashSet<(RelationType, &'a str, &'a str)>,
         rel: RelationType,
-        from: &str,
-        to: &str,
+        from: &'a str,
+        to: &'a str,
         reason: &str,
         excerpt: &str,
     ) {
         if from == to {
             return;
         }
-        let key = (rel_name(&rel), from.to_owned(), to.to_owned());
+        let key = (rel.clone(), from, to);
         // Duplicates are neither selected nor omitted: only a unique
         // candidate that meets a full cap counts as an omission.
         if !seen.insert(key) {
@@ -77,30 +77,18 @@ pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> Candi
         .iter()
         .map(|e| (e.id.as_str(), e))
         .collect();
-    let mut name_index: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for e in &extraction.entities {
-        if e.compiler.is_some() {
-            continue;
-        }
-        name_index
-            .entry(e.name.clone())
-            .or_default()
-            .push(e.id.clone());
-        name_index
-            .entry(e.qualified_name.clone())
-            .or_default()
-            .push(e.id.clone());
-    }
     let mut cat = CandidateCatalog {
         candidates: Vec::new(),
         selected: BTreeMap::new(),
         omitted: BTreeMap::new(),
         cap: max_candidates,
     };
-    let mut seen: BTreeSet<(String, String, String)> = extraction
+    // Only membership is queried; traversal/selection order still comes from
+    // extraction. Borrow endpoint ids even for proposals beyond the cap.
+    let mut seen: HashSet<(RelationType, &str, &str)> = extraction
         .facts
         .iter()
-        .map(|fact| (rel_name(&fact.rel_type), fact.from.clone(), fact.to.clone()))
+        .map(|fact| (fact.rel_type.clone(), fact.from.as_str(), fact.to.as_str()))
         .collect();
     // 1. Uncertified extraction proposals. Certified facts are already in
     // `seen`: they consume neither candidate slots nor omitted accounting.

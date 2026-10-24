@@ -2,12 +2,12 @@
 
 import hashlib
 import json
-from pathlib import Path
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -486,10 +486,10 @@ class ResearchPilotTest(unittest.TestCase):
                            ("strict_model_identity", 1), ("redirects", True)]:
             with self.subTest(key=key, value=value):
                 capabilities = {**baseline, key: value}
-                with patch.object(research.subprocess, "run", return_value=
-                                  subprocess.CompletedProcess([], 0, json.dumps(capabilities), "")):
-                    with self.assertRaisesRegex(ValueError, "capabilities"):
-                        research.JevRunner(work)({}, questions)
+                with (patch.object(research.subprocess, "run", return_value=
+                                   subprocess.CompletedProcess([], 0, json.dumps(capabilities), "")),
+                      self.assertRaisesRegex(ValueError, "capabilities")):
+                    research.JevRunner(work)({}, questions)
                 self.assertEqual(research.jev_usage(work)["reservedRequests"], 0)
 
     def test_substituted_model_is_failed_without_fallback_or_automatic_retry(self):
@@ -727,7 +727,7 @@ class ResearchPilotTest(unittest.TestCase):
     def test_metrics_do_not_label_partial_extraction_as_complete(self):
         work = self.root / "metrics"
         research.prepare(self.archive, work, session_ids=["ses_a"])
-        bundles = research.export(work, max_chars=15, chunk_chars=16)
+        research.export(work, max_chars=15, chunk_chars=16)
         status = research.metrics(work)
         self.assertEqual(status["selectedSessions"], 1)
         self.assertEqual(status["sourceSlices"], 2)
@@ -746,6 +746,23 @@ class ResearchPilotTest(unittest.TestCase):
                          "Please add an export command")
         with self.assertRaisesRegex(ValueError, "not exported"):
             research.inspect(work, "invented", radius=1)
+
+
+class ResearchSchemaTest(unittest.TestCase):
+    def test_malformed_top_level_types_are_rejected(self):
+        for value in (None, [], "not an object", {}, {"summary": 1, "shared": []}):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(TypeError, "invalid brief"):
+                    research.validate_signals(value, {"records": []})
+                with self.assertRaisesRegex(TypeError, "invalid report"):
+                    research.validate_report(value, {}, {})
+                with self.assertRaisesRegex(TypeError, "invalid portfolio"):
+                    research.validate_portfolio(value, {})
+
+    def test_reproduction_inventory_requires_an_object(self):
+        report = {"summary": "Reviewed", "limitations": [], "opportunities": []}
+        with self.assertRaisesRegex(TypeError, "reproductions must be an object"):
+            research.validate_report(report, {}, {}, reproductions=[])
 
 
 if __name__ == "__main__":

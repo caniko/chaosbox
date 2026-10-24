@@ -275,14 +275,32 @@ enum QueryCmd {
         id: String,
         #[arg(long, default_value = "demo")]
         repo: String,
+        /// Read this exact published build instead of the current publication.
+        #[arg(long)]
+        build_id: Option<String>,
     },
-    /// Incoming/outgoing neighborhoods with optional relation filter.
+    /// Page incoming/outgoing neighborhoods, pinned across continuation.
     Neighbors {
         id: String,
         #[arg(long, default_value = "demo")]
         repo: String,
         #[arg(long)]
         rel: Option<String>,
+        /// Relation names; an explicitly empty list matches nothing.
+        #[arg(long, num_args = 0.., value_delimiter = ',', conflicts_with = "rel")]
+        rel_types: Option<Vec<String>>,
+        /// Rows per selected direction (1..=200).
+        #[arg(long, default_value_t = backend_cmd::NEIGHBORHOOD_DEFAULT_LIMIT)]
+        limit: usize,
+        /// Continue the exact prior request and publication.
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Exact publication; must agree with a supplied continuation cursor.
+        #[arg(long)]
+        build_id: Option<String>,
+        /// Select both, outgoing or incoming.
+        #[arg(long, default_value = "both")]
+        direction: chaosbox::NeighborhoodMode,
     },
     /// Bounded path between two entities (successful negative => null).
     Path {
@@ -290,7 +308,7 @@ enum QueryCmd {
         to: String,
         #[arg(long, default_value = "demo")]
         repo: String,
-        #[arg(long, default_value_t = 4)]
+        #[arg(long, default_value_t = chaosbox::PathQuery::DEFAULT_MAX_HOPS)]
         max_hops: usize,
     },
     /// Deterministic export of the pinned active build.
@@ -303,6 +321,9 @@ enum QueryCmd {
         id: String,
         #[arg(long, default_value = "demo")]
         repo: String,
+        /// Read this exact published build instead of the current publication.
+        #[arg(long)]
+        build_id: Option<String>,
     },
     /// Active-build status, coverage, and generation.
     Status {
@@ -313,6 +334,17 @@ enum QueryCmd {
 
 #[derive(Debug, Subcommand)]
 enum DbCmd {
+    /// Page retained build headers and membership counts without loading graph payloads.
+    Inventory {
+        #[arg(long)]
+        repo: String,
+        /// Build headers per page (1..=50).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Exclusive build-ID boundary returned by the previous page.
+        #[arg(long)]
+        after: Option<String>,
+    },
     /// Read-only readiness check. Exit 0 only when ready.
     Check {
         /// Emit the versioned JSON envelope (contract v2; always on).
@@ -650,9 +682,18 @@ async fn main() {
                     eprintln!("intelligence federation: {error}");
                     std::process::exit(1);
                 });
-            Box::pin(serve_mcp(bundle, workspace, current, federation)).await;
+            if let Err(error) = Box::pin(serve_mcp(bundle, workspace, current, federation)).await {
+                eprintln!("MCP transport: {error}");
+                std::process::exit(1);
+            }
         }
         Command::Db { op } => match op {
+            DbCmd::Inventory { repo, limit, after } => {
+                match Box::pin(backend_cmd::run_inventory_typedb(repo, limit, after)).await {
+                    Ok(report) => println!("{}", serde_json::to_string(&report).unwrap()),
+                    Err(error) => std::process::exit(consumer_err("db inventory", error)),
+                }
+            }
             DbCmd::Check { json: _, repo } => {
                 // Read-only: never init/migrate/repair. Exit 0 when ready,
                 // 2 when pending, 1 otherwise (harbor-db contract v2).

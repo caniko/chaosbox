@@ -1,4 +1,4 @@
-//! Backend selection, `TypeDB` connection helpers, the pinned consumer reader, and the `db check` / `db migrate` lifecycle commands.
+//! Backend selection, `TypeDB` connection helpers, the pinned reader, and database commands.
 
 use super::*;
 
@@ -114,15 +114,71 @@ pub(super) async fn active_publishes_relations<S: chaosbox_store::Store>(
 /// read surface. Query methods deref through to the pinned reader.
 pub(super) struct AnyReader(GraphReader<TypeDbReader>);
 
+pub(super) const NEIGHBORHOOD_DEFAULT_LIMIT: usize = 20;
+
 impl AnyReader {
-    /// Connect and pin the active build for `repo` on `TypeDB`.
-    pub(super) async fn connect(repo: &str) -> Result<Self, PipelineError> {
+    async fn handle() -> Result<TypeDbReader, PipelineError> {
+        Self::handle_cached(&mut None).await
+    }
+
+    /// Reuse transport only, after rereading the operator's credential file.
+    /// The caller owns eviction and must not retain this slot after failure.
+    pub(super) async fn handle_cached(
+        slot: &mut Option<TypeDbReader>,
+    ) -> Result<TypeDbReader, PipelineError> {
         let config = typedb_config_from_env().map_err(PipelineError::Consumer)?;
+        if let Some(handle) = slot
+            .as_ref()
+            .filter(|handle| handle.matches_config(&config))
+        {
+            return Ok(handle.clone());
+        }
+        *slot = None;
         let mut handle = TypeDbReader::new(config);
         Box::pin(handle.connect())
             .await
             .map_err(|e| PipelineError::Consumer(format!("typedb connect: {e}")))?;
-        Ok(Self(GraphReader::pinned(handle, repo).await?))
+        *slot = Some(handle.clone());
+        Ok(handle)
+    }
+
+    /// Connect and pin the active build for `repo` on `TypeDB`.
+    pub(super) async fn connect(repo: &str) -> Result<Self, PipelineError> {
+        Self::connect_at(repo, None).await
+    }
+
+    /// Validate selection before acquiring credentials, then pin exactly once.
+    pub(super) async fn connect_at(
+        repo: &str,
+        build_id: Option<&str>,
+    ) -> Result<Self, PipelineError> {
+        if let Some(build_id) = build_id {
+            chaosbox::validate_build_id(build_id)?;
+        }
+        Self::pin(Self::handle().await?, repo, build_id).await
+    }
+
+    /// Pin a fresh publication on an existing transport, never a previous reader.
+    pub(super) async fn pin(
+        handle: TypeDbReader,
+        repo: &str,
+        build_id: Option<&str>,
+    ) -> Result<Self, PipelineError> {
+        Ok(Self(GraphReader::selected(handle, repo, build_id).await?))
+    }
+
+    /// Acquire credentials only after shared preparation has validated the query.
+    pub(super) async fn neighborhood_page(
+        query: chaosbox::PreparedNeighborhood,
+    ) -> Result<chaosbox::NeighborhoodPage, PipelineError> {
+        query.read(Self::handle().await?).await
+    }
+
+    /// Start the whole path budget before polling credential/backend acquisition.
+    pub(super) async fn path_query(
+        query: chaosbox::PreparedPath,
+    ) -> Result<serde_json::Value, PipelineError> {
+        query.read(Self::handle()).await
     }
 
     /// Pinned active build id for status responses.
@@ -208,4 +264,35 @@ pub(super) fn consumer_err(op: &str, e: impl std::fmt::Display) -> i32 {
     println!("{}", serde_json::to_string(&report).unwrap());
     eprintln!("{op} failed: {e}");
     1
+}
+
+/// Inspect retained headers/counts using the existing credential-file route.
+pub(super) async fn run_inventory_typedb(
+    repo: String,
+    limit: usize,
+    after: Option<String>,
+) -> Result<LifecycleReport, String> {
+    use chaosbox_typedb::reader::{InventoryQuery, INVENTORY_TIMEOUT};
+    let query = InventoryQuery::new(repo, limit, after).map_err(|error| error.to_string())?;
+    let page = tokio::time::timeout(INVENTORY_TIMEOUT, async {
+        let mut reader = TypeDbReader::new(typedb_config_from_env()?);
+        Box::pin(reader.connect())
+            .await
+            .map_err(|error| error.to_string())?;
+        reader
+            .inventory(&query)
+            .await
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "build inventory deadline exceeded")??;
+    Ok(LifecycleReport {
+        contract_version: 2,
+        backend: "typedb".into(),
+        operation: "db inventory".into(),
+        status: "ready".into(),
+        schema_version: chaosbox_typedb::SCHEMA_VERSION,
+        pinned: chaosbox_typedb::TYPEDB_PINNED.into(),
+        detail: serde_json::json!({"contract":"chaosbox.build-inventory.v1", "page":page}),
+    })
 }

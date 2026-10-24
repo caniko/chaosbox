@@ -42,8 +42,8 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
                 Err(e) => consumer_err("query search", e),
             }
         }
-        QueryCmd::Lookup { id, repo } => {
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
+        QueryCmd::Lookup { id, repo, build_id } => {
+            let reader = match Box::pin(AnyReader::connect_at(&repo, build_id.as_deref())).await {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query lookup", e),
             };
@@ -55,25 +55,32 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
                 Err(e) => consumer_err("query lookup", e),
             }
         }
-        QueryCmd::Neighbors { id, repo, rel } => {
-            // Validate the filter before touching the backend: typos must fail loudly.
-            let filter = match chaosbox::validate_rel_filter(rel.map(|r| vec![r])) {
-                Ok(f) => f,
-                Err(e) => return consumer_err("query neighbors", e),
+        QueryCmd::Neighbors {
+            id,
+            repo,
+            rel,
+            rel_types,
+            limit,
+            cursor,
+            build_id,
+            direction,
+        } => {
+            let query = chaosbox::NeighborhoodQuery {
+                id,
+                repo,
+                direction,
+                limit,
+                cursor,
+                build_id,
+                rel_types: rel_types.or_else(|| rel.map(|name| vec![name])),
             };
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
-                Ok(r) => r,
-                Err(e) => return consumer_err("query neighbors", e),
+            let query = match query.prepare() {
+                Ok(query) => query,
+                Err(error) => return consumer_err("query neighbors", error),
             };
-            match reader.neighbors(&id, filter).await {
-                Ok((out, inc)) => {
-                    println!(
-                        "{}",
-                        serde_json::to_string(&serde_json::json!({
-                            "id": id, "outgoing": out, "incoming": inc,
-                        }))
-                        .unwrap()
-                    );
+            match Box::pin(AnyReader::neighborhood_page(query)).await {
+                Ok(page) => {
+                    println!("{}", serde_json::to_string(&page).unwrap());
                     0
                 }
                 Err(e) => consumer_err("query neighbors", e),
@@ -85,20 +92,20 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
             repo,
             max_hops,
         } => {
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
-                Ok(r) => r,
-                Err(e) => return consumer_err("query path", e),
+            let query = chaosbox::PathQuery {
+                repo,
+                from,
+                to,
+                max_hops,
             };
-            match reader.path(&from, &to, max_hops).await {
+            let query = match query.prepare() {
+                Ok(query) => query,
+                Err(error) => return consumer_err("query path", error),
+            };
+            match Box::pin(AnyReader::path_query(query)).await {
                 // Successful negative (no path) is a null result, exit 0.
-                Ok(path) => {
-                    println!(
-                        "{}",
-                        serde_json::to_string(&serde_json::json!({
-                            "from": from, "to": to, "path": path,
-                        }))
-                        .unwrap()
-                    );
+                Ok(value) => {
+                    println!("{value}");
                     0
                 }
                 Err(e) => consumer_err("query path", e),
@@ -117,31 +124,14 @@ pub(super) async fn run_query(q: QueryCmd) -> i32 {
                 Err(e) => consumer_err("query export", e),
             }
         }
-        QueryCmd::Explain { id, repo } => {
-            let reader = match Box::pin(AnyReader::connect(&repo)).await {
+        QueryCmd::Explain { id, repo, build_id } => {
+            let reader = match Box::pin(AnyReader::connect_at(&repo, build_id.as_deref())).await {
                 Ok(r) => r,
                 Err(e) => return consumer_err("query explain", e),
             };
-            match reader.lookup(&id).await {
-                Ok(None) => {
-                    println!("null");
-                    0
-                }
-                Ok(Some(e)) => {
-                    let (out, inc) = match reader.neighbors(&id, None).await {
-                        Ok(n) => n,
-                        Err(e) => return consumer_err("query explain", e),
-                    };
-                    println!(
-                        "{}",
-                        serde_json::to_string(&serde_json::json!({
-                            "id": e.entity_id, "kind": e.kind, "file": e.file,
-                            "qualified_name": e.qualified_name,
-                            "snapshot": e.snapshot, "span": e.span, "compiler": e.compiler,
-                            "outgoing": out.len(), "incoming": inc.len(),
-                        }))
-                        .unwrap()
-                    );
+            match reader.explain(&id).await {
+                Ok(value) => {
+                    println!("{value}");
                     0
                 }
                 Err(e) => consumer_err("query explain", e),

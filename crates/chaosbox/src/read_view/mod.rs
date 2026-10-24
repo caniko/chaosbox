@@ -335,8 +335,9 @@ pub(super) fn unix_now() -> Result<u64, ReadError> {
         .map_err(|_| ReadError::Expired)
 }
 
-/// Serialize with an allocation bound rather than allocating then checking size.
-pub(super) fn bounded_json<T: Serialize>(value: &T, cap: usize) -> Result<Vec<u8>, ReadError> {
+/// Serialize with a byte bound rather than allocating the complete JSON then checking size.
+/// This pure helper grants no read-view authority. `Vec` capacity may round up.
+pub fn bounded_json<T: Serialize>(value: &T, cap: usize) -> Result<Vec<u8>, ReadError> {
     struct Buffer {
         bytes: Vec<u8>,
         cap: usize,

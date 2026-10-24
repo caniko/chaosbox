@@ -1,6 +1,15 @@
 //! Read-only MCP over stdio: tool definitions, argument validation, dispatch, and the serve loop.
 
-use super::{AnyReader, LifecycleReport, EXPORT_NODE_CAP, EXPORT_EDGE_CAP, all_relation_types};
+use super::{
+    AnyReader, LifecycleReport, TypeDbReader, EXPORT_NODE_CAP, EXPORT_EDGE_CAP, all_relation_types,
+};
+use std::{
+    collections::VecDeque,
+    future::{Future, pending},
+    time::Duration,
+};
+use serde_json::Value;
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 // ---- Read-only MCP (JSON-RPC over stdio, full handshake) ----
 
@@ -12,8 +21,15 @@ const MCP_PROTOCOL_FALLBACKS: &[&str] = &["2024-11-05", "2025-03-26"];
 const MCP_PAGE_SIZE: usize = 5;
 /// Upper bound for caller-supplied search limits: paginate instead.
 const MCP_SEARCH_LIMIT_MAX: i64 = 200;
-/// Upper bound for caller-supplied path hop counts.
-const MCP_MAX_HOPS: usize = 8;
+/// Limits include framing bytes. Overlong input closes the connection.
+pub(super) const MCP_FRAME_BYTES: usize = 64 * 1024;
+pub(super) const MCP_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+const MCP_OUTPUT_TIMEOUT: Duration = Duration::from_secs(10);
+const MCP_GRAPH_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const MCP_PENDING_REQUESTS: usize = 8;
+const MCP_PENDING_BYTES: usize = 256 * 1024;
+// Admission wait is separate from dispatch-owned backend/path deadlines.
+const MCP_ADMISSION_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(super) fn mcp_tool_defs() -> Vec<serde_json::Value> {
     vec![
@@ -25,23 +41,40 @@ pub(super) fn mcp_tool_defs() -> Vec<serde_json::Value> {
         ),
         mcp_tool(
             "lookup",
-            "Typed entity lookup by id.",
+            "Typed entity lookup by id. Optional build_id selects an exact repository-owned publication; omission selects current at dispatch.",
             serde_json::json!({"id": {"type": "string"}}),
             vec!["id"],
         ),
-        mcp_tool(
-            "neighbors",
-            "Incoming/outgoing neighborhoods with optional relation filter.",
-            serde_json::json!({"id": {"type": "string"}, "rel": {"type": "string"}}),
-            vec!["id"],
-        ),
-        mcp_tool(
-            "path",
-            "Bounded path between two entities (null when absent).",
-            serde_json::json!({"from": {"type": "string"}, "to": {"type": "string"},
-                "max_hops": {"type": "integer", "default": 4, "maximum": 8}}),
-            vec!["from", "to"],
-        ),
+        {
+            let mut tool = mcp_tool(
+                "neighbors",
+                "Page neighborhoods in relationship-ID order. Limit applies per direction. Follow next_cursor with the same arguments until complete; continuation pins the exact build. Optional build_id starts a fresh historical anchor and must agree with any cursor. Use rel or rel_types, not both; an empty rel_types list matches nothing.",
+                serde_json::json!({"id":{"type":"string","minLength":1,"maxLength":256},
+                    "rel":{"type":"string"},"rel_types":{"type":"array","items":{"type":"string"}},
+                    "limit":{"type":"integer","minimum":1,"maximum":200,"default":super::backend_cmd::NEIGHBORHOOD_DEFAULT_LIMIT},
+                    "cursor":{"type":"string","maxLength":16384},
+                    "direction":{"type":"string","enum":["both","outgoing","incoming"],"default":"both"}}),
+                vec!["id"],
+            );
+            tool["inputSchema"]["additionalProperties"] = serde_json::json!(false);
+            tool["inputSchema"]["not"] = serde_json::json!({"required":["rel","rel_types"]});
+            tool
+        },
+        {
+            let text = serde_json::json!({"type":"string","minLength":1,"maxLength":256});
+            let mut tool = mcp_tool(
+                "path",
+                "Shortest undirected path within max_hops; null when absent, error on work/deadline exhaustion. Repository and endpoints must be nonblank, control-free and at most 256 UTF-8 bytes.",
+                serde_json::json!({"from":text,"to":text,
+                    "max_hops":{"type":"integer","minimum":0,
+                        "default":chaosbox::PathQuery::DEFAULT_MAX_HOPS,
+                        "maximum":chaosbox::PathQuery::MAX_HOPS}}),
+                vec!["from", "to"],
+            );
+            tool["inputSchema"]["properties"]["repo"] = text;
+            tool["inputSchema"]["additionalProperties"] = serde_json::json!(false);
+            tool
+        },
         mcp_tool(
             "evidence",
             "Claim evidence and source locations for a relationship.",
@@ -119,6 +152,12 @@ pub(super) fn mcp_tool(
             "repo".to_owned(),
             serde_json::json!({"type": "string", "minLength": 1}),
         );
+        if matches!(name, "lookup" | "explain" | "evidence" | "neighbors") {
+            props.insert("build_id".into(), serde_json::json!({
+                "type":"string", "minLength":1, "maxLength":256,
+                "description":"Exact repository-owned publication. Omit for current; with a cursor, must match its build."
+            }));
+        }
     }
     serde_json::json!({
         "name": name, "description": description,
@@ -131,9 +170,12 @@ pub(super) fn mcp_text_result(
     id: &serde_json::Value,
     payload: &serde_json::Value,
 ) -> serde_json::Value {
+    let Ok(bytes) = chaosbox::read_view::bounded_json(payload, MCP_RESPONSE_BYTES) else {
+        return mcp_error(id, -32603, "MCP response byte budget exceeded".into(), None);
+    };
     serde_json::json!({
         "jsonrpc": "2.0", "id": id,
-        "result": {"content": [{"type": "text", "text": serde_json::to_string(payload).unwrap_or_default()}]},
+        "result": {"content": [{"type": "text", "text": String::from_utf8_lossy(&bytes)}]},
     })
 }
 
@@ -185,10 +227,11 @@ pub(super) fn mcp_args(
 // Long CLI/dispatch functions; splitting them apart is the owning
 // session's refactor. Allowed to keep CI unblocked.
 #[allow(clippy::too_many_lines)]
-pub(super) async fn mcp_call_tool(
+async fn mcp_call_tool_connected(
     id: &serde_json::Value,
     name: &str,
     params: &serde_json::Value,
+    connection: &mut Option<TypeDbReader>,
 ) -> serde_json::Value {
     let args = match mcp_args(name, params) {
         Ok(a) => a,
@@ -235,8 +278,52 @@ pub(super) async fn mcp_call_tool(
             None,
         );
     };
-    // Cheap service limits before any backend work: an unbounded query
-    // would block the serial stdio loop for every later call.
+    let build_id = args
+        .get("build_id")
+        .map(|value| {
+            if !matches!(name, "lookup" | "explain" | "evidence" | "neighbors") {
+                return Err("build_id is not supported by this tool".to_owned());
+            }
+            let build_id = value.as_str().ok_or("build_id must be a string")?;
+            chaosbox::validate_build_id(build_id).map_err(|error| error.to_string())?;
+            Ok(build_id)
+        })
+        .transpose();
+    let build_id = match build_id {
+        Ok(build_id) => build_id,
+        Err(error) => return mcp_error(id, -32602, error, None),
+    };
+    // Continuation selects its historical publication before any active pin.
+    if name == "neighbors" {
+        let query = match prepare_neighborhood(args) {
+            Ok(query) => query,
+            Err(error) => return mcp_error(id, -32602, error, None),
+        };
+        return match async {
+            query
+                .read(AnyReader::handle_cached(connection).await?)
+                .await
+        }
+        .await
+        {
+            Ok(page) => mcp_text_result(id, &serde_json::json!(page)),
+            Err(error) => mcp_backend_error(id, name, &error),
+        };
+    }
+    if name == "path" {
+        let query = serde_json::from_value::<chaosbox::PathQuery>(serde_json::Value::Object(args))
+            .map_err(|error| error.to_string())
+            .and_then(|query| query.prepare().map_err(|error| error.to_string()));
+        let query = match query {
+            Ok(query) => query,
+            Err(error) => return mcp_error(id, -32602, error, None),
+        };
+        return match query.read(AnyReader::handle_cached(connection)).await {
+            Ok(value) => mcp_text_result(id, &value),
+            Err(error) => mcp_backend_error(id, name, &error),
+        };
+    }
+    // Cheap service limits before any backend work.
     if name == "search" {
         if let Some(l) = args.get("limit").and_then(serde_json::Value::as_i64) {
             if l > MCP_SEARCH_LIMIT_MAX {
@@ -244,18 +331,6 @@ pub(super) async fn mcp_call_tool(
                     id,
                     -32602,
                     format!("search limit exceeds maximum {MCP_SEARCH_LIMIT_MAX}"),
-                    None,
-                );
-            }
-        }
-    }
-    if name == "path" {
-        if let Some(h) = args.get("max_hops").and_then(serde_json::Value::as_u64) {
-            if h > MCP_MAX_HOPS as u64 {
-                return mcp_error(
-                    id,
-                    -32602,
-                    format!("max_hops exceeds maximum {MCP_MAX_HOPS}"),
                     None,
                 );
             }
@@ -296,17 +371,13 @@ pub(super) async fn mcp_call_tool(
             None,
         );
     }
-    let reader = match Box::pin(AnyReader::connect(repo)).await {
+    let reader = match async {
+        AnyReader::pin(AnyReader::handle_cached(connection).await?, repo, build_id).await
+    }
+    .await
+    {
         Ok(r) => r,
-        Err(e) => {
-            let report = LifecycleReport::error(&format!("mcp {name}"), &e.to_string());
-            return mcp_error(
-                id,
-                -32603,
-                e.to_string(),
-                Some(serde_json::to_value(&report).unwrap()),
-            );
-        }
+        Err(e) => return mcp_backend_error(id, name, &e),
     };
     let payload: Result<serde_json::Value, String> = match name {
         "search" => {
@@ -327,37 +398,6 @@ pub(super) async fn mcp_call_tool(
                 .lookup(eid)
                 .await
                 .map(|row| serde_json::to_value(&row).unwrap())
-                .map_err(|e| e.to_string())
-        }
-        "neighbors" => {
-            let eid = args["id"].as_str().unwrap_or_default();
-            let raw = args
-                .get("rel")
-                .and_then(|r| r.as_str())
-                .map(|r| vec![r.to_owned()]);
-            let filter = match chaosbox::validate_rel_filter(raw) {
-                Ok(f) => f,
-                Err(e) => return mcp_error(id, -32602, e.to_string(), None),
-            };
-            reader
-                .neighbors(eid, filter)
-                .await
-                .map(|(out, inc)| serde_json::json!({"id": eid, "outgoing": out, "incoming": inc}))
-                .map_err(|e| e.to_string())
-        }
-        "path" => {
-            let from = args["from"].as_str().unwrap_or_default();
-            let to = args["to"].as_str().unwrap_or_default();
-            let hops = usize::try_from(
-                args.get("max_hops")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(4),
-            )
-            .expect("hop count fits in usize");
-            reader
-                .path(from, to, hops)
-                .await
-                .map(|path| serde_json::json!({"from": from, "to": to, "path": path}))
                 .map_err(|e| e.to_string())
         }
         "evidence" => {
@@ -415,6 +455,11 @@ pub(super) async fn mcp_call_tool(
     }
 }
 
+#[cfg(test)]
+pub(super) async fn mcp_call_tool(id: &Value, name: &str, params: &Value) -> Value {
+    mcp_call_tool_connected(id, name, params, &mut None).await
+}
+
 /// Read-only MCP over stdio: full handshake, paginated tools, validated calls.
 /// Never loads Jev credentials; never accepts prose as evidence.
 // Long CLI/dispatch functions; splitting them apart is the owning
@@ -425,53 +470,56 @@ pub(super) async fn serve_mcp(
     workspace: Option<chaosbox::workspace::Workspace>,
     mut current: Option<chaosbox::sync::current::CurrentReader>,
     federation: Option<chaosbox::federation::Federator>,
-) {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    let stdin = tokio::io::stdin();
-    let mut stdout = tokio::io::stdout();
-    let mut lines = BufReader::new(stdin).lines();
+) -> std::io::Result<()> {
+    let mut stdout = mcp_output()?;
+    let mut frames = Frames::new(tokio::io::stdin());
     let mut initialized = false;
-    while let Ok(Some(line)) = lines.next_line().await {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let req: serde_json::Value = if let Ok(v) = serde_json::from_str(&line) {
-            v
-        } else {
-            let resp = mcp_error(
-                &serde_json::Value::Null,
-                -32700,
-                "parse error".to_owned(),
-                None,
-            );
-            let _ = stdout
-                .write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes())
-                .await;
-            continue;
+    // ponytail: one idle driver per ordinary server; no result/header cache.
+    // Queued frames acquire credentials and fresh pins only when dispatched.
+    let mut graph: Option<(TypeDbReader, tokio::time::Instant)> = None;
+    loop {
+        let line = tokio::select! {
+            biased;
+            () = async { match graph.as_ref() {
+                Some((_, deadline)) => tokio::time::sleep_until(*deadline).await,
+                None => pending().await,
+            }} => { graph = None; continue; }
+            line = frames.request() => line?,
         };
-        if req.is_array() {
-            let resp = mcp_error(
-                &serde_json::Value::Null,
-                -32600,
-                "batch requests not supported".to_owned(),
-                None,
-            );
-            let _ = stdout
-                .write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes())
-                .await;
-            continue;
-        }
+        let Some((line, admission_deadline)) = line else {
+            break;
+        };
+        let req = match decode_frame(&line) {
+            Ok(Some(req)) => req,
+            Ok(None) => continue,
+            Err(response) => {
+                if !exchange(&mut frames, &mut stdout, &Value::Null, async { response }).await? {
+                    break;
+                }
+                continue;
+            }
+        };
         // Notifications carry no id and get no response.
         let id = match req.get("id") {
             Some(i) => i.clone(),
             None => continue,
         };
+        if admission_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
+            if !exchange(&mut frames, &mut stdout, &id, async {
+                admission_expired(&id)
+            })
+            .await?
+            {
+                break;
+            }
+            continue;
+        }
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
         let params = req
             .get("params")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
-        let resp = match method {
+        let mut response = async || match method {
             "initialize" => {
                 let requested = params
                     .get("protocolVersion")
@@ -493,7 +541,6 @@ pub(super) async fn serve_mcp(
                     },
                 })
             }
-            "notifications/initialized" => continue,
             "ping" => serde_json::json!({"jsonrpc": "2.0", "id": id, "result": {}}),
             "tools/list" => {
                 if initialized {
@@ -548,6 +595,7 @@ pub(super) async fn serve_mcp(
                 if initialized {
                     let name = params.get("name").and_then(|n| n.as_str()).unwrap_or("");
                     if name == "workspace_impact" {
+                        graph = None;
                         match workspace.as_ref() {
                             Some(workspace) => {
                                 match workspace_call(workspace, &params["arguments"]) {
@@ -563,6 +611,7 @@ pub(super) async fn serve_mcp(
                             ),
                         }
                     } else if name.starts_with("intelligence_") {
+                        graph = None;
                         if let Some(reader) = federation.as_ref() {
                             match reader.query(name, &params["arguments"]).await {
                                 Ok(value) => mcp_text_result(&id, &value),
@@ -592,7 +641,20 @@ pub(super) async fn serve_mcp(
                             }
                         }
                     } else {
-                        Box::pin(mcp_call_tool(&id, name, &params)).await
+                        // Move ownership into this future. Cancellation drops all
+                        // request-owned clones; no cached driver survives it.
+                        let mut connection = graph
+                            .take()
+                            .filter(|(_, deadline)| tokio::time::Instant::now() < *deadline)
+                            .map(|(handle, _)| handle);
+                        let result =
+                            mcp_call_tool_connected(&id, name, &params, &mut connection).await;
+                        if result.get("error").is_none() {
+                            graph = connection.map(|handle| {
+                                (handle, tokio::time::Instant::now() + MCP_GRAPH_IDLE_TIMEOUT)
+                            });
+                        }
+                        result
                     }
                 } else {
                     mcp_error(&id, -32600, "server not initialized".to_owned(), None)
@@ -605,11 +667,280 @@ pub(super) async fn serve_mcp(
                 None,
             ),
         };
-        let _ = stdout
-            .write_all(format!("{}\n", serde_json::to_string(&resp).unwrap()).as_bytes())
-            .await;
+        if !exchange(&mut frames, &mut stdout, &id, response()).await? {
+            break;
+        }
     }
     let _ = all_relation_types;
+    Ok(())
+}
+
+fn mcp_output() -> std::io::Result<Box<dyn AsyncWrite + Unpin>> {
+    // Tokio Stdout uses an uncancellable blocking write. Reopen Linux pipes
+    // nonblocking so EOF can stop an unread response without stranding a worker
+    // during runtime shutdown. Keep normal terminal/file redirection support.
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if std::fs::metadata("/proc/self/fd/1")?.file_type().is_fifo() {
+            return Ok(Box::new(
+                tokio::net::unix::pipe::OpenOptions::new().open_sender("/proc/self/fd/1")?,
+            ));
+        }
+    }
+    Ok(Box::new(tokio::io::stdout()))
+}
+
+struct Queued {
+    line: Vec<u8>,
+    id: Value,
+    deadline: tokio::time::Instant,
+}
+
+/// Cancellation-safe framing and bounded raw-request admission. No queued frame
+/// owns credentials, a backend future, a publication pin or a query result.
+pub(super) struct Frames<I> {
+    input: BufReader<I>,
+    line: Vec<u8>,
+    queued: VecDeque<Queued>,
+}
+
+impl<I: AsyncRead + Unpin> Frames<I> {
+    pub(super) fn new(input: I) -> Self {
+        Self {
+            input: BufReader::new(input),
+            line: Vec::new(),
+            queued: VecDeque::new(),
+        }
+    }
+
+    async fn request(
+        &mut self,
+    ) -> std::io::Result<Option<(Vec<u8>, Option<tokio::time::Instant>)>> {
+        if let Some(queued) = self.queued.pop_front() {
+            return Ok(Some((queued.line, Some(queued.deadline))));
+        }
+        Ok(self.next().await?.map(|line| (line, None)))
+    }
+
+    pub(super) async fn next(&mut self) -> std::io::Result<Option<Vec<u8>>> {
+        let remaining = MCP_FRAME_BYTES + 1 - self.line.len();
+        let read = (&mut self.input)
+            .take(remaining as u64)
+            .read_until(b'\n', &mut self.line)
+            .await?;
+        if self.line.len() > MCP_FRAME_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "MCP input frame byte budget exceeded",
+            ));
+        }
+        if read == 0 && self.line.is_empty() {
+            return Ok(None);
+        }
+        if !self.line.ends_with(b"\n") {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "incomplete MCP input frame",
+            ));
+        }
+        Ok(Some(std::mem::take(&mut self.line)))
+    }
+}
+
+fn decode_frame(line: &[u8]) -> Result<Option<Value>, Value> {
+    if line.iter().all(u8::is_ascii_whitespace) {
+        return Ok(None);
+    }
+    let req: Value = serde_json::from_slice(line)
+        .map_err(|_| mcp_error(&Value::Null, -32700, "parse error".into(), None))?;
+    if !req.is_object()
+        || req["jsonrpc"] != "2.0"
+        || !req["method"].is_string()
+        || req.get("id").is_some_and(|id| {
+            !(id.is_i64()
+                || id.is_u64()
+                || id
+                    .as_str()
+                    .is_some_and(|s| s.len() <= 128 && !s.chars().any(char::is_control)))
+        })
+    {
+        return Err(mcp_error(
+            &Value::Null,
+            -32600,
+            "invalid request".into(),
+            None,
+        ));
+    }
+    Ok(Some(req))
+}
+
+struct Output {
+    id: Value,
+    bytes: Vec<u8>,
+    offset: usize,
+    deadline: tokio::time::Instant,
+    final_response: bool,
+}
+
+impl Output {
+    fn new(response: &Value, final_response: bool) -> Self {
+        let mut bytes = chaosbox::read_view::bounded_json(response, MCP_RESPONSE_BYTES - 1)
+            .unwrap_or_else(|_| {
+                mcp_error(
+                    &response["id"],
+                    -32603,
+                    "MCP response byte budget exceeded".into(),
+                    None,
+                )
+                .to_string()
+                .into_bytes()
+            });
+        bytes.push(b'\n');
+        Self {
+            id: response["id"].clone(),
+            bytes,
+            offset: 0,
+            deadline: tokio::time::Instant::now() + MCP_OUTPUT_TIMEOUT,
+            final_response,
+        }
+    }
+
+    /// `write`, unlike `write_all`, is cancellation safe. Keep the offset and
+    /// deadline outside the future so input cannot replay bytes or extend a write.
+    async fn step<O: AsyncWrite + Unpin>(&mut self, output: &mut O) -> std::io::Result<bool> {
+        if tokio::time::Instant::now() >= self.deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "MCP output deadline exceeded",
+            ));
+        }
+        tokio::time::timeout_at(self.deadline, async {
+            if self.offset == self.bytes.len() {
+                output.flush().await?;
+                return Ok(true);
+            }
+            let written = output.write(&self.bytes[self.offset..]).await?;
+            if written == 0 {
+                return Err(std::io::ErrorKind::WriteZero.into());
+            }
+            self.offset += written;
+            Ok(false)
+        })
+        .await
+        .map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::TimedOut, "MCP output deadline exceeded")
+        })?
+    }
+}
+
+fn admission_expired(id: &Value) -> Value {
+    mcp_error(
+        id,
+        -32000,
+        "MCP admission wait deadline exceeded".into(),
+        None,
+    )
+}
+
+/// One backend future, one final response and bounded request/control queues.
+/// EOF/error drops the in-place backend future; pings and cancellation bypass
+/// admission. Controls drain before returning so every removed request receives
+/// its response even when the active final response was already being written.
+// ponytail: one active backend request per connection; increase concurrency only
+// with explicit per-request connection ownership and the same cleanup bounds.
+pub(super) async fn exchange<I, O, F>(
+    frames: &mut Frames<I>,
+    output: &mut O,
+    id: &Value,
+    response: F,
+) -> std::io::Result<bool>
+where
+    I: AsyncRead + Unpin,
+    O: AsyncWrite + Unpin,
+    F: Future<Output = Value>,
+{
+    let mut call = Some(Box::pin(response));
+    let mut writing: Option<Output> = None;
+    let mut ready: Option<Output> = None;
+    let mut controls = VecDeque::<Output>::new();
+    let mut finished = false;
+    loop {
+        if writing.is_none() {
+            writing = controls.pop_front().or_else(|| ready.take());
+        }
+        if finished && writing.is_none() {
+            return Ok(true);
+        }
+        let deadline = frames.queued.front().map(|queued| queued.deadline);
+        let output_deadline = ready.as_ref().map(|frame| frame.deadline);
+        tokio::select! {
+            biased;
+            value = async { match call.as_mut() { Some(future) => future.await, None => pending().await } } => {
+                call = None;
+                ready = Some(Output::new(&value, true));
+            }
+            written = async { match writing.as_mut() { Some(frame) => frame.step(output).await, None => pending().await } } => {
+                if written? {
+                    finished |= writing.take().is_some_and(|frame| frame.final_response);
+                }
+            }
+            () = async { match output_deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => pending().await,
+            }} => return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "MCP output deadline exceeded")),
+            () = async { match deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => pending().await,
+            }} => {
+                if controls.len() == MCP_PENDING_REQUESTS {
+                    return Err(std::io::Error::other("MCP output backpressure: response queue full"));
+                }
+                if let Some(queued) = frames.queued.pop_front() {
+                    controls.push_back(Output::new(&admission_expired(&queued.id), false));
+                }
+            }
+            line = frames.next() => {
+                let Some(line) = line? else { return Ok(false); };
+                let response = match decode_frame(&line) {
+                    Ok(None) => continue,
+                    Err(error) => error,
+                    Ok(Some(req)) => {
+                        if req.get("id").is_none() {
+                            if req["method"] != "notifications/cancelled" { continue; }
+                            let Some(target) = req["params"].get("requestId") else { continue; };
+                            if call.is_some() && target == id {
+                                call = None;
+                                ready = Some(Output::new(&mcp_error(id, -32800, "request cancelled".into(), None), true));
+                                continue;
+                            }
+                            let Some(position) = frames.queued.iter().position(|queued| queued.id == *target) else { continue; };
+                            let queued = frames.queued.remove(position).expect("queued position exists");
+                            mcp_error(&queued.id, -32800, "request cancelled".into(), None)
+                        } else if (!finished && req["id"] == *id)
+                            || frames.queued.iter().any(|queued| queued.id == req["id"])
+                            || writing.as_ref().is_some_and(|frame| frame.id == req["id"])
+                            || controls.iter().any(|frame| frame.id == req["id"]) {
+                            mcp_error(&Value::Null, -32600, "duplicate outstanding request id".into(), None)
+                        } else if req["method"] == "ping" {
+                            serde_json::json!({"jsonrpc":"2.0", "id":req["id"], "result":{}})
+                        } else if frames.queued.len() < MCP_PENDING_REQUESTS
+                            && frames.queued.iter().map(|queued| queued.line.len()).sum::<usize>() + line.len() <= MCP_PENDING_BYTES {
+                            frames.queued.push_back(Queued { line, id: req["id"].clone(),
+                                deadline: tokio::time::Instant::now() + MCP_ADMISSION_TIMEOUT });
+                            continue;
+                        } else {
+                            mcp_error(&req["id"], -32000, "MCP admission queue full".into(), None)
+                        }
+                    }
+                };
+                if controls.len() == MCP_PENDING_REQUESTS {
+                    return Err(std::io::Error::other("MCP output backpressure: response queue full"));
+                }
+                controls.push_back(Output::new(&response, false));
+            }
+        }
+    }
 }
 
 fn workspace_call(
@@ -642,6 +973,54 @@ fn workspace_call(
             integer(args.get("max_nodes"), 20),
         )
         .map_err(|e| e.to_string())
+}
+
+fn prepare_neighborhood(
+    mut args: serde_json::Map<String, serde_json::Value>,
+) -> Result<chaosbox::PreparedNeighborhood, String> {
+    if let Some(rel) = args.remove("rel") {
+        if args.contains_key("rel_types") {
+            return Err("rel and rel_types are mutually exclusive".into());
+        }
+        let rel = rel.as_str().ok_or("rel must be a string")?;
+        args.insert("rel_types".into(), serde_json::json!([rel]));
+    }
+    for (key, valid) in [
+        (
+            "cursor",
+            args.get("cursor").is_none_or(serde_json::Value::is_string),
+        ),
+        (
+            "rel_types",
+            args.get("rel_types")
+                .is_none_or(serde_json::Value::is_array),
+        ),
+    ] {
+        if !valid {
+            return Err(format!("{key} has an invalid type"));
+        }
+    }
+    args.entry("limit").or_insert(serde_json::json!(
+        super::backend_cmd::NEIGHBORHOOD_DEFAULT_LIMIT
+    ));
+    let query: chaosbox::NeighborhoodQuery =
+        serde_json::from_value(serde_json::Value::Object(args))
+            .map_err(|error| error.to_string())?;
+    query.prepare().map_err(|error| error.to_string())
+}
+
+fn mcp_backend_error(
+    id: &serde_json::Value,
+    name: &str,
+    error: &impl std::fmt::Display,
+) -> serde_json::Value {
+    let report = LifecycleReport::error(&format!("mcp {name}"), &error.to_string());
+    mcp_error(
+        id,
+        -32603,
+        error.to_string(),
+        Some(serde_json::json!(report)),
+    )
 }
 
 fn integer(value: Option<&serde_json::Value>, default: usize) -> usize {

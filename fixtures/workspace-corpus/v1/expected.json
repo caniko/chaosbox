@@ -1,0 +1,95 @@
+{
+  "contract": "chaosbox.workspace-corpus-oracle.v1",
+  "origin": "Independently specified from the fixture source and exact dependency declarations; never generated from an extractor, graph, or impact artifact.",
+  "relationship_direction": "consumer call -> exact provider definition",
+  "evidence": {
+    "api-v1-definition": {
+      "member": "api-v1", "file": "src/lib.rs",
+      "quote": "pub fn context() -> &'static str {\n    \"records:v1\"\n}\n",
+      "span": {"byte_start": 0, "byte_end": 54, "start_line": 1, "start_col": 1, "end_line": 4, "end_col": 1}
+    },
+    "api-v2-definition": {
+      "member": "api-v2", "file": "src/lib.rs",
+      "quote": "pub fn context() -> &'static str {\n    \"items:v2\"\n}\n",
+      "span": {"byte_start": 0, "byte_end": 52, "start_line": 1, "start_col": 1, "end_line": 4, "end_col": 1}
+    },
+    "private-definition": {
+      "member": "private-api", "file": "src/lib.rs",
+      "quote": "pub fn context() -> &'static str {\n    \"PRIVATE_SOURCE_CANARY\"\n}\n",
+      "span": {"byte_start": 0, "byte_end": 65, "start_line": 1, "start_col": 1, "end_line": 4, "end_col": 1}
+    },
+    "app-legacy-use": {
+      "member": "app", "file": "src/lib.rs", "quote": "api_v1::context()",
+      "span": {"byte_start": 38, "byte_end": 55, "start_line": 2, "start_col": 5, "end_line": 2, "end_col": 22}
+    },
+    "app-current-use": {
+      "member": "app", "file": "src/lib.rs", "quote": "api_v2::context()",
+      "span": {"byte_start": 98, "byte_end": 115, "start_line": 6, "start_col": 5, "end_line": 6, "end_col": 22}
+    },
+    "app-missing-use": {
+      "member": "app", "file": "src/lib.rs", "quote": "missing_api::context()",
+      "span": {"byte_start": 162, "byte_end": 184, "start_line": 10, "start_col": 5, "end_line": 10, "end_col": 27}
+    },
+    "app-private-use": {
+      "member": "app", "file": "src/lib.rs", "quote": "private_api::context()",
+      "span": {"byte_start": 230, "byte_end": 252, "start_line": 14, "start_col": 5, "end_line": 14, "end_col": 27}
+    },
+    "dep-v1": {
+      "member": "app", "file": "Cargo.toml",
+      "quote": "api_v1 = { package = \"fixture-api\", path = \"../api-v1\", version = \"=1.0.0\" }",
+      "span": {"byte_start": 82, "byte_end": 158, "start_line": 7, "start_col": 1, "end_line": 7, "end_col": 77}
+    },
+    "dep-v2": {
+      "member": "app", "file": "Cargo.toml",
+      "quote": "api_v2 = { package = \"fixture-api\", path = \"../api-v2\", version = \"=2.0.0\" }",
+      "span": {"byte_start": 159, "byte_end": 235, "start_line": 8, "start_col": 1, "end_line": 8, "end_col": 77}
+    },
+    "dep-missing": {
+      "member": "app", "file": "Cargo.toml",
+      "quote": "missing_api = { package = \"fixture-api\", path = \"../missing-api\", version = \"=3.0.0\" }",
+      "span": {"byte_start": 236, "byte_end": 322, "start_line": 9, "start_col": 1, "end_line": 9, "end_col": 87}
+    },
+    "dep-private": {
+      "member": "app", "file": "Cargo.toml",
+      "quote": "private_api = { package = \"fixture-private-api\", path = \"../private-api\", version = \"=1.0.0\" }",
+      "span": {"byte_start": 323, "byte_end": 417, "start_line": 10, "start_col": 1, "end_line": 10, "end_col": 95}
+    }
+  },
+  "results": {
+    "impact-v1": {
+      "status": "resolved", "providers": ["api-v1"],
+      "bindings": [{"consumer": "app-legacy-use", "provider": "api-v1-definition", "dependency": "dep-v1"}],
+      "evidence": ["api-v1-definition", "dep-v1", "app-legacy-use"],
+      "forbidden_consumers": ["app-current-use", "app-missing-use", "app-private-use"]
+    },
+    "resolve-v2": {
+      "status": "resolved", "providers": ["api-v2"],
+      "bindings": [{"consumer": "app-current-use", "provider": "api-v2-definition", "dependency": "dep-v2"}],
+      "evidence": ["api-v2-definition", "dep-v2", "app-current-use"],
+      "forbidden_consumers": ["app-legacy-use", "app-missing-use", "app-private-use"]
+    },
+    "ambiguous-context": {
+      "status": "ambiguous", "providers": [], "candidates": ["api-v1", "api-v2"], "bindings": [],
+      "evidence": ["api-v1-definition", "api-v2-definition"]
+    },
+    "unavailable-v3": {
+      "status": "unresolved", "providers": [], "candidates": [], "bindings": [],
+      "requested_project": "fixture-api", "requested_version": "3.0.0",
+      "evidence": ["dep-missing", "app-missing-use"], "forbidden_providers": ["api-v1", "api-v2"]
+    },
+    "wrong-provider-version": {
+      "status": "version_mismatch", "providers": [], "bindings": [], "required_provider": "api-v1",
+      "evidence": ["dep-v1", "app-legacy-use", "api-v2-definition"]
+    },
+    "scope-blocked": {
+      "status": "scope_blocked", "providers": [], "bindings": [],
+      "evidence": ["dep-private", "app-private-use"],
+      "forbidden_evidence": ["private-definition"], "forbidden_text": ["PRIVATE_SOURCE_CANARY"]
+    },
+    "maintainer-private": {
+      "status": "resolved", "providers": ["private-api"],
+      "bindings": [{"consumer": "app-private-use", "provider": "private-definition", "dependency": "dep-private"}],
+      "evidence": ["private-definition", "dep-private", "app-private-use"]
+    }
+  }
+}

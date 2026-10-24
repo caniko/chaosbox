@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use chaosbox_core::GraphBuild;
 
 use crate::StoreError;
-use crate::queries::GraphQueries;
+use crate::queries::{GraphQueries, NeighborhoodDirection};
 use crate::rows::{BuildRow, EntityRow, EvidenceRow, RelRow, entity_row, rel_row};
 
 /// In-memory [`GraphQueries`] fake: same method surface and ordering as the
@@ -187,6 +187,27 @@ impl GraphQueries for MemoryReader {
             .find(|e| e.entity_id == id))
     }
 
+    async fn neighbor_counts(
+        &self,
+        build_id: &str,
+        id: &str,
+        rel_types: Vec<String>,
+    ) -> Result<(u64, u64), StoreError> {
+        let mut counts = (0, 0);
+        if !rel_types.is_empty() {
+            if let Some(build) = self.builds.get(build_id) {
+                // ponytail: O(build edges) reference scan; index adjacency if this backend becomes hot.
+                for rel in build.edges.values() {
+                    if rel_types.contains(&chaosbox_core::relation_type_name(&rel.rel_type)) {
+                        counts.0 += u64::from(rel.from == id);
+                        counts.1 += u64::from(rel.to == id);
+                    }
+                }
+            }
+        }
+        Ok(counts)
+    }
+
     async fn neighbors_out(
         &self,
         build_id: &str,
@@ -210,6 +231,40 @@ impl GraphQueries for MemoryReader {
             .member_relations(build_id)
             .into_iter()
             .filter(|r| r.to_entity.entity_id == id && rel_types.contains(&r.rel_type))
+            .collect())
+    }
+
+    async fn neighbor_page(
+        &self,
+        build_id: &str,
+        id: &str,
+        direction: NeighborhoodDirection,
+        rel_types: Vec<String>,
+        after: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<RelRow>, StoreError> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        if limit <= 0 || rel_types.is_empty() {
+            return Ok(Vec::new());
+        }
+        let Some(build) = self.builds.get(build_id) else {
+            return Ok(Vec::new());
+        };
+        // ponytail: scan remaining build edges; index adjacency if this reference backend becomes hot.
+        Ok(build
+            .edges
+            .range::<str, _>((after.map_or(Unbounded, Excluded), Unbounded))
+            .map(|(_, edge)| edge)
+            .filter(|edge| {
+                let anchor = match direction {
+                    NeighborhoodDirection::Outgoing => &edge.from,
+                    NeighborhoodDirection::Incoming => &edge.to,
+                };
+                anchor == id
+                    && rel_types.contains(&chaosbox_core::relation_type_name(&edge.rel_type))
+            })
+            .take(usize::try_from(limit).unwrap_or(usize::MAX))
+            .map(rel_row)
             .collect())
     }
 

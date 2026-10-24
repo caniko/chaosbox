@@ -9,9 +9,12 @@
 set -euo pipefail
 
 case "${1:-}" in
-  "") FEDERATION_ONLY=0 ;;
-  --federation-only) FEDERATION_ONLY=1 ;;
-  *) echo "usage: $0 [--federation-only]" >&2; exit 2 ;;
+"") FEDERATION_ONLY=0 ;;
+--federation-only) FEDERATION_ONLY=1 ;;
+*)
+  echo "usage: $0 [--federation-only]" >&2
+  exit 2
+  ;;
 esac
 if [ "$#" -gt 1 ]; then
   echo "usage: $0 [--federation-only]" >&2

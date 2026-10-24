@@ -1,0 +1,116 @@
+{
+  "workcard": "S01b.1",
+  "date": "2026-10-19",
+  "status": "native-logical-inventory-locally-qualified-parent-attribution-open",
+  "source": {
+    "baselineHead": "4cc0a2aa18d34ab65ef139e7e7828b7d54920ffe",
+    "implementationAndTestsCommit": "4704623025ee23a977ee5759043bc73e9c209836",
+    "reportSavepoint": "commit containing this receipt",
+    "usesPreservedDirtyCheckout": true,
+    "cleanReleaseQualificationClaimed": false,
+    "archive": "source-inventory.tar",
+    "archiveSha256": "c10749c9d51692336d380fa532cfccc9bc595e6ea8d5d3a97f4ada55303ab27e",
+    "sourceFilesManifest": "source-inventory-files.sha256",
+    "sourceFilesManifestSha256": "da55d620de30096e9f04b3a39b5de4cf8060f8aa3c9cc35cbf08669347f7e839",
+    "archiveExcludes": ["docs/", "tasks/"],
+    "ownedFiles": [
+      "crates/chaosbox/src/main.rs",
+      "crates/chaosbox/src/backend_cmd.rs",
+      "crates/chaosbox-typedb/src/reader.rs",
+      "crates/chaosbox-typedb/src/inventory.rs",
+      "crates/chaosbox-typedb/tests/live.rs",
+      "crates/chaosbox/tests/build_inventory.rs"
+    ]
+  },
+  "contract": {
+    "name": "chaosbox.build-inventory.v1",
+    "lifecycleEnvelopeVersion": 2,
+    "command": "db inventory --repo REPO [--limit N] [--after BUILD_ID]",
+    "pageDefault": 20,
+    "pageMaximum": 50,
+    "labelMaximumBytes": 256,
+    "validationBeforeCredentials": true,
+    "wholeCliDeadlineSeconds": 10,
+    "readTransactionLifetimeSeconds": 10,
+    "readTransactionsPerPage": 1,
+    "maximumQueriesPerPage": 152,
+    "crossPageSnapshotPinned": false,
+    "physicalBytesMeasured": false,
+    "sealValidationClaimed": false,
+    "knowledgeOrMvccInventoryClaimed": false,
+    "productionResourceAcceptanceClaimed": false
+  },
+  "checks": {
+    "preChangeCommandRegressionFailed": true,
+    "affectedTestsPassed": 94,
+    "aggregateOptInIgnored": 4,
+    "aggregateOptInsNotSeparatelyQualified": 3,
+    "requiredNativeCasesPassed": 3,
+    "requiredNativeCasesIgnored": 0,
+    "requiredNativeCases": [
+      "disposable_inventory_enumerates_history_without_confusing_status_and_pointer",
+      "unpublished_build_header_is_unavailable_despite_live_pointer",
+      "reader_passes_reference_conformance_against_live_backend"
+    ],
+    "warningsDeniedClippyPassed": true,
+    "treefmtCiPassed": true,
+    "whitespacePassed": true,
+    "stagedAndCommittedPatchBytesEqual": true
+  },
+  "liveObservation": {
+    "repo": "canix",
+    "currentBuild": "build:8ac2e28136c3",
+    "retainedHeaders": 3,
+    "complete": true,
+    "elapsedSeconds": 0.91,
+    "clientPeakRssKiB": 25724,
+    "productionPid": 4144752,
+    "productionStartMonotonic": 158470931838,
+    "productionPidAndStartPreserved": true,
+    "isolatedServerCostClaimed": false,
+    "rawPage": "production-inventory.json"
+  },
+  "disposable": {
+    "serverVersion": "TypeDB CE 3.13.0",
+    "address": "127.0.0.1:24779",
+    "serverPeakBytes": 249159680,
+    "serverSwapPeakBytes": 0,
+    "finalActiveTransactions": 0,
+    "stoppedAfterSigterm": true,
+    "listenersGone": true
+  },
+  "environment": {
+    "approvedProjectEnvironment": true,
+    "cargoJobs": 2,
+    "tokioWorkers": 2,
+    "cpuQuotaPercent": 200,
+    "memoryHighBytes": 2147483648,
+    "memoryMaxBytes": 4294967296,
+    "memorySwapMaxBytes": 0,
+    "exactCumulativeContextTelemetryAvailable": false
+  },
+  "evidence": {
+    "root": "/data/scratch/tmp/opencode/chaosbox-s01b1-s05a-20261019",
+    "manifest": "qualification.sha256",
+    "finalization": "finalization.json",
+    "commands": "commands.md",
+    "executable": "bin/chaosbox-inventory",
+    "executableSha256": "a7a9d15a9159a8e4501cbfcc7c530190a3a327620370895cdf89aff982852fb3",
+    "affectedTestsLog": "affected-inventory-final.log",
+    "clippyLog": "clippy-inventory.log",
+    "allocationAccessRecord": "access-limit.md"
+  },
+  "remainingGate": {
+    "parentS01bComplete": false,
+    "owner": "typedb service; privileged inspection governed by operator tool policy",
+    "releaseCondition": "authorized read-only process/storage evidence plus a selected allocator/storage measurement surface",
+    "numericProductionResourcePolicy": "deferred by operator"
+  },
+  "preservation": {
+    "foreignTrackedDiffBytesEqual": true,
+    "foreignStagingIncluded": false,
+    "canixSourceOrIndexWritten": false,
+    "pushOrConsumerPromotionPerformed": false,
+    "activationOrProductionRestartPerformed": false
+  }
+}

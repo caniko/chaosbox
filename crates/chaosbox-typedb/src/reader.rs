@@ -14,13 +14,20 @@
 //! case-sensitive and has no case-insensitive form). An empty relation-type
 //! filter matches nothing.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
-use chaosbox_store::{BuildRow, EntityRow, EndpointRef, EvidenceRow, StoreError, GraphQueries, RelRow};
+use chaosbox_store::{
+    BuildRow, EntityRow, EndpointRef, EvidenceRow, StoreError, GraphQueries, NeighborhoodDirection,
+    RelRow,
+};
 use typedb_driver::{Address, Addresses, Credentials, DriverOptions, DriverTlsConfig, TypeDBDriver};
 
 use crate::common::{TypeDbConfig, col_int, col_string, col_string_opt, driver_error, read_rows};
 use crate::encode::{int_lit, str_lit};
+
+#[path = "inventory.rs"]
+mod inventory;
+pub use inventory::{InventoryPage, InventoryQuery, RetainedBuild, INVENTORY_TIMEOUT};
 
 /// Entity attribute columns selected by every member query.
 const ENTITY_COLS: &[&str] = &[
@@ -108,9 +115,11 @@ fn unescape_like(like: &str) -> String {
 }
 
 /// Read-only `TypeDB` query handle: one pinned database, read transactions.
+/// Clones share only the driver; every query still opens its own transaction.
+#[derive(Clone)]
 pub struct TypeDbReader {
     config: TypeDbConfig,
-    driver: Option<TypeDBDriver>,
+    driver: Option<Arc<TypeDBDriver>>,
 }
 
 impl TypeDbReader {
@@ -121,6 +130,16 @@ impl TypeDbReader {
             config,
             driver: None,
         }
+    }
+
+    /// Whether an operator-selected configuration has the same connection and
+    /// credential identity. This grants no build pin or scoped-read authority.
+    #[must_use]
+    pub fn matches_config(&self, config: &TypeDbConfig) -> bool {
+        self.config.address == config.address
+            && self.config.database == config.database
+            && self.config.username == config.username
+            && self.config.password == config.password
     }
 
     /// Connect the driver. Unlike the store, the read path never creates
@@ -151,7 +170,7 @@ impl TypeDbReader {
                     self.config.database
                 )));
             }
-            self.driver = Some(driver);
+            self.driver = Some(Arc::new(driver));
         }
         Ok(())
     }
@@ -159,7 +178,7 @@ impl TypeDbReader {
     /// Borrow the connected driver or report a client error.
     fn driver(&self) -> Result<&TypeDBDriver, StoreError> {
         self.driver
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| StoreError::Connection("TypeDbReader disconnected".into()))
     }
 
@@ -251,25 +270,32 @@ impl TypeDbReader {
     }
 
     async fn build_header(&self, query: &str) -> Result<Option<BuildRow>, StoreError> {
-        let rows = read_rows(
-            self.driver()?,
-            &self.config.database,
-            query,
-            &["b", "gen", "st", "coverage", "digest"],
-        )
-        .await?;
+        use typedb_driver::{TransactionOptions, TransactionType};
+        use crate::common::{READ_TIMEOUT, read_rows_in};
+
+        // One request-owned read batch; the cached driver never retains this tx.
+        let tx = self
+            .driver()?
+            .transaction_with_options(
+                &self.config.database,
+                TransactionType::Read,
+                TransactionOptions::new().transaction_timeout(READ_TIMEOUT),
+            )
+            .await
+            .map_err(driver_error)?;
+        let rows = read_rows_in(&tx, query, &["b", "gen", "st", "coverage", "digest"]).await?;
         let Some(row) = rows.into_iter().next() else {
             return Ok(None);
         };
         let build_id = col_string(&row, "b")?;
-        // Second read for the freshness fingerprint: one row per snapshot of
+        // Second query in the same read snapshot: one row per snapshot of
         // the PINNED build (never every build in the database). Sorted for
         // the same deterministic reporting order as the in-memory backend.
         let qs = format!(
             "match $g isa graph-build, has build-id {}, has snapshot-id $s; select $s;",
             str_lit(&build_id)
         );
-        let snap_rows = read_rows(self.driver()?, &self.config.database, &qs, &["s"]).await?;
+        let snap_rows = read_rows_in(&tx, &qs, &["s"]).await?;
         let mut snapshots = Vec::with_capacity(snap_rows.len());
         for r in &snap_rows {
             snapshots.push(col_string(r, "s")?);
@@ -360,6 +386,36 @@ impl GraphQueries for TypeDbReader {
         rows.first().map(row_to_entity).transpose()
     }
 
+    async fn neighbor_counts(
+        &self,
+        build_id: &str,
+        id: &str,
+        rel_types: Vec<String>,
+    ) -> Result<(u64, u64), StoreError> {
+        if rel_types.is_empty() {
+            return Ok((0, 0));
+        }
+        let filter = rel_types
+            .iter()
+            .map(|kind| format!("{{ $rt == {}; }}", str_lit(kind)))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        let mut counts = [0; 2];
+        for (index, role) in ["from-entity", "to-entity"].iter().enumerate() {
+            let query = format!(
+                "match (build: $b, edge: $rel) isa edge-membership; $b isa graph-build, has build-id {}; $rel isa relationship ({role}: $e), has rel-type $rt; $e isa code-entity, has entity-id {}; {filter}; reduce $count = count($rel);",
+                str_lit(build_id), str_lit(id),
+            );
+            let rows = read_rows(self.driver()?, &self.config.database, &query, &["count"]).await?;
+            if rows.len() != 1 {
+                return Err(StoreError::Query("expected one relationship count".into()));
+            }
+            counts[index] = u64::try_from(col_int(&rows[0], "count")?)
+                .map_err(|_| StoreError::Query("negative relationship count".into()))?;
+        }
+        Ok((counts[0], counts[1]))
+    }
+
     async fn neighbors_out(
         &self,
         build_id: &str,
@@ -376,6 +432,40 @@ impl GraphQueries for TypeDbReader {
         rel_types: Vec<String>,
     ) -> Result<Vec<RelRow>, StoreError> {
         self.neighbors(build_id, id, rel_types, false).await
+    }
+
+    async fn neighbor_page(
+        &self,
+        build_id: &str,
+        id: &str,
+        direction: NeighborhoodDirection,
+        mut rel_types: Vec<String>,
+        after: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<RelRow>, StoreError> {
+        if limit <= 0 || rel_types.is_empty() {
+            return Ok(Vec::new());
+        }
+        rel_types.sort();
+        rel_types.dedup();
+        let filter = rel_types
+            .iter()
+            .map(|kind| format!("{{ $rt == {}; }}", str_lit(kind)))
+            .collect::<Vec<_>>()
+            .join(" or ");
+        let anchor = match direction {
+            NeighborhoodDirection::Outgoing => "fid",
+            NeighborhoodDirection::Incoming => "tid",
+        };
+        let boundary = after
+            .map(|key| format!("$r > {};", str_lit(key)))
+            .unwrap_or_default();
+        let query = format!(
+            "match (build: $b, edge: $rel) isa edge-membership; $b isa graph-build, has build-id {}; $rel isa relationship (from-entity: $f, to-entity: $t), has rel-id $r, has rel-type $rt; $f isa code-entity, has entity-id $fid; $t isa code-entity, has entity-id $tid; ${anchor} == {}; {filter}; {boundary} select $r, $rt, $fid, $tid; sort $r asc; limit {};",
+            str_lit(build_id), str_lit(id), int_lit(limit),
+        );
+        let rows = read_rows(self.driver()?, &self.config.database, &query, REL_COLS).await?;
+        rows.iter().map(row_to_rel).collect()
     }
 
     async fn build_entities(
@@ -544,5 +634,32 @@ impl TypeDbReader {
         }
         out.sort_by(|a, b| a.rel_id.cmp(&b.rel_id));
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_identity_includes_every_backend_and_credential_field() {
+        let config = TypeDbConfig {
+            address: "127.0.0.1:1729".into(),
+            database: "disposable".into(),
+            username: "reader".into(),
+            password: "disposable-password".into(),
+        };
+        let reader = TypeDbReader::new(config.clone());
+        assert!(reader.matches_config(&config));
+        for key in ["address", "database", "username", "password"] {
+            let mut other = config.clone();
+            match key {
+                "address" => other.address.push('x'),
+                "database" => other.database.push('x'),
+                "username" => other.username.push('x'),
+                _ => other.password.push('x'),
+            }
+            assert!(!reader.matches_config(&other), "{key}");
+        }
     }
 }

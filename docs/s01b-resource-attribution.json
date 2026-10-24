@@ -1,0 +1,203 @@
+{
+  "schemaVersion": 1,
+  "id": "s01b-atlas-20261016",
+  "status": "partial-attribution",
+  "baseline": "s01-efficiency-baseline.json",
+  "evidence": {
+    "directory": "/data/scratch/tmp/opencode/chaosbox-s01b-20261016",
+    "manifest": "SHA256SUMS",
+    "manifestSha256": "1d605160b2aa88d7a40b01052eae0b9ae62c34780a596b2cf1741a47a6b3a9b8"
+  },
+  "sourceIdentity": {
+    "chaosboxInspectedRevision": "9d6c81d202aa5e9b4e0a513161891e8a4ff01e96",
+    "typedbInspectedRevision": "7e3baa369a5afd3c42c3e21a4672785dbdbb09ec",
+    "typedbTag": "3.13.0",
+    "canonicalChaosboxHead": "42f0e64fddd50f612516e39e82d5c2ea4d2ead45",
+    "canonicalChaosboxDirty": true,
+    "trackedDiffSha256Before": "5b7da061ac7690d4d387f1f478e08d2336041822b4523c59ff5cd91f4ac013b4",
+    "canixIndexSha256Before": "32ae1fa38d8b9da9d4f8bee4ec91ae93339f1d77bdffa8cd7871cf441b85c659"
+  },
+  "runningProcesses": {
+    "opencode": {
+      "pid": 3464594,
+      "executable": "/nix/store/lwlhs766ad8pi7hq82xkg521zcn8z5d5-opencode-v2-candidate-2.0.22+047c74e/bin/.opencode-wrapped",
+      "executableSha256": "b1994d029cec40c185fbf0765c0de1f82dbb1de3e4e27a1f3826eaa3a454db5c",
+      "sameExecutableAsS01PathResolution": false,
+      "serviceStartedAt": "2026-10-15T21:27:33Z",
+      "serviceMemoryCurrentBytes": 588926976,
+      "serviceMemoryPeakBytes": 13899816960,
+      "serviceMemorySwapCurrentBytes": 406994944,
+      "processRssKiB": 395272,
+      "processPssKiB": 392330,
+      "processSwapKiB": 328740,
+      "processHighWaterRssKiB": 2397508,
+      "processReadBytesSinceStart": 126733504512,
+      "processWriteBytesSinceStart": 135800463360,
+      "scope": "shared backend, not this conversation alone; process and service samples are non-simultaneous"
+    },
+    "observedChaosboxChild": {
+      "pid": 3464853,
+      "parentPid": 3464594,
+      "executable": "/nix/store/aamrc152yl781cs8fy5nrk1nzgip19a7-chaosbox-0.1.0/bin/.chaosbox-wrapped",
+      "executableSha256": "7f4aa0f7b301b27e1677f6af29510cb653fce15c2e3cdd2b3c12f9d3853a6878",
+      "rssKiB": 2412,
+      "pssKiB": 20,
+      "swapKiB": 4848,
+      "scope": "idle observed service child; not a measured MCP query peak or proof of this harness's effective configuration"
+    }
+  },
+  "typedbMemory": {
+    "pid": 3067,
+    "capturedAt": "2026-10-16T13:56:38Z",
+    "source": "typedb-cgroup-before.txt",
+    "cgroupCurrentBytes": 7523958784,
+    "cgroupSwapCurrentBytes": 24393367552,
+    "anonBytes": 3550978048,
+    "fileBytes": 756936704,
+    "kernelBytes": 3207340032,
+    "zswapBytesWithinKernel": 3103397118,
+    "zswappedLogicalBytes": 8390770688,
+    "processRssKiB": 3501696,
+    "processAnonRssKiB": 3467752,
+    "processFileRssKiB": 33944,
+    "processSwapKiB": 23821648,
+    "processHighWaterRssKiB": 10610856,
+    "processThreads": 296,
+    "derivedAnonResidentPlusSwapBytes": 27944345600,
+    "derivedKernelMinusZswapBytes": 103942914,
+    "allocatorOrObjectOwnershipKnown": false,
+    "accountingCaveats": [
+      "zswap is already included in kernel/current memory and must not be added again",
+      "zswapped is logical data represented by compressed zswap, not additional physical RAM",
+      "RSS plus swap describes an approximate footprint, not a working-set requirement or heap allocation profile",
+      "counters are read sequentially and may have accounting lag"
+    ]
+  },
+  "observationWindows": {
+    "beforeBoundedReads": {
+      "start": "2026-10-16T13:56:35.531548088Z",
+      "end": "2026-10-16T14:00:38.532958072Z",
+      "startFile": "typedb-systemd-before.txt",
+      "endFile": "typedb-systemd-idle-end.txt",
+      "startCpuNanoseconds": 30280924078000,
+      "endCpuNanoseconds": 30294390809000,
+      "startReadBytes": 37854786560,
+      "endReadBytes": 37862638592,
+      "startWriteBytes": 1289399566336,
+      "endWriteBytes": 1289403981824,
+      "exclusiveIdle": false
+    },
+    "boundedReads": {
+      "counterStart": "2026-10-16T14:00:38.532958072Z",
+      "counterEnd": "2026-10-16T14:01:42.289768554Z",
+      "startFile": "typedb-systemd-idle-end.txt",
+      "endFile": "typedb-systemd-read-end.txt",
+      "startCpuNanoseconds": 30294390809000,
+      "endCpuNanoseconds": 30315338528000,
+      "startReadBytes": 37862638592,
+      "endReadBytes": 38067905536,
+      "startWriteBytes": 1289403981824,
+      "endWriteBytes": 1289404076032,
+      "readBytesDelta": 205266944,
+      "writeBytesDelta": 94208,
+      "cpuSecondsDelta": 20.947719,
+      "memoryBytesDelta": 396693504,
+      "swapBytesDelta": -102637568,
+      "snapshotUnitActiveAtEndpoints": false,
+      "decisionsUnitActiveAtEndpoints": false,
+      "otherClientsAndBackgroundWorkExcluded": false,
+      "causalPerQueryAttribution": false
+    }
+  },
+  "freshClientReads": {
+    "repo": "canix",
+    "observedBuild": "build:8ac2e28136c3",
+    "observedGeneration": 3,
+    "observedSnapshot": "snap:cba2b1e91c07",
+    "perProcessScope": { "memoryHighBytes": 536870912, "memoryMaxBytes": 1073741824, "memorySwapMaxBytes": 0, "cpuQuotaPercent": 200 },
+    "search": {
+      "arguments": ["query", "search", "RuntimeManifest", "--repo", "canix", "--limit", "5"],
+      "elapsedSeconds": 1.39,
+      "peakRssKiB": 13176,
+      "exitCode": 0,
+      "resultCount": 5
+    },
+    "context": {
+      "arguments": ["query", "context", "RuntimeManifest", "--repo", "canix", "--depth", "2", "--max-nodes", "10", "--max-chars", "6000"],
+      "elapsedSeconds": 17.69,
+      "peakRssKiB": 94628,
+      "exitCode": 1,
+      "outputBytes": 0,
+      "error": "query navigation failed: consumer: export truncated at 10000 nodes; narrow the repo"
+    }
+  },
+  "background": {
+    "snapshotLastStart": "2026-10-16T13:51:22Z",
+    "snapshotLastExit": "2026-10-16T13:55:11Z",
+    "snapshotLastResult": "success",
+    "snapshotLastPeakBytes": 174608384,
+    "decisionsLastResult": "exit-code 1",
+    "decisionsLastPeakBytes": 226336768,
+    "hostSwapUsedBytes": 41137139712,
+    "hostSwapTotalBytes": 41184194560,
+    "hostAvailableMemoryBytes": 36881453056,
+    "hostSwapSampleIsLaterThanReadWindow": true
+  },
+  "sourceBackedMechanisms": {
+    "rocksdbResources": "shared across databases; cache limit soft, pinned index/filter blocks may exceed it",
+    "queryCaches": { "parseEntries": 200, "translationEntries": 200, "planEntries": 100, "byteWeigherConfigured": false, "residentBytesMeasured": null },
+    "mvccCleanup": "disabled cleanup clears the cleanup queue; this setting alone does not prove an unbounded in-memory queue",
+    "isolationTimeline": "has window eviction/freeing; retained-window sizes were not measured",
+    "graphPublication": "one committed write transaction per inserted row; memberships and sealed evidence are persisted; moving the pointer does not delete predecessor builds",
+    "knowledgePublication": "whole-generation raw-envelope plus typed records and evidence are staged; generation references preserve historical access",
+    "retainedGenerationCount": null,
+    "retainedHistoryPhysicalBytes": null,
+    "confirmedDominantHeapOwner": null
+  },
+  "previousProposal": {
+    "status": "not-adopted; operator selected revision then deferred numeric limits",
+    "accepted": false,
+    "freshBoundedReadClientPeakRssBytes": 134217728,
+    "warmSearchP95Milliseconds": 2000,
+    "warmContextP95Milliseconds": 5000,
+    "latencySampleCountPerCase": 30,
+    "warmSteadyReadWindowSeconds": 300,
+    "warmSteadyReadSustainedSwapOut": false,
+    "readOnlyCallsMutateGraphData": false,
+    "offlineCandidatePeakRssRegressionFraction": 0.10,
+    "absoluteTypeDbRamCapBytes": null,
+    "absoluteWholeStackRamCapBytes": null,
+    "automaticContextTokenBudget": null,
+    "ioTarget": "measure controlled before/after amplification; the shared 205266944-byte read delta is not a per-query budget"
+  },
+  "acceptancePolicy": {
+    "operatorConfirmed": true,
+    "decision": "defer-numeric-limits-until-the-repaired-read-path-has-been-measured",
+    "source": "operator selected Revise the targets, then Defer numeric limits in S01b",
+    "freshBoundedReadClientPeakRssBytes": null,
+    "warmSearchP95Milliseconds": null,
+    "warmContextP95Milliseconds": null,
+    "swapLimit": null,
+    "absoluteTypeDbRamCapBytes": null,
+    "absoluteWholeStackRamCapBytes": null,
+    "requiredContracts": [
+      "complete declared indexing scope and honest coverage",
+      "bounded query responses with exact recoverable evidence",
+      "read-only calls do not mutate graph data",
+      "successful repaired reads are measured before numerical criteria are agreed"
+    ]
+  },
+  "gate": {
+    "accessibleObservationPassComplete": true,
+    "allocationAndHistoryAttributionComplete": false,
+    "resourcePolicyDecisionRecorded": true,
+    "numericResourceCriteriaAgreed": false,
+    "majorStorageOrSchemaImplementationReady": false,
+    "boundedReadFixCanProceed": true,
+    "blockers": [
+      "TypeDB smaps/io/allocator or RocksDB allocation evidence unavailable to this session",
+      "retained build/generation inventory and physical disk ownership not measured; native console needs a tty"
+    ],
+    "nextImplementationSession": "S02"
+  }
+}
