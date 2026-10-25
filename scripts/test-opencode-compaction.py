@@ -2,10 +2,10 @@
 """Verify adapter typing and native loading against an explicit patched OpenCode checkout."""
 import argparse
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--opencode", required=True, type=Path)

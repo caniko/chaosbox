@@ -2,13 +2,64 @@
 
 ## [Unreleased]
 
+### Added
+
+- Graphify parity, deterministic and cited:
+  - **Extraction.** Rust/TS calls, inheritance and implementations resolve to
+    unique same-language definitions as INFERRED evidence (`unique-name-v1`)
+    with exact use-site spans and no model decisions. Coverage gains
+    `resolved_relations`.
+  - **Certified facts.** `declarations-v2` certifies syntactic nesting and
+    rationale comments (`NOTE:`, `WHY:`, `SAFETY:`, `ponytail:`, …). ADR/RFC
+    citations link to captured documents.
+  - **Exclusion.** `.chaosboxignore` and `--exclude` narrow capture, and
+    non-empty exclusions join the snapshot identity.
+  - **Analytics.** `leiden-v1` publication analytics: deterministic Leiden
+    communities with labels and cohesion, god nodes, scored surprising
+    connections and questions that name the read answering them.
+  - **Reads.** `--resolution` recomputation, `query report` / MCP `report`
+    (GRAPH_REPORT.md with runnable citations), `query evidence`, and context
+    seeding that ignores short terms and function words.
+  - **Exports.** `query export --format html|mermaid|graphml|cypher|wiki`:
+    offline interactive HTML, forge-native Mermaid, GraphML, Neo4j Cypher and
+    an Obsidian-compatible wiki, all byte-reproducible.
+  - **Ops.** `install`/`uninstall` for Claude Code, OpenCode and Codex,
+    `hook install`, `watch`, name-or-id entity arguments with exit codes 3
+    (ambiguous) and 4 (absent), and a local JSONL usage ledger
+    (`CHAOSBOX_QUERY_LOG=off` disables it).
+
+### Changed
+
+- Rust/TS producers report `declarations-v2`. The reader export adds
+  `source_location` and relationship `scope`. `stats` gains Leiden fields
+  while keeping `hubs`, and its stored packets are recomputed when their
+  algorithm is older.
+
 ### Fixed
 
+- TypeDB publication flushes content-keyed rows (spans, entities,
+  relationships, memberships, file versions, candidates, evidence) in chunks of
+  256 per write transaction, probing each key first, instead of committing one
+  transaction per row. A canix-sized build drops from roughly 300k commits to
+  about 1.2k; a chunk that meets a rival's duplicate or conflict replays through
+  the per-row path, so first-write-wins semantics are unchanged. The redundant
+  per-edge sealed-evidence read-back is gone; the publication swing still
+  verifies the complete membership set.
+- Snapshot capture skips files under a source extension that are not valid
+  UTF-8 and reports them as `unreadable` instead of failing the whole run.
+  Explicit file selections still refuse them.
+- `no active build for repo` names the next action and carries
+  `data.code = "no_active_build"` on MCP errors; TypeDB `[REX1]` read
+  interruptions explain the read timeout and server-restart causes.
+- Nix deployment and federation checks import existing package-set paths
+  directly so cold, read-only flake qualification does not need a new store copy.
 - OpenCode adapters load from standalone packaged runtimes without a runtime
   dependency on the SDK. Production install checks cover all four adapter imports.
 - Reject malformed pre-bounding truncation metadata and preserve string-valued
   tool output exactly when reconstructing source-custodied checkpoints. The
   global plugin example now uses native project resolution instead of a fixed repo.
+- Session-research validators reject malformed top-level input types with
+  `TypeError`, including non-object portfolio and reproduction inventories.
 - Global OpenCode session custody binds each archive capture and retrieval to
   the native session's canonical project root, including worktrees, and refuses
   context reduction when that identity cannot be verified.
@@ -28,6 +79,9 @@
 
 ### Changed
 
+- Rust, database and documentation infrastructure now consume one qualified
+  Harbor monorepo input. Database service identities remain `services.harbor-db`,
+  and the default development shell includes its configured treefmt wrapper.
 - Indexing avoids redundant graph/evidence copies and streams publication hashing
   and CLI exports. Complete-export comparisons show 47–56% lower peak RSS on the
   measured corpora; TypeDB server memory and the original million-fact workload

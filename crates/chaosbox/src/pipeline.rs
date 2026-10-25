@@ -82,7 +82,7 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
         max_candidates: usize,
         policy: &chaosbox_core::EffectivePolicy,
     ) -> Result<(Snapshot, Extraction, CandidateCatalog), PipelineError> {
-        let snap = Snapshot::capture_scoped(repo, root, &policy.scope)
+        let snap = Snapshot::capture_excluding(repo, root, &policy.scope, &policy.exclude)
             .map_err(|e| PipelineError::Extract(e.to_string()))?;
         let ext = extract_snapshot(&snap);
         let catalog = build_candidates(&ext, max_candidates);
@@ -373,15 +373,18 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
             .collect();
         crate::structural::publish_facts(&mut self.store, &mut build, snapshot, extraction).await?;
         let direct_relations = build.edges.len();
+        let resolved_relations = extraction.facts.iter().filter(|f| f.resolved).count();
         self.materialize_decisions(&mut build, decided, mat).await?;
         build.coverage = Some(chaosbox_core::coverage::BuildCoverage {
             files: extraction.coverage.clone(),
             structural_relations: direct_relations
+                - resolved_relations
                 - extraction
                     .compiler
                     .as_ref()
                     .map_or(0, chaosbox_core::compiler::CompilerCoverage::relations),
             decision_relations: build.edges.len() - direct_relations,
+            resolved_relations,
             compiler: extraction.compiler.clone(),
             catalog: None,
         });

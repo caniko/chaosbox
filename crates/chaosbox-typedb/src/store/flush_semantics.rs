@@ -13,7 +13,8 @@ use crate::common::{
 use crate::encode::{bool_lit, double_lit, int_lit, str_lit};
 use typedb_driver::{TransactionOptions, TransactionType};
 
-use super::TypeDbStore;
+use super::flush::{entity_row, node_membership_row, relationship_row, span_row};
+use super::{KeyedRow, TypeDbStore};
 
 impl TypeDbStore {
     /// Conditional decision write: insert when absent, replace when the
@@ -271,8 +272,9 @@ impl TypeDbStore {
         Ok(Some((cache_key, outcome_str, d)))
     }
 
-    /// Insert one evidence row (idempotent).
-    pub(super) async fn flush_evidence(&self, e: &Evidence) -> Result<(), StoreError> {
+    /// Keyed rows for one evidence record: its span (when any) first, then
+    /// the evidence row itself.
+    pub(super) fn evidence_rows(e: &Evidence) -> Vec<KeyedRow> {
         let mut owns = format!(
             "has evidence-id {}, has class {}, has supports {}, has text {}, has file-version-id {}",
             str_lit(&e.id),
@@ -281,8 +283,9 @@ impl TypeDbStore {
             str_lit(&e.text),
             str_lit(&file_version_id(&e.snapshot, &e.source_file_version))
         );
+        let mut rows = Vec::with_capacity(2);
         if let Some(s) = &e.span {
-            self.flush_span(s).await?;
+            rows.push(span_row(s));
             owns.push_str(", has span-id ");
             owns.push_str(&str_lit(&span_id_of(
                 &s.file,
@@ -298,8 +301,19 @@ impl TypeDbStore {
             owns.push_str(", has producer ");
             owns.push_str(&str_lit(producer));
         }
-        let q = format!("insert $x isa evidence, {owns};");
-        self.insert_ignoring_duplicates(&q).await
+        rows.push(KeyedRow::new(
+            "evidence",
+            "evidence-id",
+            &e.id,
+            format!("insert $x isa evidence, {owns};"),
+        ));
+        rows
+    }
+
+    /// Insert one evidence row (idempotent, durable-first on `put_evidence`).
+    pub(super) async fn flush_evidence(&self, e: &Evidence) -> Result<(), StoreError> {
+        self.flush_keyed_rows(Box::new(Self::evidence_rows(e).into_iter().map(Ok)))
+            .await
     }
 
     /// Insert one claim with its supporting/contradicting links.
@@ -343,8 +357,10 @@ impl TypeDbStore {
         build: &GraphBuild,
         digest: &str,
     ) -> Result<(), StoreError> {
-        let navigation =
-            chaosbox_core::navigation::summarize_build(build).map_err(StoreError::Query)?;
+        let navigation = chaosbox_core::navigation::summarize_build(build, |rel| {
+            self.staging.edge_class(&build.id, rel)
+        })
+        .map_err(StoreError::Query)?;
         let navigation =
             serde_json::to_string(&navigation).map_err(|e| StoreError::Query(e.to_string()))?;
         self.flush_repository(&build.repo).await?;
@@ -380,19 +396,29 @@ impl TypeDbStore {
         self.insert_ignoring_duplicates(&format!("insert $b isa graph-build, {owns};"))
             .await?;
         self.check_build_digest(build, digest).await?;
+        // Dependency order within one ordered stream: spans before entities,
+        // entities before memberships and relationships, relationships before
+        // edge memberships. Chunks commit in order and a transaction reads
+        // its own writes, so each `match` finds what precedes it.
         let mut nodes: Vec<&Entity> = build.nodes.values().collect();
         nodes.sort_by(|a, b| a.id.cmp(&b.id));
-        for e in nodes {
-            self.flush_entity(e).await?;
-            self.flush_node_membership(&build.id, &e.id, digest).await?;
-        }
         let mut edges: Vec<&Relation> = build.edges.values().collect();
         edges.sort_by(|a, b| a.id.cmp(&b.id));
-        for r in edges {
-            self.flush_relationship(r).await?;
-            self.flush_edge_membership(&build.id, &r.id, digest).await?;
-        }
-        Ok(())
+        let rows = nodes
+            .iter()
+            .flat_map(|e| [Ok(span_row(&e.span)), entity_row(e)])
+            .chain(
+                nodes
+                    .iter()
+                    .map(|e| Ok(node_membership_row(&build.id, &e.id, digest))),
+            )
+            .chain(edges.iter().map(|r| Ok(relationship_row(r))))
+            .chain(
+                edges
+                    .iter()
+                    .map(|r| self.edge_membership_row(&build.id, &r.id, digest)),
+            );
+        self.flush_keyed_rows(Box::new(rows)).await
     }
 }
 

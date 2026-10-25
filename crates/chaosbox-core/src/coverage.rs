@@ -36,6 +36,10 @@ pub struct BuildCoverage {
     pub structural_relations: usize,
     /// Relationships published from accepted model decisions.
     pub decision_relations: usize,
+    /// Relationships published from deterministic name resolution (INFERRED
+    /// evidence with a producer, no model decisions). Zero for older builds.
+    #[serde(default)]
+    pub resolved_relations: usize,
     /// Optional compiler analysis; absence means it was not requested.
     #[serde(default)]
     pub compiler: Option<crate::compiler::CompilerCoverage>,
@@ -80,6 +84,7 @@ impl BuildCoverage {
             catalog: self.catalog.as_ref(),
             structural_relations: self.structural_relations,
             decision_relations: self.decision_relations,
+            resolved_relations: self.resolved_relations,
             file_count: self.files.len(),
             parse_errors: self
                 .files
@@ -110,6 +115,8 @@ pub struct CoverageReport<'a> {
     pub structural_relations: usize,
     /// Decision-backed relationships.
     pub decision_relations: usize,
+    /// Name-resolved (INFERRED, no decision) relationships.
+    pub resolved_relations: usize,
     /// Total captured files, including omitted detail rows.
     pub file_count: usize,
     /// Files whose certified syntax pass failed.

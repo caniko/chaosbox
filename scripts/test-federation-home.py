@@ -3,10 +3,10 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import socket
 import subprocess
 import tempfile
+from pathlib import Path
 
 
 def verify(evaluation, chaosbox):

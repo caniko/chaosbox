@@ -181,6 +181,7 @@ fn test_snapshot() -> Snapshot {
             bytes: 3,
         }],
         contents: BTreeMap::from([("a.rs".into(), "a b".into())]),
+        unreadable: Vec::new(),
     }
 }
 
@@ -312,6 +313,7 @@ async fn failed_refresh_preserves_last_good_build() {
         scope: Vec::new(),
         files: vec![],
         contents: BTreeMap::new(),
+        unreadable: Vec::new(),
     };
     let ext = Extraction {
         compiler: None,
@@ -391,6 +393,7 @@ async fn cache_only_refresh_republishes_paid_for_relations() {
         scope: Vec::new(),
         files: vec![],
         contents: BTreeMap::new(),
+        unreadable: Vec::new(),
     };
     let ext = Extraction {
         compiler: None,
@@ -520,6 +523,7 @@ async fn source_edit_leaves_capture_only_refresh_without_coverage() {
         scope: Vec::new(),
         files: vec![],
         contents: BTreeMap::new(),
+        unreadable: Vec::new(),
     };
     let ext = Extraction {
         compiler: None,
@@ -586,6 +590,7 @@ async fn source_edit_leaves_capture_only_refresh_without_coverage() {
                 bytes: 4,
             }],
             contents: BTreeMap::from([("a.rs".into(), "a b edited".into())]),
+            unreadable: Vec::new(),
         }
     };
     let reused = decide_cached(
@@ -891,6 +896,7 @@ async fn empty_decisions_publish_entities_only() {
             bytes: 9,
         }],
         contents: BTreeMap::from([("a.rs".into(), "fn a() {}\n".into())]),
+        unreadable: Vec::new(),
     };
     let ext = Extraction {
         compiler: None,

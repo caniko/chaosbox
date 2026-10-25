@@ -2,10 +2,19 @@
 
 use super::mcp_server::{mcp_args, mcp_call_tool, mcp_tool_defs};
 
+/// Signals when a pending backend future is dropped.
+struct Guard(tokio::sync::watch::Sender<bool>);
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        self.0.send_replace(true);
+    }
+}
+
 #[test]
 fn tool_defs_are_read_only_with_schemas() {
     let defs = mcp_tool_defs();
-    assert_eq!(defs.len(), 12);
+    assert_eq!(defs.len(), 13);
     for d in &defs {
         assert_eq!(d["annotations"]["readOnlyHint"], true);
         assert!(d["inputSchema"]["properties"].is_object(), "{d}");
@@ -25,6 +34,178 @@ fn tool_defs_are_read_only_with_schemas() {
             "repo must be nonempty: {d}"
         );
     }
+}
+
+#[test]
+fn neighbors_advertises_bounded_continuation() {
+    let defs = mcp_tool_defs();
+    let neighbors = defs
+        .iter()
+        .find(|tool| tool["name"] == "neighbors")
+        .unwrap();
+    let schema = &neighbors["inputSchema"];
+    assert_eq!(schema["additionalProperties"], false);
+    let props = &schema["properties"];
+    assert_eq!(props["limit"]["default"], 20);
+    assert_eq!(props["limit"]["minimum"], 1);
+    assert_eq!(props["limit"]["maximum"], 200);
+    assert_eq!(props["cursor"]["type"], "string");
+    assert_eq!(
+        props["direction"]["enum"],
+        serde_json::json!(["both", "outgoing", "incoming"])
+    );
+    assert_eq!(props["rel"]["type"], "string");
+    assert_eq!(props["rel_types"]["items"]["type"], "string");
+}
+
+#[test]
+fn historical_tools_advertise_optional_exact_publication() {
+    let defs = mcp_tool_defs();
+    for name in ["lookup", "explain", "evidence", "neighbors"] {
+        let tool = defs.iter().find(|tool| tool["name"] == name).unwrap();
+        let schema = &tool["inputSchema"];
+        let build = &schema["properties"]["build_id"];
+        assert_eq!(build["type"], "string", "{name}");
+        assert_eq!(build["minLength"], 1);
+        assert_eq!(build["maxLength"], 256);
+        assert!(!schema["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("build_id")));
+    }
+}
+
+#[tokio::test]
+async fn historical_tools_validate_selection_before_credentials() {
+    use serde_json::json;
+    for name in ["lookup", "explain", "evidence", "neighbors"] {
+        for build in [
+            json!(null),
+            json!(false),
+            json!(1),
+            json!([]),
+            json!(""),
+            json!(" "),
+            json!("build:\ncontrol"),
+            json!("é".repeat(129)),
+        ] {
+            let mut args = json!({"repo":"demo", "build_id":build});
+            args[if name == "evidence" { "rel" } else { "id" }] = json!("fixture:id");
+            let response = mcp_call_tool(&json!(1), name, &json!({"arguments":args})).await;
+            assert_eq!(response["error"]["code"], -32602, "{name}: {response}");
+            assert!(response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("build_id"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn historical_cursor_conflicts_fail_before_credentials() {
+    use serde_json::json;
+    let mut kinds = chaosbox::all_relation_types();
+    kinds.sort();
+    let cursor = json!({"contract":"chaosbox.repository-neighborhood", "version":1, "order":"rel_id_asc",
+        "scope":{"repo":"demo", "id":"ent:hub", "direction":"both", "rel_types":kinds, "limit":20},
+        "build_id":"build:old", "outgoing":{"after":"rel:first"}, "incoming":"done"});
+    let response = mcp_call_tool(
+        &json!(1),
+        "neighbors",
+        &json!({"arguments":{
+            "repo":"demo", "id":"ent:hub", "build_id":"build:new", "cursor":cursor.to_string()
+        }}),
+    )
+    .await;
+    assert_eq!(response["error"]["code"], -32602, "{response}");
+    assert!(response["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("conflicts"));
+}
+
+#[test]
+fn path_advertises_shared_bounds_and_rejects_unknown_fields() {
+    let defs = mcp_tool_defs();
+    let path = defs.iter().find(|tool| tool["name"] == "path").unwrap();
+    let schema = &path["inputSchema"];
+    assert_eq!(schema["additionalProperties"], false);
+    for field in ["repo", "from", "to"] {
+        assert_eq!(schema["properties"][field]["minLength"], 1);
+        assert_eq!(schema["properties"][field]["maxLength"], 256);
+    }
+    let hops = &schema["properties"]["max_hops"];
+    assert_eq!(hops["default"], 4);
+    assert_eq!(hops["minimum"], 0);
+    assert_eq!(hops["maximum"], 8);
+}
+
+#[tokio::test]
+async fn path_rejects_malformed_arguments_before_credentials() {
+    use serde_json::json;
+    for (field, value) in [
+        ("max_hops", json!(-1)),
+        ("max_hops", json!(9)),
+        ("max_hops", json!(1.5)),
+        ("max_hops", json!("4")),
+        ("max_hops", json!(true)),
+        ("max_hops", json!(null)),
+        ("max_hops", json!([])),
+        ("max_hops", json!(u64::MAX)),
+        ("repo", json!(" ")),
+        ("repo", json!("x".repeat(257))),
+        ("from", json!(" ")),
+        ("from", json!("ent:\ncontrol")),
+        ("from", json!("é".repeat(129))),
+        ("to", json!("x".repeat(257))),
+        ("unexpected", json!(true)),
+    ] {
+        let mut args = json!({"repo":"demo", "from":"ent:a", "to":"ent:b"});
+        args[field] = value;
+        let response = mcp_call_tool(&json!(1), "path", &json!({"arguments":args})).await;
+        assert_eq!(response["error"]["code"], -32602, "{field}: {response}");
+    }
+}
+
+#[tokio::test]
+async fn neighbors_rejects_invalid_supplied_arguments_before_credentials() {
+    use serde_json::json;
+    for (field, value) in [
+        ("limit", json!(0)),
+        ("limit", json!(201)),
+        ("limit", json!(-1)),
+        ("limit", json!("3")),
+        ("limit", json!(null)),
+        ("direction", json!("sideways")),
+        ("direction", json!(null)),
+        ("cursor", json!(false)),
+        ("cursor", json!(null)),
+        ("cursor", json!("not json")),
+        ("cursor", json!("x".repeat(20_000))),
+        ("rel", json!(3)),
+        ("rel", json!(null)),
+        ("rel", json!("unknown")),
+        ("rel_types", json!(null)),
+        ("rel_types", json!("calls")),
+        ("rel_types", json!(["calls", 3])),
+        ("unexpected", json!(true)),
+        ("repo", json!(" ")),
+        ("id", json!("x".repeat(257))),
+    ] {
+        let mut args = json!({"repo":"demo", "id":"ent:hub"});
+        args[field] = value;
+        let response = mcp_call_tool(&json!(1), "neighbors", &json!({"arguments":args})).await;
+        assert_eq!(response["error"]["code"], -32602, "{field}: {response}");
+    }
+    let response = mcp_call_tool(
+        &json!(1),
+        "neighbors",
+        &json!({"arguments":{
+            "repo":"demo", "id":"ent:hub", "rel":"calls", "rel_types":["calls"]
+        }}),
+    )
+    .await;
+    assert_eq!(response["error"]["code"], -32602, "{response}");
 }
 
 #[test]
@@ -100,6 +281,12 @@ async fn unbounded_queries_rejected_before_backend() {
             serde_json::json!({"repo":"demo","query":"entry","max_nodes":-1}),
         ),
         ("stats", serde_json::json!({"repo":"demo","limit":"all"})),
+        ("stats", serde_json::json!({"repo":"demo","resolution":0})),
+        ("report", serde_json::json!({"repo":"demo","resolution":11})),
+        (
+            "community",
+            serde_json::json!({"repo":"demo","id":"c","resolution":"fine"}),
+        ),
     ] {
         let response = mcp_call_tool(
             &serde_json::json!(1),
@@ -131,7 +318,7 @@ fn mcp_tool_set_loads_no_provider_credentials() {
     // than trusting the shape alone, so a future mutation tool cannot slip
     // past the closed set unnoticed.
     let defs = mcp_tool_defs();
-    assert_eq!(defs.len(), 12);
+    assert_eq!(defs.len(), 13);
     let names: Vec<_> = defs
         .iter()
         .map(|d| d["name"].as_str().unwrap_or_default())
@@ -149,4 +336,219 @@ fn mcp_tool_set_loads_no_provider_credentials() {
         !src.contains("api_key"),
         "mcp_server.rs must never load provider credentials"
     );
+}
+
+#[tokio::test]
+async fn ordinary_frames_keep_partial_bytes_when_a_response_wins() {
+    use super::mcp_server::{Frames, exchange, MCP_FRAME_BYTES};
+    use tokio::io::{AsyncWriteExt, AsyncReadExt};
+    let (mut sender, input) = tokio::io::duplex(MCP_FRAME_BYTES + 1);
+    let mut frames = Frames::new(input);
+    let (mut output, mut receiver) = tokio::io::duplex(1024);
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let sending = async {
+        sender
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\",\"label\":\"")
+            .await
+            .unwrap();
+        // Split a multi-byte UTF-8 character across the competing event.
+        sender.write_all(&[0xc3]).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        tx.send(()).unwrap();
+    };
+    let id = serde_json::json!(1);
+    let serving = exchange(&mut frames, &mut output, &id, async {
+        rx.await.unwrap();
+        serde_json::json!({"id":1})
+    });
+    let (result, ()) = tokio::join!(serving, sending);
+    assert!(result.unwrap());
+    let mut response = vec![0; 9];
+    receiver.read_exact(&mut response).await.unwrap();
+    assert_eq!(response, b"{\"id\":1}\n");
+    sender.write_all(&[0xa9, b'"', b'}', b'\n']).await.unwrap();
+    let req: serde_json::Value =
+        serde_json::from_slice(&frames.next().await.unwrap().unwrap()).unwrap();
+    assert_eq!(req["label"], "é");
+    sender
+        .write_all(&vec![b' '; MCP_FRAME_BYTES - 1])
+        .await
+        .unwrap();
+    sender.write_all(b"\n").await.unwrap();
+    assert_eq!(frames.next().await.unwrap().unwrap().len(), MCP_FRAME_BYTES);
+    sender
+        .write_all(&vec![b' '; MCP_FRAME_BYTES + 1])
+        .await
+        .unwrap();
+    assert_eq!(
+        frames.next().await.unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[tokio::test]
+async fn ordinary_transport_drops_pending_reads_on_eof_oversize_and_closed_output() {
+    use super::mcp_server::{Frames, exchange, MCP_FRAME_BYTES};
+    use tokio::io::AsyncWriteExt;
+    // A pending backend must be polled before any transport failure is injected.
+    for case in ["eof", "oversize", "closed-output"] {
+        let (mut sender, input) = tokio::io::duplex(MCP_FRAME_BYTES + 1);
+        let (mut output, receiver) = tokio::io::duplex(1);
+        let (started, start) = tokio::sync::oneshot::channel();
+        let (dropped, mut drop_rx) = tokio::sync::watch::channel(false);
+        let serving = async {
+            exchange(
+                &mut Frames::new(input),
+                &mut output,
+                &serde_json::json!(1),
+                async {
+                    let _guard = Guard(dropped);
+                    started.send(()).unwrap();
+                    std::future::pending().await
+                },
+            )
+            .await
+        };
+        let failing = async {
+            start.await.unwrap();
+            if case == "eof" {
+                drop(sender);
+                drop(receiver);
+            } else if case == "oversize" {
+                sender
+                    .write_all(&vec![b'x'; MCP_FRAME_BYTES + 1])
+                    .await
+                    .unwrap();
+            } else {
+                drop(receiver);
+                sender
+                    .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n")
+                    .await
+                    .unwrap();
+            }
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(serving, failing)
+        })
+        .await
+        .unwrap();
+        if case == "eof" {
+            assert!(!result.unwrap());
+        } else {
+            assert!(result.is_err());
+        }
+        drop_rx.wait_for(|value| *value).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn ordinary_response_overflow_is_an_error_and_keeps_the_rpc_id() {
+    use super::mcp_server::{Frames, exchange, MCP_RESPONSE_BYTES};
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let (_sender, input) = tokio::io::duplex(16);
+    let (mut output, receiver) = tokio::io::duplex(1024);
+    let mut frames = Frames::new(input);
+    let id = serde_json::json!(7);
+    let serving = exchange(&mut frames, &mut output, &id, async {
+        serde_json::json!({"jsonrpc":"2.0", "id":7, "result":"x".repeat(MCP_RESPONSE_BYTES)})
+    });
+    let mut lines = BufReader::new(receiver).lines();
+    let (result, line) = tokio::join!(serving, lines.next_line());
+    assert!(result.unwrap());
+    let response: serde_json::Value = serde_json::from_str(&line.unwrap().unwrap()).unwrap();
+    assert_eq!(response["id"], 7);
+    assert_eq!(response["error"]["code"], -32603);
+}
+
+#[tokio::test]
+async fn ordinary_controls_drain_after_a_backpressured_final_response() {
+    use super::mcp_server::{Frames, exchange};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let (mut sender, input) = tokio::io::duplex(4096);
+    let (mut output, receiver) = tokio::io::duplex(1);
+    let id = serde_json::json!(1);
+    let mut frames = Frames::new(input);
+    let serving = exchange(&mut frames, &mut output, &id, async {
+        serde_json::json!({"jsonrpc":"2.0", "id":1, "result":"x".repeat(1024)})
+    });
+    let client = async {
+        sender.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":2}}\n{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}\n").await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let mut lines = BufReader::new(receiver).lines();
+        for (index, expected) in [1, 2, 3, 1].into_iter().enumerate() {
+            let response: serde_json::Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(response["id"], expected);
+            if index == 0 {
+                // A flushed final response releases its ID even while earlier
+                // control responses remain backpressured.
+                sender
+                    .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n")
+                    .await
+                    .unwrap();
+            }
+            if expected == 2 {
+                assert_eq!(response["error"]["code"], -32800);
+            } else {
+                assert!(response.get("error").is_none(), "{response}");
+            }
+        }
+        // Keep stdin open until exchange has drained every control response.
+        sender
+    };
+    let (result, _sender) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(serving, client)
+    })
+    .await
+    .unwrap();
+    assert!(result.unwrap());
+}
+
+#[tokio::test]
+async fn ordinary_slow_output_keeps_one_deadline_and_drops_the_active_read() {
+    use super::mcp_server::{Frames, exchange};
+    use tokio::io::AsyncWriteExt;
+    let (mut sender, input) = tokio::io::duplex(4096);
+    let (mut output, _unread) = tokio::io::duplex(1);
+    let (started, start) = tokio::sync::oneshot::channel();
+    let (dropped, mut drop_rx) = tokio::sync::watch::channel(false);
+    let serving = async {
+        exchange(
+            &mut Frames::new(input),
+            &mut output,
+            &serde_json::json!(1),
+            async {
+                let _guard = Guard(dropped);
+                started.send(()).unwrap();
+                std::future::pending().await
+            },
+        )
+        .await
+    };
+    let client = async {
+        start.await.unwrap();
+        sender
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n")
+            .await
+            .unwrap();
+        // Unrelated notifications neither cancel work nor restart the blocked
+        // output deadline. Keep stdin open until the backend guard is released.
+        loop {
+            tokio::select! {
+                _ = drop_rx.wait_for(|value| *value) => break,
+                () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                    sender.write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":999}}\n").await.unwrap();
+                }
+            }
+        }
+    };
+    let began = std::time::Instant::now();
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        tokio::join!(serving, client)
+    })
+    .await
+    .unwrap();
+    assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+    assert!(began.elapsed() >= std::time::Duration::from_secs(9));
+    assert!(*drop_rx.borrow());
 }

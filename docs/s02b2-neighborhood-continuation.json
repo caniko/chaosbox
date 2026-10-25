@@ -1,0 +1,80 @@
+{
+  "workcard": "S02b.2",
+  "status": "shared-repository-reader-locally-qualified",
+  "date": "2026-10-16",
+  "source": {
+    "repository": "/data/nvme0/can/canix/projects/repos/owned/chaosbox",
+    "baselineHead": "46ab2034331116e14414c585148784a831ca8646",
+    "qualificationUsesDirtyCheckout": true,
+    "cleanReleaseQualificationClaimed": false,
+    "scopedSavepoint": "commit containing this receipt; three production files, new regression and report/receipt",
+    "testedSourceArchive": "source-tested.tar",
+    "testedSourceSha256": "e82f24dcb95d9ab63a51adfe7b941af57ff57a4164e2e5f34425f8185b94b993",
+    "testedSourceMatchesCheckout": true
+  },
+  "contract": {
+    "domain": "chaosbox.repository-neighborhood",
+    "version": 1,
+    "order": "rel_id_asc",
+    "binds": ["repo", "build", "anchor", "direction-mode", "canonical-filter", "page-size", "both-last-delivered-positions"],
+    "cursorIsCredentialOrAuthenticatedIssuance": false,
+    "exactRepositoryOwnershipRevalidated": true,
+    "scopedViewAdmissionAndEvidenceValidationChanged": false,
+    "pageSizePerDirectionMaximum": 200,
+    "labelBytesMaximum": 256,
+    "requestAndCursorBytesMaximum": 16384
+  },
+  "checks": {
+    "redFailedBeforeImplementation": true,
+    "aggregatePassed": 87,
+    "aggregateIgnoredDisposableCases": 3,
+    "requiredLivePassed": 1,
+    "requiredLiveIgnored": 0,
+    "priorS02aAndS02b1LiveGatesRerun": false,
+    "warningsDeniedClippyPassed": true,
+    "treefmtPassed": true,
+    "gitDiffCheckPassed": true
+  },
+  "live": {
+    "serverVersion": "TypeDB CE 3.13.0",
+    "address": "127.0.0.1:24729",
+    "database": "s02b2_continuation_20261016",
+    "requiredTypeDb": true,
+    "oldBuild": "build:8a1da3aa857a",
+    "newActiveBuild": "build:ac0ed0471189",
+    "oldNodes": 10,
+    "oldRelationships": 21,
+    "enumeratedOutgoing": 19,
+    "enumeratedIncoming": 3,
+    "everyResumeUsesFreshReader": true,
+    "fullRelationshipProjectionEquality": true,
+    "freshProcessTransportContinuationQualified": false,
+    "testSeconds": 0.67,
+    "workerWallSeconds": 0.789,
+    "workerMemoryPeakNativeSummary": "66.8M",
+    "compilationAlreadyWarm": true,
+    "recordedServerPeakBytes": 136437760,
+    "recordedServerCurrentSwapBytes": 0,
+    "productionResourceAcceptance": false
+  },
+  "evidence": {
+    "root": "/data/scratch/tmp/opencode/chaosbox-s02b2-20261016",
+    "manifest": "qualification.sha256",
+    "manifestEntries": 21,
+    "manifestSha256": "7de9ae654801708b29466614b850f30004c31ad34bf10f6c17c46af1194d87d7",
+    "checksumsVerified": true,
+    "testExecutable": "neighborhood-continuation-qualified",
+    "testExecutableSha256": "07c2a1aa59237160634853c19d2164cfc8996aef0cde7e98aaa19746e408cace",
+    "commandsAndBoundaries": "qualification-context.txt",
+    "nativeCommandsAndResources": "worker-resources.txt"
+  },
+  "preservation": {
+    "canixStagingUnchanged": true,
+    "canixIndexPatchSha256": "32ae1fa38d8b9da9d4f8bee4ec91ae93339f1d77bdffa8cd7871cf441b85c659",
+    "productionTypeDbPidAndStartUnchanged": true,
+    "disposableServerInactiveAfterSigterm": true,
+    "disposableDataAndLogsRetained": true
+  },
+  "nextWorkcard": "S02b.3",
+  "ordinaryCliMcpPagingQualified": false
+}

@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 1,
+  "id": "s01b-operator-followup-atlas-20261019",
+  "status": "partial-attribution",
+  "gateClosed": false,
+  "evidence": {
+    "directory": "/data/scratch/tmp/opencode/chaosbox-s01b3-20261019",
+    "manifest": "evidence.sha256",
+    "manifestSha256": "473969021b0f0aff5facf18573ba01fbbbc614975eb36b940d24b67407063ebd",
+    "manifestEntries": 71,
+    "provenance": "operator-supplied output; numeric/path transcription with possible whitespace normalization",
+    "receivedAt": "2026-10-19T06:21:17+00:00",
+    "captureTimestamp": null,
+    "fullSmapsSupplied": false,
+    "agentRanPrivilegedCommands": false,
+    "synchronizedSamples": false
+  },
+  "sourceIdentity": {
+    "chaosboxBaselineHead": "9c8462276c512675b09443f6f14e0eb4f425a487",
+    "chaosboxDirty": true,
+    "canixObservedHead": "dd9a972aa63b0cdf98f70997acaf3343af0a3d45",
+    "typedbInspectedRevision": "7e3baa369a5afd3c42c3e21a4672785dbdbb09ec",
+    "verifiedSourceBlobs": 16,
+    "sourceBlobInventory": "source-blob-verification.tsv",
+    "runningExecutable": "/nix/store/g9hwrllc0d4gqmdwyjggv674kf0jdm7x-typedb-3.13.0/bin/typedb-server",
+    "runningExecutableSha256": "f2eda580af8a386f25d68d82bcd2984fa3b03b5f330b12a5c12a6bc88d2db3b8",
+    "runningPackageDeriver": "unknown-deriver",
+    "runningSourceBindingVerified": false
+  },
+  "processIdentity": {
+    "operatorReportedPid": 4144752,
+    "agentObservedServicePid": 4144752,
+    "agentObservedStartTimestampMonotonic": 158470931838,
+    "operatorCaptureStartIdentityKnown": false
+  },
+  "observations": {
+    "memory": {
+      "procKbMultiplier": 1024,
+      "rssBytes": 9506381824,
+      "anonymousResidentBytes": 9500651520,
+      "swapBytes": 19063894016,
+      "anonymousResidentPlusSwapBytes": 28564545536,
+      "nonAnonymousResidentBytes": 5730304,
+      "anonymousResidentPlusSwapIsRamRequirement": false
+    },
+    "disk": {
+      "rawRows": 196,
+      "databaseDirectories": 49,
+      "rootBytes": 30375899136,
+      "rootGiB": 28.28976058959961,
+      "chaosboxBytes": 30278262784,
+      "chaosboxGiB": 28.198829650878906,
+      "walBytes": 21148098560,
+      "walGiB": 19.695701599121094,
+      "storageBytes": 9121206272,
+      "storageGiB": 8.49478530883789,
+      "checkpointBytes": 8957952,
+      "checkpointMiB": 8.54296875,
+      "walFractionOfChaosbox": 0.6984581219492992,
+      "otherDirectoryBytes": 97636352,
+      "testNamedDirectories": 47,
+      "testNamedBytes": 95178752,
+      "testNamedMiB": 90.76953125,
+      "testNamedFractionOfRoot": 0.0031333641046759632,
+      "rootMinusTopLevelDirectorySum": 4096
+    },
+    "io": {
+      "raw": {
+        "rchar": 7143475126760,
+        "wchar": 87596824363,
+        "syscr": 870565441,
+        "syscw": 204179576,
+        "read_bytes": 86344593408,
+        "write_bytes": 679761944576,
+        "cancelled_write_bytes": 0
+      },
+      "readGiB": 80.41466903686523,
+      "writeGiB": 633.0776443481445,
+      "readCharacterTiB": 6.496952780034917
+    }
+  },
+  "interpretation": {
+    "diskUnits": "allocated filesystem tally; hard-link traversal accounting can affect directory splits; unique extents unmeasured",
+    "checkpointStandaloneSizeKnown": false,
+    "walRotationIsTotalRetentionCap": false,
+    "inspectedCheckpointPathPrunesWalPrefix": false,
+    "walTruncateFromSemantics": "remove records at or after the sequence and newer files",
+    "ioScope": "process lifetime; not per-query cost or current rate",
+    "priorLogicalInventory": "prior-logical-inventory.json",
+    "priorLogicalInventoryBuilds": 3,
+    "priorLogicalInventoryIsSynchronizedWithDu": false,
+    "productionMonitoringEnabled": false,
+    "productionAdminEnabled": false,
+    "inspectedMonitoringOrAdminProvidesAllocatorBreakdown": false
+  },
+  "unresolved": {
+    "allocatorOwnershipBytes": null,
+    "perBuildPhysicalBytes": null,
+    "safelyReclaimableWalBytes": null,
+    "requiredProducer": "TypeDB allocation/storage measurement surface",
+    "releaseCondition": "measured live-object/allocator/cache attribution and retained graph/knowledge payload versus engine-history decomposition",
+    "dependentGatesRemainOpen": ["S05", "representation-dependent S03b.2", "S04b"]
+  },
+  "resourcePolicy": {
+    "decision": "defer numeric limits until repaired bounded reads are measured",
+    "numericLimitsAccepted": false
+  },
+  "verification": {
+    "nativeConsistencyAssertions": 17,
+    "sourceBlobMatches": 16,
+    "arithmeticCommand": "commands.md",
+    "arithmeticResult": "consistency-check.json",
+    "treefmt": "scoped invocation passed; 2 files traversed, no matching configured formatter",
+    "runtimeCodeChanged": false
+  }
+}

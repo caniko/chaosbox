@@ -107,10 +107,12 @@ pub async fn check_conformance<R: GraphQueries>(
     let active = r.active_build("conf").await.unwrap().unwrap();
     assert_eq!(active.build_id, builds.1);
     assert_eq!(active.generation, 2);
+    assert_eq!(active.snapshots, ["s2"]);
     assert!(r.active_build("missing-repo").await.unwrap().is_none());
     let historical = r.published_build("conf", &builds.0).await.unwrap().unwrap();
     assert_eq!(historical.build_id, builds.0);
     assert_eq!(historical.generation, 1);
+    assert_eq!(historical.snapshots, ["s1"]);
     assert!(r
         .published_build("other", &builds.0)
         .await
@@ -246,6 +248,43 @@ pub async fn check_conformance<R: GraphQueries>(
         .map(|x| x.rel_id)
         .collect();
     assert_eq!(r1, BTreeSet::from([rel1.to_owned()]));
+    // Both pinned builds retain their snapshots across prefix/sentinel boundaries.
+    for (build, names, snapshot) in [
+        (&builds.0, ["Alpha", "Beta"], "s1"),
+        (&builds.1, ["Alpha", "Gamma"], "s2"),
+    ] {
+        for limit in [-1_i64, 0, 1, 2, 3] {
+            let started = std::time::Instant::now();
+            let nodes = r.build_entities(build, limit).await.unwrap();
+            let edges = r.build_relationships(build, limit).await.unwrap();
+            let elapsed = started.elapsed();
+            let count = usize::try_from(limit.max(0)).unwrap().min(names.len());
+            assert_eq!(
+                nodes
+                    .iter()
+                    .map(|n| n.qualified_name.as_str())
+                    .collect::<Vec<_>>(),
+                names[..count],
+                "build {build}, limit {limit}"
+            );
+            assert!(nodes.iter().all(|n| n.snapshot == snapshot));
+            assert_eq!(edges.len(), count.min(1));
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "case":"membership-boundary", "build":build, "limit":limit,
+                    "nodes":nodes.len(), "edges":edges.len(),
+                    "projected_json_bytes":serde_json::to_vec(&(&nodes, &edges)).unwrap().len(),
+                    "elapsed_us":elapsed.as_micros(),
+                })
+            );
+        }
+    }
+    assert!(r
+        .build_relationships("build:missing", 1)
+        .await
+        .unwrap()
+        .is_empty());
     // Evidence attaches to the relationship within its own build only.
     let ev = r.evidence_for(&builds.0, rel1).await.unwrap();
     assert_eq!(ev.len(), 1);

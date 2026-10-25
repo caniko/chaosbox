@@ -506,33 +506,33 @@ async fn running_file_provider_observes_revocation_without_a_restart() {
 
 #[test]
 fn mcp_exposes_and_executes_snapshot_bound_federation_tools() {
-    use std::io::Write;
+    use std::io::{BufRead, BufReader, Write};
     let dir = tempfile::tempdir().unwrap();
     let (_, client, _) = config_files(dir.path(), "can");
     let input = [
         serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}),
         serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{"cursor":"10"}}),
         serde_json::json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"intelligence_context","arguments":{"repo":"project-a","query":"context citations"}}}),
-    ].into_iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\n") + "\n";
+    ];
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_chaosbox"))
         .args(["mcp", "--intelligence-federation", client.to_str().unwrap()])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
-    assert!(output.status.success());
-    let replies: Vec<serde_json::Value> = String::from_utf8(output.stdout)
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    let mut replies = Vec::<serde_json::Value>::new();
+    for request in input {
+        writeln!(stdin, "{request}").unwrap();
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        replies.push(serde_json::from_str(&line).unwrap());
+        assert_eq!(replies.last().unwrap()["id"], request["id"]);
+    }
+    // EOF now cancels active work; close only after consuming every reply.
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
     let tools = replies[1]["result"]["tools"].as_array().unwrap();
     let evidence = tools
         .iter()

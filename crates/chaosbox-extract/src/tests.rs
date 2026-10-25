@@ -400,3 +400,142 @@ fn overlapping_scopes_dedup() {
     paths.sort_unstable();
     assert_eq!(paths, ["a/b/y.rs", "a/x.rs"]);
 }
+
+#[test]
+fn name_resolution_is_unique_inferred_and_cites_use_sites() {
+    let (_d, root) = tmp_repo(&[
+        (
+            "src/lib.rs",
+            "mod store;\npub trait Shape {}\npub struct Square;\nimpl Shape for Square {}\n\
+             impl std::fmt::Display for Square {\n    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { Ok(()) }\n}\n\
+             fn hidden() -> u8 { 0 }\n\
+             pub fn run(x: Vec<u8>) {\n    store::flush();\n    Store::open();\n    x.len();\n    String::new();\n    println!(\"{}\", hidden());\n    run(Vec::new());\n}\n",
+        ),
+        (
+            "src/store.rs",
+            "pub fn flush() { helper(); }\nfn helper() {}\npub struct Store;\nimpl Store { pub fn open() -> Self { Store } }\n",
+        ),
+        ("src/other.rs", "pub fn dup() {}\npub fn caller() { dup(); }\n"),
+        ("src/third.rs", "pub fn dup() {}\n"),
+        ("src/fourth.rs", "pub fn call_dup() { dup(); }\n"),
+        // `Err(..)` must not resolve to an associated `type Err`.
+        (
+            "src/parse.rs",
+            "pub struct P;\nimpl std::str::FromStr for P {\n    type Err = ();\n    fn from_str(_: &str) -> Result<Self, ()> { Err(()) }\n}\n",
+        ),
+        (
+            "web/app.ts",
+            "// NOTE(arch): see ADR-12 for why\nexport class Base {}\nexport interface Named { name(): string }\n\
+             export interface Labeled extends Named {}\n\
+             export class Child extends Base implements Named {\n  name() { return this.label(); }\n  label() { return \"x\"; }\n}\n\
+             const make = () => new Child();\n",
+        ),
+        ("docs/adr/0012-use-typedb.md", "# Use TypeDB\nSee RFC 9110.\n"),
+        ("docs/notes.md", "Follows ADR-0012.\n"),
+    ]);
+    let snap = Snapshot::capture("demo", &root).unwrap();
+    let ext = extract_snapshot(&snap);
+    let name = |id: &str| {
+        ext.entities
+            .iter()
+            .find(|e| e.id == id)
+            .unwrap()
+            .name
+            .clone()
+    };
+    let resolved: BTreeSet<_> = ext
+        .facts
+        .iter()
+        .filter(|f| f.resolved)
+        .map(|f| {
+            // Every resolved fact cites its exact use-site text.
+            let text = &snap.contents[&f.span.file];
+            assert_eq!(
+                &text[f.span.byte_start as usize..f.span.byte_end as usize],
+                f.text
+            );
+            (format!("{:?}", f.rel_type), name(&f.from), name(&f.to))
+        })
+        .collect();
+    let expected: BTreeSet<_> = [
+        ("Calls", "flush", "helper"),
+        ("Calls", "run", "flush"),
+        ("Calls", "run", "open"),
+        ("Calls", "caller", "dup"),
+        ("Implements", "Square", "Shape"),
+        ("Calls", "name", "label"),
+        ("Calls", "make", "Child"),
+        ("Inherits", "Child", "Base"),
+        ("Implements", "Child", "Named"),
+        ("Inherits", "Labeled", "Named"),
+        (
+            "References",
+            "NOTE(arch): see ADR-12 for why",
+            "docs/adr/0012-use-typedb.md",
+        ),
+        ("References", "docs/notes.md", "docs/adr/0012-use-typedb.md"),
+    ]
+    .into_iter()
+    .map(|(r, f, t)| (r.to_owned(), f.to_owned(), t.to_owned()))
+    .collect();
+    // Absent by design: x.len(), String::new/Vec::new, ambiguous dup() from
+    // fourth.rs, calls hidden in macro input, recursion, std trait impls.
+    assert_eq!(resolved, expected);
+    assert!(ext.facts.iter().filter(|f| f.resolved).all(|f| f
+        .producer
+        .starts_with("unique-name-v1/declarations-v2/")
+        || f.producer == "citations-v1"));
+}
+
+#[test]
+fn exclusion_narrows_capture_and_identity() {
+    let (_d, root) = tmp_repo(&[
+        ("a.rs", "fn a() {}\n"),
+        ("gen/b.rs", "fn b() {}\n"),
+        ("docs/c.md", "# c\n"),
+        (".chaosboxignore", "docs/\n"),
+    ]);
+    let plain = Snapshot::capture("r", &root).unwrap();
+    assert!(plain.contents.contains_key("gen/b.rs"));
+    assert!(
+        !plain.contents.contains_key("docs/c.md"),
+        ".chaosboxignore honored"
+    );
+    let narrowed = Snapshot::capture_excluding("r", &root, &[], &["gen/**".into()]).unwrap();
+    assert!(!narrowed.contents.contains_key("gen/b.rs"));
+    assert_ne!(narrowed.id, plain.id, "exclusion is part of the identity");
+    let unrestricted = Snapshot::capture_excluding("r", &root, &[], &[]).unwrap();
+    assert_eq!(
+        unrestricted.id, plain.id,
+        "empty exclusion keeps historical ids"
+    );
+    for bad in ["", "!a.rs", "../x", "/abs", "a\\b"] {
+        assert!(
+            Snapshot::capture_excluding("r", &root, &[], &[bad.into()]).is_err(),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn source_fingerprint_tracks_selected_files_only() {
+    let (_d, root) = tmp_repo(&[("a.rs", "fn a() {}\n"), ("gen/b.rs", "fn b() {}\n")]);
+    let first = source_fingerprint(&root, &[], &[]).unwrap();
+    assert_eq!(first, source_fingerprint(&root, &[], &[]).unwrap());
+    std::fs::write(root.join("gen/b.rs"), "fn b() { b(); }\n").unwrap();
+    let edited = source_fingerprint(&root, &[], &[]).unwrap();
+    assert_ne!(first, edited, "a write changes the fingerprint");
+    let excluded = source_fingerprint(&root, &[], &["gen/**".into()]).unwrap();
+    std::fs::write(root.join("gen/b.rs"), "fn b() {}\n// edit\n").unwrap();
+    assert_eq!(
+        excluded,
+        source_fingerprint(&root, &[], &["gen/**".into()]).unwrap(),
+        "excluded files never wake watch"
+    );
+    std::fs::write(root.join("notes.bin"), [0u8, 1, 2]).unwrap();
+    assert_eq!(
+        excluded,
+        source_fingerprint(&root, &[], &["gen/**".into()]).unwrap(),
+        "unsupported files never wake watch"
+    );
+}

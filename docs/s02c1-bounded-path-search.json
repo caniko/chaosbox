@@ -1,0 +1,68 @@
+{
+  "workcard": "S02c.1",
+  "status": "shared-reader-locally-qualified",
+  "date": "2026-10-17",
+  "parentS02cPassed": false,
+  "source": {
+    "repository": "/data/nvme0/can/canix/projects/repos/owned/chaosbox",
+    "baselineHead": "d42a93c04efca667a8b5b05c4b9324465c26e1ed",
+    "scopedSavepoint": "commit containing this receipt",
+    "qualificationUsesDirtyCheckout": true,
+    "cleanReleaseQualificationClaimed": false,
+    "foreignWriteExportJsonExportIncludedInSavepoint": false
+  },
+  "contract": {
+    "pageRowsMax": 200,
+    "defaultMaxVisits": 100000,
+    "defaultMaxAcceptedRows": 20000,
+    "rowOverflowDetectionExtraRowsMax": 1,
+    "defaultMaxBackendQueries": 500,
+    "defaultMaxProjectedJsonBytes": 8388608,
+    "defaultAlreadyPinnedSearchDeadlineMs": 10000,
+    "endpointBytesMax": 256,
+    "nullOnExhaustion": false,
+    "missingSelfEndpointReturnsPath": false,
+    "unboundedNeighborhoodFallback": false,
+    "backendAcquisitionIncludedInDeadline": false,
+    "bytesMeasuredBeforeDecode": false,
+    "byteBudgetMeasuresWireBytesOrServerScans": false,
+    "productionRamTargetEstablished": false,
+    "historicalIdentitiesOrGraphContentsChanged": false
+  },
+  "checks": {
+    "preChangeRedExecuted": false,
+    "focusedPassed": 10,
+    "affectedPassed": 98,
+    "affectedIgnoredDisposableCases": 2,
+    "warningsDeniedClippyPassed": true,
+    "treefmtCiPassed": true,
+    "gitDiffCheckPassed": true,
+    "liveTypeDbPathQualified": false,
+    "persistentMcpRetentionQualified": false,
+    "ordinaryMcpCancellationQualified": false
+  },
+  "environment": {
+    "harnessProjectDirenvUsed": true,
+    "rootedNixDevelopWorkerExecuted": false,
+    "cargoJobs": 2,
+    "tokioWorkers": 2,
+    "workerMemoryHighBytes": 2147483648,
+    "workerMemoryMaxBytes": 4294967296,
+    "workerMemorySwapMaxBytes": 0,
+    "workerCpuQuotaPercent": 200,
+    "environmentRefreshed": false
+  },
+  "evidence": {
+    "root": "/data/scratch/tmp/opencode/chaosbox-s02c1-20261017",
+    "affectedTestLog": "affected-tests.log",
+    "testedSourceArchive": "source-tested.tar",
+    "manifest": "qualification.sha256"
+  },
+  "nextWorkcard": "S02c.2",
+  "remainingGates": [
+    "ordinary MCP framing, cancellation and backpressure",
+    "whole-request deadline including backend acquisition",
+    "live disposable TypeDB CLI/MCP path qualification",
+    "repeated persistent-MCP retention and remote-read cleanup"
+  ]
+}

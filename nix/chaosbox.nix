@@ -4,7 +4,7 @@
 # together with harbor-db's module and the TypeDB service module:
 #
 #   imports = [
-#     inputs.harbor-db.nixosModules.default
+#     inputs.harbor.nixosModules.database-default
 #     inputs.nixpkgs-typedb-typedb-module  # file: nixos/modules/services/databases/typedb.nix
 #     inputs.chaosbox.nixosModules.chaosbox
 #   ];
