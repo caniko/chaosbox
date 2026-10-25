@@ -6,11 +6,14 @@
 //! staged rows idempotently before swinging the active-build pointer.
 //!
 //! Transaction discipline (all proven against `TypeDB` 3.13.0):
-//! - One short write transaction per row insert; ingestion never holds a
-//!   whole repository in one transaction.
+//! - Content-keyed rows flush in bounded chunks ([`FLUSH_CHUNK`] rows per
+//!   write transaction, each row probed by key before insert); ingestion
+//!   never holds a whole repository in one transaction. One commit per row
+//!   cost production ~300k commits and ~1 TB of WAL per full publication.
 //! - Duplicate `@key` inserts fail with the `@unique` violation (`CNT9`),
 //!   which the flush treats as already-present; a concurrent rival's commit
-//!   fails with an isolation conflict (`STC2`).
+//!   fails with an isolation conflict (`STC2`). A chunk that meets either
+//!   falls back to the per-row path, so first-write-wins is unchanged.
 //! - Publication swings the pointer in a single write transaction that
 //!   re-validates predecessor and generation live, so two publishers from
 //!   the same generation cannot both succeed.
@@ -30,8 +33,34 @@ use typedb_driver::{
 use crate::common::{
     FLUSH_RETRIES, WRITE_TIMEOUT, driver_error, drain, is_conflict, is_unique_violation,
 };
+use crate::encode::str_lit;
 /// Connection config re-exported for backend constructors.
 pub use crate::common::TypeDbConfig;
+
+/// Rows per write transaction in the chunked flush.
+// ponytail: fixed chunk; make it configurable only if commit latency or the
+// 30 s write timeout ever bites at this size (256 rows ≈ 512 local queries).
+const FLUSH_CHUNK: usize = 256;
+
+/// One idempotent, content-keyed row: `probe` matches an existing row by
+/// its `@key`, `insert` writes it. Every attribute is a function of the key,
+/// so a matching probe means the durable row is already byte-identical.
+pub(super) struct KeyedRow {
+    probe: String,
+    insert: String,
+}
+
+impl KeyedRow {
+    pub(super) fn new(type_name: &str, key_attr: &str, key: &str, insert: String) -> Self {
+        Self {
+            probe: format!(
+                "match $x isa {type_name}, has {key_attr} {}; select $x; limit 1;",
+                str_lit(key)
+            ),
+            insert,
+        }
+    }
+}
 
 mod chain;
 mod flush;
@@ -132,6 +161,71 @@ impl TypeDbStore {
             .map_err(Box::new)?;
         let answer = tx.query(query).await.map_err(Box::new)?;
         drain(answer).await?;
+        tx.commit().await.map_err(Box::new)?;
+        Ok(())
+    }
+
+    /// Flush keyed rows in order, [`FLUSH_CHUNK`] rows per write transaction:
+    /// skip every row whose probe already matches, insert the rest, commit
+    /// once. Later rows may `match` earlier ones (memberships after their
+    /// entities) because a transaction reads its own writes and chunks commit
+    /// in order. Any failure on a chunk — duplicate key or isolation conflict
+    /// from a rival, timeout, connection loss — replays that chunk through
+    /// the per-row [`Self::insert_ignoring_duplicates`] path, which keeps the
+    /// proven semantics and surfaces real errors unchanged.
+    pub(super) async fn flush_keyed_rows(
+        &self,
+        rows: Box<dyn Iterator<Item = Result<KeyedRow, StoreError>> + Send + '_>,
+    ) -> Result<(), StoreError> {
+        let mut chunk = Vec::with_capacity(FLUSH_CHUNK);
+        for row in rows {
+            chunk.push(row?);
+            if chunk.len() == FLUSH_CHUNK {
+                self.flush_chunk(&chunk).await?;
+                chunk.clear();
+            }
+        }
+        if !chunk.is_empty() {
+            self.flush_chunk(&chunk).await?;
+        }
+        Ok(())
+    }
+
+    async fn flush_chunk(&self, chunk: &[KeyedRow]) -> Result<(), StoreError> {
+        if self.write_chunk(chunk).await.is_ok() {
+            return Ok(());
+        }
+        for row in chunk {
+            self.insert_ignoring_duplicates(&row.insert).await?;
+        }
+        Ok(())
+    }
+
+    async fn write_chunk(&self, chunk: &[KeyedRow]) -> Result<(), Box<typedb_driver::Error>> {
+        use futures::TryStreamExt;
+        use typedb_driver::answer::{ConceptRow, QueryAnswer};
+        let driver = self.driver.as_ref().expect("connected before flush");
+        let tx = driver
+            .transaction_with_options(
+                &self.config.database,
+                TransactionType::Write,
+                TransactionOptions::new().transaction_timeout(WRITE_TIMEOUT),
+            )
+            .await
+            .map_err(Box::new)?;
+        for row in chunk {
+            let present = match tx.query(&row.probe).await.map_err(Box::new)? {
+                QueryAnswer::ConceptRowStream(_, stream) => {
+                    let rows: Vec<ConceptRow> = stream.try_collect().await.map_err(Box::new)?;
+                    !rows.is_empty()
+                }
+                _ => false,
+            };
+            if present {
+                continue;
+            }
+            drain(tx.query(&row.insert).await.map_err(Box::new)?).await?;
+        }
         tx.commit().await.map_err(Box::new)?;
         Ok(())
     }

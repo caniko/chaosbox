@@ -296,6 +296,7 @@ fn fact(
         span: evidence.span.clone(),
         text: evidence.name.clone(),
         producer: producer.into(),
+        resolved: false,
     }
 }
 

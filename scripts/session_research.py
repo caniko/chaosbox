@@ -6,17 +6,17 @@ source snapshot and its reconciliation are never modified or installed.
 """
 
 import argparse
-from contextlib import closing
-from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import sqlite3
 import stat
 import subprocess
+from contextlib import closing
+from datetime import datetime, timezone
+from pathlib import Path
 
 import session_research_jev as jev
 
@@ -102,7 +102,7 @@ def informative_title(title):
 
 def lineage_key(title, first_user_text):
     """Conservatively collapse forks replaying the same request, not related topics."""
-    name = re.sub(r"\s*\(fork\s*#\d+\)\s*$", "", title, flags=re.I).strip().casefold()
+    name = re.sub(r"\s*\(fork\s*#\d+\)\s*$", "", title, flags=re.IGNORECASE).strip().casefold()
     request = " ".join(first_user_text.split()).casefold()
     return hashlib.sha256(json.dumps([name, request[:10000]]).encode()).hexdigest()[:24]
 
@@ -282,7 +282,7 @@ KINDS = {"feature", "unfinished", "friction", "decision", "outcome", "constraint
 
 def validate_signals(answer, chunk):
     if not isinstance(answer, dict) or not isinstance(answer.get("brief"), str):
-        raise ValueError("invalid brief")
+        raise TypeError("invalid brief")
     signals = answer.get("signals")
     if not isinstance(signals, list) or len(signals) > 12:
         raise ValueError("invalid signals")
@@ -431,7 +431,7 @@ class JevRunner:
                     "strict_model_identity": True, "redirects": False}
         try:
             proc = subprocess.run([binary, "jev", "capabilities"], cwd=self.work,
-                                  capture_output=True, text=True, timeout=10)
+                                  capture_output=True, text=True, timeout=10, check=False)
             capabilities = json.loads(proc.stdout)
             if (proc.returncode or not isinstance(capabilities, dict)
                     or any(type(capabilities.get(key)) is not type(value)
@@ -495,7 +495,7 @@ class JevRunner:
         reported_tokens = 0
         try:
             proc = subprocess.run([binary, "jev", "evaluate", "--privacy-reviewed", "--input", str(wire)],
-                                  cwd=self.work, capture_output=True, text=True, timeout=90)
+                                  cwd=self.work, capture_output=True, text=True, timeout=90, check=False)
             receipt = json.loads(proc.stdout)
             if (not isinstance(receipt, dict) or type(receipt.get("input_tokens")) is not int
                     or receipt["input_tokens"] < 0):
@@ -734,10 +734,10 @@ def check_citations(citations, texts, label):
 
 def validate_report(report, source, repo_context, reproductions=None):
     if reproductions is not None and not isinstance(reproductions, dict):
-        raise ValueError("reproductions must be an object")
+        raise TypeError("reproductions must be an object")
     if (not isinstance(report, dict) or not isinstance(report.get("summary"), str)
             or not isinstance(report.get("limitations"), list)):
-        raise ValueError("invalid report")
+        raise TypeError("invalid report")
     opportunities = report.get("opportunities")
     if not isinstance(opportunities, list) or len(opportunities) > 8:
         raise ValueError("invalid opportunities")
@@ -754,9 +754,7 @@ def validate_report(report, source, repo_context, reproductions=None):
             raise ValueError("invalid current status")
         check_citations(entry.get("sessionEvidence"), source, "source evidence")
         evidence = entry.get("repoEvidence", [])
-        if entry["currentStatus"] != "unverified":
-            check_citations(evidence, repo_context, "repository evidence")
-        elif evidence:
+        if entry["currentStatus"] != "unverified" or evidence:
             check_citations(evidence, repo_context, "repository evidence")
         if entry["currentStatus"] == "confirmed-gap":
             ref = entry.get("reproductionRef")
@@ -798,8 +796,9 @@ def repo_context(directory, files):
 
 
 def validate_portfolio(report, texts, repos_by_ref=None):
-    if not isinstance(report.get("summary"), str) or not isinstance(report.get("shared"), list):
-        raise ValueError("invalid portfolio")
+    if (not isinstance(report, dict) or not isinstance(report.get("summary"), str)
+            or not isinstance(report.get("shared"), list)):
+        raise TypeError("invalid portfolio")
     if len(report["shared"]) > 8:
         raise ValueError("too many shared opportunities")
     for entry in report["shared"]:
@@ -866,7 +865,11 @@ def pin_artifact(path, value):
 
 def synthesize(work, repo_files=None, privacy_reviewed=False, retry=False, decisions=None,
                max_requests=100, max_input_tokens=1_000_000):
-    from session_research_ledger import build_ledger, review_context, validate_candidate_view
+    from session_research_ledger import (
+        build_ledger,
+        review_context,
+        validate_candidate_view,
+    )
     if not privacy_reviewed:
         raise ValueError("inspect private findings before --privacy-reviewed")
     work = Path(work)
@@ -884,7 +887,7 @@ def synthesize(work, repo_files=None, privacy_reviewed=False, retry=False, decis
         write_new(ledger_path, ledger)
     reproductions = load(work / "reproductions.json") if (work / "reproductions.json").exists() else {}
     if not isinstance(reproductions, dict):
-        raise ValueError("reproductions must be an object")
+        raise TypeError("reproductions must be an object")
     repo_files = repo_files or {}
     reports = {}
     directory = work / "reports"
@@ -989,8 +992,8 @@ def render(work):
                   if updates else "unknown")
         lines = [f"# {repo}: session-derived opportunities", "",
                  f"Frozen primary snapshot: `{plan['sourceSha256']}`", "",
-                 f"Sample: {sum(b['repoCwdHint'] == repo for b in bundles)} root sessions; "
-                 f"last updated {period}; selected by historical cwd, not a complete repo audit.", "",
+                 (f"Sample: {sum(b['repoCwdHint'] == repo for b in bundles)} root sessions; "
+                  f"last updated {period}; selected by historical cwd, not a complete repo audit."), "",
                   report["summary"], ""]
         if prompt.get("reviewVersion") == 1:
             lines.extend(["Ownership: reviewed per candidate; full inventory: `../candidate-ledger.json`.", ""])
@@ -1008,8 +1011,8 @@ def render(work):
                              f"{json.dumps(citation['quote'], ensure_ascii=False)}")
             if prompt.get("reviewVersion") == 1:
                 lines.extend([f"- Candidate IDs: {', '.join(item['candidateIds'])}",
-                              f"- Reviewed action: {item['action']}; implementation: {item['implementation']}; "
-                              f"deployment: {item['deployment']}"])
+                              (f"- Reviewed action: {item['action']}; implementation: {item['implementation']}; "
+                               f"deployment: {item['deployment']}")])
             lines.append("")
         lines.extend(["## Limitations", "", *[f"- {note}" for note in report["limitations"]], ""])
         documents[repo] = "\n".join(lines)

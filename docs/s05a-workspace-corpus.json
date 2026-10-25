@@ -1,0 +1,101 @@
+{
+  "workcard": "S05a",
+  "date": "2026-10-19",
+  "status": "immutable-source-and-independent-oracle-preparation-qualified",
+  "source": {
+    "baselineHead": "4704623025ee23a977ee5759043bc73e9c209836",
+    "corpusAndTestsCommit": "73b20702cf62f0dab3ecc4a748dd162cb01f4b37",
+    "reportSavepoint": "commit containing this receipt",
+    "usesPreservedDirtyCheckout": true,
+    "cleanReleaseQualificationClaimed": false,
+    "archive": "source-corpus.tar",
+    "archiveSha256": "b548b217d5afe427e146781e2f06703973401e6bdc0ffe95dce157209ab46b3e",
+    "sourceFilesManifest": "source-corpus-files.sha256",
+    "sourceFilesManifestSha256": "05324f573aa6492c0a6d588f8ba4c7414bdf24fcac8ed612559fdf1755114f72",
+    "archiveExcludes": ["docs/", "tasks/"],
+    "ownedPaths": ["fixtures/workspace-corpus/v1/", "crates/chaosbox/tests/workspace_corpus.rs"]
+  },
+  "corpus": {
+    "contract": "chaosbox.workspace-corpus.v1",
+    "oracleContract": "chaosbox.workspace-corpus-oracle.v1",
+    "synthetic": true,
+    "logicalProjects": 3,
+    "memberVersions": 4,
+    "files": 8,
+    "sourceBytes": 1050,
+    "tasks": 7,
+    "sourceCitations": 11,
+    "inputsSha256": "4320e432f94efb783a977e19c100e7e6a5d0bcd0b7462598fa6535d06663fbfc",
+    "oracleSha256": "e95b1f1e4bf66d43fe8809917cae8c04b4f0123ec25053827e91f59829551d11",
+    "archive": "corpus-v1.tar",
+    "archiveSha256": "5220e0fbb9c2812045f4ca849297a381c2ba09bbb733755393bcae917a83941b",
+    "filesManifest": "corpus-files.sha256",
+    "filesManifestSha256": "94f0a65118fddbc7dbd045be4555ff7bc3e9f4a2036f4f983d778a2118e1ee07",
+    "preloadedGraphOrReviewedArtifactInput": false,
+    "oracleGeneratedFromResolver": false,
+    "expectedStatuses": {
+      "impact-v1": "resolved",
+      "resolve-v2": "resolved",
+      "ambiguous-context": "ambiguous",
+      "unavailable-v3": "unresolved",
+      "wrong-provider-version": "version_mismatch",
+      "scope-blocked": "scope_blocked",
+      "maintainer-private": "resolved"
+    }
+  },
+  "checks": {
+    "corpusChecksPassed": 3,
+    "corpusChecksIgnored": 0,
+    "existingWorkspacePilotTestsPassed": 8,
+    "retainedExecutableAndCorpusCopyChecksPassed": 3,
+    "sameSizeSourceCorruptionRejected": true,
+    "corruptionExitCode": 101,
+    "rawHashesMemberManifestHashesAndExactSpansPassed": true,
+    "oracleVersionAndEvidenceScopeConsistencyPassed": true,
+    "nativeParsedRustFiles": 4,
+    "nativeDefinitions": 7,
+    "distinctProviderSnapshotsAndDefinitionsPreserved": true,
+    "warningsDeniedClippyPassed": true,
+    "treefmtCiPassed": true,
+    "whitespacePassed": true,
+    "stagedAndCommittedPatchBytesEqual": true
+  },
+  "acceptanceBoundary": {
+    "sourceAndOraclePreparationComplete": true,
+    "packageManifestSemanticsIngestedByCurrentSnapshot": false,
+    "automaticCrossProjectResolutionQualified": false,
+    "persistedWorkspaceViewsQualified": false,
+    "productionScopeEnforcementQualified": false,
+    "parentS01bComplete": false,
+    "productionResourceAcceptanceClaimed": false
+  },
+  "environment": {
+    "approvedProjectEnvironment": true,
+    "cargoJobs": 2,
+    "cpuQuotaPercent": 200,
+    "memoryHighBytes": 2147483648,
+    "memoryMaxBytes": 4294967296,
+    "memorySwapMaxBytes": 0,
+    "exactCumulativeContextTelemetryAvailable": false
+  },
+  "evidence": {
+    "root": "/data/scratch/tmp/opencode/chaosbox-s01b1-s05a-20261019",
+    "manifest": "qualification.sha256",
+    "finalization": "finalization.json",
+    "commands": "commands.md",
+    "testsLog": "corpus-final.log",
+    "retainedCopyLog": "corpus-retained-copy.log",
+    "corruptionLog": "corpus-source-corruption-red.log",
+    "clippyLog": "clippy-corpus-final.log",
+    "testExecutable": "bin/workspace-corpus-qualified",
+    "testExecutableSha256": "1d801171cec5110eec6a29f1934eb6ffcbdd9f0cb310899eb11cb6c6a81d618e"
+  },
+  "preservation": {
+    "foreignTrackedDiffBytesEqual": true,
+    "foreignStagingIncluded": false,
+    "canixSourceOrIndexWritten": false,
+    "pushOrConsumerPromotionPerformed": false,
+    "activationOrProductionRestartPerformed": false
+  },
+  "nextPrerequisite": "S01b authorized allocator/physical-storage attribution before S05.1/S05.2; S05.3 migration separately qualified"
+}

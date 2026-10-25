@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<title>{{TITLE}}</title>
+<style>
+:root { --bg: #fafafa; --fg: #1d1d1f; --muted: #6e6e73; --panel: #ffffff; --line: #d2d2d7; --accent: #0a66c2; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111214; --fg: #ececf1; --muted: #9a9aa3; --panel: #1b1c1f; --line: #34353a; --accent: #5aa7ff; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; height: 100vh; display: flex; background: var(--bg); color: var(--fg);
+  font: 14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+#side { flex: none; width: 320px; max-width: 45vw; padding: 12px; overflow: auto; border-right: 1px solid var(--line); background: var(--panel); }
+#side h1 { font-size: 15px; margin: 0 0 4px; overflow-wrap: anywhere; }
+#side .muted { color: var(--muted); font-size: 12px; }
+#search { width: 100%; padding: 6px 8px; margin: 10px 0; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+#filters label { display: inline-flex; gap: 4px; margin: 2px 8px 2px 0; font-size: 12px; }
+#detail { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; overflow-wrap: anywhere; }
+#detail button { all: unset; cursor: pointer; color: var(--accent); }
+#detail li { margin: 2px 0; }
+#stage { flex: 1; position: relative; min-width: 0; min-height: 0; }
+canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; }
+@media (max-width: 640px) { body { flex-direction: column; } #side { width: auto; max-width: none; max-height: 40vh; } }
+</style>
+</head>
+<body>
+<aside id="side">
+  <h1 id="title"></h1>
+  <div class="muted" id="summary"></div>
+  <input id="search" type="search" placeholder="Search labels, Enter to focus" aria-label="Search nodes">
+  <div id="filters" aria-label="Relationship types"></div>
+  <div id="detail" class="muted">Click a node for its location and relationships.</div>
+</aside>
+<main id="stage"><canvas id="view" aria-label="Graph view"></canvas></main>
+<script id="data" type="application/json">{{DATA}}</script>
+<script>
+"use strict";
+const data = JSON.parse(document.getElementById("data").textContent);
+const g = data.graph;
+const nodes = g.nodes.map((n, i) => ({ ...n, i, x: 0, y: 0, vx: 0, vy: 0, deg: 0 }));
+const byId = new Map(nodes.map(n => [n.id, n]));
+const links = g.links.filter(l => byId.has(l.source) && byId.has(l.target))
+  .map(l => ({ ...l, s: byId.get(l.source), t: byId.get(l.target) }));
+links.forEach(l => { l.s.deg++; l.t.deg++; });
+const types = [...new Set(links.map(l => l.rel_type))].sort();
+const hidden = new Set(data.collapsed ? [] : ["contains", "defines"].filter(t => types.includes(t)));
+
+document.getElementById("title").textContent = data.title;
+document.getElementById("summary").textContent = data.collapsed
+  ? `${nodes.length} largest communities, one node each (graph above the node limit; ${g.omitted_communities} smaller or single-node communities omitted)`
+  : `${nodes.length} nodes · ${links.length} relationships`;
+const filters = document.getElementById("filters");
+for (const type of types) {
+  const label = document.createElement("label");
+  const box = document.createElement("input");
+  box.type = "checkbox"; box.checked = !hidden.has(type);
+  box.addEventListener("change", () => { box.checked ? hidden.delete(type) : hidden.add(type); draw(); });
+  label.append(box, document.createTextNode(type));
+  filters.append(label);
+}
+
+// Deterministic start: communities on a circle, members around their centre.
+const groups = new Map();
+nodes.forEach(n => { const c = n.community ?? 0; if (!groups.has(c)) groups.set(c, []); groups.get(c).push(n); });
+const radius = 60 * Math.sqrt(nodes.length) + 80;
+[...groups.keys()].sort((a, b) => a - b).forEach((c, k, all) => {
+  const angle = 2 * Math.PI * k / all.length;
+  const cx = radius * Math.cos(angle), cy = radius * Math.sin(angle);
+  groups.get(c).forEach((n, j, members) => {
+    const r = 12 * Math.sqrt(members.length), a = 2 * Math.PI * j / members.length;
+    n.x = cx + r * Math.cos(a); n.y = cy + r * Math.sin(a);
+  });
+});
+const color = c => `hsl(${((c ?? 0) * 137.508) % 360} 55% 50%)`;
+
+// O(n^2) repulsion; HTML_NODE_LIMIT keeps n small enough.
+let alpha = 1;
+function tick() {
+  for (let a = 0; a < nodes.length; a++) for (let b = a + 1; b < nodes.length; b++) {
+    const p = nodes[a], q = nodes[b];
+    let dx = p.x - q.x, dy = p.y - q.y, d2 = dx * dx + dy * dy || 0.01;
+    const f = 900 * alpha / d2;
+    p.vx += dx * f; p.vy += dy * f; q.vx -= dx * f; q.vy -= dy * f;
+  }
+  for (const l of links) {
+    const dx = l.t.x - l.s.x, dy = l.t.y - l.s.y, d = Math.hypot(dx, dy) || 1;
+    const f = (d - 40) * 0.02 * alpha / d;
+    l.s.vx += dx * f; l.s.vy += dy * f; l.t.vx -= dx * f; l.t.vy -= dy * f;
+  }
+  for (const n of nodes) {
+    n.vx -= n.x * 0.002 * alpha; n.vy -= n.y * 0.002 * alpha;
+    n.vx *= 0.6; n.vy *= 0.6; n.x += n.vx; n.y += n.vy;
+  }
+  alpha *= 0.985;
+}
+
+const canvas = document.getElementById("view");
+const ctx = canvas.getContext("2d");
+let scale = 1, ox = 0, oy = 0, selected = null, matches = new Set();
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = canvas.clientWidth * dpr; canvas.height = canvas.clientHeight * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); draw();
+}
+const size = n => (data.collapsed ? 2 + Math.sqrt(n.size) : 3 + Math.sqrt(n.deg));
+const labelled = nodes.length <= 80;
+// Fit the whole layout into the view.
+function fit() {
+  if (!nodes.length) return;
+  const xs = nodes.map(n => n.x), ys = nodes.map(n => n.y);
+  const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  scale = Math.min(w / (x1 - x0 + 120), h / (y1 - y0 + 120), 4);
+  ox = -(x0 + x1) / 2 * scale; oy = -(y0 + y1) / 2 * scale;
+}
+function draw() {
+  const w = canvas.clientWidth, h = canvas.clientHeight, css = getComputedStyle(document.body);
+  ctx.clearRect(0, 0, w, h);
+  ctx.save(); ctx.translate(w / 2 + ox, h / 2 + oy); ctx.scale(scale, scale);
+  ctx.lineWidth = 1 / scale;
+  for (const l of links) {
+    if (hidden.has(l.rel_type)) continue;
+    const hot = selected && (l.s === selected || l.t === selected);
+    ctx.strokeStyle = hot ? css.getPropertyValue("--accent") : css.getPropertyValue("--line");
+    ctx.globalAlpha = hot ? 0.9 : 0.5;
+    ctx.beginPath(); ctx.moveTo(l.s.x, l.s.y); ctx.lineTo(l.t.x, l.t.y); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.font = `${12 / scale}px system-ui, sans-serif`;
+  ctx.fillStyle = css.getPropertyValue("--fg");
+  for (const n of nodes) {
+    const dim = matches.size && !matches.has(n);
+    ctx.globalAlpha = dim ? 0.15 : 1;
+    ctx.fillStyle = color(n.community);
+    ctx.beginPath(); ctx.arc(n.x, n.y, size(n), 0, 2 * Math.PI); ctx.fill();
+    if (n === selected) { ctx.strokeStyle = css.getPropertyValue("--fg"); ctx.lineWidth = 2 / scale; ctx.stroke(); ctx.lineWidth = 1 / scale; }
+    if (labelled || (data.collapsed && n.community < 30) || scale > 1.6 || n === selected || matches.has(n)) {
+      ctx.fillStyle = css.getPropertyValue("--fg");
+      ctx.fillText(n.label, n.x + size(n) + 2, n.y + 4 / scale);
+    }
+  }
+  ctx.restore();
+}
+let touched = false;
+function animate() {
+  for (let k = 0; k < 3 && alpha > 0.01; k++) tick();
+  if (!touched) fit();
+  draw();
+  if (alpha > 0.01) requestAnimationFrame(animate);
+}
+
+function toWorld(e) {
+  const r = canvas.getBoundingClientRect();
+  return [(e.clientX - r.left - r.width / 2 - ox) / scale, (e.clientY - r.top - r.height / 2 - oy) / scale];
+}
+function hit(e) {
+  const [x, y] = toWorld(e);
+  let best = null, bestD = Infinity;
+  for (const n of nodes) { const d = Math.hypot(n.x - x, n.y - y); if (d < size(n) + 4 / scale && d < bestD) { best = n; bestD = d; } }
+  return best;
+}
+function focus(n) {
+  touched = true;
+  selected = n; ox = -n.x * scale; oy = -n.y * scale; draw(); describe(n);
+}
+function describe(n) {
+  const panel = document.getElementById("detail");
+  panel.replaceChildren();
+  panel.classList.remove("muted");
+  const head = document.createElement("strong"); head.textContent = n.label;
+  const meta = document.createElement("div"); meta.className = "muted";
+  meta.textContent = [n.kind, n.file && `${n.file}:${n.line ?? ""}`, n.community_label].filter(Boolean).join(" · ");
+  const id = document.createElement("div"); id.className = "muted"; id.textContent = n.id;
+  panel.append(head, meta, id);
+  for (const [title, own, other] of [["Outgoing", "s", "t"], ["Incoming", "t", "s"]]) {
+    const rel = links.filter(l => l[own] === n);
+    if (!rel.length) continue;
+    const h = document.createElement("div"); h.textContent = `${title} (${rel.length})`; h.style.marginTop = "8px";
+    const list = document.createElement("ul");
+    for (const l of rel.slice(0, 200)) {
+      const item = document.createElement("li");
+      const go = document.createElement("button"); go.textContent = l[other].label;
+      go.addEventListener("click", () => focus(l[other]));
+      item.append(document.createTextNode(`${l.rel_type} `), go);
+      list.append(item);
+    }
+    panel.append(h, list);
+  }
+}
+
+let drag = null;
+canvas.addEventListener("mousedown", e => { touched = true; drag = { x: e.clientX, y: e.clientY, ox, oy, moved: false }; });
+window.addEventListener("mousemove", e => {
+  if (!drag) return;
+  if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) > 3) drag.moved = true;
+  ox = drag.ox + e.clientX - drag.x; oy = drag.oy + e.clientY - drag.y; draw();
+});
+window.addEventListener("mouseup", e => {
+  if (drag && !drag.moved) { const n = hit(e); if (n) { selected = n; describe(n); draw(); } }
+  drag = null;
+});
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  touched = true;
+  const factor = Math.exp(-e.deltaY * 0.0015), r = canvas.getBoundingClientRect();
+  const mx = e.clientX - r.left - r.width / 2, my = e.clientY - r.top - r.height / 2;
+  ox = mx - (mx - ox) * factor; oy = my - (my - oy) * factor; scale *= factor; draw();
+}, { passive: false });
+const search = document.getElementById("search");
+search.addEventListener("input", () => {
+  const q = search.value.trim().toLowerCase();
+  matches = new Set(q ? nodes.filter(n => String(n.label).toLowerCase().includes(q)) : []);
+  draw();
+});
+search.addEventListener("keydown", e => { if (e.key === "Enter" && matches.size) focus([...matches][0]); });
+window.addEventListener("resize", resize);
+resize();
+animate();
+</script>
+</body>
+</html>

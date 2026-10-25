@@ -24,6 +24,7 @@ use thiserror::Error;
 pub mod compaction;
 pub mod compiler;
 pub mod continuation;
+pub mod export;
 pub mod federation;
 pub mod history;
 pub mod intelligence;
@@ -33,6 +34,7 @@ pub mod navigation;
 pub mod nix;
 mod pipeline;
 pub mod postgres;
+pub mod query_log;
 pub mod read_view;
 mod reader;
 mod responder;
@@ -50,7 +52,9 @@ pub use materialization::{
 };
 pub use pipeline::{Pipeline, chain_publication, summarize_outcomes, uncached_decisions};
 pub use reader::{
-    EXPORT_EDGE_CAP, EXPORT_NODE_CAP, GraphReader, all_relation_types, validate_rel_filter,
+    EXPORT_EDGE_CAP, EXPORT_NODE_CAP, GraphReader, NeighborhoodMode, NeighborhoodPage,
+    NeighborhoodQuery, PathBudget, PathQuery, PreparedNeighborhood, PreparedPath, Resolution,
+    all_relation_types, validate_build_id, validate_rel_filter,
 };
 pub use responder::{FixtureResponder, LiveResponder, Responder};
 pub use view::{export_json, explain_entity, search, write_export_json};
@@ -73,6 +77,18 @@ pub enum PipelineError {
     #[error("consumer: {0}")]
     /// A read-only consumer query failed.
     Consumer(String),
+}
+
+/// Consumer error for a repository name with no published active build.
+/// Names the next action: agents hit this most often with a guessed repo key
+/// and otherwise read it as a dead end.
+#[must_use]
+pub fn no_active_build(repo: &str) -> PipelineError {
+    PipelineError::Consumer(format!(
+        "no active build for repo {repo}: nothing is published under this name; \
+         list registered names with `chaosbox db inventory`, or index the checkout with \
+         `chaosbox run <path> --repo {repo} --no-decisions`"
+    ))
 }
 
 /// Assemble evidence deterministically from a decision: ids and texts are

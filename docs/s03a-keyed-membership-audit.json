@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "id": "s03a-keyed-membership-audit-20261016",
+  "status": "complete-existing-production-materialization-contract",
+  "observedAt": "2026-10-16T18:03:01Z",
+  "finalPreservationObservedAt": "2026-10-16T18:14:16Z",
+  "evidence": {
+    "directory": "/data/scratch/tmp/opencode/chaosbox-s03a-20261016",
+    "manifest": "SHA256SUMS",
+    "manifestSha256": "b84037855c8d3d8d56539904e2ab622584e057e0674a80090c3d32e603223485",
+    "artifactCount": 200,
+    "checksumVerificationLog": "/data/scratch/tmp/opencode/chaosbox-s03a-20261016-checksums.log",
+    "verification": "verification.json",
+    "sourceManifest": "source-tested.sha256",
+    "archivedSourceManifest": "archived-source.sha256"
+  },
+  "source": {
+    "chaosboxHead": "42f0e64fddd50f612516e39e82d5c2ea4d2ead45",
+    "canixHead": "d5613d4f78c3a2094e63e71262d01c4395c09285",
+    "dirty": true,
+    "changedCode": ["crates/chaosbox-store/src/conformance.rs"],
+    "productionReaderChange": false,
+    "testSha256": "f267ce0babe36027d484054dc7e2e95832ce4201bb49531f022eefd75e4b3a50"
+  },
+  "verification": {
+    "negativeControlExitCode": 101,
+    "negativeControlMutationRestored": true,
+    "memoryConformance": {"passed": 1, "ignored": 0},
+    "requiredTypeDbConformance": {"passed": 1, "ignored": 0},
+    "storeLibrary": {"passed": 9, "ignored": 1, "ignoreCountedAsEvidence": false},
+    "prefixCasesPerBackend": 10,
+    "limitsPerPinnedBuild": [-1, 0, 1, 2, 3],
+    "referenceLiveBoundarySummaryParity": true,
+    "rowPayloadParityEstablished": false,
+    "sourceSpanEqualityAssertedBySharedHelper": false,
+    "warningsDeniedClippy": true,
+    "treefmt": true,
+    "diffCheck": true
+  },
+  "observedFixtureCosts": {
+    "liveClientPeakRssKiB": 17288,
+    "liveClientWallSeconds": 0.42,
+    "maximumProjectionJsonBytes": 627,
+    "serverCgroupSamplePeakBytes": 187858944,
+    "serverCgroupSampleSwapBytes": 0,
+    "includesMigrationFixtureAndDriver": true,
+    "largeCorpusResourceAcceptance": false,
+    "serverScanAndSortCostsEstablished": false,
+    "queryCountsAreSourceDerived": true,
+    "numericProductionLimitsAdopted": false
+  },
+  "disposableServer": {
+    "version": "3.13.0",
+    "address": "127.0.0.1:22729",
+    "database": "t_conf_2122625_1792173684",
+    "memoryMaxBytes": 4294967296,
+    "memorySwapMaxBytes": 0,
+    "stopped": true,
+    "dataAndLogsRetained": true
+  },
+  "preservation": {
+    "foreignTrackedDiffSha256": "25381a7a30167a7fccacac92984810fb507f6be856708f894bbbd0b7af58363d",
+    "canixIndexAtEntrySha256": "32ae1fa38d8b9da9d4f8bee4ec91ae93339f1d77bdffa8cd7871cf441b85c659",
+    "canixIndexAtFinalObservationSha256": "9d583021eea127f1b98552c02e2e47a1b439c35ecef7c3bd680119631434ff7f",
+    "foreignTrackedDiffByteIdentical": true,
+    "canixIndexByteIdenticalAtPostTestObservation": true,
+    "canixIndexByteIdenticalAtFinalObservation": false,
+    "canixEntryStagingUnchangedAtFinalObservation": true,
+    "concurrentCanixStaging": [
+      "docs/src/operations/database-cutover-admission.md",
+      "docs/src/operations/postgresql-off-host-recovery.md",
+      "flake.lock",
+      "flake.nix",
+      "flake/checks/harbor_db.nix"
+    ],
+    "productionDatabaseWrite": false,
+    "productionServiceRestart": false,
+    "productionTypeDbIdentityUnchanged": true,
+    "activation": false,
+    "pinChange": false,
+    "indexWrite": false,
+    "commit": false
+  },
+  "handoff": {
+    "nextWorkcard": "S02a count-only explanations",
+    "s01b": "allocation/history attribution remains open",
+    "s02b": "complete neighborhood enumeration with build/scope-bound continuation",
+    "s02c": "aggregate request budgets, deadline/cancellation and honest path exhaustion",
+    "s03b": "investigate complete-generation validation/current eligibility before targeted knowledge implementation",
+    "s04a": "graph reuse is independent of knowledge-schema implementation",
+    "s25": "native exact-tuple consumer qualification and promotion remain separate"
+  },
+  "reviewClarification": {
+    "workcard": "S02a",
+    "originalEvidenceBundleUnchanged": true,
+    "originalReportAndReceiptPreservedIn": "/data/scratch/tmp/opencode/chaosbox-s02a-20261016/docs",
+    "comparison": "build/limit/count/serialized-byte summaries with timing removed; not row-payload parity"
+  }
+}

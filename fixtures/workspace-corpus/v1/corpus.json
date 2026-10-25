@@ -1,0 +1,61 @@
+{
+  "contract": "chaosbox.workspace-corpus.v1",
+  "purpose": "Source-only qualification inputs; no preloaded graph, reviewed bridges, or production identities.",
+  "content_hash": "SHA-256 of raw bytes. Each member manifest hashes sorted '<file-sha256>  <relative-path>\\n' lines as emitted by sha256sum.",
+  "members": {
+    "api-v1": {
+      "project": "fixture-api",
+      "version": "1.0.0",
+      "root": "api-v1",
+      "scopes": ["private:reader", "private:maintainer"],
+      "content_manifest_sha256": "826e1358c36128040af14236177b8e0358ae65d276aa723c17f1cc5ef8a4807d",
+      "files": {
+        "Cargo.toml": {"sha256": "befef35b6737bc6f87b5283224c5bf66fc03eae6f0f0466557f7788f8ef56d98", "bytes": 66},
+        "src/lib.rs": {"sha256": "f1f0ed5302b83338e6590c5d4dcc2dcb7241d800d4ff94ee22a6768e86fa2ae9", "bytes": 54}
+      }
+    },
+    "api-v2": {
+      "project": "fixture-api",
+      "version": "2.0.0",
+      "root": "api-v2",
+      "scopes": ["private:reader", "private:maintainer"],
+      "content_manifest_sha256": "a1aacf4e15698cef1e9802a598dd3197ca2f1a53618dcc103d2d50958cba8db7",
+      "files": {
+        "Cargo.toml": {"sha256": "5ae3a7c3c6b8098f8a4af7923e2b15264ad20e5efb7ccbef10129f2f1fbe9adc", "bytes": 66},
+        "src/lib.rs": {"sha256": "06b92b84b279be551af7c98da134452e21f606c83f8e4a7c24f26d64f81d2889", "bytes": 52}
+      }
+    },
+    "app": {
+      "project": "fixture-app",
+      "version": "1.0.0",
+      "root": "app",
+      "scopes": ["private:reader", "private:maintainer"],
+      "content_manifest_sha256": "399c7e9c66efa3356ddeb6cd6e8cd84671bf11316aa798aa6b54d4e4363e9195",
+      "files": {
+        "Cargo.toml": {"sha256": "a2a7a4a2aa34a2cf204d154d458631805378f8d1ea17ae6ed09a35185ef3afa8", "bytes": 418},
+        "src/lib.rs": {"sha256": "c895433c92ff3597f3283ab5cf6255aabefe320c93ee40be9ba865d96f13bf11", "bytes": 255}
+      }
+    },
+    "private-api": {
+      "project": "fixture-private-api",
+      "version": "1.0.0",
+      "root": "private-api",
+      "scopes": ["private:maintainer"],
+      "content_manifest_sha256": "e2cae35d0c9e7eadbceed842eedc76ea4e521cd002dc16c4fb360cfd89cc9237",
+      "files": {
+        "Cargo.toml": {"sha256": "fecf9a84a4a813da47929bb6f386b2d9cb83deae055f67c8908bc9721ea36514", "bytes": 74},
+        "src/lib.rs": {"sha256": "7d495557e4b7ee2bf407626e6e7e34bf7b456ce78792611848cde3427d954355", "bytes": 65}
+      }
+    }
+  },
+  "tasks": [
+    {"id": "impact-v1", "kind": "impact", "scope": "private:reader", "provider": "api-v1", "symbol": "context"},
+    {"id": "resolve-v2", "kind": "resolve-use", "scope": "private:reader", "use": "app-current-use"},
+    {"id": "ambiguous-context", "kind": "find-provider", "scope": "private:reader", "project": "fixture-api", "symbol": "context"},
+    {"id": "unavailable-v3", "kind": "resolve-use", "scope": "private:reader", "use": "app-missing-use"},
+    {"id": "wrong-provider-version", "kind": "resolve-use", "scope": "private:reader", "use": "app-legacy-use", "offered_provider": "api-v2"},
+    {"id": "scope-blocked", "kind": "resolve-use", "scope": "private:reader", "use": "app-private-use"},
+    {"id": "maintainer-private", "kind": "resolve-use", "scope": "private:maintainer", "use": "app-private-use"}
+  ],
+  "oracle": "expected.json"
+}

@@ -8,7 +8,7 @@
 let
   root = "/var/lib/chaosbox-federation-test";
   project = "git:github.com/caniko/chaosbox";
-  keys = import "${pkgs.path}/nixos/tests/ssh-keys.nix" pkgs;
+  keys = import (pkgs.path + "/nixos/tests/ssh-keys.nix") pkgs;
   # Public test key from nixpkgs' borgbackup test; never a deployment key.
   hostPrivateKey = pkgs.writeText "federation-test-host-key" ''
     -----BEGIN OPENSSH PRIVATE KEY-----

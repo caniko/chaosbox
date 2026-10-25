@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "id": "s25a-installed-provenance-atlas-20261016",
+  "status": "installed-pre-fix-source-attributed",
+  "observedAt": "2026-10-16T16:40:04Z",
+  "sourceFollowupObservedAt": "2026-10-16T17:07:58Z",
+  "session": "ses_ebb5f8623ffe6QJYuMKK0fRcj1",
+  "evidence": {
+    "directory": "/data/scratch/tmp/opencode/chaosbox-s25a-20261016",
+    "manifest": "SHA256SUMS",
+    "manifestSha256": "1f759f6fa545d31cb42e74c1c7a3b8360f7a1f913d1826aaafc606b97606afb5",
+    "artifactCount": 39,
+    "verification": "verification.json",
+    "configuration": "config-sources-projection.json",
+    "rawConfigurationResponseRetained": false,
+    "credentialValuesCollected": false,
+    "sourceFollowup": {
+      "directory": "source-followup",
+      "manifest": "SHA256SUMS",
+      "manifestSha256": "6574d434953dcfe0ff35013f938e2f59282e6aab5110768b1c48ce7ca83964da",
+      "artifactCount": 16,
+      "verification": "verification.json",
+      "originalReportAndReceiptPreserved": true
+    }
+  },
+  "sources": {
+    "chaosboxHead": "42f0e64fddd50f612516e39e82d5c2ea4d2ead45",
+    "chaosboxDirty": true,
+    "canixHeadAtEntry": "5c845bc0a7038bb3ee43acc5713e1eca57b723e2",
+    "canixHeadAtFinalObservation": "d5613d4f78c3a2094e63e71262d01c4395c09285",
+    "declaredChaosboxPin": "9d6c81d202aa5e9b4e0a513161891e8a4ff01e96",
+    "publishedCandidate": "7313e6e5feaf6f50dad9595d74aeaa691c556a24",
+    "declaredAndPublishedNavigationSourceSha256": "6d04a41c804e172012b0344b7fa881b69908296ab4351e9a0c47e3dec5544589",
+    "installedExecutableSourceVerified": true,
+    "installedSource": "/nix/store/9p9p6p8ds3zz8dpgvrx44kzqdc2yl3n4-source",
+    "sourceBindingEvidence": "operator-provided partial derivation JSON with the matching installed output path",
+    "fullDerivationIndependentlyRead": false,
+    "installedSourceFileCount": 151,
+    "installedSourceFilesManifestSha256": "a72ad2fea189da5d0f99e5b8c75da1d59cf97b897350eec994fac9eedeb7a317",
+    "allInstalledSourceFilesMatchGitRevision": "e6698a34c380b11c0216f3157a548868b7823f79",
+    "originalGitRevisionUniquelyDetermined": false,
+    "installedSourceContainsBoundedReaderFix": false,
+    "failureMechanism": {
+      "cli": "crates/chaosbox/src/query_cmd.rs:177 exports the full graph before context",
+      "mcp": "crates/chaosbox/src/mcp_server.rs:379 exports the full graph before context",
+      "nodeCap": 10000,
+      "readerNavigationFilePresent": false
+    }
+  },
+  "servingRuntime": {
+    "endpoint": "http://127.0.0.1:4096",
+    "pid": 2985490,
+    "startedAtLocal": "2026-10-16T15:32:14+02:00",
+    "executable": "/nix/store/i8mz61r692sfqqrx0rgav7b7gc18h3w2-opencode-v2-candidate-2.0.12+f18083c78e/bin/.opencode-wrapped",
+    "sha256": "2d98c9d0a3ea61baf28a956601ac0ff415b094807a0fd3b65edf1aaa631f56da",
+    "sessionLocationVerifiedThroughNativeApi": true,
+    "listeningSocketOwnerVerified": true,
+    "toolShellParentVerified": true
+  },
+  "separateServiceRuntime": {
+    "pid": 3464594,
+    "executable": "/nix/store/lwlhs766ad8pi7hq82xkg521zcn8z5d5-opencode-v2-candidate-2.0.22+047c74e/bin/.opencode-wrapped",
+    "sha256": "b1994d029cec40c185fbf0765c0de1f82dbb1de3e4e27a1f3826eaa3a454db5c",
+    "isCurrentSessionListener": false,
+    "isS01bObservedServiceProcess": true,
+    "diskAndLoadedUnitCommandsDiffer": true
+  },
+  "managedMcp": {
+    "location": "/data/nvme0/can/canix",
+    "status": "connected",
+    "configurationSource": "/home/can/.config/opencode/opencode.json",
+    "higherPrecedenceChaosboxOverrideObserved": false,
+    "command": ["/nix/store/5ksfi5dg17q91lda5nqfpf2sw5zhasgr-chaosbox-canix/bin/chaosbox-canix", "mcp"],
+    "observedChildPid": 2985990,
+    "executable": "/nix/store/aamrc152yl781cs8fy5nrk1nzgip19a7-chaosbox-0.1.0/bin/.chaosbox-wrapped",
+    "sha256": "7f4aa0f7b301b27e1677f6af29510cb653fce15c2e3cdd2b3c12f9d3853a6878",
+    "arguments": ["mcp"],
+    "configurationContainsChaosboxCompactionAdapterEntry": false,
+    "nativeCustodyCompatibilityVerified": false
+  },
+  "recordedRequest": {
+    "repo": "canix",
+    "query": "RuntimeManifest",
+    "depth": 2,
+    "maxNodes": 10,
+    "maxChars": 6000,
+    "managedMcp": "consumer: export truncated at 10000 nodes; narrow the repo",
+    "installedCliExitCode": 1,
+    "publishedCandidateCliExitCode": 0,
+    "buildId": "build:8ac2e28136c3",
+    "generation": 3,
+    "snapshots": ["snap:cba2b1e91c07"],
+    "candidatePacket": {
+      "byteIdenticalToS02": true,
+      "sha256": "fd56f20814c7cd9358e8f4a971b9ee5b6b52278adc9c480ab3a87638ec594525",
+      "nodes": 10,
+      "links": 5,
+      "truncated": true,
+      "exhaustive": false
+    },
+    "newPerformanceClaim": false
+  },
+  "blocker": {
+    "resource": "/nix/store/30j385xd35d2q7sr4ymsxadv0xs0y233-chaosbox-0.1.0.drv",
+    "deriverIdentitySource": "S02 receipt; immutable output and ELF hash unchanged",
+    "command": "nix derivation show /nix/store/30j385xd35d2q7sr4ymsxadv0xs0y233-chaosbox-0.1.0.drv",
+    "executed": false,
+    "result": "permission.rejected: Permission denied: shell",
+    "owner": "OpenCode tool permission policy/operator",
+    "releaseCondition": "authorize this exact read-only derivation inspection through the approved permission route",
+    "status": "resolved-for-source-attribution-by-operator-excerpt",
+    "resolution": "operator supplied the installed output/source binding; immutable source inspection and 151-file Git comparison explain the failure",
+    "fullDerivationIndependentlyRead": false
+  },
+  "preservation": {
+    "foreignChaosboxTrackedDiffSha256": "5b7da061ac7690d4d387f1f478e08d2336041822b4523c59ff5cd91f4ac013b4",
+    "canixIndexAtEntrySha256": "420044960c48c0e857b1a9f84d3d395bb54c256b79733a9888d81c83e6a8372d",
+    "canixIndexAtFinalObservationSha256": "32ae1fa38d8b9da9d4f8bee4ec91ae93339f1d77bdffa8cd7871cf441b85c659",
+    "canixConcurrentCommit": "another worker committed the five Pink Raven storage-test files; relevant Chaosbox declarations were unchanged",
+    "productionGraphStatusUnchangedFromS02": true,
+    "productionTypeDbPidAndStartUnchanged": true,
+    "serviceRestart": false,
+    "activation": false,
+    "databaseMigration": false,
+    "consumerPromotion": false,
+    "pinChange": false,
+    "indexWrite": false,
+    "commit": false,
+    "numericResourceLimitsAgreed": false
+  },
+  "handoff": {
+    "nextIndependentWorkcard": "S03a keyed header/membership audit",
+    "s25SourceAttribution": "installed pre-fix source identified; exact consumer qualification and promotion remain pending",
+    "s09a": "use the actual session-serving runtime, native configuration sources and adapter identity"
+  }
+}

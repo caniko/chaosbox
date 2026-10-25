@@ -4,6 +4,13 @@ use super::PipelineError;
 
 #[path = "reader_navigation.rs"]
 mod navigation;
+#[path = "reader_pages.rs"]
+mod pages;
+#[path = "reader_path.rs"]
+mod path;
+
+pub use pages::{NeighborhoodMode, NeighborhoodPage, NeighborhoodQuery, PreparedNeighborhood};
+pub use path::{PathBudget, PathQuery, PreparedPath};
 
 // ---- Read-only consumer path (CLI and MCP share this) ----
 
@@ -31,6 +38,7 @@ pub fn all_relation_types() -> Vec<String> {
         "references",
         "calls",
         "implements",
+        "inherits",
         "links_to",
         "mentions",
     ]
@@ -71,18 +79,42 @@ pub const EXPORT_NODE_CAP: i64 = 10_000;
 /// Hard cap for exported edges.
 pub const EXPORT_EDGE_CAP: i64 = 20_000;
 
+/// Validate an exact-publication selector before credentials/backend acquisition.
+/// Labels are opaque: validation never trims or rewrites historical identities.
+pub fn validate_build_id(build_id: &str) -> Result<(), PipelineError> {
+    if build_id.trim().is_empty() || build_id.len() > 256 || build_id.chars().any(char::is_control)
+    {
+        return Err(PipelineError::Consumer(
+            "invalid build_id: expected nonblank 1..256 bytes without controls".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Outcome of resolving a user-supplied entity id or name.
+#[derive(Debug)]
+pub enum Resolution {
+    /// Exactly one entity: the id itself, or a unique exact name.
+    Entity(Box<chaosbox_store::EntityRow>),
+    /// Several exact matches, or a saturated search: choose by id.
+    Ambiguous(Vec<chaosbox_store::EntityRow>),
+    /// No entity has this id or exact name; substring matches as hints.
+    Unknown(Vec<chaosbox_store::EntityRow>),
+}
+
 /// Backend read-only queries. One build id is pinned per reader from the
-/// active-build pointer; readers never mutate, migrate, or load Jev credentials.
+/// active-build pointer or an exact published build; readers never mutate,
+/// migrate, or load Jev credentials.
 /// Generic over [`chaosbox_store::GraphQueries`] with `TypeDbReader` as the
 /// live backend and [`chaosbox_store::MemoryReader`] for tests.
 pub struct GraphReader<R> {
     handle: R,
     repo: String,
-    /// Pinned active build id for every request this reader serves.
+    /// Pinned publication id for every request this reader serves.
     pub build_id: String,
     /// Pinned generation (predecessor/generation checks on the read side).
     pub generation: i64,
-    /// Pinned build status (`active`; the pointer can only pin active builds).
+    /// Published build status (`active`, including historical publications).
     pub status: String,
     /// Snapshot ids pinned by the build: the freshness fingerprint status
     /// reports so consumers can detect a build that no longer matches its
@@ -93,6 +125,18 @@ pub struct GraphReader<R> {
 }
 
 impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
+    /// Select current or one exact repository-owned publication without fallback.
+    pub async fn selected(
+        handle: R,
+        repo: &str,
+        build_id: Option<&str>,
+    ) -> Result<Self, PipelineError> {
+        match build_id {
+            Some(build_id) => Self::published(handle, repo, build_id).await,
+            None => Self::pinned(handle, repo).await,
+        }
+    }
+
     /// Pin the active build for `repo` on an existing query backend.
     /// Used by tests with [`chaosbox_store::MemoryReader`].
     pub async fn pinned(handle: R, repo: &str) -> Result<Self, PipelineError> {
@@ -100,8 +144,27 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
             .active_build(repo)
             .await
             .map_err(|e| PipelineError::Consumer(format!("active build: {e}")))?
-            .ok_or_else(|| PipelineError::Consumer(format!("no active build for repo {repo}")))?;
-        Ok(Self {
+            .ok_or_else(|| crate::no_active_build(repo))?;
+        Ok(Self::from_header(handle, repo, build))
+    }
+
+    /// Pin one exact publication owned by `repo`, without consulting its active
+    /// pointer. This repository-level reader does not grant scoped-view access.
+    pub async fn published(handle: R, repo: &str, build_id: &str) -> Result<Self, PipelineError> {
+        validate_build_id(build_id)?;
+        let build = handle
+            .published_build(repo, build_id)
+            .await
+            .map_err(|e| PipelineError::Consumer(format!("published build: {e}")))?
+            .filter(|build| build.build_id == build_id)
+            .ok_or_else(|| {
+                PipelineError::Consumer("published build unavailable for repo".into())
+            })?;
+        Ok(Self::from_header(handle, repo, build))
+    }
+
+    fn from_header(handle: R, repo: &str, build: chaosbox_store::BuildRow) -> Self {
+        Self {
             handle,
             repo: repo.to_owned(),
             build_id: build.build_id,
@@ -109,7 +172,7 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
             status: build.status,
             snapshots: build.snapshots,
             coverage: build.coverage,
-        })
+        }
     }
 
     /// Bounded substring search over the pinned build's entity names.
@@ -158,74 +221,28 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
         Ok((out, inc))
     }
 
-    /// Upper bound on BFS node visits for one path query. Exceeding it is
-    /// an explicit budget error, never an unbounded traversal: callers
-    /// (MCP agents) retry with a narrower query instead of hanging the
-    /// serial server loop.
-    pub const PATH_VISITED_CAP: usize = 100_000;
-
-    /// Bounded BFS path using iterative backend neighborhood expansion.
-    /// `ponytail: O(hops * degree) round-trips; single-projection fetch if this dominates`.
-    pub async fn path(
-        &self,
-        from: &str,
-        to: &str,
-        max_hops: usize,
-    ) -> Result<Option<Vec<String>>, PipelineError> {
-        self.path_with_cap(from, to, max_hops, Self::PATH_VISITED_CAP)
-            .await
-    }
-
-    /// [`GraphReader::path`] with an explicit visit budget (tests + future policy).
-    pub async fn path_with_cap(
-        &self,
-        from: &str,
-        to: &str,
-        max_hops: usize,
-        visit_cap: usize,
-    ) -> Result<Option<Vec<String>>, PipelineError> {
-        use std::collections::{BTreeMap, BTreeSet, VecDeque};
-        if from == to {
-            return Ok(Some(vec![from.to_owned()]));
+    /// Resolve an entity id, or an exact name or qualified name (Graphify
+    /// accepts labels). A full search page without an exact match is
+    /// ambiguous, never "absent": the name may sit beyond the page.
+    pub async fn resolve(&self, name: &str) -> Result<Resolution, PipelineError> {
+        if let Some(row) = self.lookup(name).await? {
+            return Ok(Resolution::Entity(Box::new(row)));
         }
-        let types = all_relation_types();
-        let mut prev: BTreeMap<String, String> = BTreeMap::new();
-        let mut seen: BTreeSet<String> = BTreeSet::from([from.to_owned()]);
-        let mut queue: VecDeque<(String, usize)> = VecDeque::from([(from.to_owned(), 0)]);
-        while let Some((cur, depth)) = queue.pop_front() {
-            if depth >= max_hops {
-                continue;
-            }
-            let (out, inc) = self.neighbors(&cur, Some(types.clone())).await?;
-            let mut nexts: Vec<String> = Vec::new();
-            for r in out.iter().chain(inc.iter()) {
-                nexts.push(r.from_entity.entity_id.clone());
-                nexts.push(r.to_entity.entity_id.clone());
-            }
-            for nxt in nexts {
-                if nxt == cur || !seen.insert(nxt.clone()) {
-                    continue;
-                }
-                if seen.len() > visit_cap {
-                    return Err(PipelineError::Consumer(
-                        "path traversal budget exceeded; narrow the query".into(),
-                    ));
-                }
-                prev.insert(nxt.clone(), cur.clone());
-                if nxt == to {
-                    let mut path = vec![to.to_owned()];
-                    let mut c = to.to_owned();
-                    while let Some(p) = prev.get(&c) {
-                        path.push(p.clone());
-                        c = p.clone();
-                    }
-                    path.reverse();
-                    return Ok(Some(path));
-                }
-                queue.push_back((nxt, depth + 1));
-            }
+        if name.starts_with("ent:") {
+            return Ok(Resolution::Unknown(Vec::new()));
         }
-        Ok(None)
+        let rows = self.search(name, 200).await?;
+        let mut exact: Vec<_> = rows
+            .iter()
+            .filter(|r| r.name == name || r.qualified_name == name)
+            .cloned()
+            .collect();
+        Ok(match exact.len() {
+            1 => Resolution::Entity(Box::new(exact.remove(0))),
+            0 if rows.len() < 200 => Resolution::Unknown(rows.into_iter().take(10).collect()),
+            0 => Resolution::Ambiguous(rows.into_iter().take(20).collect()),
+            _ => Resolution::Ambiguous(exact.into_iter().take(20).collect()),
+        })
     }
 
     /// Deterministic export of the pinned build; truncation errors honestly.
@@ -256,18 +273,31 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
                 serde_json::json!({
                     "id": e.entity_id, "label": e.name, "kind": e.kind,
                     "source_file": e.file, "qualified_name": e.qualified_name,
+                    "source_location": e.span.as_ref().map(|s| format!("L{}", s.start_line)),
                     "snapshot": e.snapshot, "span": e.span,
                     "compiler": e.compiler,
                 })
             })
             .collect();
         nodes.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+        // Every producer stores `file` scope exactly when both endpoints share
+        // a file, so the scope is derived rather than read back.
+        let files: std::collections::BTreeMap<&str, &str> = entities
+            .iter()
+            .map(|e| (e.entity_id.as_str(), e.file.as_str()))
+            .collect();
         let mut links: Vec<serde_json::Value> = rels
             .iter()
             .map(|r| {
+                let (from, to) = (&r.from_entity.entity_id, &r.to_entity.entity_id);
+                let scope = if files.get(from.as_str()) == files.get(to.as_str()) {
+                    "file"
+                } else {
+                    "cross_file"
+                };
                 serde_json::json!({
-                    "id": r.rel_id, "source": r.from_entity.entity_id,
-                    "target": r.to_entity.entity_id, "rel_type": r.rel_type,
+                    "id": r.rel_id, "source": from, "target": to,
+                    "rel_type": r.rel_type, "scope": scope,
                 })
             })
             .collect();
@@ -301,13 +331,17 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
         let Some(e) = entity else {
             return Ok(serde_json::Value::Null);
         };
-        let (out, inc) = self.neighbors(id, None).await?;
+        let (out, inc) = self
+            .handle
+            .neighbor_counts(&self.build_id, id, all_relation_types())
+            .await
+            .map_err(|e| PipelineError::Consumer(e.to_string()))?;
         Ok(serde_json::json!({
             "id": e.entity_id, "kind": e.kind, "file": e.file,
             "qualified_name": e.qualified_name,
             "snapshot": e.snapshot, "span": e.span,
             "compiler": e.compiler,
-            "outgoing": out.len(), "incoming": inc.len(),
+            "outgoing": out, "incoming": inc,
         }))
     }
 

@@ -87,7 +87,7 @@ impl AnalysisInputs {
             checked_path(&root, path, false)?;
         }
         let snapshot = Snapshot::capture_scoped(repo, &root, &scope)?;
-        let config = Snapshot::capture_matching(repo, &root, &[], configuration_file)?;
+        let config = Snapshot::capture_matching(repo, &root, &[], &[], configuration_file)?;
         let mut configuration: BTreeMap<_, _> = config
             .files
             .into_iter()

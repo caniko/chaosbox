@@ -9,9 +9,12 @@
 set -euo pipefail
 
 case "${1:-}" in
-  "") FEDERATION_ONLY=0 ;;
-  --federation-only) FEDERATION_ONLY=1 ;;
-  *) echo "usage: $0 [--federation-only]" >&2; exit 2 ;;
+"") FEDERATION_ONLY=0 ;;
+--federation-only) FEDERATION_ONLY=1 ;;
+*)
+  echo "usage: $0 [--federation-only]" >&2
+  exit 2
+  ;;
 esac
 if [ "$#" -gt 1 ]; then
   echo "usage: $0 [--federation-only]" >&2
@@ -206,6 +209,8 @@ export CHAOSBOX_TYPEDB_DATABASE=test-typedb
 # a live test that cannot connect, authenticates badly, fails to migrate or
 # fails conformance must FAIL. It must never report those as a passing skip.
 export CHAOSBOX_REQUIRE_TYPEDB=1
+# Qualification queries must not append to the operator's usage ledger.
+export CHAOSBOX_QUERY_LOG=off
 
 echo "== mandatory TypeDB federation gate (no skips, no inference) =="
 bash "$(dirname "${BASH_SOURCE[0]}")/test-typedb-federation.sh" "$WORK/federation-test.log"
@@ -254,7 +259,9 @@ cargo test -p chaosbox --test compiler -- --ignored
 
 echo "== consumer queries =="
 chaosbox query status --repo test
-chaosbox query search main --repo test | head -c 400
+# Write first, then truncate: a closed pipe makes the CLI exit 101 on EPIPE.
+chaosbox query search main --repo test >"$WORK/search.json"
+head -c 400 "$WORK/search.json"
 echo
 
 echo "== zero-model structural publication and fresh-process refresh =="
