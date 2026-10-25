@@ -11,7 +11,10 @@ use chaosbox_core::{
 };
 use regex::Regex;
 
-use crate::{extractors::span_of, Extraction, StructuralFact};
+use crate::{
+    extractors::{item_text, span_of},
+    Extraction, StructuralFact,
+};
 
 // Exact dependency versions are pinned in Cargo.toml. Bump the contract version
 // whenever the declaration subset or its interpretation changes. v2 adds
@@ -194,10 +197,17 @@ impl<'a> Pass<'a> {
         )
     }
 
+    /// `item` is the whole declaration, captured as bounded entity text.
     /// `scope_end` (the declaration node's end) enables syntactic nesting;
     /// Nix passes `None`: its attribute paths are not scoped here.
-    fn definition(&mut self, range: Range<usize>, scope_end: Option<usize>) -> String {
-        let entity = self.def_entity(range);
+    fn definition(
+        &mut self,
+        range: Range<usize>,
+        item: Range<usize>,
+        scope_end: Option<usize>,
+    ) -> String {
+        let mut entity = self.def_entity(range);
+        entity.text = item_text(self.text, item.start, item.end);
         let id = entity.id.clone();
         self.fact(&entity, RelationType::Defines);
         if let Some(end) = scope_end {
@@ -470,7 +480,8 @@ impl<'a> Pass<'a> {
             }
             let name = declaration_name(node, rust);
             if let Some(name) = name {
-                let id = self.definition(name.byte_range(), Some(node.end_byte()));
+                let id =
+                    self.definition(name.byte_range(), node.byte_range(), Some(node.end_byte()));
                 self.classify(node.kind(), id);
             }
             self.uses(node);
@@ -525,9 +536,10 @@ impl<'a> Pass<'a> {
                         // dynamic attributes, inherit and lambda parameters wait
                         // for a scope-aware resolver.
                         if path.children().all(|n| n.kind() == NODE_IDENT) {
-                            let range = path.text_range();
+                            let name = path.text_range();
                             self.definition(
-                                usize::from(range.start())..usize::from(range.end()),
+                                usize::from(name.start())..usize::from(name.end()),
+                                range.clone(),
                                 None,
                             );
                         }

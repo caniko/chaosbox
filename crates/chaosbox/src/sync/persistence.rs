@@ -76,6 +76,17 @@ pub async fn publish_current(
         if bytes.len() > MAX_REPLICA_BYTES {
             return Err("replica snapshot exceeds bounded publication capacity".into());
         }
+        // Content-addressed embedding inputs; harmless if this view loses.
+        let statements: Vec<&str> = view
+            .bundle
+            .records
+            .iter()
+            .map(|r| r.statement.as_str())
+            .collect();
+        store
+            .put_texts(&statements)
+            .await
+            .map_err(|e| e.to_string())?;
         match store
             .replica_publish(
                 user,

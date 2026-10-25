@@ -7,8 +7,8 @@
 <!-- simit:badges:end -->
 
 Native Rust fork/rewrite of [Graphify](https://github.com/Graphify-Labs/graphify):
-deterministic code-graph extraction, bounded Jev decisions, TypeDB-backed
-versioned graph builds, read-only CLI/MCP consumers.
+deterministic code-graph extraction, bounded Jev decisions, versioned graph
+builds in PostgreSQL with pgvector semantic retrieval, read-only CLI/MCP consumers.
 
 Deployment storage contracts are described in [Storage lifecycle integration](docs/src/storage-lifecycle.md).
 
@@ -33,7 +33,7 @@ access; research checks it before reserving a new inference attempt.
 The [source-custodied compaction coordinator](docs/SESSION_COMPACTION.md)
 preserves native OpenCode evidence before context reduction, assembles
 source-backed checkpoints, and defers intelligence assessment and private
-TypeDB publication through a restartable journal.
+PostgreSQL publication through a restartable journal.
 
 Chaosbox should connect repository structure with the decisions, findings and
 constraints discovered while working on it. Extract at meaningful evidence
@@ -56,7 +56,7 @@ See [Selective intelligence](docs/src/intelligence.md) and
 - `chaosbox-extract` — snapshot, deterministic parsing (Rust/Python/JS-TS/Nix/Markdown/text), bounded candidates (selected/omitted accounting)
 - `chaosbox-jev` — typed `POST /v1/systemone` client (`jev-1.13.0` pinned), budgets/retries/validation
 - `chaosbox-store` — shared persistence abstractions: `Store`/`GraphQueries` traits, row types, in-memory backends, conformance suite
-- `chaosbox-typedb` — TypeQL schema, driver-backed store + reader, literal encoder (authoritative backend)
+- `chaosbox-pg` — PostgreSQL + pgvector schema, store (single-transaction publication) and read-only reader (authoritative backend)
 - `chaosbox` — orchestration, CLI, read-only MCP, `db check`/`db migrate` (JSON contract v2)
 
 ## Quick start (no credentials)
@@ -69,9 +69,12 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | cargo run -q -p
 ```
 
 Jev credentials: `CHAOSBOX_JEV_API_KEY_FILE` (or operator `TYPESAFE_API_KEY`).
-Backend: TypeDB only — `db check`/`db migrate`/query/MCP always target
-TypeDB; `run` publishes through TypeDB with `CHAOSBOX_DB_BACKEND=typedb`,
-in-memory otherwise.
+Backend: PostgreSQL only — `db check`/`db migrate`/query/MCP always target
+`CHAOSBOX_DATABASE_URL`; `run` publishes there with `CHAOSBOX_DB_BACKEND=postgres`,
+in-memory otherwise. Semantic search is optional: with `CHAOSBOX_EMBED_URL`
+set, `run` embeds new declaration and knowledge texts and `search`/`context`
+fuse lexical and nearest-neighbour ranks. See [Storage and semantic
+retrieval](docs/src/storage.md).
 For a trusted host connector, `chaosbox reader --admission /private/read-view.json`
 serves a run-isolated, source-scoped and version-pinned MCP connection. See
 [run-bound read views](docs/READ_VIEWS.md) for its admission contract, budgets,
@@ -93,9 +96,8 @@ build can refresh without any model coverage. A decision-bearing or legacy
 build keeps the conservative exit-4 guard when current candidates lack reusable
 decisions. See the [certified fact contract](docs/STRUCTURAL_FACTS.md) for the
 exact syntax subset, citation format, coverage limits, and regression baseline.
-Existing TypeDB databases need `chaosbox db migrate` to reach the current schema.
-Run-bound readers additionally require a newly published, source-complete sealed
-build; migration cannot establish the evidence closure of legacy versions. See
+Run `chaosbox db migrate` once per database (idempotent) before the first `run`.
+Run-bound readers require a published, source-complete sealed build. See
 [`docs/READ_VIEWS.md`](docs/READ_VIEWS.md).
 
 See [optional compiler evidence](docs/COMPILER_EVIDENCE.md) for capture/import,
@@ -134,9 +136,11 @@ defer without parsing prose, alongside these exit codes:
   build prints `active build: …` instead and exits 1: it keeps the current
   build untouched but fails, so a batching caller never mistakes an
   operational backend failure for a successful deferral.
-TypeDB credentials: `CHAOSBOX_TYPEDB_PASSWORD_FILE` (+ optional
-`CHAOSBOX_TYPEDB_ADDR/USER/DATABASE`). OpenAI/Anthropic/Gemini/Ollama
-env vars are never read.
+Database: `CHAOSBOX_DATABASE_URL` (libpq key=value or URL; unix socket or
+loopback only, e.g. `host=/run/postgresql dbname=chaosbox`; peer auth needs no
+password). Embeddings: `CHAOSBOX_EMBED_URL` (loopback `/v1/embeddings`),
+`CHAOSBOX_EMBED_MODEL`, optional `CHAOSBOX_EMBED_TIMEOUT_MS`.
+OpenAI/Anthropic/Gemini/Ollama env vars are never read.
 
 ## Docs
 

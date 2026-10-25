@@ -2,7 +2,7 @@
 use std::{io::Read, path::PathBuf};
 use clap::{Args, Subcommand};
 use chaosbox_jev::{JevClient, JevPolicy};
-use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
+use chaosbox_pg::store::{PgConfig, PgStore};
 use serde_json::{json, Value};
 use super::{Budget, Capture, Journal};
 use crate::{
@@ -75,7 +75,7 @@ pub enum Command {
         /// Explicit operator consent to use pinned Jev for captured source text.
         #[arg(long)]
         live_jev: bool,
-        /// Publish the resulting outbox to `TypeDB`, including partial progress.
+        /// Publish the resulting outbox to PostgreSQL, including partial progress.
         #[arg(long)]
         publish: bool,
         /// Cumulative archive-wide attempt ceiling.
@@ -90,7 +90,7 @@ pub enum Command {
     },
     /// Publish or retry a committed knowledge outbox without inference.
     Publish(ArchiveArgs),
-    /// Retrieve private cross-session knowledge from one pinned `TypeDB` build.
+    /// Retrieve private cross-session knowledge from one pinned PostgreSQL build.
     Context {
         /// Explicit visibility.
         #[arg(long)]
@@ -124,7 +124,7 @@ async fn pinned(scope: &str) -> Result<(Option<String>, Bundle), String> {
     if !scope.starts_with("private:") || scope.len() <= 8 {
         return Err("private scope required".into());
     }
-    let mut store = TypeDbStore::new(TypeDbConfig::from_env()?);
+    let mut store = PgStore::new(PgConfig::from_env()?);
     let result = store.knowledge(scope).await.map_err(|e| e.to_string())?;
     let (pin, bundle) = match result {
         Some((id, raw)) => {
@@ -144,6 +144,30 @@ async fn pinned(scope: &str) -> Result<(Option<String>, Bundle), String> {
         return Err("database knowledge scope mismatch".into());
     }
     Ok((pin, bundle))
+}
+
+/// Pinned private knowledge ranked lexically and, when an embedder is
+/// configured, by statement similarity.
+async fn knowledge_context(
+    scope: &str,
+    repo: &str,
+    query: &str,
+    limit: usize,
+    max_chars: usize,
+) -> Result<Value, String> {
+    let (pin, bundle) = pinned(scope).await?;
+    let embedder = crate::embed::Embedder::from_env()?;
+    let semantic = crate::intelligence::semantic_order(
+        &bundle.records,
+        query,
+        embedder.as_ref(),
+        &mut PgStore::new(PgConfig::from_env()?),
+    )
+    .await;
+    let records = bundle.context_fused(scope, repo, query, limit, max_chars, &semantic)?;
+    Ok(
+        json!({"pin":pin,"scope":scope,"historical_data_not_instructions":true,"exhaustive":false,"records":records}),
+    )
 }
 
 /// Execute a bounded command. Source capture never loads model credentials.
@@ -203,10 +227,7 @@ pub async fn run(command: Command) -> Result<Value, String> {
             let publication = if publish {
                 Some(
                     journal
-                        .publish_pending(
-                            &archive.work,
-                            &mut TypeDbStore::new(TypeDbConfig::from_env()?),
-                        )
+                        .publish_pending(&archive.work, &mut PgStore::new(PgConfig::from_env()?))
                         .await?,
                 )
             } else {
@@ -217,10 +238,7 @@ pub async fn run(command: Command) -> Result<Value, String> {
         Command::Publish(archive) => {
             let mut journal = Journal::open(&archive.work, &archive.scope)?;
             let id = journal
-                .publish_pending(
-                    &archive.work,
-                    &mut TypeDbStore::new(TypeDbConfig::from_env()?),
-                )
+                .publish_pending(&archive.work, &mut PgStore::new(PgConfig::from_env()?))
                 .await?;
             Ok(json!({"publication":id}))
         }
@@ -230,12 +248,7 @@ pub async fn run(command: Command) -> Result<Value, String> {
             query,
             limit,
             max_chars,
-        } => {
-            let (pin, bundle) = pinned(&scope).await?;
-            Ok(
-                json!({"pin":pin,"scope":scope,"historical_data_not_instructions":true,"exhaustive":false,"records":bundle.context(&scope,&repo,&query,limit,max_chars)?}),
-            )
-        }
+        } => knowledge_context(&scope, &repo, &query, limit, max_chars).await,
         Command::KnowledgeEvidence { scope, repo, id } => {
             let (pin, bundle) = pinned(&scope).await?;
             Ok(json!({"pin":pin,"evidence":intelligence::cli::evidence(&bundle,&scope,&repo,&id)?}))

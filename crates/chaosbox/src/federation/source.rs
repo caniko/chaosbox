@@ -1,6 +1,6 @@
 //! Owner-local source adapters. No peer credentials, inference or mutation.
 use std::path::{Path, PathBuf};
-use chaosbox_typedb::{reader::TypeDbReader, store::TypeDbConfig};
+use chaosbox_pg::{reader::PgReader, store::PgConfig};
 use serde::{Deserialize, Serialize};
 use crate::intelligence::{Bundle, cli::load_bundle};
 use super::ErrorCode;
@@ -42,8 +42,8 @@ pub enum Backend {
         #[serde(default)]
         history: Option<PathBuf>,
     },
-    /// Private knowledge generations using provider-local `TypeDB` environment.
-    Typedb,
+    /// Private knowledge generations from the provider-local `CHAOSBOX_DATABASE_URL`.
+    Postgres,
 }
 impl Backend {
     fn artifact(path: &Path) -> Result<Snapshot, ErrorCode> {
@@ -69,10 +69,9 @@ impl KnowledgeSource for Backend {
                     .await
                     .map_err(|_| ErrorCode::Unavailable)?
             }
-            Self::Typedb => {
-                let mut reader = TypeDbReader::new(
-                    TypeDbConfig::from_env().map_err(|_| ErrorCode::Unavailable)?,
-                );
+            Self::Postgres => {
+                let mut reader =
+                    PgReader::new(PgConfig::from_env().map_err(|_| ErrorCode::Unavailable)?);
                 reader.connect().await.map_err(|_| ErrorCode::Unavailable)?;
                 match reader
                     .knowledge(scope)
@@ -110,10 +109,9 @@ impl KnowledgeSource for Backend {
                 }
                 Ok(Some(snapshot))
             }
-            Self::Typedb => {
-                let mut reader = TypeDbReader::new(
-                    TypeDbConfig::from_env().map_err(|_| ErrorCode::Unavailable)?,
-                );
+            Self::Postgres => {
+                let mut reader =
+                    PgReader::new(PgConfig::from_env().map_err(|_| ErrorCode::Unavailable)?);
                 reader.connect().await.map_err(|_| ErrorCode::Unavailable)?;
                 reader
                     .knowledge_at(scope, id)

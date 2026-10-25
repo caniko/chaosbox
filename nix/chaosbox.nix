@@ -1,22 +1,20 @@
-# Chaosbox deployment on harbor-db (TypeDB-backed).
+# Chaosbox deployment on harbor-db (PostgreSQL + pgvector).
 #
 # Composable NixOS module: the consuming configuration imports this module
-# together with harbor-db's module and the TypeDB service module:
+# together with harbor-db's module:
 #
 #   imports = [
 #     inputs.harbor.nixosModules.database-default
-#     inputs.nixpkgs-typedb-typedb-module  # file: nixos/modules/services/databases/typedb.nix
 #     inputs.chaosbox.nixosModules.chaosbox
 #   ];
 #
-# Nothing activates until services.chaosbox.enable with the required secret
-# files. Runtime services are attached later via services.chaosbox.runtimeUnits;
-# until then the migration/check units are runnable on demand and the eval
-# check (nix/deployment-eval.nix) proves the wiring renders.
+# Nothing activates until services.chaosbox.enable. The database, its owner
+# role and the pgvector extension are ensured by postgresql-setup; schema
+# migration is the idempotent `chaosbox db migrate`, and application
+# readiness is the `db check` exit contract (0 ready, 2 pending).
 #
-# Server liveness comes from systemd ordering on typedb.service (there is no
-# separate readiness probe unit): application readiness is the db check exit
-# contract (0 ready, 2 pending), and schema migration is idempotent.
+# Authentication is peer over the local socket: the OS user, PostgreSQL role
+# and database share one name, so no password exists anywhere.
 {
   config,
   lib,
@@ -30,10 +28,11 @@ let
     types
     ;
   cfg = config.services.chaosbox;
+  databaseUrl = "host=${cfg.socketDir} dbname=${cfg.database}";
 in
 {
   options.services.chaosbox = {
-    enable = mkEnableOption "Chaosbox TypeDB-backed deployment via harbor-db";
+    enable = mkEnableOption "Chaosbox PostgreSQL-backed deployment via harbor-db";
 
     package = mkOption {
       type = types.nullOr types.package;
@@ -47,28 +46,16 @@ in
       description = "Repository name passed as --repo to db check|migrate.";
     };
 
-    serverHost = mkOption {
-      type = types.str;
-      default = "127.0.0.1";
-      description = "TypeDB driver host the CLI targets and the service listens on (loopback).";
-    };
-
-    serverPort = mkOption {
-      type = types.port;
-      default = 1729;
-      description = "TypeDB driver port the CLI targets and the service listens on.";
-    };
-
     database = mkOption {
       type = types.str;
       default = "chaosbox";
-      description = "TypeDB database holding the Chaosbox schema and rows.";
+      description = "Database name, owning PostgreSQL role and system user (peer authentication).";
     };
 
-    username = mkOption {
+    socketDir = mkOption {
       type = types.str;
-      default = "admin";
-      description = "Application username. Never the bootstrap admin in production; rotate the default credential first.";
+      default = "/run/postgresql";
+      description = "PostgreSQL unix socket directory the CLI connects through.";
     };
 
     stateDir = mkOption {
@@ -77,16 +64,10 @@ in
       description = "State directory for Chaosbox runtime (writable by its future services).";
     };
 
-    passwordFile = mkOption {
-      type = types.nullOr types.path;
-      default = null;
-      description = "File holding the TypeDB application password, delivered as CHAOSBOX_TYPEDB_PASSWORD_FILE. Provision via age/sops or the typedb-bootstrap package output; never store a value here.";
-    };
-
     runtimeUnits = mkOption {
       type = types.listOf types.str;
       default = [ ];
-      description = "Runtime units gated behind a successful migration (e.g. workers/readers). Empty until Chaosbox ships them as units; runtime credentials must then be a separate least-privilege role, never the migration credential.";
+      description = "Runtime units gated behind a successful migration (e.g. workers/readers). Read-only consumers should use a separate role granted SELECT.";
     };
   };
 
@@ -96,39 +77,56 @@ in
         assertion = cfg.package != null;
         message = "services.chaosbox.package must be set when services.chaosbox.enable is true";
       }
-      {
-        assertion = cfg.passwordFile != null;
-        message = "services.chaosbox.passwordFile is required; it is delivered to migration/check commands, never embedded in the config";
-      }
     ];
 
-    services.typedb = {
-      enable = true;
-      listenHost = cfg.serverHost;
-      listenPort = cfg.serverPort;
+    users.users.${cfg.database} = {
+      isSystemUser = true;
+      group = cfg.database;
     };
+    users.groups.${cfg.database} = { };
+
+    services.postgresql = {
+      enable = true;
+      extensions = ps: [ ps.pgvector ];
+      ensureDatabases = [ cfg.database ];
+      ensureUsers = [
+        {
+          name = cfg.database;
+          ensureDBOwnership = true;
+        }
+      ];
+    };
+    # pgvector is not a trusted extension: create it as the superuser so the
+    # unprivileged owner's migration only verifies it.
+    systemd.services.postgresql-setup.script = lib.mkAfter ''
+      psql -v ON_ERROR_STOP=1 -d ${lib.escapeShellArg cfg.database} -c 'CREATE EXTENSION IF NOT EXISTS vector'
+    '';
 
     services.harbor-db.dataDirectories = [
       {
         path = cfg.stateDir;
-        user = "root";
-        group = "root";
+        user = cfg.database;
+        group = cfg.database;
         mode = "0700";
       }
     ];
 
     services.harbor-db.projects.chaosbox = {
       enable = true;
-      description = "Chaosbox TypeDB schema migration";
+      description = "Chaosbox PostgreSQL schema migration";
       path = [ cfg.package ];
-      environment.CHAOSBOX_DB_BACKEND = "typedb";
-      environment.CHAOSBOX_TYPEDB_ADDR = "${cfg.serverHost}:${toString cfg.serverPort}";
-      environment.CHAOSBOX_TYPEDB_USER = cfg.username;
-      environment.CHAOSBOX_TYPEDB_DATABASE = cfg.database;
+      user = cfg.database;
+      group = cfg.database;
+      environment.CHAOSBOX_DB_BACKEND = "postgres";
+      environment.CHAOSBOX_DATABASE_URL = databaseUrl;
+      postgres = {
+        enable = true;
+        inherit databaseUrl;
+        setupUnits = [ "postgresql-setup.service" ];
+      };
       operations.schema = {
         enable = true;
-        backend = "typedb";
-        credentials.typedb-password = cfg.passwordFile;
+        backend = "postgres";
         runner = {
           inherit (cfg) package;
           executable = "bin/chaosbox";
@@ -146,10 +144,7 @@ in
             "--repo"
             cfg.repo
           ];
-          credentialEnvironment.CHAOSBOX_TYPEDB_PASSWORD_FILE = "typedb-password";
         };
-        after = [ "typedb.service" ];
-        requires = [ "typedb.service" ];
       };
       inherit (cfg) runtimeUnits;
       serviceConfig.ReadWritePaths = [ cfg.stateDir ];

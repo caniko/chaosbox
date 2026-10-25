@@ -117,6 +117,40 @@ pub(crate) fn span_of(text: &str, file: &str, byte_start: usize, byte_end: usize
     }
 }
 
+/// Byte cap for [`Entity::text`]: keeps one embedding input inside the
+/// embedding server's 512-token batch.
+pub(crate) const ENTITY_TEXT_MAX: usize = 1024;
+
+/// The declaration at `start..end` plus its contiguous leading comment,
+/// attribute and decorator lines, trimmed and capped at [`ENTITY_TEXT_MAX`].
+pub(crate) fn item_text(text: &str, start: usize, end: usize) -> Option<String> {
+    let line_start = |byte: usize| text[..byte].rfind('\n').map_or(0, |i| i + 1);
+    let mut from = line_start(start);
+    while from > 0 {
+        let previous = line_start(from - 1);
+        let line = text[previous..from - 1].trim_start();
+        if !["//", "/*", "*", "#", "@"]
+            .iter()
+            .any(|p| line.starts_with(p))
+        {
+            break;
+        }
+        from = previous;
+    }
+    cap_text(&text[from..end.max(start)])
+}
+
+/// Trim and cap at [`ENTITY_TEXT_MAX`] on a character boundary.
+fn cap_text(item: &str) -> Option<String> {
+    let item = item.trim();
+    let mut cut = item.len().min(ENTITY_TEXT_MAX);
+    while !item.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let item = item[..cut].trim_end();
+    (!item.is_empty()).then(|| item.to_owned())
+}
+
 /// Extract one file deterministically. Call/heritage sites need the whole
 /// snapshot to resolve, so single-file extraction never resolves names.
 #[must_use]
@@ -214,7 +248,7 @@ fn extract_code(
         let name = cap.get(1).unwrap().as_str();
         let m = cap.get(1).unwrap();
         let qn = format!("{path}::{name}");
-        let e = Entity::new(
+        let mut e = Entity::new(
             EntityKind::Definition,
             repo,
             snapshot,
@@ -223,6 +257,10 @@ fn extract_code(
             &qn,
             span_of(text, path, m.start(), m.end()),
         );
+        let line_end = text[m.end()..]
+            .find('\n')
+            .map_or(text.len(), |i| m.end() + i);
+        e.text = item_text(text, m.start(), line_end);
         refs.push((file_id.to_owned(), e.id.clone(), "defines".into()));
         defined.push((name.to_owned(), e.id.clone()));
         entities.push(e);
@@ -302,7 +340,7 @@ fn extract_markdown(
     let code_re = Regex::new(r"`([^`]+)`").unwrap();
     for cap in head_re.captures_iter(text) {
         let title = cap.get(2).unwrap();
-        let e = Entity::new(
+        let mut e = Entity::new(
             EntityKind::Heading,
             repo,
             snapshot,
@@ -311,6 +349,15 @@ fn extract_markdown(
             &format!("{path}#{}", title.as_str()),
             span_of(text, path, title.start(), title.end()),
         );
+        // Heading plus its first paragraph; never the next heading.
+        let rest = &text[title.end()..];
+        let para = title.end() + rest.len() - rest.trim_start().len();
+        let para_end = if text[para..].starts_with('#') {
+            title.end()
+        } else {
+            text[para..].find("\n\n").map_or(text.len(), |i| para + i)
+        };
+        e.text = cap_text(&text[cap.get(0).unwrap().start()..para_end]);
         refs.push((file_id.to_owned(), e.id.clone(), "contains".into()));
         entities.push(e);
     }

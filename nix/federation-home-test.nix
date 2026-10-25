@@ -72,12 +72,11 @@ let
   };
   revoked = evaluate { programs.chaosbox.federation.projects.${project}.grants = lib.mkForce { }; };
   rejected = extra: !(builtins.tryEval (evaluate extra).home.activationPackage.drvPath).success;
-  typedb = evaluate {
+  postgres = evaluate {
     programs.chaosbox.federation.backend = {
-      kind = lib.mkForce "typedb";
+      kind = lib.mkForce "postgres";
       path = lib.mkForce null;
-      username = "chaosbox-can";
-      passwordFile = "/run/agenix/chaosbox-can-password";
+      databaseUrl = "host=/run/postgresql dbname=chaosbox_can";
     };
   };
   integrated =
@@ -147,7 +146,7 @@ assert
   .programs.chaosbox.federation.client.peers != [ ];
 assert !(builtins.tryEval invalid.home.activationPackage.drvPath).success;
 assert revoked.programs.chaosbox.federation.provider.policy.grants == [ ];
-assert typedb.programs.chaosbox.federation.provider.backend == { kind = "typedb"; };
+assert postgres.programs.chaosbox.federation.provider.backend == { kind = "postgres"; };
 assert rejected {
   programs.chaosbox.federation.fleetix.topology = lib.mkForce (
     topology

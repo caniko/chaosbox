@@ -335,11 +335,9 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
 
 /// The `run` command: validate policy, select the backend, run once, and
 /// print the live-spend line exactly once on every exit.
+#[allow(clippy::too_many_lines)]
 pub(super) async fn run_cmd(args: &super::RunArgs) -> i32 {
-    use super::{
-        backend, typedb_config_from_env, typedb_publication_chain, Backend, MemoryStore,
-        TypeDbStore,
-    };
+    use super::{backend, pg_config_from_env, pg_publication_chain, Backend, MemoryStore, PgStore};
     let policy = match super::effective_policy(
         &args.source_paths,
         &args.exclude,
@@ -367,7 +365,7 @@ pub(super) async fn run_cmd(args: &super::RunArgs) -> i32 {
             );
         }
     };
-    let (pipe, expected_predecessor) = match backend() {
+    let (pipe, expected_predecessor, embedding) = match backend() {
         Backend::Memory => {
             let code = run_pipeline_with(
                 Pipeline::<MemoryStore>::new(),
@@ -389,28 +387,40 @@ pub(super) async fn run_cmd(args: &super::RunArgs) -> i32 {
             usage();
             return code;
         }
-        Backend::Typedb => {
-            let config = match typedb_config_from_env() {
+        Backend::Postgres => {
+            let config = match pg_config_from_env() {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("typedb config: {e}");
+                    eprintln!("postgres config: {e}");
                     usage();
                     return 1;
                 }
             };
-            let mut store = TypeDbStore::new(config.clone());
+            let embedder = match chaosbox::embed::Embedder::from_env() {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("embedding config: {e}");
+                    usage();
+                    return 1;
+                }
+            };
+            let mut store = PgStore::new(config.clone());
             if let Err(e) = Box::pin(store.migrate()).await {
-                eprintln!("typedb migrate: {e}");
+                eprintln!("postgres migrate: {e}");
                 usage();
                 return 1;
             }
             // Fresh processes start at generation zero: chain off the
             // live active build so repeat runs publish gen+1 with the
             // right predecessor instead of failing the guard.
-            match Box::pin(typedb_publication_chain(&config, &args.repo)).await {
-                Ok((predecessor, generation)) => (Pipeline { store, generation }, predecessor),
+            match Box::pin(pg_publication_chain(&config, &args.repo)).await {
+                Ok((predecessor, generation)) => (
+                    Pipeline { store, generation },
+                    predecessor,
+                    embedder.map(|embedder| (config, embedder)),
+                ),
                 Err(e) => {
-                    eprintln!("typedb publication chain: {e}");
+                    eprintln!("postgres publication chain: {e}");
                     usage();
                     return 1;
                 }
@@ -434,6 +444,21 @@ pub(super) async fn run_cmd(args: &super::RunArgs) -> i32 {
         args.compiler.as_deref(),
     )
     .await;
+    // Derived vectors never change the run's verdict; the next run
+    // continues an unfinished backlog.
+    if let Some((config, embedder)) = embedding {
+        let mut store = PgStore::new(config);
+        match Box::pin(chaosbox::embed::backfill(
+            &mut store,
+            &embedder,
+            chaosbox::embed::BACKFILL_BUDGET,
+        ))
+        .await
+        {
+            Ok(stored) => eprintln!("embeddings: stored={stored}"),
+            Err(e) => eprintln!("embeddings deferred: {e}"),
+        }
+    }
     usage();
     code
 }

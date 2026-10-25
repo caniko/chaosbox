@@ -12,7 +12,7 @@ pub enum NeighborhoodDirection {
     Incoming,
 }
 
-/// Read-only query surface shared by the `TypeDB` reader and the
+/// Read-only query surface shared by the PostgreSQL reader and the
 /// in-memory fake. Member reads are scoped to one explicit build id. Trusted
 /// callers must resolve ownership through `active_build` or `published_build`
 /// before using member queries; raw query methods are not an authorization API.
@@ -33,7 +33,8 @@ pub trait GraphQueries: Send + Sync {
         build_id: &str,
     ) -> Result<Option<BuildRow>, StoreError>;
     /// Bounded substring search over the pinned build's entity names
-    /// (`like` carries `%` wrappers; `\` escapes `%` and `_`).
+    /// (`like` carries `%` wrappers; `\` escapes `%` and `_`), ranked exact
+    /// name, then name prefix, then substring, by qualified name within each.
     async fn search_entities(
         &self,
         build_id: &str,
@@ -112,6 +113,18 @@ pub trait GraphQueries: Send + Sync {
         Err(StoreError::Query(
             "bounded neighborhoods unavailable".into(),
         ))
+    }
+    /// Entities of the pinned build whose embedded text is nearest to a
+    /// unit-length `query` vector under `model`, closest first. Entities
+    /// without an embedding are absent; backends without vectors fail.
+    async fn nearest_entities(
+        &self,
+        _build_id: &str,
+        _model: &str,
+        _query: &[f32],
+        _limit: i64,
+    ) -> Result<Vec<EntityRow>, StoreError> {
+        Err(StoreError::Query("semantic search unavailable".into()))
     }
     /// Immutable bounded analytics computed at publication, when available.
     /// `None` identifies a legacy build; readers may use its bounded export.

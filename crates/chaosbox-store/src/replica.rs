@@ -43,6 +43,22 @@ pub trait ReplicaStore: Send + Sync {
         body: &str,
         expected: Option<&str>,
     ) -> Result<(), StoreError>;
+    /// Record embedding inputs for derived semantic ranking; backends
+    /// without vectors keep nothing.
+    async fn put_texts(&mut self, _bodies: &[&str]) -> Result<(), StoreError> {
+        Ok(())
+    }
+    /// Cosine similarity of a unit `query` vector to each recorded text
+    /// (by content address) embedded under `model`; unembedded texts are
+    /// absent. Backends without vectors fail, and callers stay lexical.
+    async fn rank_texts(
+        &mut self,
+        _model: &str,
+        _query: &[f32],
+        _shas: &[String],
+    ) -> Result<Vec<(String, f64)>, StoreError> {
+        Err(StoreError::Query("semantic ranking unavailable".into()))
+    }
 }
 
 /// Memory implementation with the same identity and predecessor invariants.

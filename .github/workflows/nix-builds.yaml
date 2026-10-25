@@ -29,7 +29,8 @@ jobs:
           - ".#checks.x86_64-linux.scratch-plugin"
           - ".#checks.x86_64-linux.federation-home"
           - ".#checks.x86_64-linux.intelligence-plugin"
-          - ".#checks.x86_64-linux.typedb-integration"
+          - ".#checks.x86_64-linux.postgres-live"
+          - ".#checks.x86_64-linux.postgres-integration"
           - ".#checks.x86_64-linux.federation-ssh"
     env:
       NIX_CONFIG: "experimental-features = nix-command flakes"

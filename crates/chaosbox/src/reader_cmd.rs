@@ -4,7 +4,7 @@
 
 use std::{io::Read, path::Path, time::Duration};
 use chaosbox::read_view::{ReadError, ReadView, ScopedReader, mcp};
-use chaosbox_typedb::reader::TypeDbReader;
+use chaosbox_pg::reader::PgReader;
 
 const ADMISSION_BYTES: u64 = 128 * 1024;
 
@@ -81,8 +81,8 @@ pub(super) async fn serve(path: &Path) -> Result<(), ReadError> {
     view.validate_at(&identity, now)?;
     let timeout = Duration::from_millis(view.budgets.timeout_ms);
     let reader = tokio::time::timeout(timeout, async {
-        let config = super::typedb_config_from_env().map_err(|_| ReadError::Backend)?;
-        let mut handle = TypeDbReader::new(config);
+        let config = super::pg_config_from_env().map_err(|_| ReadError::Backend)?;
+        let mut handle = PgReader::new(config);
         handle.connect().await.map_err(|_| ReadError::Backend)?;
         ScopedReader::admit(handle, view, &identity).await
     })

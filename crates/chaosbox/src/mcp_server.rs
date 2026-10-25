@@ -1,7 +1,7 @@
 //! Read-only MCP over stdio: tool definitions, argument validation, dispatch, and the serve loop.
 
 use super::{
-    AnyReader, LifecycleReport, TypeDbReader, EXPORT_NODE_CAP, EXPORT_EDGE_CAP, all_relation_types,
+    AnyReader, LifecycleReport, PgReader, EXPORT_NODE_CAP, EXPORT_EDGE_CAP, all_relation_types,
 };
 use std::{
     collections::VecDeque,
@@ -244,7 +244,7 @@ async fn mcp_call_tool_connected(
     id: &serde_json::Value,
     name: &str,
     params: &serde_json::Value,
-    connection: &mut Option<TypeDbReader>,
+    connection: &mut Option<PgReader>,
 ) -> serde_json::Value {
     let args = match mcp_args(name, params) {
         Ok(a) => a,
@@ -536,7 +536,7 @@ pub(super) async fn serve_mcp(
     let mut initialized = false;
     // ponytail: one idle driver per ordinary server; no result/header cache.
     // Queued frames acquire credentials and fresh pins only when dispatched.
-    let mut graph: Option<(TypeDbReader, tokio::time::Instant)> = None;
+    let mut graph: Option<(PgReader, tokio::time::Instant)> = None;
     loop {
         let line = tokio::select! {
             biased;
@@ -748,7 +748,7 @@ async fn resolve_names(
     repo: &str,
     build_id: Option<&str>,
     args: &mut serde_json::Map<String, Value>,
-    connection: &mut Option<TypeDbReader>,
+    connection: &mut Option<PgReader>,
 ) -> Result<(), Value> {
     let keys: &[&str] = match name {
         "lookup" | "explain" => &["id"],

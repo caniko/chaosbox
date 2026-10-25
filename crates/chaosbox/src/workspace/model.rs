@@ -90,7 +90,7 @@ pub struct Member {
     pub dirty: bool,
     /// Pinned sources, including historical source bytes.
     pub snapshot: Snapshot,
-    /// Exact zero-model local build, not the active `TypeDB` pointer.
+    /// Exact zero-model local build, not the active PostgreSQL pointer.
     pub build: GraphBuild,
 }
 

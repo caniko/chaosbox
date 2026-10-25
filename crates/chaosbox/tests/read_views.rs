@@ -802,8 +802,8 @@ fn connector_cli_fails_closed_and_redacts_credential_diagnostics() {
             .args(["reader", "--admission"])
             .arg(admission.path())
             .env(
-                "CHAOSBOX_TYPEDB_PASSWORD_FILE",
-                "/private-test-identity/never-present/password",
+                "CHAOSBOX_DATABASE_URL",
+                "host=/private-test-identity/never-present password=never-present dbname=chaosbox",
             )
             .env(
                 "CHAOSBOX_JEV_API_KEY_FILE",

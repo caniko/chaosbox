@@ -88,7 +88,7 @@ jobs:
           git config --global --add url.https://github.com/.insteadOf git@github.com:
 
       - name: Required gate package-inventory
-        run: set -euo pipefail; for crate in chaosbox-core chaosbox-extract chaosbox-jev chaosbox-store chaosbox-typedb chaosbox; do nix develop -c cargo package -p "$crate" --allow-dirty --list; done
+        run: set -euo pipefail; for crate in chaosbox-core chaosbox-extract chaosbox-jev chaosbox-store chaosbox-pg chaosbox; do nix develop -c cargo package -p "$crate" --allow-dirty --list; done
 
   gate-release-workspace:
     runs-on: ubuntu-24.04
@@ -146,7 +146,7 @@ jobs:
       - name: Required gate release-nix
         id: simit-required-gate-release-nix
         timeout-minutes: 90
-        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; evidence="$RUNNER_TEMP/chaosbox-release-nix"; mkdir -p "$evidence"; { nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --print-build-logs --json .#packages.x86_64-linux.chaosbox .#checks.x86_64-linux.unit .#checks.x86_64-linux.lint .#checks.x86_64-linux.scratch-plugin .#checks.x86_64-linux.federation-home .#checks.x86_64-linux.intelligence-plugin .#checks.x86_64-linux.typedb-integration .#checks.x86_64-linux.federation-ssh 2>&1 >&3 | tee "$evidence/build.log" >&2; } 3>"$evidence/result.json"; fi
+        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; evidence="$RUNNER_TEMP/chaosbox-release-nix"; mkdir -p "$evidence"; { nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --print-build-logs --json .#packages.x86_64-linux.chaosbox .#checks.x86_64-linux.unit .#checks.x86_64-linux.lint .#checks.x86_64-linux.scratch-plugin .#checks.x86_64-linux.federation-home .#checks.x86_64-linux.intelligence-plugin .#checks.x86_64-linux.postgres-live .#checks.x86_64-linux.postgres-integration .#checks.x86_64-linux.federation-ssh 2>&1 >&3 | tee "$evidence/build.log" >&2; } 3>"$evidence/result.json"; fi
 
       - name: Retain required gate evidence
         if: always() && steps.simit-required-gate-release-nix.outcome != '' && steps.simit-required-gate-release-nix.outcome != 'skipped'

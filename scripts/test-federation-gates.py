@@ -6,52 +6,12 @@ import runpy
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
 
 REPLY = '{"result":{"status":"ok"}}\n'
-
-
-class RustTestCount(unittest.TestCase):
-    def invoke(self, summary, exit_code=0):
-        with tempfile.TemporaryDirectory(prefix="federation-gate-", dir=os.environ.get("TMPDIR")) as directory:
-            root = Path(directory)
-            cargo = root / "cargo"
-            cargo.write_text(
-                '#!/usr/bin/env bash\n'
-                'printf "%s\\n" "$TEST_SUMMARY"\n'
-                'exit "$TEST_EXIT"\n'
-            )
-            cargo.chmod(0o700)
-            return subprocess.run(
-                ["bash", str(TYPEDB_GATE), str(root / "test.log")],
-                env=dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
-                         TEST_SUMMARY=summary, TEST_EXIT=str(exit_code)),
-                text=True, capture_output=True, timeout=5, check=False,
-            )
-
-    def test_exactly_one_executed_test_passes(self):
-        result = self.invoke("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;")
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_zero_tests_cannot_pass(self):
-        result = self.invoke("test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;")
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-
-    def test_ignored_test_cannot_pass(self):
-        result = self.invoke("test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out;")
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-
-    def test_multiple_tests_cannot_pass(self):
-        result = self.invoke("test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;")
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-
-    def test_failed_cargo_cannot_pass_despite_summary(self):
-        result = self.invoke("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;", 7)
-        self.assertNotEqual(result.returncode, 0, result.stdout)
 
 
 class OneShotDeadline(unittest.TestCase):
@@ -134,8 +94,6 @@ class OneShotDeadline(unittest.TestCase):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ssh-gate", type=Path, default=Path(__file__).with_name("test-federation-ssh.py"))
-    parser.add_argument("--typedb-gate", type=Path, default=Path(__file__).with_name("test-typedb-federation.sh"))
     args, remaining = parser.parse_known_args()
-    TYPEDB_GATE = args.typedb_gate.resolve()
     READ_ONE_SHOT = runpy.run_path(str(args.ssh_gate))["read_one_shot"]
     unittest.main(argv=[sys.argv[0], *remaining])

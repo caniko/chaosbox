@@ -5,6 +5,9 @@ use chaosbox_core::{Entity, EntityKind, GraphBuild, Relation, RelationScope, Rel
 use chaosbox_store::{BuildRow, EntityRow, EvidenceRow, GraphQueries, MemoryReader, RelRow, StoreError};
 use serde_json::{Value, json};
 
+#[path = "../../chaosbox-pg/tests/support/server.rs"]
+mod server;
+
 const DEGREE: usize = 1024;
 const REPO: &str = "explain-counts";
 
@@ -239,22 +242,16 @@ async fn check_counts(reader: &impl GraphQueries, hub: &Entity, isolated: &Entit
 }
 
 #[tokio::test]
-#[ignore = "requires an explicit disposable TypeDB database named s02a_* and CHAOSBOX_REQUIRE_TYPEDB=1"]
-async fn disposable_counts_and_native_cli_mcp_preserve_explanations() {
+#[ignore = "disposable PostgreSQL with pgvector (initdb/pg_ctl/psql)"]
+async fn live_pg_counts_and_native_cli_mcp_preserve_explanations() {
     use chaosbox_core::SnapshotFile;
+    use chaosbox_pg::{reader::PgReader, store::PgStore, PgConfig};
     use chaosbox_store::Store;
-    use chaosbox_typedb::{
-        reader::TypeDbReader,
-        store::{TypeDbConfig, TypeDbStore},
-    };
 
-    assert_eq!(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref(), Ok("1"));
-    let config = TypeDbConfig::from_env().unwrap();
-    assert!(
-        config.database.starts_with("s02a_"),
-        "use a disposable s02a_* database"
-    );
-    let mut store = TypeDbStore::new(config.clone());
+    let server = server::Server::start();
+    let url = server.url();
+    let config = PgConfig::new(url.clone()).unwrap();
+    let mut store = PgStore::new(config.clone());
     store.migrate().await.unwrap();
     store
         .ensure_snapshot_files(
@@ -275,7 +272,7 @@ async fn disposable_counts_and_native_cli_mcp_preserve_explanations() {
         .publish(build.clone(), Some(old.id.clone()))
         .await
         .unwrap();
-    let mut backend = TypeDbReader::new(config);
+    let mut backend = PgReader::new(config);
     backend.connect().await.unwrap();
     check_counts(&backend, &hub, &isolated).await;
     let reader = GraphReader::pinned(backend, REPO).await.unwrap();
@@ -293,7 +290,7 @@ async fn disposable_counts_and_native_cli_mcp_preserve_explanations() {
     for (index, id) in ids.iter().cycle().take(9).enumerate() {
         requests.push(json!({"jsonrpc":"2.0","id":index+2,"method":"tools/call","params":{"name":"explain","arguments":{"repo":REPO,"id":id}}}));
     }
-    let responses = native(&["mcp"], &requests).await;
+    let responses = native(&url, &["mcp"], &requests).await;
     assert_eq!(responses.len(), 10);
     assert_eq!(responses[0]["result"]["protocolVersion"], "2024-11-05");
     let expected_values = [
@@ -312,7 +309,7 @@ async fn disposable_counts_and_native_cli_mcp_preserve_explanations() {
     }
     for (id, value) in ids.iter().zip(&expected_values) {
         assert_eq!(
-            native(&["query", "explain", id, "--repo", REPO], &[])
+            native(&url, &["query", "explain", id, "--repo", REPO], &[])
                 .await
                 .as_slice(),
             std::slice::from_ref(value)
@@ -320,18 +317,18 @@ async fn disposable_counts_and_native_cli_mcp_preserve_explanations() {
     }
     eprintln!(
         "{}",
-        json!({"fixture_database":std::env::var("CHAOSBOX_TYPEDB_DATABASE").unwrap(),
-        "build":build.id,"nodes":build.nodes.len(),"edges":build.edges.len(),
+        json!({"build":build.id,"nodes":build.nodes.len(),"edges":build.edges.len(),
         "mcp_calls":9,"mcp_payload_bytes":total_bytes,"cli_cases":3})
     );
 }
 
-async fn native(args: &[&str], requests: &[Value]) -> Vec<Value> {
+async fn native(url: &str, args: &[&str], requests: &[Value]) -> Vec<Value> {
     use std::{process::Stdio, time::Duration};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_chaosbox"))
         .args(args)
         .env_remove("CHAOSBOX_JEV_API_KEY_FILE")
+        .env("CHAOSBOX_DATABASE_URL", url)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

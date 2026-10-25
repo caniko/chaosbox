@@ -101,7 +101,7 @@ jobs:
         timeout-minutes: 30
         env:
           SIMIT_REQUIRED_GATE: "1"
-        run: set -euo pipefail; for crate in chaosbox-core chaosbox-extract chaosbox-jev chaosbox-store chaosbox-typedb chaosbox; do nix develop -c cargo package -p "$crate" --allow-dirty --list; done
+        run: set -euo pipefail; for crate in chaosbox-core chaosbox-extract chaosbox-jev chaosbox-store chaosbox-pg chaosbox; do nix develop -c cargo package -p "$crate" --allow-dirty --list; done
       - name: Required gate release-workspace
         timeout-minutes: 120
         env:
@@ -114,7 +114,7 @@ jobs:
         env:
           NIX_CONFIG: "experimental-features = nix-command flakes"
         id: simit-required-gate-release-nix
-        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; evidence="$RUNNER_TEMP/chaosbox-release-nix"; mkdir -p "$evidence"; { nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --print-build-logs --json .#packages.x86_64-linux.chaosbox .#checks.x86_64-linux.unit .#checks.x86_64-linux.lint .#checks.x86_64-linux.scratch-plugin .#checks.x86_64-linux.federation-home .#checks.x86_64-linux.intelligence-plugin .#checks.x86_64-linux.typedb-integration .#checks.x86_64-linux.federation-ssh 2>&1 >&3 | tee "$evidence/build.log" >&2; } 3>"$evidence/result.json"; fi
+        run: set -euo pipefail; if [[ "${GITHUB_REF:-}" == refs/tags/* ]]; then test "${GITHUB_EVENT_NAME:-}" = push; git config --global --add url.https://github.com/.insteadOf ssh://git@github.com/; git config --global --add url.https://github.com/.insteadOf git@github.com:; test "${RUNNER_ENVIRONMENT:-}" = github-hosted; test -c /dev/kvm; sudo chmod a+rw /dev/kvm; test -r /dev/kvm; test -w /dev/kvm; git rev-parse HEAD; evidence="$RUNNER_TEMP/chaosbox-release-nix"; mkdir -p "$evidence"; { nix build --no-link --no-update-lock-file --max-jobs 1 --cores 2 --print-build-logs --json .#packages.x86_64-linux.chaosbox .#checks.x86_64-linux.unit .#checks.x86_64-linux.lint .#checks.x86_64-linux.scratch-plugin .#checks.x86_64-linux.federation-home .#checks.x86_64-linux.intelligence-plugin .#checks.x86_64-linux.postgres-live .#checks.x86_64-linux.postgres-integration .#checks.x86_64-linux.federation-ssh 2>&1 >&3 | tee "$evidence/build.log" >&2; } 3>"$evidence/result.json"; fi
 
       - name: Retain required gate evidence
         if: always() && steps.simit-required-gate-release-nix.outcome != '' && steps.simit-required-gate-release-nix.outcome != 'skipped'
@@ -150,12 +150,12 @@ jobs:
         run: nix develop -c cargo clippy --locked -p chaosbox-store --all-targets --all-features -- -D warnings
       - name: Document chaosbox-store
         run: nix develop -c cargo doc --locked -p chaosbox-store --no-deps --all-features
-      - name: Test chaosbox-typedb
-        run: nix develop -c cargo test --locked -p chaosbox-typedb --all-targets --all-features
-      - name: Clippy chaosbox-typedb
-        run: nix develop -c cargo clippy --locked -p chaosbox-typedb --all-targets --all-features -- -D warnings
-      - name: Document chaosbox-typedb
-        run: nix develop -c cargo doc --locked -p chaosbox-typedb --no-deps --all-features
+      - name: Test chaosbox-pg
+        run: nix develop -c cargo test --locked -p chaosbox-pg --all-targets --all-features
+      - name: Clippy chaosbox-pg
+        run: nix develop -c cargo clippy --locked -p chaosbox-pg --all-targets --all-features -- -D warnings
+      - name: Document chaosbox-pg
+        run: nix develop -c cargo doc --locked -p chaosbox-pg --no-deps --all-features
       - name: Test chaosbox
         run: nix develop -c cargo test --locked -p chaosbox --all-targets --all-features
       - name: Clippy chaosbox
@@ -163,7 +163,7 @@ jobs:
       - name: Document chaosbox
         run: nix develop -c cargo doc --locked -p chaosbox --no-deps --all-features
       - name: Package coordinated release set
-        run: nix develop -c cargo package --locked --allow-dirty --no-verify -p chaosbox-core -p chaosbox-extract -p chaosbox-jev -p chaosbox-store -p chaosbox-typedb -p chaosbox --target-dir "$RUNNER_TEMP/simit-package-target"
+        run: nix develop -c cargo package --locked --allow-dirty --no-verify -p chaosbox-core -p chaosbox-extract -p chaosbox-jev -p chaosbox-store -p chaosbox-pg -p chaosbox --target-dir "$RUNNER_TEMP/simit-package-target"
       - name: Build immutable archive chaosbox-core
         run: |
           set -euo pipefail
@@ -224,18 +224,18 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Build immutable archive chaosbox-typedb
+      - name: Build immutable archive chaosbox-pg
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME}"
-          test "$(nix develop -c cargo pkgid --locked -p chaosbox-typedb | awk -F'[#@]' 'NF > 1 {print $NF}' | tail -n 1)" = "$version"
-          mkdir -p "$RUNNER_TEMP/simit-crates/chaosbox-typedb"
-          cp "$RUNNER_TEMP/simit-package-target/package/chaosbox-typedb-$version.crate" "$RUNNER_TEMP/simit-crates/chaosbox-typedb/"
-      - name: Retain original-run archive chaosbox-typedb
+          test "$(nix develop -c cargo pkgid --locked -p chaosbox-pg | awk -F'[#@]' 'NF > 1 {print $NF}' | tail -n 1)" = "$version"
+          mkdir -p "$RUNNER_TEMP/simit-crates/chaosbox-pg"
+          cp "$RUNNER_TEMP/simit-package-target/package/chaosbox-pg-$version.crate" "$RUNNER_TEMP/simit-crates/chaosbox-pg/"
+      - name: Retain original-run archive chaosbox-pg
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: simit-crate-chaosbox-typedb-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/simit-crates/chaosbox-typedb/*.crate
+          name: simit-crate-chaosbox-pg-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/simit-crates/chaosbox-pg/*.crate
           if-no-files-found: error
           retention-days: 30
 

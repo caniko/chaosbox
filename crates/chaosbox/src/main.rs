@@ -1,7 +1,7 @@
 //! `chaosbox` CLI + read-only MCP server.
 //!
 //! Consumers (CLI queries, MCP tools) share one query implementation in the
-//! library, served TypeDB-backed through [`chaosbox::GraphReader`]. MCP is
+//! library, served PostgreSQL-backed through [`chaosbox::GraphReader`]. MCP is
 //! read-only: no mutation, ingestion, annotations, arbitrary SQL,
 //! migrations, or model configuration tools. The read-only server never loads
 //! Jev credentials. Indexing/administration are operator commands.
@@ -19,9 +19,9 @@ use chaosbox::{
 use chaosbox::{FixtureResponder, LiveResponder, PipelineError};
 use chaosbox_extract::Snapshot;
 use chaosbox_store::{GraphQueries as _, MemoryStore};
-use chaosbox_typedb::{
-    reader::TypeDbReader,
-    store::{TypeDbConfig, TypeDbStore},
+use chaosbox_pg::{
+    reader::PgReader,
+    store::{PgConfig, PgStore},
 };
 use clap::{Parser, Subcommand};
 
@@ -35,8 +35,8 @@ mod reader_cmd;
 mod setup_cmd;
 
 use backend_cmd::{
-    AnyReader, Backend, RunSpend, active_publishes_relations, backend, consumer_err,
-    db_check_typedb, run_migrate_typedb, typedb_config_from_env, typedb_publication_chain,
+    AnyReader, Backend, RunSpend, active_publishes_relations, backend, consumer_err, db_check_pg,
+    run_migrate_pg, pg_config_from_env, pg_publication_chain,
 };
 use mcp_server::serve_mcp;
 use query_cmd::run_query;
@@ -175,7 +175,7 @@ enum Command {
     Install(setup_cmd::InstallArgs),
     /// Remove exactly what `install` added.
     Uninstall(setup_cmd::InstallArgs),
-    /// Query helpers (read-only; TypeDB-backed, shared with MCP).
+    /// Query helpers (read-only; PostgreSQL-backed, shared with MCP).
     Query {
         #[command(subcommand)]
         q: QueryCmd,
@@ -435,7 +435,7 @@ enum DbCmd {
         #[arg(long, default_value = "demo")]
         repo: String,
     },
-    /// Apply the packaged `TypeDB` schema idempotently through the driver.
+    /// Apply the packaged PostgreSQL schema idempotently through the driver.
     Migrate {
         /// Emit the versioned JSON envelope (contract v2; always on).
         #[arg(long, default_value_t = true)]
@@ -693,7 +693,7 @@ async fn main() {
         }
         Command::Db { op } => match op {
             DbCmd::Inventory { repo, limit, after } => {
-                match Box::pin(backend_cmd::run_inventory_typedb(repo, limit, after)).await {
+                match Box::pin(backend_cmd::run_inventory_pg(repo, limit, after)).await {
                     Ok(report) => println!("{}", serde_json::to_string(&report).unwrap()),
                     Err(error) => std::process::exit(consumer_err("db inventory", error)),
                 }
@@ -701,7 +701,7 @@ async fn main() {
             DbCmd::Check { json: _, repo } => {
                 // Read-only: never init/migrate/repair. Exit 0 when ready,
                 // 2 when pending, 1 otherwise (harbor-db contract v2).
-                let report = Box::pin(db_check_typedb(&repo)).await;
+                let report = Box::pin(db_check_pg(&repo)).await;
                 println!("{}", serde_json::to_string(&report).unwrap());
                 if report.status == "ready" {
                     std::process::exit(0);
@@ -712,10 +712,10 @@ async fn main() {
             }
             DbCmd::Migrate { json: _, repo: _ } => {
                 // Idempotent packaged-schema application through the driver
-                // (no CLI tooling). run_migrate_typedb verifies schema
+                // (no CLI tooling). run_migrate_pg verifies schema
                 // readiness itself; the arm only maps the verdict to the
                 // exit code.
-                let result = Box::pin(run_migrate_typedb()).await;
+                let result = Box::pin(run_migrate_pg()).await;
                 match result {
                     Ok(report) => {
                         println!("{}", serde_json::to_string(&report).unwrap());

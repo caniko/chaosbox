@@ -1,11 +1,24 @@
 //! Ordinary stdio MCP must observe disconnects and cancellation during acquisition.
 
+#[path = "../../chaosbox-pg/tests/support/server.rs"]
+mod server;
+
 use std::{process::Stdio, time::Duration};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, Lines};
 
 const REPO: &str = "mcp-lifecycle";
 const SNAP: &str = "s-mcp-lifecycle";
+/// Nothing listens here: acquisition fails immediately.
+const REFUSED: &str = "host=127.0.0.1 port=1 dbname=refused user=refused";
+
+/// A loopback listener that accepts TCP but never answers the startup message.
+fn stalled(listener: &tokio::net::TcpListener) -> String {
+    format!(
+        "host=127.0.0.1 port={} dbname=stalled user=stalled",
+        listener.local_addr().unwrap().port()
+    )
+}
 
 struct Client {
     child: tokio::process::Child,
@@ -14,27 +27,12 @@ struct Client {
 }
 
 impl Client {
-    async fn start(address: &str, password: &std::path::Path) -> Self {
-        Self::start_db(address, password, "s02c3_lifecycle").await
-    }
-
-    async fn start_db(address: &str, password: &std::path::Path, database: &str) -> Self {
+    async fn start(url: &str) -> Self {
         let binary = std::env::var_os("CHAOSBOX_TEST_BIN")
             .unwrap_or_else(|| env!("CARGO_BIN_EXE_chaosbox").into());
-        Self::start_binary(address, password, database, binary).await
-    }
-
-    async fn start_binary(
-        address: &str,
-        password: &std::path::Path,
-        database: &str,
-        binary: std::ffi::OsString,
-    ) -> Self {
         let mut child = tokio::process::Command::new(binary)
             .arg("mcp")
-            .env("CHAOSBOX_TYPEDB_ADDR", address)
-            .env("CHAOSBOX_TYPEDB_DATABASE", database)
-            .env("CHAOSBOX_TYPEDB_PASSWORD_FILE", password)
+            .env("CHAOSBOX_DATABASE_URL", url)
             .env_remove("CHAOSBOX_JEV_API_KEY_FILE")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -95,21 +93,18 @@ impl Client {
 #[tokio::test]
 async fn matching_cancel_and_eof_close_real_acquisition_sockets() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let credentials = tempfile::tempdir().unwrap();
-    let password = credentials.path().join("password");
-    std::fs::write(&password, "disposable-test-password").unwrap();
-    let mut client = Client::start(&listener.local_addr().unwrap().to_string(), &password).await;
+    let mut client = Client::start(&stalled(&listener)).await;
     client.path(json!(7)).await;
     let (mut socket, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
         .await
         .unwrap()
         .unwrap();
     // Prove a real connector owns the socket before cancelling it: a loaded
-    // build sandbox can otherwise cancel before the HTTP/2 preface is written.
-    let mut preface = [0_u8; 1];
-    tokio::time::timeout(Duration::from_secs(10), socket.read_exact(&mut preface))
+    // build sandbox can otherwise cancel before the startup message is written.
+    let mut startup = [0_u8; 1];
+    tokio::time::timeout(Duration::from_secs(10), socket.read_exact(&mut startup))
         .await
-        .expect("real connector never wrote its HTTP/2 preface")
+        .expect("real connector never wrote its startup message")
         .unwrap();
     // JSON-RPC string and numeric IDs are distinct. A ping proves that the
     // unrelated cancellation has been consumed while the connector is pending.
@@ -148,10 +143,7 @@ async fn matching_cancel_and_eof_close_real_acquisition_sockets() {
 #[tokio::test]
 async fn overlapping_calls_serialize_and_queued_cancellation_preserves_typed_ids() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let credentials = tempfile::tempdir().unwrap();
-    let password = credentials.path().join("password");
-    std::fs::write(&password, "disposable-test-password").unwrap();
-    let mut client = Client::start(&listener.local_addr().unwrap().to_string(), &password).await;
+    let mut client = Client::start(&stalled(&listener)).await;
     client.path(json!(7)).await;
     let (mut socket, _) = listener.accept().await.unwrap();
     for id in [json!(8), json!("8"), json!(10)] {
@@ -199,11 +191,7 @@ async fn overlapping_calls_serialize_and_queued_cancellation_preserves_typed_ids
 async fn admission_bounds_reject_only_excess_and_duplicate_calls() {
     for wide in [false, true] {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let credentials = tempfile::tempdir().unwrap();
-        let password = credentials.path().join("password");
-        std::fs::write(&password, "disposable-test-password").unwrap();
-        let mut client =
-            Client::start(&listener.local_addr().unwrap().to_string(), &password).await;
+        let mut client = Client::start(&stalled(&listener)).await;
         client.path(json!(7)).await;
         let (_socket, _) = listener.accept().await.unwrap();
         let count = if wide { 4 } else { 8 };
@@ -256,10 +244,7 @@ async fn admission_bounds_reject_only_excess_and_duplicate_calls() {
 #[tokio::test]
 async fn queued_wait_expires_without_starting_another_acquisition() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let credentials = tempfile::tempdir().unwrap();
-    let password = credentials.path().join("password");
-    std::fs::write(&password, "disposable-test-password").unwrap();
-    let mut client = Client::start(&listener.local_addr().unwrap().to_string(), &password).await;
+    let mut client = Client::start(&stalled(&listener)).await;
     let status = |id| {
         json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
         "params":{"name":"status","arguments":{"repo":"demo"}}})
@@ -303,8 +288,7 @@ async fn queued_wait_expires_without_starting_another_acquisition() {
 
 #[tokio::test]
 async fn oversized_unterminated_frame_stops_without_waiting_for_eof() {
-    let credentials = tempfile::tempdir().unwrap();
-    let mut client = Client::start("127.0.0.1:1", &credentials.path().join("absent")).await;
+    let mut client = Client::start(REFUSED).await;
     client
         .input
         .as_mut()
@@ -317,8 +301,7 @@ async fn oversized_unterminated_frame_stops_without_waiting_for_eof() {
 
 #[tokio::test]
 async fn eof_after_a_large_protocol_error_exits_cleanly() {
-    let credentials = tempfile::tempdir().unwrap();
-    let mut client = Client::start("127.0.0.1:1", &credentials.path().join("absent")).await;
+    let mut client = Client::start(REFUSED).await;
     // The error echoes this method. The required live wide lookup below
     // establishes backpressure even on hosts with larger pipe capacities.
     client
@@ -329,48 +312,110 @@ async fn eof_after_a_large_protocol_error_exits_cleanly() {
     assert!(client.stopped().await.success());
 }
 
-async fn diagnostics() -> Value {
-    let address = std::env::var("CHAOSBOX_TEST_MONITOR_ADDR")
-        .expect("disposable monitoring address required");
-    let mut stream = tokio::net::TcpStream::connect(&address).await.unwrap();
-    stream.write_all(format!("GET /diagnostics?format=json HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").as_bytes()).await.unwrap();
-    let mut bytes = Vec::new();
-    tokio::time::timeout(Duration::from_secs(2), stream.read_to_end(&mut bytes))
-        .await
+/// Count the MCP's backend sessions; fixture stores connect under another name.
+fn sessions(server: &server::Server, condition: &str) -> u64 {
+    server
+        .psql(
+            "chaosbox",
+            &format!("SELECT count(*) FROM pg_stat_activity WHERE application_name = 'chaosbox' AND {condition}"),
+        )
+        .trim()
+        .parse()
         .unwrap()
-        .unwrap();
-    let body = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4;
-    serde_json::from_slice(&bytes[body..]).unwrap()
 }
 
-fn active_reads(metrics: &Value, database: &str) -> u64 {
-    let load = metrics["load"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|load| load["database"] == database)
-        .expect("disposable database missing in diagnostics");
-    load["activeTransactions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|tx| tx["kind"] == "read" && tx["client"] == "grpc")
-        .map(|tx| tx["count"].as_u64().unwrap())
-        .sum()
-}
-
-async fn wait_reads(database: &str, active: bool) -> Value {
+async fn wait_sessions(server: &server::Server, condition: &str, expected: u64) {
     tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let metrics = diagnostics().await;
-            if (active_reads(&metrics, database) > 0) == active {
-                return metrics;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
+        while sessions(server, condition) != expected {
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
-    .expect("remote read did not reach the required state within two seconds")
+    .unwrap_or_else(|_| panic!("MCP sessions where {condition} did not reach {expected}"));
+}
+
+/// Fingerprint of MCP statement activity: sessions, last state change, active.
+fn activity(server: &server::Server) -> String {
+    server.psql(
+        "chaosbox",
+        "SELECT count(*), max(state_change), count(*) FILTER (WHERE state = 'active') FROM pg_stat_activity WHERE application_name = 'chaosbox'",
+    )
+}
+
+/// Holds an exclusive lock on `relationships` so a graph read stays in flight
+/// until [`Blocker::release`]; EOF on psql's input rolls the lock back.
+struct Blocker(std::process::Child);
+
+impl Blocker {
+    fn hold(server: &server::Server) -> Self {
+        use std::io::Write as _;
+        let psql = std::env::var_os("PG_BIN").map_or_else(
+            || "psql".into(),
+            |dir| std::path::Path::new(&dir).join("psql"),
+        );
+        let mut child = std::process::Command::new(psql)
+            .args(["-XAtq", "--set", "ON_ERROR_STOP=1"])
+            .arg(server.url())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"BEGIN;\nLOCK TABLE relationships IN ACCESS EXCLUSIVE MODE;\n")
+            .unwrap();
+        let blocker = Self(child);
+        let granted = "SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation WHERE c.relname = 'relationships' AND l.mode = 'AccessExclusiveLock' AND l.granted";
+        let started = std::time::Instant::now();
+        while server.psql("chaosbox", granted).trim() != "1" {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "lock not granted"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        blocker
+    }
+
+    fn release(&mut self) {
+        if let Some(input) = self.0.stdin.take() {
+            drop(input);
+            let _ = self.0.wait();
+        }
+    }
+}
+
+impl Drop for Blocker {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+/// Migrated fixture store with the shared snapshot registered. It connects as
+/// `fixture`, so session counts observe only the MCP under test.
+async fn fixture_store(server: &server::Server) -> chaosbox_pg::store::PgStore {
+    use chaosbox_core::SnapshotFile;
+    use chaosbox_store::Store;
+    let config =
+        chaosbox_pg::PgConfig::new(format!("{} application_name=fixture", server.url())).unwrap();
+    let mut store = chaosbox_pg::store::PgStore::new(config);
+    store.migrate().await.unwrap();
+    store
+        .ensure_snapshot_files(
+            SNAP,
+            REPO,
+            &[SnapshotFile {
+                snapshot: SNAP.into(),
+                path: "f.rs".into(),
+                sha256: "fixture".into(),
+                bytes: 1,
+            }],
+        )
+        .await
+        .unwrap();
+    store
 }
 
 fn sample(pid: u32) -> Value {
@@ -391,54 +436,11 @@ fn sample(pid: u32) -> Value {
                 .unwrap()),
         );
     }
-    let fds: Vec<_> = std::fs::read_dir(format!("/proc/{pid}/fd"))
+    let fds = std::fs::read_dir(format!("/proc/{pid}/fd"))
         .unwrap()
-        .collect();
-    values.insert("fds".into(), json!(fds.len()));
-    let sockets: Vec<_> = fds
-        .iter()
-        .filter_map(|fd| {
-            fd.as_ref()
-                .ok()
-                .and_then(|fd| std::fs::read_link(fd.path()).ok())
-                .map(|path| path.to_string_lossy().into_owned())
-                .filter(|path| path.starts_with("socket:["))
-        })
-        .collect();
-    // Tokio's signal driver owns a Unix socket pair even before acquisition.
-    // Match process-owned inodes to the kernel's TCP tables, not all sockets.
-    let mut tcp_inodes = std::collections::BTreeSet::new();
-    for table in ["tcp", "tcp6"] {
-        for line in std::fs::read_to_string(format!("/proc/{pid}/net/{table}"))
-            .unwrap()
-            .lines()
-            .skip(1)
-        {
-            if let Some(inode) = line.split_whitespace().nth(9) {
-                tcp_inodes.insert(format!("socket:[{inode}]"));
-            }
-        }
-    }
-    values.insert(
-        "tcp_sockets".into(),
-        json!(sockets.iter().filter(|s| tcp_inodes.contains(*s)).count()),
-    );
-    values.insert("sockets".into(), json!(sockets.len()));
+        .count();
+    values.insert("fds".into(), json!(fds));
     Value::Object(values)
-}
-
-async fn settled_sample(pid: u32) -> Value {
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let sample = sample(pid);
-            if sample["tcp_sockets"] == 0 {
-                return sample;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("ordinary MCP retained a backend connection")
 }
 
 async fn call(client: &mut Client, id: u64, name: &str, arguments: Value) -> Value {
@@ -448,12 +450,23 @@ async fn call(client: &mut Client, id: u64, name: &str, arguments: Value) -> Val
     response
 }
 
-async fn check_cleanup(mut client: Client, mode: &str, database: &str, path: Value) -> Value {
+fn payload(response: &Value) -> Value {
+    assert!(response.get("error").is_none(), "{response}");
+    serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+async fn check_cleanup(
+    mut client: Client,
+    mode: &str,
+    server: &server::Server,
+    path: Value,
+) -> Value {
     // Prime successful graph reuse first: transport failures must also release
-    // a reused connection, not only a freshly acquired request-owned driver.
+    // a reused connection, not only a freshly acquired request-owned session.
     payload(&call(&mut client, 100, "status", json!({"repo":REPO})).await);
+    let mut blocker = Blocker::hold(server);
     client.send(json!({"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"path","arguments":path}})).await;
-    let active = wait_reads(database, true).await;
+    wait_sessions(server, "wait_event_type = 'Lock'", 1).await;
     client
         .send(json!({"jsonrpc":"2.0","id":104,"method":"tools/list"}))
         .await;
@@ -469,7 +482,11 @@ async fn check_cleanup(mut client: Client, mode: &str, database: &str, path: Val
                 .send(json!({"jsonrpc":"2.0","id":102,"method":"ping"}))
                 .await;
             assert_eq!(client.receive().await["id"], 102);
-            wait_reads(database, true).await;
+            assert_eq!(
+                sessions(server, "wait_event_type = 'Lock'"),
+                1,
+                "read still in flight"
+            );
             client.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":101}})).await;
             let response = client.receive().await;
             assert_eq!(response["id"], 101);
@@ -477,9 +494,9 @@ async fn check_cleanup(mut client: Client, mode: &str, database: &str, path: Val
             let queued = client.receive().await;
             assert_eq!(queued["id"], 104);
             assert!(queued["result"]["tools"].is_array());
-            wait_reads(database, false).await;
-            let observed = settled_sample(client.child.id().unwrap()).await;
-            assert_eq!(observed["tcp_sockets"], 0);
+            // The cancelled request owned the reused session: nothing survives.
+            blocker.release();
+            wait_sessions(server, "true", 0).await;
             client
                 .send(json!({"jsonrpc":"2.0","id":103,"method":"ping"}))
                 .await;
@@ -528,36 +545,22 @@ async fn check_cleanup(mut client: Client, mode: &str, database: &str, path: Val
             assert!(!client.stopped().await.success());
         }
     }
-    let idle = wait_reads(database, false).await;
-    json!({"mode":mode,"observed_active_reads":active_reads(&active,database),
-            "remaining_reads":active_reads(&idle,database),"cleanup_ms":started.elapsed().as_millis()})
+    blocker.release();
+    wait_sessions(server, "true", 0).await;
+    json!({"mode":mode,"cleanup_ms":started.elapsed().as_millis()})
 }
 
-async fn check_wide(mut client: Client, mode: &str, database: &str, id: &str) -> Value {
-    // A wide real lookup guarantees pipe backpressure. Its read transaction must
-    // already have closed while bytes remain unread, and EOF must not strand a
+async fn check_wide(mut client: Client, mode: &str, server: &server::Server, id: &str) -> Value {
+    // A wide real lookup guarantees pipe backpressure. Its reads must already
+    // have finished while bytes remain unread, and EOF must not strand a
     // Tokio blocking stdout worker during runtime shutdown.
-    let query_count = |m: &Value| {
-        m["actions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|a| a["database"] == database && a["name"] == "TRANSACTION_QUERY")
-            .map_or(0, |a| a["successful"].as_u64().unwrap())
-    };
-    let before = query_count(&diagnostics().await);
     client.send(json!({"jsonrpc":"2.0","id":201,"method":"tools/call","params":{"name":"lookup","arguments":{"repo":REPO,"id":id}}})).await;
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let metrics = diagnostics().await;
-            if query_count(&metrics) >= before + 3 && active_reads(&metrics, database) == 0 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_sessions(
+        server,
+        "state = 'idle' AND query LIKE '%JOIN entities e ON%'",
+        1,
+    )
+    .await;
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(client.child.try_wait().unwrap().is_none());
     let started = std::time::Instant::now();
@@ -572,12 +575,13 @@ async fn check_wide(mut client: Client, mode: &str, database: &str, id: &str) ->
         assert!(!status.success());
         assert!(started.elapsed() >= Duration::from_secs(8));
     }
-    json!({"mode":mode,"remaining_reads":active_reads(&diagnostics().await,database),"cleanup_ms":started.elapsed().as_millis()})
+    wait_sessions(server, "true", 0).await;
+    json!({"mode":mode,"cleanup_ms":started.elapsed().as_millis()})
 }
 
 async fn check_retention(
     mut client: Client,
-    database: &str,
+    server: &server::Server,
     hub: &str,
     isolated: &str,
 ) -> Vec<Value> {
@@ -609,8 +613,9 @@ async fn check_retention(
                 || message.contains("path traversal deadline exceeded"),
             "{response}"
         );
-        wait_reads(database, false).await;
-        let sample = settled_sample(client.child.id().unwrap()).await;
+        // A failed call never returns its session to the reuse slot.
+        wait_sessions(server, "true", 0).await;
+        let sample = sample(client.child.id().unwrap());
         eprintln!(
             "{}",
             json!({"case":"persistent-retention-sample", "batch":batch, "sample":sample})
@@ -633,32 +638,14 @@ async fn check_retention(
 }
 
 #[tokio::test]
-#[ignore = "requires a fresh disposable s02c3_* TypeDB database, monitoring and CHAOSBOX_REQUIRE_TYPEDB=1"]
-async fn disposable_ordinary_mcp_cleanup_and_retention() {
+#[ignore = "disposable PostgreSQL with pgvector (initdb/pg_ctl/psql)"]
+async fn live_pg_ordinary_mcp_cleanup_and_retention() {
     use chaosbox_core::{
-        Entity, EntityKind, GraphBuild, Relation, RelationScope, RelationType, SnapshotFile,
-        SourceSpan,
+        Entity, EntityKind, GraphBuild, Relation, RelationScope, RelationType, SourceSpan,
     };
     use chaosbox_store::Store;
-    use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
-    assert_eq!(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref(), Ok("1"));
-    let config = TypeDbConfig::from_env().unwrap();
-    assert!(config.database.starts_with("s02c3_"));
-    let mut store = TypeDbStore::new(config.clone());
-    store.migrate().await.unwrap();
-    store
-        .ensure_snapshot_files(
-            SNAP,
-            REPO,
-            &[SnapshotFile {
-                snapshot: SNAP.into(),
-                path: "f.rs".into(),
-                sha256: "fixture".into(),
-                bytes: 1,
-            }],
-        )
-        .await
-        .unwrap();
+    let server = server::Server::start();
+    let mut store = fixture_store(&server).await;
     let node = |name: &str| {
         Entity::new(
             EntityKind::Symbol,
@@ -692,10 +679,7 @@ async fn disposable_ordinary_mcp_cleanup_and_retention() {
     }
     let build_id = build.id.clone();
     store.publish(build, None).await.unwrap();
-    let password =
-        std::path::PathBuf::from(std::env::var_os("CHAOSBOX_TYPEDB_PASSWORD_FILE").unwrap());
-    let new_client = || Client::start_db(&config.address, &password, &config.database);
-    let before = wait_reads(&config.database, false).await;
+    let url = server.url();
     let mut cleanup = Vec::new();
     for mode in [
         "cancel",
@@ -705,134 +689,17 @@ async fn disposable_ordinary_mcp_cleanup_and_retention() {
         "output-overload",
     ] {
         let path = json!({"repo":REPO,"from":hub.id,"to":isolated.id,"max_hops":2});
-        cleanup.push(check_cleanup(new_client().await, mode, &config.database, path).await);
+        cleanup.push(check_cleanup(Client::start(&url).await, mode, &server, path).await);
     }
     for mode in ["wide-eof", "wide-deadline"] {
-        cleanup.push(check_wide(new_client().await, mode, &config.database, &large.id).await);
+        cleanup.push(check_wide(Client::start(&url).await, mode, &server, &large.id).await);
     }
-    let samples =
-        check_retention(new_client().await, &config.database, &hub.id, &isolated.id).await;
-    let after = wait_reads(&config.database, false).await;
+    let samples = check_retention(Client::start(&url).await, &server, &hub.id, &isolated.id).await;
     eprintln!(
         "{}",
         json!({"case":"ordinary-mcp-lifecycle-retention", "build":build_id,
         "nodes":653,"relationships":650,"wide_entity_name_bytes":large.name.len(),
-        "cleanup":cleanup,"calls_in_one_persistent_process":147,"warmup_calls":21,"samples":samples,
-        "diagnostics_before":before,"diagnostics_after":after})
-    );
-}
-
-fn action_count(metrics: &Value, database: &str, action: &str) -> u64 {
-    metrics["actions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|row| {
-            row["name"] == action && (action == "CONNECTION_OPEN" || row["database"] == database)
-        })
-        .map(|row| row["successful"].as_u64().unwrap())
-        .sum()
-}
-
-fn payload(response: &Value) -> Value {
-    assert!(response.get("error").is_none(), "{response}");
-    serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
-}
-
-async fn lookup_batch(client: &mut Client, id: &str, database: &str, base_id: u64) -> Value {
-    let before = diagnostics().await;
-    for index in 0..20 {
-        let row = payload(
-            &call(
-                client,
-                base_id + index,
-                "lookup",
-                json!({"repo":REPO,"id":id}),
-            )
-            .await,
-        );
-        assert_eq!(row["entity_id"], id);
-    }
-    let after = wait_reads(database, false).await;
-    json!({"connections":action_count(&after,database,"CONNECTION_OPEN") - action_count(&before,database,"CONNECTION_OPEN"),
-        "transactions":action_count(&after,database,"TRANSACTION_OPEN") - action_count(&before,database,"TRANSACTION_OPEN"),
-        "queries":action_count(&after,database,"TRANSACTION_QUERY") - action_count(&before,database,"TRANSACTION_QUERY"),
-        "sample":sample(client.child.id().unwrap())})
-}
-
-async fn repin_and_rotate(
-    client: &mut Client,
-    store: &mut chaosbox_typedb::store::TypeDbStore,
-    password: &std::path::Path,
-    config: &chaosbox_typedb::store::TypeDbConfig,
-    hub: &str,
-    old: &str,
-) {
-    use chaosbox_store::Store;
-    let page = payload(
-        &call(
-            client,
-            10000,
-            "neighbors",
-            json!({"repo":REPO,"id":hub,"limit":1,"direction":"outgoing"}),
-        )
-        .await,
-    );
-    let cursor = page["next_cursor"]
-        .as_str()
-        .expect("old publication needs a second page");
-    let replacement = chaosbox_core::GraphBuild::new(REPO, vec![SNAP.into()], 2);
-    let id = replacement.id.clone();
-    // This publication deliberately has no members. Current lookup must not
-    // borrow the previous request's pin; continuation still selects the old one.
-    store
-        .publish(replacement, Some(old.to_owned()))
-        .await
-        .unwrap();
-    assert!(payload(&call(client, 10001, "lookup", json!({"repo":REPO,"id":hub})).await).is_null());
-    let status = payload(&call(client, 10002, "status", json!({"repo":REPO})).await);
-    assert_eq!(status["build_id"], id);
-    let historical = payload(
-        &call(
-            client,
-            10003,
-            "neighbors",
-            json!({"repo":REPO,"id":hub,"limit":1,"direction":"outgoing","cursor":cursor}),
-        )
-        .await,
-    );
-    assert_eq!(historical["build_id"], old);
-    let other = "s04a1-other";
-    store
-        .publish(chaosbox_core::GraphBuild::new(other, vec![], 1), None)
-        .await
-        .unwrap();
-    assert!(
-        payload(&call(client, 10004, "lookup", json!({"repo":other,"id":hub})).await).is_null()
-    );
-    assert!(call(
-        client,
-        10005,
-        "neighbors",
-        json!({"repo":other,"id":hub,"limit":1,"direction":"outgoing","cursor":cursor})
-    )
-    .await
-    .get("error")
-    .is_some());
-    payload(&call(client, 10006, "status", json!({"repo":REPO})).await);
-    std::fs::write(password, "disposable-wrong-password").unwrap();
-    assert!(call(client, 10007, "status", json!({"repo":REPO}))
-        .await
-        .get("error")
-        .is_some());
-    assert_eq!(
-        settled_sample(client.child.id().unwrap()).await["tcp_sockets"],
-        0
-    );
-    std::fs::write(password, &config.password).unwrap();
-    assert_eq!(
-        payload(&call(client, 10008, "status", json!({"repo":REPO})).await)["build_id"],
-        id
+        "cleanup":cleanup,"calls_in_one_persistent_process":147,"samples":samples})
     );
 }
 
@@ -870,278 +737,26 @@ fn connection_fixture() -> (chaosbox_core::GraphBuild, String) {
     (build, hub.id)
 }
 
-#[tokio::test]
-#[ignore = "requires fresh disposable s04a1_* TypeDB, monitoring, CHAOSBOX_BASELINE_TEST_BIN and CHAOSBOX_REQUIRE_TYPEDB=1"]
-async fn disposable_ordinary_mcp_connection_reuse_is_pinned_and_bounded() {
-    use chaosbox_core::SnapshotFile;
-    use chaosbox_store::Store;
-    use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
-    assert_eq!(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref(), Ok("1"));
-    let config = TypeDbConfig::from_env().unwrap();
-    assert!(config.database.starts_with("s04a1_"));
-    let mut store = TypeDbStore::new(config.clone());
-    store.migrate().await.unwrap();
-    store
-        .ensure_snapshot_files(
-            SNAP,
-            REPO,
-            &[SnapshotFile {
-                snapshot: SNAP.into(),
-                path: "f.rs".into(),
-                sha256: "fixture".into(),
-                bytes: 1,
-            }],
-        )
-        .await
-        .unwrap();
-    let (build, hub) = connection_fixture();
-    let old = build.id.clone();
-    store.publish(build, None).await.unwrap();
-    let credentials = tempfile::tempdir().unwrap();
-    let password = credentials.path().join("password");
-    std::fs::write(&password, &config.password).unwrap();
-    let baseline_binary = std::env::var_os("CHAOSBOX_BASELINE_TEST_BIN").unwrap();
-    let mut baseline = Client::start_binary(
-        &config.address,
-        &password,
-        &config.database,
-        baseline_binary,
-    )
-    .await;
-    let before = lookup_batch(&mut baseline, &hub, &config.database, 1).await;
-    drop(baseline.input.take());
-    assert!(baseline.stopped().await.success());
-    let mut client = Client::start_db(&config.address, &password, &config.database).await;
-    let mut batches = Vec::new();
-    for batch in 0..7 {
-        batches.push(lookup_batch(&mut client, &hub, &config.database, 100 + batch * 20).await);
-        if batch == 0 {
-            eprintln!(
-                "{}",
-                json!({"case":"connection-reuse-before-after","baseline":before,"candidate":batches[0]})
-            );
-            assert!(
-                batches[0]["connections"].as_u64().unwrap()
-                    < before["connections"].as_u64().unwrap()
-            );
-            assert_eq!(batches[0]["queries"], before["queries"]);
-        }
-        let observed = batches.last().unwrap();
-        assert_eq!(observed["connections"], u64::from(batch == 0));
-        assert_eq!(observed["queries"], 60);
-        let current = &observed["sample"];
-        assert_eq!(current["tcp_sockets"], 1);
-        assert_eq!(current["VmSwap"], 0);
-        let warm = &batches[0]["sample"];
-        assert!(current["VmRSS"].as_u64().unwrap() <= warm["VmRSS"].as_u64().unwrap() + 16 * 1024);
-        assert!(current["Threads"].as_u64().unwrap() <= warm["Threads"].as_u64().unwrap() + 2);
-        assert!(current["fds"].as_u64().unwrap() <= warm["fds"].as_u64().unwrap() + 2);
-    }
-    repin_and_rotate(&mut client, &mut store, &password, &config, &hub, &old).await;
-    let started = std::time::Instant::now();
-    tokio::time::sleep(Duration::from_secs(16)).await;
-    assert_eq!(sample(client.child.id().unwrap())["tcp_sockets"], 1);
-    client
-        .send(json!({"jsonrpc":"2.0","id":19999,"method":"ping"}))
-        .await;
-    assert_eq!(client.receive().await["id"], 19999);
-    tokio::time::sleep(Duration::from_secs(15)).await;
-    let idle = sample(client.child.id().unwrap());
-    assert_eq!(
-        idle["tcp_sockets"], 0,
-        "idle connection was retained: {idle}"
-    );
-    payload(&call(&mut client, 20000, "status", json!({"repo":REPO})).await);
-    drop(client.input.take());
-    assert!(client.stopped().await.success());
-    wait_reads(&config.database, false).await;
-    eprintln!(
-        "{}",
-        json!({"case":"ordinary-connection-reuse","baseline_calls":20,"baseline":before,
-        "candidate_success_calls":140,"batches":batches,"idle":idle,"idle_elapsed_ms":started.elapsed().as_millis(),
-        "pointer_repo_credential_and_historical_checks":true})
-    );
-}
-
-async fn header_cases(
+/// Send a wide lookup and return once its reads finished while its response
+/// is still blocked on unread output.
+async fn hold_wide_response(
     client: &mut Client,
-    baseline: &mut Client,
-    store: &mut chaosbox_typedb::store::TypeDbStore,
-    database: &str,
-) {
-    use chaosbox_store::Store;
-    for snapshots in [vec![], vec!["s04a2-header".to_owned()]] {
-        let repo = format!("s04a2-snapshots-{}", snapshots.len());
-        store
-            .publish(
-                chaosbox_core::GraphBuild::new(&repo, snapshots.clone(), 1),
-                None,
-            )
-            .await
-            .unwrap();
-        let expected = payload(&call(baseline, 500, "status", json!({"repo":repo})).await);
-        let before = diagnostics().await;
-        let actual = payload(&call(client, 500, "status", json!({"repo":repo})).await);
-        let after = wait_reads(database, false).await;
-        assert_eq!(
-            action_count(&after, database, "TRANSACTION_OPEN")
-                - action_count(&before, database, "TRANSACTION_OPEN"),
-            1
-        );
-        assert_eq!(
-            action_count(&after, database, "TRANSACTION_QUERY")
-                - action_count(&before, database, "TRANSACTION_QUERY"),
-            2
-        );
-        assert_eq!(actual, expected);
-        assert_eq!(actual["snapshots"], json!(snapshots));
-    }
-}
-
-async fn historical_header_batch(config: &chaosbox_typedb::store::TypeDbConfig, old: &str) {
-    use chaosbox_store::GraphQueries;
-    let mut reader = chaosbox_typedb::reader::TypeDbReader::new(config.clone());
-    reader.connect().await.unwrap();
-    let before = diagnostics().await;
-    let historical = reader.published_build(REPO, old).await.unwrap().unwrap();
-    assert_eq!(historical.build_id, old);
-    assert_eq!(historical.generation, 1);
-    assert_eq!(historical.snapshots, [SNAP]);
-    assert!(historical.evidence_sealed);
-    assert!(reader
-        .published_build("s04a2-foreign", old)
-        .await
-        .unwrap()
-        .is_none());
-    assert!(reader
-        .published_build(REPO, "build:missing")
-        .await
-        .unwrap()
-        .is_none());
-    let after = wait_reads(&config.database, false).await;
-    assert_eq!(
-        action_count(&after, &config.database, "TRANSACTION_OPEN")
-            - action_count(&before, &config.database, "TRANSACTION_OPEN"),
-        3
-    );
-    assert_eq!(
-        action_count(&after, &config.database, "TRANSACTION_QUERY")
-            - action_count(&before, &config.database, "TRANSACTION_QUERY"),
-        4
-    );
-}
-
-#[tokio::test]
-#[ignore = "requires fresh disposable s04a2_* TypeDB, monitoring, S04a.1 CHAOSBOX_BASELINE_TEST_BIN and CHAOSBOX_REQUIRE_TYPEDB=1"]
-async fn disposable_ordinary_mcp_header_batches_reduce_transactions() {
-    use chaosbox_core::SnapshotFile;
-    use chaosbox_store::Store;
-    use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
-    assert_eq!(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref(), Ok("1"));
-    let config = TypeDbConfig::from_env().unwrap();
-    assert!(config.database.starts_with("s04a2_"));
-    let mut store = TypeDbStore::new(config.clone());
-    store.migrate().await.unwrap();
-    store
-        .ensure_snapshot_files(
-            SNAP,
-            REPO,
-            &[SnapshotFile {
-                snapshot: SNAP.into(),
-                path: "f.rs".into(),
-                sha256: "fixture".into(),
-                bytes: 1,
-            }],
-        )
-        .await
-        .unwrap();
-    let (build, hub) = connection_fixture();
-    let old = build.id.clone();
-    store.publish(build, None).await.unwrap();
-    let credentials = tempfile::tempdir().unwrap();
-    let password = credentials.path().join("password");
-    std::fs::write(&password, &config.password).unwrap();
-    let mut baseline = Client::start_binary(
-        &config.address,
-        &password,
-        &config.database,
-        std::env::var_os("CHAOSBOX_BASELINE_TEST_BIN").unwrap(),
-    )
-    .await;
-    let before = lookup_batch(&mut baseline, &hub, &config.database, 1).await;
-    let mut client = Client::start_db(&config.address, &password, &config.database).await;
-    let after = lookup_batch(&mut client, &hub, &config.database, 1).await;
-    eprintln!(
-        "{}",
-        json!({"case":"header-batch-before-after", "lookups_each":20, "baseline":before, "candidate":after})
-    );
-    assert_eq!(before["transactions"], 60);
-    assert_eq!(after["transactions"], 40);
-    assert_eq!(before["queries"], 60);
-    assert_eq!(after["queries"], 60);
-    assert_eq!(before["connections"], 1);
-    assert_eq!(after["connections"], 1);
-    header_cases(&mut client, &mut baseline, &mut store, &config.database).await;
-    repin_and_rotate(&mut client, &mut store, &password, &config, &hub, &old).await;
-    historical_header_batch(&config, &old).await;
-    let before_missing = diagnostics().await;
-    assert!(call(
-        &mut client,
-        20000,
-        "status",
-        json!({"repo":"s04a2-missing"})
-    )
-    .await
-    .get("error")
-    .is_some());
-    let missing = wait_reads(&config.database, false).await;
-    assert_eq!(
-        action_count(&missing, &config.database, "TRANSACTION_OPEN")
-            - action_count(&before_missing, &config.database, "TRANSACTION_OPEN"),
-        1
-    );
-    assert_eq!(
-        action_count(&missing, &config.database, "TRANSACTION_QUERY")
-            - action_count(&before_missing, &config.database, "TRANSACTION_QUERY"),
-        1
-    );
-    assert_eq!(
-        settled_sample(client.child.id().unwrap()).await["tcp_sockets"],
-        0
-    );
-    drop(client.input.take());
-    drop(baseline.input.take());
-    assert!(client.stopped().await.success());
-    assert!(baseline.stopped().await.success());
-    eprintln!(
-        "{}",
-        json!({"case":"header-batch-pin-parity", "zero_and_single_snapshot":true,
-        "historical_repository_and_credential_checks":true, "missing_header_queries":1, "missing_header_transactions":1,
-        "remaining_reads":active_reads(&wait_reads(&config.database, false).await, &config.database)})
-    );
-}
-
-async fn hold_wide_response(client: &mut Client, database: &str, id: u64, entity: &str) -> Value {
-    let before = action_count(&diagnostics().await, database, "TRANSACTION_QUERY");
+    server: &server::Server,
+    id: u64,
+    entity: &str,
+) -> String {
     client
         .send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
         "params":{"name":"lookup","arguments":{"repo":REPO,"id":entity}}}))
         .await;
-    let metrics = tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            let metrics = diagnostics().await;
-            if action_count(&metrics, database, "TRANSACTION_QUERY") == before + 3
-                && active_reads(&metrics, database) == 0
-            {
-                break metrics;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_sessions(
+        server,
+        "state = 'idle' AND query LIKE '%JOIN entities e ON%'",
+        1,
+    )
+    .await;
     tokio::time::sleep(Duration::from_millis(50)).await;
-    metrics
+    activity(server)
 }
 
 fn status_request(id: u64) -> Value {
@@ -1149,24 +764,23 @@ fn status_request(id: u64) -> Value {
         "params":{"name":"status","arguments":{"repo":REPO}}})
 }
 
-async fn queued_repin_and_credentials(
+async fn queued_repin(
     client: &mut Client,
-    store: &mut chaosbox_typedb::store::TypeDbStore,
-    password: &std::path::Path,
-    config: &chaosbox_typedb::store::TypeDbConfig,
+    store: &mut chaosbox_pg::store::PgStore,
+    server: &server::Server,
     wide: &chaosbox_core::Entity,
     old: &str,
 ) -> String {
     use chaosbox_core::GraphBuild;
     use chaosbox_store::Store;
-    let held = hold_wide_response(client, &config.database, 1, &wide.id).await;
+    let held = hold_wide_response(client, server, 1, &wide.id).await;
     for id in 10..18 {
         client.send(status_request(id)).await;
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(
-        action_count(&diagnostics().await, &config.database, "TRANSACTION_QUERY"),
-        action_count(&held, &config.database, "TRANSACTION_QUERY"),
+        activity(server),
+        held,
         "queued calls started behind blocked output"
     );
     let mut replacement = GraphBuild::new(REPO, vec![SNAP.into()], 2);
@@ -1176,63 +790,24 @@ async fn queued_repin_and_credentials(
         .publish(replacement, Some(old.to_owned()))
         .await
         .unwrap();
-    let before = diagnostics().await;
     assert_eq!(payload(&client.receive().await)["entity_id"], wide.id);
+    // Queued calls pin at dispatch, so all observe the moved pointer.
     for id in 10..18 {
         let response = client.receive().await;
         assert_eq!(response["id"], id);
         assert_eq!(payload(&response)["build_id"], current);
     }
-    let after = wait_reads(&config.database, false).await;
-    assert_eq!(
-        action_count(&after, &config.database, "TRANSACTION_QUERY")
-            - action_count(&before, &config.database, "TRANSACTION_QUERY"),
-        16
-    );
-    assert_eq!(
-        action_count(&after, &config.database, "TRANSACTION_OPEN")
-            - action_count(&before, &config.database, "TRANSACTION_OPEN"),
-        8
-    );
-
-    let held = hold_wide_response(client, &config.database, 100, &wide.id).await;
-    client.send(status_request(101)).await;
-    client
-        .send(json!({"jsonrpc":"2.0","id":102,"method":"tools/list"}))
-        .await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert_eq!(
-        action_count(&diagnostics().await, &config.database, "TRANSACTION_QUERY"),
-        action_count(&held, &config.database, "TRANSACTION_QUERY")
-    );
-    std::fs::write(password, "disposable-wrong-password").unwrap();
-    assert_eq!(payload(&client.receive().await)["entity_id"], wide.id);
-    let failed = client.receive().await;
-    assert_eq!(failed["id"], 101);
-    assert_eq!(
-        failed["error"]["code"], -32603,
-        "queued call reused stale credentials: {failed}"
-    );
-    let listed = client.receive().await;
-    assert_eq!(listed["id"], 102);
-    assert!(listed["result"]["tools"].is_array());
-    assert_eq!(
-        settled_sample(client.child.id().unwrap()).await["tcp_sockets"],
-        0
-    );
-    std::fs::write(password, &config.password).unwrap();
-    assert_eq!(
-        payload(&call(client, 110, "status", json!({"repo":REPO})).await)["build_id"],
-        current
-    );
     current
 }
 
-async fn queued_status_retention(client: &mut Client, database: &str, current: &str) -> Vec<Value> {
+async fn queued_status_retention(
+    client: &mut Client,
+    server: &server::Server,
+    current: &str,
+) -> Vec<Value> {
     let mut samples = Vec::new();
     for batch in 0..7 {
         let base = 1000 + batch * 8;
-        let before = diagnostics().await;
         for id in base..base + 8 {
             client.send(status_request(id)).await;
         }
@@ -1241,26 +816,11 @@ async fn queued_status_retention(client: &mut Client, database: &str, current: &
             assert_eq!(response["id"], id);
             assert_eq!(payload(&response)["build_id"], current);
         }
-        let after = wait_reads(database, false).await;
-        assert_eq!(
-            action_count(&after, database, "TRANSACTION_QUERY")
-                - action_count(&before, database, "TRANSACTION_QUERY"),
-            16
-        );
-        assert_eq!(
-            action_count(&after, database, "TRANSACTION_OPEN")
-                - action_count(&before, database, "TRANSACTION_OPEN"),
-            8
-        );
-        assert_eq!(
-            action_count(&after, database, "CONNECTION_OPEN")
-                - action_count(&before, database, "CONNECTION_OPEN"),
-            0
-        );
+        // Successful calls reuse one session; bursts open no new connections.
+        assert_eq!(sessions(server, "true"), 1);
         samples.push(sample(client.child.id().unwrap()));
     }
     for observed in &samples {
-        assert_eq!(observed["tcp_sockets"], 1);
         assert_eq!(observed["VmSwap"], 0);
         assert!(
             observed["VmRSS"].as_u64().unwrap()
@@ -1275,29 +835,12 @@ async fn queued_status_retention(client: &mut Client, database: &str, current: &
 }
 
 #[tokio::test]
-#[ignore = "requires fresh disposable s02c4_* TypeDB, monitoring and CHAOSBOX_REQUIRE_TYPEDB=1"]
-async fn disposable_queued_calls_repin_reread_credentials_and_retain_bounded_state() {
-    use chaosbox_core::{Entity, EntityKind, SnapshotFile, SourceSpan};
+#[ignore = "disposable PostgreSQL with pgvector (initdb/pg_ctl/psql)"]
+async fn live_pg_queued_calls_repin_and_retain_bounded_state() {
+    use chaosbox_core::{Entity, EntityKind, SourceSpan};
     use chaosbox_store::Store;
-    use chaosbox_typedb::store::{TypeDbConfig, TypeDbStore};
-    assert_eq!(std::env::var("CHAOSBOX_REQUIRE_TYPEDB").as_deref(), Ok("1"));
-    let config = TypeDbConfig::from_env().unwrap();
-    assert!(config.database.starts_with("s02c4_"));
-    let mut store = TypeDbStore::new(config.clone());
-    store.migrate().await.unwrap();
-    store
-        .ensure_snapshot_files(
-            SNAP,
-            REPO,
-            &[SnapshotFile {
-                snapshot: SNAP.into(),
-                path: "f.rs".into(),
-                sha256: "fixture".into(),
-                bytes: 1,
-            }],
-        )
-        .await
-        .unwrap();
+    let server = server::Server::start();
+    let mut store = fixture_store(&server).await;
     let (mut build, _) = connection_fixture();
     let wide = Entity::new(
         EntityKind::Symbol,
@@ -1311,22 +854,16 @@ async fn disposable_queued_calls_repin_reread_credentials_and_retain_bounded_sta
     build.add_node(wide.clone()).unwrap();
     let old = build.id.clone();
     store.publish(build, None).await.unwrap();
-    let credentials = tempfile::tempdir().unwrap();
-    let password = credentials.path().join("password");
-    std::fs::write(&password, &config.password).unwrap();
-    let mut client = Client::start_db(&config.address, &password, &config.database).await;
-    let current =
-        queued_repin_and_credentials(&mut client, &mut store, &password, &config, &wide, &old)
-            .await;
-    let samples = queued_status_retention(&mut client, &config.database, &current).await;
+    let mut client = Client::start(&server.url()).await;
+    let current = queued_repin(&mut client, &mut store, &server, &wide, &old).await;
+    let samples = queued_status_retention(&mut client, &server, &current).await;
     drop(client.input.take());
     assert!(client.stopped().await.success());
-    assert_eq!(active_reads(&diagnostics().await, &config.database), 0);
+    wait_sessions(&server, "true", 0).await;
     eprintln!(
         "{}",
         json!({"case":"bounded-ordinary-admission", "old":old,"current":current,
-        "queued_after_pointer_movement":8,"credential_replacement_rejected":true,
-        "retention_bursts":7,"calls_per_burst":8,"queries_per_burst":16,"transactions_per_burst":8,
-        "samples":samples,"remaining_reads":0})
+        "queued_after_pointer_movement":8,"retention_bursts":7,"calls_per_burst":8,
+        "samples":samples})
     );
 }

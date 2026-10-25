@@ -358,22 +358,6 @@
         "type": "github"
       }
     },
-    "nixpkgs-typedb": {
-      "locked": {
-        "lastModified": 1789916601,
-        "narHash": "sha256-RTDxNTnSmo3WYoRPWOTDH+1S7Fv8kmnbpWF+Ir/EDC8=",
-        "ref": "refs/heads/master",
-        "rev": "26996c2a9def51106563a8983abe3617c76b2db7",
-        "revCount": 1077071,
-        "type": "git",
-        "url": "https://github.com/NixOS/nixpkgs.git"
-      },
-      "original": {
-        "rev": "26996c2a9def51106563a8983abe3617c76b2db7",
-        "type": "git",
-        "url": "https://github.com/NixOS/nixpkgs.git"
-      }
-    },
     "nixpkgs_2": {
       "locked": {
         "lastModified": 1789684949,
@@ -489,7 +473,6 @@
         "harbor": "harbor",
         "home-manager": "home-manager",
         "nixpkgs": "nixpkgs_2",
-        "nixpkgs-typedb": "nixpkgs-typedb",
         "treefmt-nix": "treefmt-nix_2"
       }
     },

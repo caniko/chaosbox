@@ -1,4 +1,4 @@
-"""Reader acceptance within test-typedb.sh's disposable server and source tree."""
+"""Reader acceptance within a disposable database and source tree (test-postgres.sh, VM test)."""
 
 import array
 import fcntl

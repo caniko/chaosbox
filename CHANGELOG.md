@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### Breaking: PostgreSQL + pgvector replaces TypeDB (0.2.0)
+
+- The authoritative backend is the new `chaosbox-pg` crate. `chaosbox-typedb`,
+  the TypeQL schema, `typedb-bootstrap`, the TypeDB VM/bootstrap tests,
+  `test-typedb` and the `nixpkgs-typedb` pin are removed.
+- Configuration: `CHAOSBOX_DATABASE_URL` (unix socket or loopback only)
+  replaces `CHAOSBOX_TYPEDB_{ADDR,USER,DATABASE,PASSWORD_FILE}`, and
+  `CHAOSBOX_DB_BACKEND=postgres` replaces `=typedb`. Lifecycle reports carry
+  backend `postgres`, schema version 1. Federation providers use
+  `{"kind":"postgres"}`; the Home Manager option is `backend.databaseUrl`.
+- Publication writes the build, members, sealed evidence, audit rows and the
+  pointer swing in one transaction under a per-repository advisory lock;
+  published rows are immutable and reads are single statements, so reads
+  during publication no longer fail. Evidence is no longer written one row
+  per transaction before publication.
+- No data migration: builds re-derive on the next snapshot, knowledge
+  republishes from `memory.sqlite` (whose TypeDB-era predecessor is forgotten
+  once), and replicas re-sync.
+- The NixOS module enables PostgreSQL with pgvector, a peer-authenticated
+  owner role and harbor-db's `postgres` migration backend; it no longer takes
+  a password file.
+
 ### Added
 
 - Graphify parity, deterministic and cited:
@@ -27,6 +49,17 @@
     `hook install`, `watch`, name-or-id entity arguments with exit codes 3
     (ambiguous) and 4 (absent), and a local JSONL usage ledger
     (`CHAOSBOX_QUERY_LOG=off` disables it).
+
+- Semantic retrieval: definitions and headings carry bounded declaration
+  text; `run` embeds new texts through a loopback OpenAI-compatible endpoint
+  (`CHAOSBOX_EMBED_URL`, `CHAOSBOX_EMBED_MODEL`, `CHAOSBOX_EMBED_TIMEOUT_MS`).
+  `search` and `context` fuse lexical and nearest-neighbour ranks (`context`
+  reports `"semantic"`), and current-snapshot `intelligence_context` and
+  `compaction context` rank statements by similarity too. Any embedding
+  failure degrades to lexical.
+- Lexical `search` ranks exact names, then prefixes, then substrings.
+- Hermetic `live_pg_*` tests on disposable clusters, the `postgres-live` and
+  `postgres-integration` checks, and `scripts/test-postgres.sh`.
 
 ### Changed
 
