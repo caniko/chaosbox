@@ -18,8 +18,18 @@ described in the new book chapters are not yet implemented.
   Rust/TypeScript/TSX use pinned tree-sitter grammars; Nix uses rnix. Certified
   declaration and file/module containment facts publish without model decisions
   or candidate slots. Syntax failures withhold direct facts with explicit
-  coverage. Imports/name matches remain proposals; see `STRUCTURAL_FACTS.md`
-  for the exact subset (no compiler resolution or Nix evaluation).
+  coverage. Rust/TS `declarations-v2` also certifies syntactic nesting and
+  marked rationale comments (`NOTE:`/`WHY:`/`TODO:`/`SAFETY:`/`ponytail:`…).
+  Rust/TS `calls`, `inherits` and `implements`, plus ADR/RFC citations to
+  captured documents, publish as INFERRED resolved relations (unique lexical
+  match, exact use-site span, no model decisions, own `resolved_relations`
+  coverage bucket). Imports and other name matches remain proposals; see
+  `STRUCTURAL_FACTS.md` for the exact subset (no compiler resolution or Nix
+  evaluation).
+- Exclusion: `.chaosboxignore` (gitignore syntax) is always honored, and
+  repeatable `--exclude` globs on `snapshot`/`extract`/`run` narrow capture.
+  Non-empty exclusions join the snapshot id and policy digest, so narrowing is
+  never silent; unrestricted captures keep their historical ids.
 - Optional SCIP protobuf ingestion: operator-only capture with source/configuration
   receipts, exact occurrence ranges, package-qualified/global and scoped-local
   anchors, explicit resolved references and implementation links. Compiler facts
@@ -48,7 +58,9 @@ described in the new book chapters are not yet implemented.
   incompatible installed binaries fail before reserving an inference attempt.
   Offline fixture decisions have their own explicit `fixture-test` identity;
   the live client never accepts that identity.
-- Evidence classes EXTRACTED/INFERRED/AMBIGUOUS (confidence never upgrades);
+- Evidence classes EXTRACTED/INFERRED/AMBIGUOUS (confidence never upgrades;
+  INFERRED comes from accepted decisions or from deterministic name
+  resolution, distinguishable by the resolver's producer identity);
   below-floor confidence abstains (recorded, never retried); responder faults
   become recorded `Failed` decisions with catch-and-continue (fault text never
   copied into evidence); `Failed` rows are supersedable once, other outcomes
@@ -78,8 +90,26 @@ described in the new book chapters are not yet implemented.
   mirrors the store supersedure rule
 - Worker leases: claim/heartbeat/reclaim with injected clocks and generation
   guards; stale holders recognizable (backend persistence pending)
+- Graph analytics (`leiden-v1`, CLI + MCP `stats`/`community`/`report`):
+  deterministic Leiden communities with labels, cohesion and modularity,
+  `--resolution` recomputation (Graphify `--resolution`/`--cluster-only`),
+  god nodes, scored surprising connections and suggested questions that name
+  the read answering them; every item cites entity/relation ids, and
+  `query report` renders Graphify's `GRAPH_REPORT.md` with runnable reads.
+  Exports (`query export --format html|mermaid|graphml|cypher|wiki`): offline
+  interactive HTML, Mermaid, GraphML, Cypher and a Markdown/Obsidian wiki,
+  byte-reproducible, narrowed by `--community` or `--query`, collapsing to
+  communities instead of refusing large graphs.
+- Agent and git integration (`docs/src/agent-integration.md`): `install` /
+  `uninstall` for Claude Code, OpenCode and Codex (MCP registration plus a
+  guidance block, never clobbering foreign or managed files), `hook install`
+  for background refresh on commit/merge/branch switch, `watch`, name-or-id
+  entity arguments with exit codes 3 (ambiguous) and 4 (absent), and a local
+  JSONL usage ledger for every CLI query and MCP call.
+  Context seeding drops short terms and function words (Graphify rule). See
+  `docs/src/graph-navigation.md`.
 - Shared read-only queries (search/lookup/neighbors/path/evidence/status/diff/
-  export/explain), deterministic + Graphify-compatible export,
+  export/explain/context/stats/community/report), deterministic + Graphify-compatible export,
   backend-backed `GraphReader` with per-request active-build pinning and
   capped projections. Full MCP handshake (`initialize` negotiation, paginated
   `tools/list` with `inputSchema`, validated `tools/call`, JSON-RPC errors);
@@ -176,6 +206,9 @@ described in the new book chapters are not yet implemented.
   `ext::ai`, rerankers, neural OCR/transcription, generative
   summaries/labels/dedup/query-repair, arbitrary query escape hatches,
   single giant graph JSON storage, endpoint-to-endpoint multi-links
+- Hyperedges: Graphify only produces them through LLM semantic extraction;
+  there is no deterministic source, so they stay out (issue #10 closes with
+  deterministic communities instead)
 
 Embeddings were listed here until 0.2.0. They now rank retrieval only
 (search/context seeds and knowledge context); they never create facts,
@@ -197,11 +230,9 @@ under an explicit admission policy; it does not turn fluent summaries into facts
 - Decision-cache reuse/invalidation live proof (the Gel and TypeDB gates were
   removed with their backends; PostgreSQL is the authoritative write path)
 - Live Jev quality runs (adapter + `--live-jev` ready; needs operator key file)
-- Broader language coverage (grammar parsing beyond the current path set),
-  communities/hyperedges materialization. Hyperedges are **in scope** for the
-  stats/communities work (issue #10), not deferred to the capability backlog;
-  only the grammar expansion is out of scope there.
-- Remaining build statistics in `status` (node/edge counts, candidate omissions,
+- Broader language coverage (grammar parsing beyond the current path set)
+- Remaining build statistics in `status` (candidate omissions,
   catalog/rubric/model provenance recorded at publish; needs schema work —
-  tracked in the chaosbox issue tracker), bounded NL `query ask`, workspace
-  aggregate build, stats/communities read surface
+  tracked in the chaosbox issue tracker; node/edge counts are in `stats`),
+  bounded NL `query ask` (`context` covers Graphify's lexical `query`),
+  workspace aggregate build and graph merging

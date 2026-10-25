@@ -25,6 +25,7 @@ pub mod compaction;
 pub mod compiler;
 pub mod continuation;
 pub mod embed;
+pub mod export;
 pub mod federation;
 pub mod history;
 pub mod intelligence;
@@ -34,6 +35,7 @@ pub mod navigation;
 pub mod nix;
 mod pipeline;
 pub mod postgres;
+pub mod query_log;
 pub mod read_view;
 mod reader;
 mod responder;
@@ -52,7 +54,7 @@ pub use materialization::{
 pub use pipeline::{Pipeline, chain_publication, summarize_outcomes, uncached_decisions};
 pub use reader::{
     EXPORT_EDGE_CAP, EXPORT_NODE_CAP, GraphReader, NeighborhoodMode, NeighborhoodPage,
-    NeighborhoodQuery, PathBudget, PathQuery, PreparedNeighborhood, PreparedPath,
+    NeighborhoodQuery, PathBudget, PathQuery, PreparedNeighborhood, PreparedPath, Resolution,
     all_relation_types, validate_build_id, validate_rel_filter,
 };
 pub use responder::{FixtureResponder, LiveResponder, Responder};

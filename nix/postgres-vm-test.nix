@@ -97,10 +97,15 @@ pkgs.testers.nixosTest {
     graph = json.loads(out)
     nodes = {node["id"]: node for node in graph["nodes"]}
     facts = set()
+    resolved = set()
     for link in graph["links"]:
         source, target = nodes[link["source"]], nodes[link["target"]]
-        assert source["kind"] == "file", f"syntax fact must originate from a file: {link}"
         assert source["source_file"] == target["source_file"], f"syntax fact must stay in its file: {link}"
+        if link["rel_type"] == "calls":
+            # Name-resolved (INFERRED, unique-name-v1) calls start at the caller.
+            resolved.add((source["label"], target["label"], target["source_file"]))
+            continue
+        assert source["kind"] == "file", f"syntax fact must originate from a file: {link}"
         facts.add((link["rel_type"], target["source_file"], target["label"], target["kind"]))
     expected = {
         ("defines", "app.ts", "main", "definition"),
@@ -110,7 +115,10 @@ pkgs.testers.nixosTest {
         ("contains", "src/main.rs", "main", "module"),
     }
     assert facts == expected, f"exact certified syntax facts expected: {out}"
-    assert len(graph["links"]) == len(expected), f"duplicate syntax facts: {out}"
+    # `hello` is imported from Python, outside the Rust index: never resolved.
+    assert resolved == {("main", "helper", "src/main.rs")}, f"exact resolved calls expected: {out}"
+    assert len(graph["links"]) == len(expected) + len(resolved), f"duplicate syntax facts: {out}"
+    assert graph["coverage"]["resolved_relations"] == len(resolved), f"resolved coverage mismatch: {out}"
     assert graph["coverage"]["decision_relations"] == 0, f"no-decisions build published decision relations: {out}"
 
     # Reader acceptance: historical pinning, newer publication, revocation,

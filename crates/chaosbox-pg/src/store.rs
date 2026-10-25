@@ -307,11 +307,14 @@ pub(crate) async fn put_texts(tx: &Transaction<'_>, bodies: &[&str]) -> Result<(
 /// Insert the build header once; an existing header must be this version.
 async fn write_header(
     tx: &Transaction<'_>,
+    staging: &MemoryStore,
     build: &GraphBuild,
     digest: &str,
 ) -> Result<(), StoreError> {
     let navigation =
-        json(&chaosbox_core::navigation::summarize_build(build).map_err(StoreError::Query)?)?;
+        chaosbox_core::navigation::summarize_build(build, |rel| staging.edge_class(&build.id, rel))
+            .map_err(StoreError::Query)?;
+    let navigation = json(&navigation)?;
     let coverage = build.coverage.as_ref().map(json).transpose()?;
     let count = |n: usize| {
         i64::try_from(n).map_err(|_| StoreError::Invariant("count overflows i64".into()))
@@ -357,7 +360,7 @@ async fn write_build(
     build: &GraphBuild,
     digest: &str,
 ) -> Result<(), StoreError> {
-    write_header(tx, build, digest).await?;
+    write_header(tx, staging, build, digest).await?;
     let mut nodes: Vec<&Entity> = build.nodes.values().collect();
     nodes.sort_by(|a, b| a.id.cmp(&b.id));
     let inputs: Vec<Option<String>> = nodes.iter().map(|e| embed_input(e)).collect();

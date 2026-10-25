@@ -51,9 +51,10 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         cat.cap,
         serde_json::to_string(&cat.omitted).unwrap(),
     );
+    let resolved = ext.facts.iter().filter(|f| f.resolved).count();
     eprintln!(
-        "structural: facts={} files={} parse_errors={}",
-        ext.facts.len(),
+        "structural: facts={} resolved={resolved} files={} parse_errors={}",
+        ext.facts.len() - resolved,
         ext.coverage.len(),
         ext.coverage
             .iter()
@@ -328,6 +329,188 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
         Err(e) => {
             eprintln!("publish: {e}");
             1
+        }
+    }
+}
+
+/// The `run` command: validate policy, select the backend, run once, and
+/// print the live-spend line exactly once on every exit.
+#[allow(clippy::too_many_lines)]
+pub(super) async fn run_cmd(args: &super::RunArgs) -> i32 {
+    use super::{backend, pg_config_from_env, pg_publication_chain, Backend, MemoryStore, PgStore};
+    let policy = match super::effective_policy(
+        &args.source_paths,
+        &args.exclude,
+        &args.privacy,
+        &args.inference,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("run failed: {e}");
+            return 1;
+        }
+    };
+    // Live spend of this run. Every exit prints it exactly once (via
+    // `usage`), so a batching caller can debit what this repository
+    // dispatched even when the run dies before it publishes.
+    let spend = RunSpend::default();
+    let usage = || {
+        if args.live_jev {
+            // Stable parseable spend line: `canix chaosbox sync`
+            // budgets a whole batch against what this run dispatched.
+            eprintln!(
+                "usage: requests={} input_tokens={}",
+                spend.requests.load(Ordering::Relaxed),
+                spend.tokens.load(Ordering::Relaxed)
+            );
+        }
+    };
+    let (pipe, expected_predecessor, embedding) = match backend() {
+        Backend::Memory => {
+            let code = run_pipeline_with(
+                Pipeline::<MemoryStore>::new(),
+                &args.path,
+                &args.repo,
+                args.max_candidates,
+                &policy,
+                args.live_jev,
+                args.fixture_decisions,
+                args.no_decisions,
+                args.max_requests,
+                args.max_input_tokens,
+                args.max_retries,
+                None,
+                &spend,
+                args.compiler.as_deref(),
+            )
+            .await;
+            usage();
+            return code;
+        }
+        Backend::Postgres => {
+            let config = match pg_config_from_env() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("postgres config: {e}");
+                    usage();
+                    return 1;
+                }
+            };
+            let embedder = match chaosbox::embed::Embedder::from_env() {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("embedding config: {e}");
+                    usage();
+                    return 1;
+                }
+            };
+            let mut store = PgStore::new(config.clone());
+            if let Err(e) = Box::pin(store.migrate()).await {
+                eprintln!("postgres migrate: {e}");
+                usage();
+                return 1;
+            }
+            // Fresh processes start at generation zero: chain off the
+            // live active build so repeat runs publish gen+1 with the
+            // right predecessor instead of failing the guard.
+            match Box::pin(pg_publication_chain(&config, &args.repo)).await {
+                Ok((predecessor, generation)) => (
+                    Pipeline { store, generation },
+                    predecessor,
+                    embedder.map(|embedder| (config, embedder)),
+                ),
+                Err(e) => {
+                    eprintln!("postgres publication chain: {e}");
+                    usage();
+                    return 1;
+                }
+            }
+        }
+    };
+    let code = run_pipeline_with(
+        pipe,
+        &args.path,
+        &args.repo,
+        args.max_candidates,
+        &policy,
+        args.live_jev,
+        args.fixture_decisions,
+        args.no_decisions,
+        args.max_requests,
+        args.max_input_tokens,
+        args.max_retries,
+        expected_predecessor,
+        &spend,
+        args.compiler.as_deref(),
+    )
+    .await;
+    // Derived vectors never change the run's verdict; the next run
+    // continues an unfinished backlog.
+    if let Some((config, embedder)) = embedding {
+        let mut store = PgStore::new(config);
+        match Box::pin(chaosbox::embed::backfill(
+            &mut store,
+            &embedder,
+            chaosbox::embed::BACKFILL_BUDGET,
+        ))
+        .await
+        {
+            Ok(stored) => eprintln!("embeddings: stored={stored}"),
+            Err(e) => eprintln!("embeddings deferred: {e}"),
+        }
+    }
+    usage();
+    code
+}
+
+/// Graphify's `watch`: re-run whenever the captured sources change. Each
+/// check hashes file metadata only; a changed fingerprint is confirmed by
+/// the content-addressed snapshot id before publishing, so touches without
+/// content changes never republish. Failed runs are reported and the loop
+/// continues; Ctrl+C stops it.
+pub(super) async fn watch(args: &super::RunArgs, interval_secs: u64) -> i32 {
+    let policy = match super::effective_policy(
+        &args.source_paths,
+        &args.exclude,
+        &args.privacy,
+        &args.inference,
+    ) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("watch failed: {e}");
+            return 1;
+        }
+    };
+    let interval = std::time::Duration::from_secs(interval_secs.max(1));
+    let (mut fingerprint, mut snapshot) = (None, None);
+    loop {
+        match chaosbox_extract::source_fingerprint(&args.path, &policy.scope, &policy.exclude) {
+            Err(e) => eprintln!("watch: {e}"),
+            Ok(current) if fingerprint.as_ref() != Some(&current) => {
+                fingerprint = Some(current);
+                // ponytail: confirming re-reads changed sources, and the run
+                // reads them again; cache the snapshot if watch latency matters.
+                match chaosbox_extract::Snapshot::capture_excluding(
+                    &args.repo,
+                    &args.path,
+                    &policy.scope,
+                    &policy.exclude,
+                ) {
+                    Ok(snap) if snapshot.as_ref() != Some(&snap.id) => {
+                        eprintln!("watch: sources changed ({}), running", snap.id);
+                        let code = Box::pin(run_cmd(args)).await;
+                        eprintln!("watch: run exited {code}");
+                        snapshot = Some(snap.id);
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("watch: snapshot failed: {e}"),
+                }
+            }
+            Ok(_) => {}
+        }
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => return 0,
+            () = tokio::time::sleep(interval) => {}
         }
     }
 }

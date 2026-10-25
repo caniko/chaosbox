@@ -26,6 +26,30 @@
 
 ### Added
 
+- Graphify parity, deterministic and cited:
+  - **Extraction.** Rust/TS calls, inheritance and implementations resolve to
+    unique same-language definitions as INFERRED evidence (`unique-name-v1`)
+    with exact use-site spans and no model decisions. Coverage gains
+    `resolved_relations`.
+  - **Certified facts.** `declarations-v2` certifies syntactic nesting and
+    rationale comments (`NOTE:`, `WHY:`, `SAFETY:`, `ponytail:`, …). ADR/RFC
+    citations link to captured documents.
+  - **Exclusion.** `.chaosboxignore` and `--exclude` narrow capture, and
+    non-empty exclusions join the snapshot identity.
+  - **Analytics.** `leiden-v1` publication analytics: deterministic Leiden
+    communities with labels and cohesion, god nodes, scored surprising
+    connections and questions that name the read answering them.
+  - **Reads.** `--resolution` recomputation, `query report` / MCP `report`
+    (GRAPH_REPORT.md with runnable citations), `query evidence`, and context
+    seeding that ignores short terms and function words.
+  - **Exports.** `query export --format html|mermaid|graphml|cypher|wiki`:
+    offline interactive HTML, forge-native Mermaid, GraphML, Neo4j Cypher and
+    an Obsidian-compatible wiki, all byte-reproducible.
+  - **Ops.** `install`/`uninstall` for Claude Code, OpenCode and Codex,
+    `hook install`, `watch`, name-or-id entity arguments with exit codes 3
+    (ambiguous) and 4 (absent), and a local JSONL usage ledger
+    (`CHAOSBOX_QUERY_LOG=off` disables it).
+
 - Semantic retrieval: definitions and headings carry bounded declaration
   text; `run` embeds new texts through a loopback OpenAI-compatible endpoint
   (`CHAOSBOX_EMBED_URL`, `CHAOSBOX_EMBED_MODEL`, `CHAOSBOX_EMBED_TIMEOUT_MS`).
@@ -36,6 +60,13 @@
 - Lexical `search` ranks exact names, then prefixes, then substrings.
 - Hermetic `live_pg_*` tests on disposable clusters, the `postgres-live` and
   `postgres-integration` checks, and `scripts/test-postgres.sh`.
+
+### Changed
+
+- Rust/TS producers report `declarations-v2`. The reader export adds
+  `source_location` and relationship `scope`. `stats` gains Leiden fields
+  while keeping `hubs`, and its stored packets are recomputed when their
+  algorithm is older.
 
 ### Fixed
 
@@ -55,6 +86,8 @@
   interruptions explain the read timeout and server-restart causes.
 - Nix deployment and federation checks import existing package-set paths
   directly so cold, read-only flake qualification does not need a new store copy.
+- OpenCode adapters load from standalone packaged runtimes without a runtime
+  dependency on the SDK. Production install checks cover all four adapter imports.
 - Reject malformed pre-bounding truncation metadata and preserve string-valued
   tool output exactly when reconstructing source-custodied checkpoints. The
   global plugin example now uses native project resolution instead of a fixed repo.
@@ -82,6 +115,10 @@
 - Rust, database and documentation infrastructure now consume one qualified
   Harbor monorepo input. Database service identities remain `services.harbor-db`,
   and the default development shell includes its configured treefmt wrapper.
+- Indexing avoids redundant graph/evidence copies and streams publication hashing
+  and CLI exports. Complete-export comparisons show 47–56% lower peak RSS on the
+  measured corpora; TypeDB server memory and the original million-fact workload
+  remain unqualified. See [memory verification](docs/memory-performance.md).
 - The continuation design now requires Jev-selected records and deterministic
   source-backed rendering, replacing the earlier generative-model contract.
 - Session research uses pinned Typesafe Jev choices for extraction, reviewed

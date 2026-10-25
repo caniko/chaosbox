@@ -387,6 +387,7 @@ async fn live_pg_direct_fact_citations_survive_a_fresh_reader_and_later_claims()
         }],
         structural_relations: 1,
         decision_relations: 0,
+        resolved_relations: 0,
     });
     store.publish(build.clone(), None).await.unwrap();
     let r = reader(&server).await;

@@ -136,5 +136,5 @@ async fn live_pg_semantic_search_finds_entities_without_lexical_overlap() {
     assert!(degraded.search("pointer", 5).await.unwrap().is_empty());
     let context = degraded.context("pointer", 1, 5, 12_000).await.unwrap();
     assert_eq!(context["semantic"], false);
-    assert_eq!(context["algorithm"], "bounded-lexical-bfs-v2");
+    assert_eq!(context["algorithm"], "bounded-lexical-bfs-v3");
 }

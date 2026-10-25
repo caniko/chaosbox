@@ -31,6 +31,8 @@ bin psql -XAtq -h "$WORK" -p "$PORT" -U chaosbox_test -d postgres -c 'CREATE DAT
 
 export CHAOSBOX_DB_BACKEND=postgres
 export CHAOSBOX_DATABASE_URL="host=$WORK port=$PORT user=chaosbox_test dbname=test_postgres"
+# Qualification queries must not append to the operator's usage ledger.
+export CHAOSBOX_QUERY_LOG=off
 
 # Qualify the binary under test, never whichever chaosbox is on PATH: an
 # installed release would answer for an older schema. The packaged runner

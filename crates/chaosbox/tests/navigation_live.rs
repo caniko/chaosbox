@@ -86,7 +86,7 @@ async fn live_context_cli_and_mcp_share_bounded_source_graph() {
     .await
     .remove(0);
     assert_eq!(packet["build_id"], expected);
-    assert_eq!(packet["algorithm"], "bounded-lexical-bfs-v2");
+    assert_eq!(packet["algorithm"], "bounded-lexical-bfs-v3");
     assert_eq!(packet["exhaustive"], false);
     assert_eq!(packet["truncated"], true);
     assert!(packet.to_string().chars().count() <= 6000);

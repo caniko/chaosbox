@@ -1,6 +1,6 @@
 //! Backend-bounded context and publication-cached analytics.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 
 use chaosbox_store::{EntityRow, GraphQueries, RelRow};
 use serde_json::{Value, json};
@@ -27,11 +27,9 @@ impl ContextGraph {
         query: &str,
         max_nodes: usize,
     ) -> Result<Self, PipelineError> {
-        let query = query.to_lowercase();
-        let terms: BTreeSet<_> = query
-            .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .filter(|s| !s.is_empty())
-            .collect();
+        // Short terms and function words ("a", "is", "the") match nearly every
+        // label; Graphify drops them, and so do we unless nothing remains.
+        let terms = chaosbox_core::navigation::context_terms(query);
         if terms.len() > CONTEXT_TERM_CAP {
             return Err(PipelineError::Consumer(
                 "context term budget exceeded; narrow the query".into(),
@@ -54,9 +52,17 @@ impl ContextGraph {
                 candidates.insert(row.entity_id.clone(), row);
             }
         }
+        // Name hits weigh double qualified-name/path hits (Graphify: label 1.0,
+        // source file 0.5).
         let score = |e: &EntityRow| {
-            let text = format!("{} {}", e.name, e.qualified_name).to_lowercase();
-            terms.iter().filter(|term| text.contains(**term)).count()
+            let (name, qualified) = (e.name.to_lowercase(), e.qualified_name.to_lowercase());
+            terms
+                .iter()
+                .map(|term| {
+                    2 * usize::from(name.contains(term.as_str()))
+                        + usize::from(qualified.contains(term.as_str()))
+                })
+                .sum::<usize>()
         };
         let mut candidates: Vec<_> = candidates.into_values().collect();
         candidates.sort_by(|a, b| {
@@ -66,7 +72,7 @@ impl ContextGraph {
         });
         graph.truncated |= candidates.len() > max_nodes;
         let mut lists = vec![candidates];
-        if let Some(nearest) = reader.semantic(&query, max_nodes).await {
+        if let Some(nearest) = reader.semantic(query, max_nodes).await {
             graph.semantic = true;
             lists.push(nearest);
         }
@@ -138,7 +144,7 @@ impl ContextGraph {
             let algorithm = if self.semantic {
                 "bounded-hybrid-bfs-v1"
             } else {
-                "bounded-lexical-bfs-v2"
+                "bounded-lexical-bfs-v3"
             };
             let packet = json!({
                 "build_id":reader.build_id,"generation":reader.generation,"snapshots":reader.snapshots,
@@ -181,16 +187,40 @@ impl<R: GraphQueries> GraphReader<R> {
         graph.render(self, max_chars)
     }
 
-    async fn navigation_packet(&self) -> Result<Value, PipelineError> {
-        let packet = match self
+    /// Publication analytics at `resolution`. The stored packet serves the
+    /// default resolution while its algorithm is current; anything else is
+    /// recomputed from the complete bounded export (Graphify's
+    /// `--cluster-only`/`--resolution`, with no stored state). A stale packet
+    /// whose build exceeds the export cap is served as-is with a refresh hint.
+    async fn navigation_packet(&self, resolution: f64) -> Result<Value, PipelineError> {
+        use chaosbox_core::navigation::{summary_at, ALGORITHM, DEFAULT_RESOLUTION};
+        if !(0.01..=10.0).contains(&resolution) {
+            return Err(PipelineError::Consumer(
+                "resolution must be 0.01..10".into(),
+            ));
+        }
+        let stored = self
             .handle
             .navigation_summary(&self.build_id)
             .await
-            .map_err(|e| PipelineError::Consumer(e.to_string()))?
-        {
-            Some(packet) => packet,
-            None => chaosbox_core::navigation::summary(&self.export().await?, 200)
-                .map_err(PipelineError::Consumer)?,
+            .map_err(|e| PipelineError::Consumer(e.to_string()))?;
+        #[allow(clippy::float_cmp)] // exact default, never a computed value
+        let default = resolution == DEFAULT_RESOLUTION;
+        let packet = match stored {
+            Some(packet) if default && packet["algorithm"] == ALGORITHM => packet,
+            stale => match self.export().await {
+                Ok(graph) => {
+                    summary_at(&graph, 200, resolution).map_err(PipelineError::Consumer)?
+                }
+                Err(error) => match stale.filter(|_| default) {
+                    Some(mut packet) => {
+                        packet["refresh"] =
+                            json!("analytics predate this reader; republish with `chaosbox run`");
+                        packet
+                    }
+                    None => return Err(error),
+                },
+            },
         };
         if packet["build_id"] != self.build_id
             || packet["generation"] != self.generation
@@ -203,52 +233,77 @@ impl<R: GraphQueries> GraphReader<R> {
         Ok(packet)
     }
 
-    /// Read publication-time counts, bounded hubs and weak connectivity groups.
-    /// Legacy builds use a complete bounded export until refreshed.
+    /// [`Self::stats_at`] at the default resolution.
     pub async fn stats(&self, limit: usize) -> Result<Value, PipelineError> {
+        self.stats_at(limit, chaosbox_core::navigation::DEFAULT_RESOLUTION)
+            .await
+    }
+
+    /// Counts, Leiden communities, hubs, god nodes, surprising connections and
+    /// answerable questions for the pinned build, bounded to `limit` entries.
+    pub async fn stats_at(&self, limit: usize, resolution: f64) -> Result<Value, PipelineError> {
         if !(1..=200).contains(&limit) {
             return Err(PipelineError::Consumer(
                 "summary limit must be 1..200".into(),
             ));
         }
-        let mut packet = self.navigation_packet().await?;
-        packet["hubs"]
-            .as_array_mut()
-            .ok_or_else(|| PipelineError::Consumer("invalid analytics hubs".into()))?
-            .truncate(limit);
+        let mut packet = self.navigation_packet(resolution).await?;
+        let invalid = |what: &str| PipelineError::Consumer(format!("invalid analytics {what}"));
+        for list in ["hubs", "god_nodes"] {
+            if let Some(items) = packet[list].as_array_mut() {
+                items.truncate(limit);
+            }
+        }
         packet["omitted_hubs"] = json!(packet["nodes"]
             .as_u64()
-            .ok_or_else(|| PipelineError::Consumer("invalid analytics node count".into()))?
+            .ok_or_else(|| invalid("node count"))?
             .saturating_sub(limit as u64));
         let total = packet["community_count"]
             .as_u64()
-            .ok_or_else(|| PipelineError::Consumer("invalid analytics group count".into()))?;
+            .ok_or_else(|| invalid("group count"))?;
         let groups = packet["communities"]
             .as_array_mut()
-            .ok_or_else(|| PipelineError::Consumer("invalid analytics groups".into()))?;
+            .ok_or_else(|| invalid("groups"))?;
         groups.truncate(limit);
         for group in groups {
             let size = group["size"]
                 .as_u64()
-                .ok_or_else(|| PipelineError::Consumer("invalid analytics group size".into()))?;
+                .ok_or_else(|| invalid("group size"))?;
             let members = group["members"]
                 .as_array_mut()
-                .ok_or_else(|| PipelineError::Consumer("invalid analytics members".into()))?;
+                .ok_or_else(|| invalid("members"))?;
             members.truncate(limit);
             group["omitted_members"] = json!(size.saturating_sub(members.len() as u64));
         }
         packet["omitted_communities"] = json!(total.saturating_sub(limit as u64));
+        // Questions name the exact read that answers them, for this repository.
+        if let Some(questions) = packet["questions"].as_array_mut() {
+            for question in questions {
+                question["args"]["repo"] = json!(self.repo);
+            }
+        }
         Ok(packet)
     }
 
-    /// Inspect one of the publication summary's build-bound connectivity groups.
+    /// [`Self::community_at`] at the default resolution.
     pub async fn community(&self, id: &str, limit: usize) -> Result<Value, PipelineError> {
+        self.community_at(id, limit, chaosbox_core::navigation::DEFAULT_RESOLUTION)
+            .await
+    }
+
+    /// Inspect one community of the pinned build's analytics.
+    pub async fn community_at(
+        &self,
+        id: &str,
+        limit: usize,
+        resolution: f64,
+    ) -> Result<Value, PipelineError> {
         if !(1..=200).contains(&limit) {
             return Err(PipelineError::Consumer(
                 "community limit must be 1..200".into(),
             ));
         }
-        let packet = self.navigation_packet().await?;
+        let packet = self.navigation_packet(resolution).await?;
         let group = packet["communities"]
             .as_array()
             .and_then(|groups| groups.iter().find(|group| group["id"] == id))
@@ -272,8 +327,16 @@ impl<R: GraphQueries> GraphReader<R> {
         }
         Ok(
             json!({"build_id":self.build_id,"generation":self.generation,"snapshots":self.snapshots,
-            "id":id,"algorithm":packet["algorithm"],"size":group["size"],"nodes":nodes,
+            "id":id,"algorithm":packet["algorithm"],"label":group["label"],"cohesion":group["cohesion"],
+            "size":group["size"],"nodes":nodes,
             "omitted_members":group["size"].as_u64().unwrap_or(0).saturating_sub(nodes.len() as u64),"exhaustive":false}),
         )
+    }
+
+    /// Markdown report (Graphify's `GRAPH_REPORT.md`) from the same packet as
+    /// [`Self::stats_at`], citing ids with the commands that verify them.
+    pub async fn report(&self, resolution: f64) -> Result<String, PipelineError> {
+        let packet = self.stats_at(20, resolution).await?;
+        Ok(chaosbox_core::report::markdown(&packet, &self.repo))
     }
 }
