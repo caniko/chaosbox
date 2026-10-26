@@ -60,10 +60,6 @@ let
             };
           };
         };
-        projects.${project} = {
-          repo = "${owner}-local";
-          grants.${peer}.mode = "all_admitted";
-        };
         peers."${peer}-fixture" = {
           identity.owner = peer;
           host = "fixture";
@@ -113,7 +109,13 @@ pkgs.testers.nixosTest {
       sharedModules = [ ./federation-home.nix ];
       users = homes;
     };
-    services.chaosbox.federation.enable = true;
+    services.chaosbox.federation = {
+      enable = true;
+      projects.${project} = {
+        repos = pkgs.lib.genAttrs [ "can" "dejana" ] (owner: "${owner}-local");
+        mode = "all_admitted";
+      };
+    };
     environment.systemPackages = [
       pkgs.python3
       pkgs.openssh

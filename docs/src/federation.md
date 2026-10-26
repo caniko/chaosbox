@@ -339,43 +339,36 @@ Standalone HM exposes the entries for the deployment's SSH authority to install.
 The forced commands serve only the provider's local knowledge and pin the caller.
 Grants default to `selected` with no ids; a query key alone grants no project reads.
 
-### Shared Canix declaration
+### Shared project declaration
 
-Canix's HM adapter imports the upstream module, supplies its Fleetix topology
-facade and backend defaults, and connects managed `clientFile` to the existing
-MCP registration. A single NixOS declaration can configure both homes and
-generate project-specific reciprocal grants:
+With integrated Home Manager, one NixOS declaration renders each owner's local
+mapping and a separate grant to every other declared participant:
 
 ```nix
 { ... }: {
-  canix.chaosbox.federation = {
+  services.chaosbox.federation = {
     enable = true;
     projects."git:github.com/caniko/chaosbox" = {
       repos = { can = "chaosbox"; dejana = "chaosbox"; };
       mode = "all_admitted";
       revision = 1;
     };
-    homes = {
-      can = import ./can-chaosbox-provider.nix;
-      dejana = import ./dejana-chaosbox-provider.nix;
-    };
   };
 }
 ```
 
-Each home module declares its backend, peers and query keys using the portable
-options shown above. Canix generates each owner's local mapping and a separate
-grant to each other declared project participant, enables Fleetix-backed routes
-and MCP, and installs the restricted endpoints. Shared project `mode` defaults
-to `selected`; per-owner selected ids or directional overrides can be declared
-in that home's `projects.<key>.grants.<recipient>` options. Project discovery
-and verification remain Canix-owned; enrollment into code indexing does not
-automatically enroll a project into sharing.
+Each owner's home still enables `programs.chaosbox.federation` and declares its
+backend, peers and query keys using the portable options shown above. Shared
+project `mode` defaults to `selected`; per-owner selected ids or directional
+overrides can be declared in that home's `projects.<key>.grants.<recipient>`
+options. Canix adds its Fleetix topology facade, backend defaults and MCP
+registration on top. Enrollment into code indexing does not automatically enroll
+a project into sharing.
 
-Consume a Chaosbox input exporting both federation modules before enabling this
-declaration. Apply provider policies through Home Manager activation. Existing
-project grants are rechecked on the next request; restart consumers after changing
-client routes, identities or project mappings.
+Import both federation modules before enabling this declaration. Apply provider
+policies through Home Manager activation. Existing project grants are rechecked
+on the next request; restart consumers after changing client routes, identities
+or project mappings.
 
 ## Verification
 
