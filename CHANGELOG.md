@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- `services.chaosbox.federation.projects` declares a shared project once on an
+  integrated Home Manager host and renders each owner's repo mapping and grants
+  to every other participant (moved from Canix's `canix.chaosbox.federation`).
+
 ### Breaking: PostgreSQL + pgvector replaces TypeDB (0.2.0)
 
 - The authoritative backend is the new `chaosbox-pg` crate. `chaosbox-typedb`,
