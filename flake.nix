@@ -161,12 +161,12 @@
                     ]
                   }
               '';
-              passthru.scratchPlugin = "${./plugins}/chaosbox-scratch/index.ts";
+              passthru.scratchPlugin = "${./plugins}/chaosbox-scratch";
               passthru.scratchAssessmentVersion = 1;
               passthru.nixOperationVersion = 1;
-              passthru.nixPlugin = "${./plugins}/chaosbox-nix/index.ts";
+              passthru.nixPlugin = "${./plugins}/chaosbox-nix";
               passthru.federationVersion = 1;
-              passthru.intelligencePlugin = "${./plugins}/chaosbox-intelligence/index.ts";
+              passthru.intelligencePlugin = "${./plugins}/chaosbox-intelligence";
               passthru.compactionPlugin = "${./plugins}/chaosbox-compaction";
               passthru.compactionVersion = 2;
               passthru.compactionSource = self.outPath;
@@ -368,6 +368,17 @@
                 node --test ${./plugins/chaosbox-nix}/test/*.test.mjs
                 touch "$out"
               '';
+          # OpenCode V2 needs plugins[].package to be a directory with package.json.
+          plugin-dirs =
+            let
+              chaosbox = self.packages.${pkgs.stdenv.hostPlatform.system}.chaosbox;
+            in
+            pkgs.runCommand "chaosbox-plugin-dirs" { } ''
+              for d in ${chaosbox.scratchPlugin} ${chaosbox.nixPlugin} ${chaosbox.intelligencePlugin} ${chaosbox.compactionPlugin}; do
+                test -d "$d" && test -f "$d/package.json" && test -f "$d/index.ts"
+              done
+              touch $out
+            '';
           scratch-plugin =
             pkgs.runCommand "chaosbox-scratch-plugin"
               {
