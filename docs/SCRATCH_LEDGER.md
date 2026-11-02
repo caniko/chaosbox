@@ -188,9 +188,9 @@ Canix exports `CHAOSBOX_SCRATCH_MAX_REQUESTS` and
 these ceilings alongside the capture identity and assessment setting in plans.
 
 The configured scratch root must already exist. Durable private state parents
-are created by the writer. The plugin targets the explicit `index.ts` file,
-which was verified through the native Promise host rather than package-directory
-auto-discovery.
+are created by the writer. The package exports the plugin directory
+(`scratchPlugin`), which OpenCode V2 requires for `plugins[].package`; its
+`package.json` names `index.ts` as `main`.
 
 Filesystem observation is bounded and asynchronous. Short-lived allocations
 which vanish before metadata inspection get a coverage-gap event instead of an
