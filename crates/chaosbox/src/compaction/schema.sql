@@ -14,3 +14,5 @@ CREATE TABLE IF NOT EXISTS normalized_sources (hash TEXT PRIMARY KEY, body TEXT 
 CREATE TABLE IF NOT EXISTS tool_sources (source TEXT NOT NULL, session TEXT NOT NULL, repo TEXT NOT NULL,
     message TEXT NOT NULL, call_id TEXT NOT NULL, hash TEXT NOT NULL REFERENCES blobs(hash),
     PRIMARY KEY(source,session,repo,message,call_id));
+CREATE TABLE IF NOT EXISTS shell_sources (session TEXT NOT NULL, id TEXT NOT NULL,
+    hash TEXT NOT NULL REFERENCES blobs(hash), PRIMARY KEY(session,id));

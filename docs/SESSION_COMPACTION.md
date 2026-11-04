@@ -11,6 +11,11 @@ The runtime extension is integrated against Canix's OpenCode pin
 1. At tool settlement, capture the complete result before generic output bounding.
    Reconcile those bytes into the settled native message before assessment so
    the early capture never becomes a second independent source occurrence.
+   When the runtime settles a file-backed preview (`result.metadata.outputPath`
+   for tools, `outputPath` for shell messages), custody archives the complete
+   capture file at settlement, before retention can sweep it. Recovery only
+   reads regular UTF-8 files named by the runtime's `tool-output` and `shell`
+   capture directories, at most 64 MiB; anything else stays bounded.
 2. Before compaction, capture native history across all previous checkpoints.
 3. Commit immutable record hashes, a capture manifest and pending work together in
    a private SQLite database with `synchronous=FULL`.
@@ -18,8 +23,14 @@ The runtime extension is integrated against Canix's OpenCode pin
    bodies and attachment bytes have recoverable hash/pointer references. Tool
    inputs, outcome, exit metadata, original user requirements and uncertain
    assistant state remain in the checkpoint.
-   Pre-bounding results replace bounded content and metadata together; a result
-   already marked truncated cannot establish complete output custody.
+   Pre-bounding results replace bounded content and metadata together. A
+   `truncated` marker alone is not a custody refusal: `read`, `grep` and `glob`
+   report native paging or result limits, and their content is the complete
+   output of the call. A durable `outputPath`, or a shell record without an
+   archived complete body, still refuses reduction. Sources captured before
+   complete-output recovery existed are upgraded at plan time from the same
+   runtime capture files when they are still retained, including the runtime's
+   `full output saved to` preview notice.
 5. Independently assess reusable intelligence and continuation relevance using
    pinned Jev. Publication uses the existing admission/consolidation policy.
 6. Publish immutable PostgreSQL knowledge generations through a scope-specific,
