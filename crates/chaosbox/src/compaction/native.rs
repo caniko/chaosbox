@@ -219,12 +219,23 @@ fn tool_content(content: &Value) -> Result<(), String> {
 }
 
 pub(super) fn complete_result(raw: &Value) -> Result<(), String> {
+    // A durable path reference means the captured body was a preview; capture
+    // clears it only after the complete bytes were archived.
+    if raw.pointer("/result/metadata/outputPath").is_some() {
+        return Err("tool was bounded before capture; complete output lacks custody".into());
+    }
     if raw
         .pointer("/result/metadata/truncated")
         .is_some_and(|truncated| truncated != &Value::Bool(false))
-        || raw.pointer("/result/metadata/outputPath").is_some()
     {
-        return Err("tool was bounded before capture; complete output lacks custody".into());
+        // Paging tools report that more input exists, not that output was lost.
+        let paged = raw
+            .get("tool")
+            .and_then(Value::as_str)
+            .is_some_and(super::complete::paged);
+        if !paged {
+            return Err("tool was bounded before capture; complete output lacks custody".into());
+        }
     }
     Ok(())
 }

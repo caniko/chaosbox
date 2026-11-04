@@ -207,6 +207,177 @@ fn the_checkpoint_uses_the_complete_outcome_instead_of_a_bounded_preview() {
     assert!(!plan.summary.contains("\"exitCode\":0"));
 }
 
+fn runtime_capture(root: &std::path::Path, directory: &str, name: &str, body: &str) -> String {
+    let directory = root.join(directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let file = directory.join(name);
+    std::fs::write(&file, body).unwrap();
+    file.to_str().unwrap().to_owned()
+}
+
+#[test]
+fn paged_tool_results_are_complete_without_bounded_metadata() {
+    let dir = private_dir();
+    let mut journal = Journal::open(dir.path(), "private:test").unwrap();
+    let mut early = settlement();
+    early["tool"] = json!("read");
+    early["result"]["content"] = json!("page one of a long file");
+    early["result"]["metadata"] = json!({"truncated": true});
+    journal.capture(&capture(vec![early])).unwrap();
+    let mut record = assistant();
+    record["content"][0]["name"] = json!("read");
+    record["content"][0]["state"]["metadata"] = json!({"truncated": true});
+    record["content"][0]["state"]["content"] =
+        json!([{"type":"text","text":"page one of a long file"}]);
+    let receipt = journal.capture(&capture(vec![user(), record])).unwrap();
+    let plan = journal.plan(&receipt.id, 8000).unwrap();
+    assert!(plan.summary.contains("page one of a long file"));
+    assert_eq!(journal.verify_plan(&plan.id).unwrap(), plan);
+}
+
+#[test]
+fn file_backed_tool_output_is_archived_before_reduction() {
+    let dir = private_dir();
+    let mut journal = Journal::open(dir.path(), "private:test").unwrap();
+    let complete = "Complete repair output.\n".repeat(300);
+    let path = runtime_capture(dir.path(), "shell", "sh_0123456789ab.out", &complete);
+    let mut early = settlement();
+    early["result"]["content"] = json!("bounded preview");
+    early["result"]["metadata"] = json!({"truncated": true, "outputPath": path});
+    journal.capture(&capture(vec![early])).unwrap();
+    let receipt = journal
+        .capture(&capture(vec![user(), assistant()]))
+        .unwrap();
+    let plan = journal.plan(&receipt.id, 120_000).unwrap();
+    assert!(!plan.summary.contains("bounded preview"));
+    assert_eq!(plan.externalized.len(), 1);
+    let archived = journal.evidence(&plan.externalized[0]).unwrap();
+    assert_eq!(archived["result"]["content"][0]["text"], json!(complete));
+    assert_eq!(archived["result"]["metadata"]["truncated"], json!(false));
+    assert!(archived["result"]["metadata"].get("outputPath").is_none());
+    assert_eq!(journal.verify_plan(&plan.id).unwrap(), plan);
+}
+
+#[test]
+fn bounded_previews_outside_runtime_captures_are_refused() {
+    let dir = private_dir();
+    let mut journal = Journal::open(dir.path(), "private:test").unwrap();
+    let complete = "unbounded text";
+    let outside = dir.path().join("sh_0123456789ac.out");
+    std::fs::write(&outside, complete).unwrap();
+    let linked = runtime_capture(dir.path(), "shell", "sh_0123456789ad.out", complete);
+    let link = dir.path().join("shell/sh_0123456789ae.out");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&linked, &link).unwrap();
+    #[cfg(not(unix))]
+    let _ = &linked;
+    let oversized = runtime_capture(dir.path(), "tool-output", "tool_0123456789af", complete);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&oversized)
+        .unwrap()
+        .set_len(64 * 1024 * 1024 + 1)
+        .unwrap();
+    #[cfg(unix)]
+    let paths = [
+        outside.to_str().unwrap(),
+        link.to_str().unwrap(),
+        oversized.as_str(),
+    ];
+    #[cfg(not(unix))]
+    let paths = [outside.to_str().unwrap(), oversized.as_str()];
+    for path in paths {
+        let mut early = settlement();
+        early["result"]["content"] = json!("bounded preview");
+        early["result"]["metadata"] = json!({"truncated": true, "outputPath": path});
+        journal.capture(&capture(vec![early])).unwrap();
+        let receipt = journal
+            .capture(&capture(vec![user(), assistant()]))
+            .unwrap();
+        assert!(journal.plan(&receipt.id, 8000).is_err(), "{path}");
+    }
+}
+
+#[test]
+fn bounded_shell_records_reference_the_complete_capture() {
+    let dir = private_dir();
+    let mut journal = Journal::open(dir.path(), "private:test").unwrap();
+    let complete = "full build log line\n".repeat(400);
+    let path = runtime_capture(dir.path(), "shell", "sh_0123456789b0.out", &complete);
+    let shell = json!({"id":"msg_shell","type":"shell","status":"exited","command":"build",
+        "outputPath":path,
+        "output":{"output":"[showing lines 901-1000 of 1000; full output saved to the capture]","truncated":true}});
+    let receipt = journal.capture(&capture(vec![user(), shell])).unwrap();
+    let plan = journal.plan(&receipt.id, 120_000).unwrap();
+    assert!(!plan.summary.contains("showing lines"));
+    assert_eq!(plan.externalized.len(), 1);
+    let archived = journal.evidence(&plan.externalized[0]).unwrap();
+    assert_eq!(archived["output"]["output"], json!(complete));
+    assert_eq!(archived["output"]["truncated"], json!(false));
+    assert_eq!(journal.verify_plan(&plan.id).unwrap(), plan);
+}
+
+#[test]
+fn archived_shell_bodies_survive_runtime_retention() {
+    let dir = private_dir();
+    let mut journal = Journal::open(dir.path(), "private:test").unwrap();
+    let complete = "durable shell body\n".repeat(200);
+    let path = runtime_capture(dir.path(), "shell", "sh_0123456789b2.out", &complete);
+    let shell = json!({"id":"msg_shell","type":"shell","status":"exited","command":"build",
+        "outputPath":path,
+        "output":{"output":"bounded preview","truncated":true}});
+    let first = journal
+        .capture(&capture(vec![user(), shell.clone()]))
+        .unwrap();
+    std::fs::remove_file(&path).unwrap();
+    let second = journal.capture(&capture(vec![user(), shell])).unwrap();
+    assert_eq!(first.id, second.id);
+    let plan = journal.plan(&second.id, 120_000).unwrap();
+    assert_eq!(plan.externalized.len(), 1);
+    assert_eq!(
+        journal.evidence(&plan.externalized[0]).unwrap()["output"]["output"],
+        json!(complete)
+    );
+    assert_eq!(journal.verify_plan(&plan.id).unwrap(), plan);
+}
+
+#[test]
+fn legacy_bounded_settlements_are_repaired_from_the_runtime_capture() {
+    let dir = private_dir();
+    let mut journal = Journal::open(dir.path(), "private:test").unwrap();
+    let complete = "Complete legacy repair.\n".repeat(300);
+    let path = runtime_capture(dir.path(), "shell", "sh_0123456789b1.out", &complete);
+    let mut legacy = settlement();
+    legacy["result"]["content"] = json!(format!(
+        "bounded preview\n[showing lines 901-1000 of 1000; full output saved to {path}]"
+    ));
+    legacy["result"]["metadata"] = json!({"truncated": true, "exitCode": 1});
+    let body = serde_json::to_string(&legacy).unwrap();
+    let hash = chaosbox_core::sha256_hex(&[&body]);
+    let receipt = journal
+        .capture(&capture(vec![user(), assistant()]))
+        .unwrap();
+    let db = rusqlite::Connection::open(dir.path().join("memory.sqlite")).unwrap();
+    db.execute(
+        "INSERT INTO blobs VALUES (?1,?2)",
+        rusqlite::params![hash, body],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO tool_sources VALUES ('opencode','ses_native','test','msg_assistant','call_test',?1)",
+        [&hash],
+    )
+    .unwrap();
+    drop(db);
+    let plan = journal.plan(&receipt.id, 120_000).unwrap();
+    assert!(!plan.summary.contains("bounded preview"));
+    assert!(plan.summary.contains("\"exitCode\":1"));
+    assert_eq!(plan.externalized.len(), 1);
+    let archived = journal.evidence(&plan.externalized[0]).unwrap();
+    assert_eq!(archived["result"]["content"][0]["text"], json!(complete));
+    assert_eq!(journal.verify_plan(&plan.id).unwrap(), plan);
+}
+
 #[test]
 fn rust_observation_selects_settled_records_and_reports_unsettled_work() {
     let dir = private_dir();

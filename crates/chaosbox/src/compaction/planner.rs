@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 use chaosbox_core::sha256_hex;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde_json::{json, Value};
 use super::{err, Capture, Journal, Plan};
 
@@ -124,6 +124,7 @@ impl Journal {
     /// Build a conservative checkpoint. Only high-confidence irrelevant
     /// assistant text can be omitted; tool groups and users remain.
     pub fn plan(&mut self, capture_id: &str, max_chars: usize) -> Result<Plan, String> {
+        self.repair(capture_id)?;
         let plan = self.build_plan(capture_id, max_chars, None)?;
         self.persist_plan(&plan)?;
         Ok(plan)
@@ -137,6 +138,7 @@ impl Journal {
         max_chars: usize,
         budget_tokens: usize,
     ) -> Result<Plan, String> {
+        self.repair(capture_id)?;
         let plan = self.build_plan(capture_id, max_chars.min(budget_tokens), None)?;
         if plan.summary.len().saturating_add(plan.recent.len()) > budget_tokens {
             return Err(
@@ -145,6 +147,79 @@ impl Journal {
         }
         self.persist_plan(&plan)?;
         Ok(plan)
+    }
+
+    /// Upgrade previously bounded tool sources to their complete bodies when
+    /// the runtime still retains them. Idempotent: admissible sources are left
+    /// untouched and an unrecoverable body keeps its bounded record.
+    fn repair(&mut self, capture_id: &str) -> Result<(), String> {
+        let capture = self.load(capture_id)?;
+        let mut derived = Vec::new();
+        let mut upgrades = Vec::new();
+        for record in &capture.records {
+            if record["type"] != "assistant" {
+                continue;
+            }
+            let message = record["id"].as_str().ok_or("missing native identity")?;
+            let key = if record["parts"].is_array() {
+                "parts"
+            } else {
+                "content"
+            };
+            for part in record[key].as_array().into_iter().flatten() {
+                if part["type"] != "tool" {
+                    continue;
+                }
+                let call = part["id"].as_str().ok_or("missing tool call identity")?;
+                let hash: Option<String> = self
+                    .db
+                    .query_row(
+                        "SELECT hash FROM tool_sources WHERE source=?1 AND session=?2 AND repo=?3 AND message=?4 AND call_id=?5",
+                        params![capture.source, capture.session, capture.repo, message, call],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(err)?;
+                let Some(hash) = hash else { continue };
+                let source = self.evidence(&hash)?;
+                if super::native::complete_result(&source).is_ok() {
+                    continue;
+                }
+                let Some(complete) = super::complete::tool(&source) else {
+                    continue;
+                };
+                let body = serde_json::to_string(&complete).map_err(err)?;
+                let hash = sha256_hex(&[&body]);
+                derived.push((hash.clone(), body));
+                upgrades.push((
+                    capture.source.clone(),
+                    capture.session.clone(),
+                    capture.repo.clone(),
+                    message.to_owned(),
+                    call.to_owned(),
+                    hash,
+                ));
+            }
+        }
+        if upgrades.is_empty() {
+            return Ok(());
+        }
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(err)?;
+        for (hash, body) in &derived {
+            tx.execute(
+                "INSERT OR IGNORE INTO blobs VALUES (?1,?2)",
+                params![hash, body],
+            )
+            .map_err(err)?;
+        }
+        for (source, session, repo, message, call, hash) in upgrades {
+            tx.execute("UPDATE tool_sources SET hash=?1 WHERE source=?2 AND session=?3 AND repo=?4 AND message=?5 AND call_id=?6",
+                params![hash, source, session, repo, message, call]).map_err(err)?;
+        }
+        tx.commit().map_err(err)
     }
 
     /// Recover and independently reconstruct a stored plan from complete custody.
@@ -300,7 +375,15 @@ impl Journal {
                 .and_then(Value::as_bool)
                 == Some(true)
         {
-            return Err("truncated shell output needs complete custody before reduction".into());
+            // Capture archived the complete stdout; the checkpoint references
+            // it by hash instead of carrying a bounded tail as if it were whole.
+            let hash = record["outputPathHash"]
+                .as_str()
+                .ok_or("truncated shell output needs complete custody before reduction")?;
+            if !externalized.iter().any(|source| source == hash) {
+                externalized.push(hash.to_owned());
+            }
+            projection["output"] = json!({"archive_hash":hash,"externalized":true});
         }
         if record["type"] == "shell"
             && serde_json::to_vec(&projection["output"])

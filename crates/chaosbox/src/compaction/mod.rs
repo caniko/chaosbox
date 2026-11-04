@@ -3,6 +3,7 @@
 //! never authorizes forgetting active work. All archive references are hashes.
 
 pub mod cli;
+mod complete;
 mod native;
 mod planner;
 mod replica;
@@ -77,6 +78,122 @@ pub struct Journal {
 
 fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
+}
+
+/// Native message and call identity for a recovered tool source.
+type ToolTarget = (String, String, String);
+/// Records with file-backed bounds replaced by their complete variant, the
+/// derived blobs to store, and tool-source targets.
+type Prepared = (Capture, Vec<(String, String)>, Vec<ToolTarget>);
+
+fn prepare(
+    input: &Capture,
+    archived: impl Fn(&str) -> Result<Option<String>, String>,
+) -> Result<Prepared, String> {
+    let mut prepared = input.clone();
+    let mut derived = Vec::new();
+    let mut tools = Vec::new();
+    for record in &mut prepared.records {
+        match record["type"].as_str() {
+            Some("tool-result") => {
+                let Some(source) = complete::tool(record) else {
+                    continue;
+                };
+                let body = serde_json::to_string(&source).map_err(err)?;
+                let hash = sha256_hex(&[&body]);
+                tools.push((
+                    record["messageID"]
+                        .as_str()
+                        .ok_or("missing tool settlement identity")?
+                        .to_owned(),
+                    record["callID"]
+                        .as_str()
+                        .ok_or("missing tool settlement identity")?
+                        .to_owned(),
+                    hash.clone(),
+                ));
+                derived.push((hash, body));
+            }
+            Some("shell") => {
+                let truncated =
+                    record.pointer("/output/truncated").and_then(Value::as_bool) == Some(true);
+                // A body archived by an earlier capture survives runtime
+                // retention even when the capture file is already gone.
+                let recovered = match complete::shell(record) {
+                    Some(source) => {
+                        let body = serde_json::to_string(&source).map_err(err)?;
+                        let hash = sha256_hex(&[&body]);
+                        derived.push((hash.clone(), body));
+                        Some(hash)
+                    }
+                    None if truncated => archived(
+                        record["id"]
+                            .as_str()
+                            .ok_or("missing shell message identity")?,
+                    )?,
+                    None => None,
+                };
+                let Some(hash) = recovered else {
+                    continue;
+                };
+                record["outputPathHash"] = Value::String(hash);
+            }
+            _ => {}
+        }
+    }
+    Ok((prepared, derived, tools))
+}
+
+fn upsert_tool_source(
+    tx: &rusqlite::Transaction<'_>,
+    input: &Capture,
+    record: &Value,
+    target: &str,
+) -> Result<(), String> {
+    let message = record["messageID"]
+        .as_str()
+        .ok_or("missing tool settlement identity")?;
+    let call = record["callID"]
+        .as_str()
+        .ok_or("missing tool settlement identity")?;
+    let existing: Option<String> = tx.query_row("SELECT hash FROM tool_sources WHERE source=?1 AND session=?2 AND repo=?3 AND message=?4 AND call_id=?5",
+        params![input.source,input.session,input.repo,message,call], |r| r.get(0)).optional().map_err(err)?;
+    let Some(current) = existing else {
+        tx.execute(
+            "INSERT INTO tool_sources VALUES (?1,?2,?3,?4,?5,?6)",
+            params![
+                input.source,
+                input.session,
+                input.repo,
+                message,
+                call,
+                target
+            ],
+        )
+        .map_err(err)?;
+        return Ok(());
+    };
+    if current == target {
+        return Ok(());
+    }
+    let stored: String = tx
+        .query_row("SELECT body FROM blobs WHERE hash=?1", [&current], |r| {
+            r.get(0)
+        })
+        .map_err(err)?;
+    let source: Value = serde_json::from_str(&stored).map_err(err)?;
+    if source["tool"] != record["tool"]
+        || source["input"] != record["input"]
+        || source["status"] != record["status"]
+    {
+        return Err("tool settlement changed after custody".into());
+    }
+    // Only upgrade an inadmissible source; a complete one stays.
+    if native::complete_result(&source).is_err() {
+        tx.execute("UPDATE tool_sources SET hash=?1 WHERE source=?2 AND session=?3 AND repo=?4 AND message=?5 AND call_id=?6",
+            params![target, input.source, input.session, input.repo, message, call]).map_err(err)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn private_database(root: &Path, name: &str) -> Result<Connection, String> {
@@ -184,13 +301,16 @@ impl Journal {
     /// Commit immutable records and a pending job in one transaction.
     /// Variants retain separate hashes; identical captures are idempotent.
     pub fn capture(&mut self, input: &Capture) -> Result<Custody, String> {
-        let raw = self.validate_capture(input)?;
+        self.validate_snapshot(input, true)?;
+        let (prepared, derived, complete_tools) =
+            prepare(input, |id| self.shell_source(&input.session, id))?;
+        let raw = self.validate_snapshot(&prepared, true)?;
         let id = sha256_hex(&["session-custody-v1", &raw]);
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(err)?;
-        for record in &input.records {
+        for record in input.records.iter().chain(prepared.records.iter()) {
             let body = serde_json::to_string(record).map_err(err)?;
             let hash = sha256_hex(&[&body]);
             tx.execute(
@@ -198,25 +318,42 @@ impl Journal {
                 params![hash, body],
             )
             .map_err(err)?;
-            if native::Record::parse(record, &input.session)?.kind == native::Kind::ToolResult {
-                let existing: Option<String> = tx.query_row("SELECT hash FROM tool_sources WHERE source=?1 AND session=?2 AND repo=?3 AND message=?4 AND call_id=?5",
-                    params![input.source,input.session,input.repo,record["messageID"].as_str(),record["callID"].as_str()], |r| r.get(0)).optional().map_err(err)?;
-                if existing.as_ref().is_some_and(|h| h != &hash) {
-                    return Err("tool settlement changed after custody".into());
-                }
+        }
+        for (hash, body) in &derived {
+            tx.execute(
+                "INSERT OR IGNORE INTO blobs VALUES (?1,?2)",
+                params![hash, body],
+            )
+            .map_err(err)?;
+        }
+        for record in &prepared.records {
+            if record["type"].as_str() != Some("shell") {
+                continue;
+            }
+            if let Some(hash) = record["outputPathHash"].as_str() {
                 tx.execute(
-                    "INSERT OR IGNORE INTO tool_sources VALUES (?1,?2,?3,?4,?5,?6)",
-                    params![
-                        input.source,
-                        input.session,
-                        input.repo,
-                        record["messageID"].as_str(),
-                        record["callID"].as_str(),
-                        hash
-                    ],
+                    "INSERT OR IGNORE INTO shell_sources VALUES (?1,?2,?3)",
+                    params![input.session, record["id"].as_str(), hash],
                 )
                 .map_err(err)?;
             }
+        }
+        for record in &prepared.records {
+            if native::Record::parse(record, &input.session)?.kind != native::Kind::ToolResult {
+                continue;
+            }
+            let message = record["messageID"]
+                .as_str()
+                .ok_or("missing tool settlement identity")?;
+            let call = record["callID"]
+                .as_str()
+                .ok_or("missing tool settlement identity")?;
+            let body = serde_json::to_string(record).map_err(err)?;
+            let target = complete_tools
+                .iter()
+                .find(|(message_id, called, _)| message_id == message && called == call)
+                .map_or_else(|| sha256_hex(&[&body]), |(_, _, hash)| hash.clone());
+            upsert_tool_source(&tx, input, record, &target)?;
         }
         tx.execute(
             "INSERT OR IGNORE INTO captures VALUES (?1,?2,?3,?4,?5,'pending')",
@@ -228,6 +365,17 @@ impl Journal {
             id,
             records: input.records.len(),
         })
+    }
+
+    fn shell_source(&self, session: &str, id: &str) -> Result<Option<String>, String> {
+        self.db
+            .query_row(
+                "SELECT hash FROM shell_sources WHERE session=?1 AND id=?2",
+                params![session, id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(err)
     }
 
     fn validate_capture(&self, input: &Capture) -> Result<String, String> {
