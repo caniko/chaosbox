@@ -15,8 +15,9 @@ blind to structure. It cannot tell a declaration from a mention, a real call
 edge from a lexical coincidence, or a constraint someone already reviewed. The
 previous system (Graphify) answered some of this but pulled in network and model
 dependencies into the operational path. Chaosbox keeps the useful graph and
-makes every claim either a compiler-certified fact or a bounded, cached,
-source-cited decision.
+labels every claim by its evidence: a parser-certified fact, optional compiler
+evidence, a deterministic (lexical) inference, or a bounded, cached,
+source-cited model decision.
 
 ## Principles
 
@@ -64,8 +65,8 @@ source-cited decision.
 - A general-purpose LLM summarizer or chatbot over a repository.
 - Automatic workspace inference beyond the reviewed pilot; a cited
   cross-language link is not a calibrated general claim.
-- Publishing session knowledge to PostgreSQL or replacing migration/compaction
-  scripts today; the capability matrix marks that as not yet implemented.
+- Replacing the migration scripts or full runtime integration of session
+  compaction today; the capability matrix marks that as incomplete.
 - Carrying Graphify's network/runtime dependencies in the operational path.
 
 ## Direction
