@@ -334,7 +334,7 @@ export function coordinator(options, run, repository) {
       if (event?.status !== "completed") return "";
       if (!HINT_TOOLS.has(String(event.tool).toLowerCase())) return "";
       try {
-        return hintText(await run(binary, ["hint"], hintPayload(event, cwd), 5_000));
+        return hintText(await run(binary, ["hint"], hintPayload(event, cwd), 1_000));
       } catch {
         return "";
       }

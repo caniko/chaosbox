@@ -561,9 +561,11 @@ pub(super) fn disable(args: &DisableArgs) -> i32 {
     }
 }
 
-/// The `PostToolUse` handler `install` adds to Claude Code.
+/// The `PostToolUse` handler `install` adds to Claude Code. The harness caps
+/// the hook at two seconds so a stuck graph lookup cannot stall the tool call.
 const HINT_MATCHER: &str = "Grep|Glob|Bash|Read";
 const HINT_COMMAND: &str = "chaosbox hint";
+const HINT_TIMEOUT_SECONDS: u64 = 2;
 
 fn is_our_hook(entry: &Value) -> bool {
     entry.get("type").and_then(Value::as_str) == Some("command")
@@ -572,11 +574,13 @@ fn is_our_hook(entry: &Value) -> bool {
 
 /// Plan the managed `chaosbox hint` `PostToolUse` hooks in a Claude Code
 /// settings file. Foreign hooks are kept; only entries whose command is
-/// exactly ours are added or removed.
+/// exactly ours are added, upgraded or removed.
+// One plan/apply branch per action; splitting it would hide the shared refusal.
+#[allow(clippy::too_many_lines)]
 fn plan_hooks(path: &Path, remove: bool) -> Change {
     let entry = json!({
         "matcher": HINT_MATCHER,
-        "hooks": [{"type": "command", "command": HINT_COMMAND}],
+        "hooks": [{"type": "command", "command": HINT_COMMAND, "timeout": HINT_TIMEOUT_SECONDS}],
     });
     let snippet = serde_json::to_string_pretty(&json!({"hooks": {"PostToolUse": [entry]}}))
         .unwrap_or_default();
@@ -638,18 +642,29 @@ fn plan_hooks(path: &Path, remove: bool) -> Change {
             config["hooks"]["PostToolUse"] = Value::Array(changed);
         }
     } else {
-        if groups.iter().any(|group| {
-            group
-                .get("hooks")
-                .and_then(Value::as_array)
-                .is_some_and(|hooks| hooks.iter().any(is_our_hook))
-        }) {
+        let mut found = false;
+        let mut upgraded = false;
+        for group in &mut changed {
+            let Some(hooks) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for hook in hooks.iter_mut().filter(|hook| is_our_hook(hook)) {
+                found = true;
+                if hook.get("timeout").is_none() {
+                    hook["timeout"] = json!(HINT_TIMEOUT_SECONDS);
+                    upgraded = true;
+                }
+            }
+        }
+        if found && !upgraded {
             return change("unchanged", None);
         }
         if !config["hooks"].is_object() {
             config["hooks"] = json!({});
         }
-        changed.push(entry);
+        if !found {
+            changed.push(entry);
+        }
         config["hooks"]["PostToolUse"] = Value::Array(changed);
     }
     if config["hooks"]
@@ -836,6 +851,27 @@ mod tests {
         assert_eq!(groups.len(), 2, "the foreign hook group survives");
         assert_eq!(groups[0]["matcher"], "Write");
         assert_eq!(groups[1]["hooks"][0]["command"], "chaosbox hint");
+        assert_eq!(
+            groups[1]["hooks"][0]["timeout"], 2,
+            "the hook is time-capped"
+        );
+
+        // A previously installed entry without the timeout is upgraded in place.
+        let mut legacy: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        legacy["hooks"]["PostToolUse"][1]["hooks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("timeout");
+        std::fs::write(&path, format!("{legacy}\n")).unwrap();
+        let upgrade = plan_hooks(&path, false);
+        assert_eq!(upgrade.action, "update");
+        apply_changes(std::slice::from_ref(&upgrade));
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let groups = config["hooks"]["PostToolUse"].as_array().unwrap();
+        assert_eq!(groups.len(), 2, "the upgrade does not duplicate the hook");
+        assert_eq!(groups[1]["hooks"][0]["timeout"], 2);
 
         let removed = plan_hooks(&path, true);
         apply_changes(std::slice::from_ref(&removed));

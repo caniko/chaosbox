@@ -295,8 +295,8 @@ test(
 
 test("hints ride on completed tool results and fail open", async () => {
   const calls = [];
-  const memory = coordinator(options, async (binary, args, input) => {
-    calls.push({ binary, args, input });
+  const memory = coordinator(options, async (binary, args, input, timeout) => {
+    calls.push({ binary, args, input, timeout });
     return {
       hookSpecificOutput: {
         hookEventName: "PostToolUse",
@@ -321,6 +321,7 @@ test("hints ride on completed tool results and fail open", async () => {
       tool_name: "grep",
       tool_input: { pattern: "parse_config" },
     },
+    timeout: 1_000,
   });
   assert.match(text, /parse_config/);
   assert.equal(appendHint(event, text), true);

@@ -61,7 +61,8 @@ most five hints and repeated patterns are skipped (state under
 `$XDG_STATE_HOME/chaosbox/hints/<session>`); the whole hook is bounded to
 about 300 ms and any failure prints nothing and exits 0, so it can never block
 the tool that triggered it. OpenCode gets the same hint appended to a tool
-result by its compaction plugin. For `Read`, the hook emits nothing to the
+result by its compaction plugin, which waits at most one second; the installed
+Claude Code hook declares a two-second timeout. For `Read`, the hook emits nothing to the
 agent: if the file was served as source by an MCP call in the last 30
 minutes, it appends a `read_after_served` line to the ledger instead.
 
