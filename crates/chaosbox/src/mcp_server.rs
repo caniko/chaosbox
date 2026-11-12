@@ -754,6 +754,16 @@ pub(super) fn mcp_tool_list(
     defs
 }
 
+/// Graph-tool enablement for one `tools/call`. The startup checkout's marker is
+/// re-read, so deleting it disables graph work without a server restart;
+/// `tools/list` keeps the startup view. A marker added mid-session still needs
+/// a restart, because the server also holds the startup repo name.
+pub(super) fn graph_enabled(
+    startup: Option<&chaosbox::enablement::Enabled>,
+) -> Option<chaosbox::enablement::Enabled> {
+    chaosbox::enablement::enabled(&startup?.root)
+}
+
 /// Read-only MCP over stdio: full handshake, one tool page, validated calls.
 /// Never loads Jev credentials; never accepts prose as evidence.
 // Long CLI/dispatch functions; splitting them apart is the owning
@@ -940,6 +950,7 @@ pub(super) async fn serve_mcp(
                             .take()
                             .filter(|(_, deadline)| tokio::time::Instant::now() < *deadline)
                             .map(|(handle, _)| handle);
+                        let enabled = graph_enabled(enabled.as_ref());
                         let result = mcp_call_tool_connected(
                             &id,
                             name,

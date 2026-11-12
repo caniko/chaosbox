@@ -1,7 +1,7 @@
 //! MCP surface unit tests, moved verbatim from the former inline `mod tests` block.
 
 use super::mcp_server::{
-    ChangedFile, changed_entities, is_test_path, prepare_neighborhood, prepare_path,
+    ChangedFile, changed_entities, graph_enabled, is_test_path, prepare_neighborhood, prepare_path,
     review_payload, safe_join, serve_source, trim_payload, SourceInclude, SourceTarget,
     MCP_DESCRIPTION_LINE_MAX, MCP_NOT_ENABLED, backend_args, char_budget, mcp_args, mcp_call_tool,
     mcp_call_tool_without_opt_in, mcp_instructions, mcp_text_result, mcp_tool_defs, mcp_tool_list,
@@ -1142,6 +1142,25 @@ fn intelligence_calls_accept_the_advertised_defaults() {
     assert_eq!(answer["scope"], "private");
     assert_eq!(answer["records"], json!([]));
     assert!(answer["snapshot"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn graph_tools_reread_the_project_marker_on_every_call() {
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join(".git")).unwrap();
+    std::fs::write(root.join(".chaosbox.json"), r#"{"repo":"demo"}"#).unwrap();
+    let startup = chaosbox::enablement::enabled(root);
+    assert!(startup.is_some());
+    assert!(graph_enabled(startup.as_ref()).is_some());
+    // The agent deletes the marker mid-session: the next call is disabled.
+    std::fs::remove_file(root.join(".chaosbox.json")).unwrap();
+    let enabled = graph_enabled(startup.as_ref());
+    assert!(enabled.is_none(), "startup state must not be reused");
+    let answer = mcp_call_tool_without_opt_in(&json!(1), "status", &json!({"arguments": {}})).await;
+    assert_eq!(answer["error"]["code"], -32601);
+    assert_eq!(answer["error"]["message"], MCP_NOT_ENABLED);
 }
 
 #[test]
