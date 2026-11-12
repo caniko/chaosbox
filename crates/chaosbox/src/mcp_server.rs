@@ -1525,8 +1525,18 @@ pub(super) fn trim_payload(name: &str, payload: &mut Value, budget: usize) {
     match name {
         "search" | "community" => fit_budget(payload, budget, &["/nodes"]),
         "context" | "export" => {
+            // Pruning drops links whose endpoints were trimmed; count those too.
+            let links_total = payload
+                .pointer("/truncated/links/total")
+                .and_then(Value::as_u64)
+                .and_then(|total| usize::try_from(total).ok())
+                .unwrap_or_else(|| list_len(payload, "/links"));
             fit_budget(payload, budget, &["/links", "/nodes"]);
             prune_links(payload);
+            record_truncated(
+                payload,
+                &std::collections::BTreeMap::from([("/links", links_total)]),
+            );
         }
         "stats" => fit_budget(
             payload,

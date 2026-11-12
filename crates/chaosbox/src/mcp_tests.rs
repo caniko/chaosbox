@@ -1185,3 +1185,23 @@ fn tool_level_arguments_do_not_reach_strict_query_structs() {
         );
     }
 }
+
+#[test]
+fn context_trim_counts_links_pruned_with_their_endpoints() {
+    let mut payload = serde_json::json!({
+        "nodes": [{"id": "a"}, {"id": "b"}, {"id": "c", "pad": "x".repeat(300)}],
+        "links": [{"source": "a", "target": "b"}, {"source": "b", "target": "c"}],
+    });
+    // Room for everything but the padded node c.
+    let budget = serde_json::to_string(&payload).unwrap().len() - 200;
+    trim_payload("context", &mut payload, budget);
+    assert_eq!(payload["links"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        payload["truncated"]["links"],
+        serde_json::json!({"shown": 1, "total": 2})
+    );
+    assert_eq!(
+        payload["truncated"]["nodes"],
+        serde_json::json!({"shown": 2, "total": 3})
+    );
+}
