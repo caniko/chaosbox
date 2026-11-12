@@ -165,6 +165,26 @@ fn schemas_declare_every_default() {
 }
 
 #[test]
+fn repeated_budget_passes_keep_the_original_total() {
+    use serde_json::json;
+    let nodes: Vec<_> = (0..10)
+        .map(|index| json!({"id": format!("ent:{index}")}))
+        .collect();
+    let mut payload = json!({"nodes": nodes});
+    trim_payload("search", &mut payload, 120);
+    assert_eq!(payload["truncated"]["nodes"]["total"], 10);
+    let shown = payload["nodes"].as_array().unwrap().len();
+    assert!(shown < 10, "the fixture must be trimmed");
+    // A later pass only sees the trimmed list; the total stays the original.
+    trim_payload("search", &mut payload, 80);
+    assert_eq!(
+        payload["truncated"]["nodes"]["total"], 10,
+        "a second pass must not report the trimmed length as the total"
+    );
+    assert!(payload["nodes"].as_array().unwrap().len() < shown);
+}
+
+#[test]
 fn large_results_are_trimmed_item_wise_under_the_budget() {
     use serde_json::json;
     let nodes: Vec<_> = (0..200)
@@ -174,9 +194,9 @@ fn large_results_are_trimmed_item_wise_under_the_budget() {
     assert_eq!(char_budget(&serde_json::Map::new()), 32_000);
     trim_payload("search", &mut payload, 4_000);
     assert!(serde_json::to_string(&payload).unwrap().len() <= 4_000);
-    assert_eq!(payload["truncated"]["total"], 200);
+    assert_eq!(payload["truncated"]["nodes"]["total"], 200);
     let shown = payload["nodes"].as_array().unwrap().len();
-    assert_eq!(payload["truncated"]["shown"], shown);
+    assert_eq!(payload["truncated"]["nodes"]["shown"], shown);
     assert!(shown < 200, "the fixture must be trimmed");
     assert_eq!(payload["nodes"][0]["id"], "ent:0", "ranked order kept");
 }

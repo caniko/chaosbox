@@ -191,8 +191,8 @@ Grep/Glob/Read when you need: where something is defined, its source, callers/ca
 change affects, or architecture. Read a file directly only for lines Chaosbox did not return or \
 marked stale. Do not re-verify Chaosbox answers with grep. Source Chaosbox returns is the file \
 content; treat it as already read.\n\n\
-The repo argument defaults to {repo}. Answers carry truncated{{shown,total}}: raise max_tokens or \
-follow next_cursor instead of asking again.\n\n\
+The repo argument defaults to {repo}. Answers carry truncated counts (shown/total, keyed by list \
+when several lost items): raise max_tokens or follow next_cursor instead of asking again.\n\n\
 Tools: context = ranked entities plus source for a question; search = entity names; lookup/explain \
 = one entity (include=source|signatures|none, default source); neighbors = callers/callees, paged \
 by cursor; path = shortest chain between two entities; review = changed entities of a git diff \
@@ -262,22 +262,34 @@ fn mcp_operator_result(
     args: &serde_json::Value,
 ) -> serde_json::Value {
     match budget_any(value, args) {
-        Ok(value) => mcp_text_result(id, &value),
+        Ok(value) => mcp_text_result(id, value),
         Err(error) => mcp_error(id, -32602, error, None),
     }
 }
 
-pub(super) fn mcp_text_result(
-    id: &serde_json::Value,
-    payload: &serde_json::Value,
-) -> serde_json::Value {
-    let Ok(bytes) = chaosbox::read_view::bounded_json(payload, MCP_RESPONSE_BYTES) else {
+pub(super) fn mcp_text_result(id: &serde_json::Value, mut payload: Value) -> Value {
+    flatten_truncated(&mut payload);
+    let Ok(bytes) = chaosbox::read_view::bounded_json(&payload, MCP_RESPONSE_BYTES) else {
         return mcp_error(id, -32603, "MCP response byte budget exceeded".into(), None);
     };
     serde_json::json!({
         "jsonrpc": "2.0", "id": id,
         "result": {"content": [{"type": "text", "text": String::from_utf8_lossy(&bytes)}]},
     })
+}
+
+/// One trimmed collection keeps the flat `{shown,total,next_cursor?}` shape;
+/// several stay keyed by collection, so no count is ambiguous.
+fn flatten_truncated(payload: &mut Value) {
+    let Some(collections) = payload.get("truncated").and_then(Value::as_object) else {
+        return;
+    };
+    if collections.len() != 1 || !collections.values().all(Value::is_object) {
+        return;
+    }
+    if let Some(only) = collections.values().next().cloned() {
+        payload["truncated"] = only;
+    }
 }
 
 // message moves into the error json! below (macro boundary false positive
@@ -451,7 +463,7 @@ async fn mcp_call_tool_connected(
         }
         .await
         {
-            Ok(page) => mcp_text_result(id, &neighborhood_budget(page, budget)),
+            Ok(page) => mcp_text_result(id, neighborhood_budget(page, budget)),
             Err(error) => mcp_backend_error(id, name, &error),
         };
     }
@@ -470,8 +482,8 @@ async fn mcp_call_tool_connected(
         };
         return match query.read(AnyReader::handle_cached(connection)).await {
             Ok(mut value) => {
-                fit_budget(&mut value, budget, "/path", &["/path"]);
-                mcp_text_result(id, &value)
+                fit_budget(&mut value, budget, &["/path"]);
+                mcp_text_result(id, value)
             }
             Err(error) => mcp_backend_error(id, name, &error),
         };
@@ -648,7 +660,7 @@ async fn mcp_call_tool_connected(
     match payload {
         Ok(v) => {
             let v = finish_payload(name, v, budget, enabled, &reader, include, detail).await;
-            mcp_text_result(id, &v)
+            mcp_text_result(id, v)
         }
         Err(e) => mcp_error(id, -32603, e, None),
     }
@@ -1383,17 +1395,28 @@ fn list_len(payload: &Value, pointer: &str) -> usize {
 }
 
 /// Trim whole items from the end of the given lists until the encoded payload
-/// fits. The longest remaining list loses first, so every ranked list keeps
-/// its head. `truncated` reports the primary list's shown and total counts and
-/// is itself part of the measured payload.
-fn fit_budget(payload: &mut Value, budget: usize, primary: &str, lists: &[&str]) {
-    let total = list_len(payload, primary);
-    let mut removed = false;
-    loop {
-        if removed {
-            let shown = list_len(payload, primary);
-            payload["truncated"] = serde_json::json!({"shown": shown, "total": total});
+/// fits. The longest remaining list loses first, so every ranked list keeps its
+/// head. `truncated` names every trimmed collection and keeps the first pass's
+/// total, because a repeated pass sees only the trimmed length.
+fn fit_budget(payload: &mut Value, budget: usize, lists: &[&str]) {
+    let mut totals: std::collections::BTreeMap<&str, usize> = lists
+        .iter()
+        .map(|list| (*list, list_len(payload, list)))
+        .collect();
+    if let Some(previous) = payload.get("truncated").and_then(Value::as_object) {
+        for (list, total) in &mut totals {
+            if let Some(original) = previous
+                .get(list.trim_start_matches('/'))
+                .and_then(|entry| entry.get("total"))
+                .and_then(Value::as_u64)
+                .and_then(|total| usize::try_from(total).ok())
+            {
+                *total = original;
+            }
         }
+    }
+    loop {
+        record_truncated(payload, &totals);
         if encoded_len(payload) <= budget {
             return;
         }
@@ -1409,8 +1432,32 @@ fn fit_budget(payload: &mut Value, budget: usize, primary: &str, lists: &[&str])
         let Some(victim) = victim else { return };
         if let Some(array) = payload.pointer_mut(victim).and_then(Value::as_array_mut) {
             array.pop();
-            removed = true;
         }
+    }
+}
+
+/// Record the shown and original total of every collection that lost items,
+/// keyed by its list name. Entries for collections trimmed by another pass stay.
+fn record_truncated(payload: &mut Value, totals: &std::collections::BTreeMap<&str, usize>) {
+    let mut entries = payload
+        .get("truncated")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    let mut trimmed = false;
+    for (list, total) in totals {
+        let shown = list_len(payload, list);
+        if shown >= *total {
+            continue;
+        }
+        entries.insert(
+            list.trim_start_matches('/').to_owned(),
+            serde_json::json!({"shown": shown, "total": total}),
+        );
+        trimmed = true;
+    }
+    if trimmed {
+        payload["truncated"] = Value::Object(entries);
     }
 }
 
@@ -1432,15 +1479,14 @@ fn prune_links(payload: &mut Value) {
 
 pub(super) fn trim_payload(name: &str, payload: &mut Value, budget: usize) {
     match name {
-        "search" | "community" => fit_budget(payload, budget, "/nodes", &["/nodes"]),
+        "search" | "community" => fit_budget(payload, budget, &["/nodes"]),
         "context" | "export" => {
-            fit_budget(payload, budget, "/nodes", &["/links", "/nodes"]);
+            fit_budget(payload, budget, &["/links", "/nodes"]);
             prune_links(payload);
         }
         "stats" => fit_budget(
             payload,
             budget,
-            "/hubs",
             &[
                 "/communities",
                 "/hubs",
@@ -1452,7 +1498,6 @@ pub(super) fn trim_payload(name: &str, payload: &mut Value, budget: usize) {
         "diff" => fit_budget(
             payload,
             budget,
-            "/added_nodes",
             &[
                 "/added_nodes",
                 "/removed_nodes",
@@ -1460,7 +1505,7 @@ pub(super) fn trim_payload(name: &str, payload: &mut Value, budget: usize) {
                 "/removed_edges",
             ],
         ),
-        "evidence" => fit_budget(payload, budget, "/evidence", &["/evidence"]),
+        "evidence" => fit_budget(payload, budget, &["/evidence"]),
         "status" => {
             // Summary already dropped the per-file list; `full` may still exceed
             // a tight budget, so the list goes first and names its omission.
@@ -1473,10 +1518,13 @@ pub(super) fn trim_payload(name: &str, payload: &mut Value, budget: usize) {
                     {
                         files.clear();
                     }
-                    payload["truncated"] = serde_json::json!({"shown": 0, "total": total});
+                    record_truncated(
+                        payload,
+                        &std::collections::BTreeMap::from([("/coverage/files", total)]),
+                    );
                 }
             }
-            fit_budget(payload, budget, "/snapshots", &["/snapshots"]);
+            fit_budget(payload, budget, &["/snapshots"]);
         }
         _ => {}
     }
@@ -1505,8 +1553,8 @@ fn budget_any(mut value: Value, args: &Value) -> Result<Value, String> {
         })
         .unwrap_or_default();
     let pointers: Vec<&str> = lists.iter().map(String::as_str).collect();
-    if let Some(primary) = pointers.first() {
-        fit_budget(&mut value, budget, primary, &pointers);
+    if !pointers.is_empty() {
+        fit_budget(&mut value, budget, &pointers);
     }
     Ok(value)
 }
@@ -1533,7 +1581,8 @@ fn fit_report(payload: &mut Value, budget: usize) {
         ));
     }
     if sections.len() < total {
-        payload["truncated"] = serde_json::json!({"shown": sections.len(), "total": total});
+        payload["truncated"] =
+            serde_json::json!({"sections": {"shown": sections.len(), "total": total}});
     }
 }
 
@@ -2191,12 +2240,7 @@ pub(super) async fn review_payload<R: chaosbox_store::GraphQueries>(
         "build_id": reader.build_id, "base": base, "commit": commit,
         "changed_files": files.len(), "entities": ranked, "unmapped": unmapped,
     });
-    fit_budget(
-        &mut payload,
-        budget,
-        "/entities",
-        &["/entities", "/unmapped"],
-    );
+    fit_budget(&mut payload, budget, &["/entities", "/unmapped"]);
     // One changed region per entity per pass, risk order: a round-robin share
     // of whatever the metadata left over.
     let mut targets: Vec<SourceTarget> = Vec::new();
@@ -2261,12 +2305,7 @@ pub(super) async fn review_payload<R: chaosbox_store::GraphQueries>(
         }
     }
     if encoded_len(&payload) > budget {
-        fit_budget(
-            &mut payload,
-            budget,
-            "/entities",
-            &["/entities", "/unmapped"],
-        );
+        fit_budget(&mut payload, budget, &["/entities", "/unmapped"]);
     }
     Ok(payload)
 }
@@ -2283,7 +2322,7 @@ fn neighborhood_budget(mut page: chaosbox::NeighborhoodPage, budget: usize) -> V
             if let Some(cursor) = value.get("next_cursor").filter(|cursor| !cursor.is_null()) {
                 truncated["next_cursor"] = cursor.clone();
             }
-            value["truncated"] = truncated;
+            value["truncated"] = serde_json::json!({"rows": truncated});
         }
         if encoded_len(&value) <= budget {
             return value;

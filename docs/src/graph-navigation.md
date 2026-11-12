@@ -136,10 +136,12 @@ lexical context, depth 2, 200 nodes) narrow any format.
 
 The MCP server is one page and one budget. `tools/list` returns every tool at
 once (never `nextCursor`); each result is bounded by `max_tokens` (default
-8000, maximum 20000, four characters per token) and reports
-`truncated: {shown,total}` when whole items were dropped. `neighbors` keeps
-its cursor: a budget-trimmed page returns a `next_cursor` that resumes at the
-first omitted row.
+8000, maximum 20000, four characters per token) and reports what it dropped:
+`truncated: {shown,total}` when one collection lost whole items, or
+`{"<collection>": {shown,total}}` when several did, so no count is ambiguous.
+Totals are the counts before trimming and survive later budget passes.
+`neighbors` keeps its cursor: a budget-trimmed page returns a `next_cursor`
+that resumes at the first omitted row.
 
 `context`, `lookup` and `explain` accept `include=source|signatures|none`
 (default `source`): verified working-tree text for the entity span,

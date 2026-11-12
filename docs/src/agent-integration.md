@@ -150,8 +150,10 @@ this project. Do not call it; use normal file tools."; `--intelligence*` and
 Inside an enabled project the `repo` argument is optional and defaults to the
 `.chaosbox.json` repository; an explicit `repo` still wins. Every tool takes
 `max_tokens` (default 8000, maximum 20000, four characters per token). Results
-are trimmed item by item, highest rank first, and carry
-`truncated: {shown, total, next_cursor?}`; `neighbors` resumes with its
+are trimmed item by item, highest rank first, and report `truncated` counts:
+`{shown, total, next_cursor?}` for one trimmed collection, or
+`{"<collection>": {shown, total}}` when several lost items. Totals are the
+pre-trim counts and survive later budget passes; `neighbors` resumes with its
 existing cursor when rows are dropped.
 
 `context`, `lookup` and `explain` take `include: "source" | "signatures" |
