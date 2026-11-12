@@ -89,6 +89,10 @@ pub struct NeighborhoodPage {
     pub complete: bool,
     /// Resume both positions against the same immutable request and publication.
     pub next_cursor: Option<String>,
+    /// Positions this page read from, not serialized: a trim that drops every
+    /// row resumes there instead of past an undisplayed row.
+    pre_outgoing: Position,
+    pre_incoming: Position,
     /// Exact request scope, retained so output trimming can rebuild a cursor.
     #[serde(skip)]
     pub scope: NeighborhoodQuery,
@@ -121,12 +125,14 @@ impl NeighborhoodPage {
         self.outgoing.truncate(keep_out);
         self.incoming.truncate(keep_in);
         cursor.outgoing = trimmed_position(
+            &self.pre_outgoing,
             &cursor.outgoing,
             keep_out,
             out_full,
             self.outgoing.last().map(|row| row.rel_id.as_str()),
         );
         cursor.incoming = trimmed_position(
+            &self.pre_incoming,
             &cursor.incoming,
             keep_in,
             in_full,
@@ -148,19 +154,23 @@ impl NeighborhoodPage {
     }
 }
 
-/// Next-page position after keeping a prefix of the delivered rows.
-fn trimmed_position(original: &Position, kept: usize, full: usize, last: Option<&str>) -> Position {
+/// Next-page position after keeping a prefix of the delivered rows: the last
+/// kept row, the position the page itself read from when nothing survives, and
+/// the page's own end position when nothing was dropped.
+fn trimmed_position(
+    pre: &Position,
+    current: &Position,
+    kept: usize,
+    full: usize,
+    last: Option<&str>,
+) -> Position {
     if kept == full {
-        return original.clone();
+        return current.clone();
     }
     if kept > 0 {
-        return last.map_or(Position::Start, |id| Position::After(id.to_owned()));
+        return last.map_or_else(|| pre.clone(), |id| Position::After(id.to_owned()));
     }
-    if matches!(original, Position::Done) {
-        Position::Start
-    } else {
-        original.clone()
-    }
+    pre.clone()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -228,8 +238,7 @@ impl NeighborhoodQuery {
                         .iter()
                         .all(|p| match p {
                             Position::After(key) => valid_label(key),
-                            Position::Done => true,
-                            Position::Start => false,
+                            Position::Done | Position::Start => true,
                         });
                 if cursor.contract != CONTRACT
                     || cursor.version != VERSION
@@ -303,6 +312,8 @@ impl PreparedNeighborhood {
                 Position::Start
             },
         });
+        // A budget trim that drops every row must resume where this page read.
+        let (pre_outgoing, pre_incoming) = (cursor.outgoing.clone(), cursor.incoming.clone());
         let outgoing = reader
             .directional_page(
                 &query,
@@ -340,6 +351,8 @@ impl PreparedNeighborhood {
             incoming_complete,
             complete,
             next_cursor,
+            pre_outgoing,
+            pre_incoming,
             scope,
         })
     }

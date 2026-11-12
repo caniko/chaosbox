@@ -256,6 +256,55 @@ async fn fresh_handles_resume_exact_pages_without_active_pointer_or_collections(
 }
 
 #[tokio::test]
+async fn zero_row_trims_resume_at_the_first_undisplayed_row() {
+    let f = fixture();
+    let mut request = query(&f);
+    let first = GraphReader::neighborhood_page(handle(&f, true, false), request.clone())
+        .await
+        .unwrap();
+    assert!(!first.outgoing.is_empty() && !first.incoming.is_empty());
+
+    // Keeping no incoming row resumes at the first one, not past it.
+    let mut page = first;
+    let (outgoing, incoming) = (page.outgoing.clone(), page.incoming.clone());
+    page.trim_rows(outgoing.len(), 0);
+    assert!(page.incoming.is_empty());
+    assert!(!page.incoming_complete);
+    request.cursor = page.next_cursor.clone();
+    assert!(
+        request.clone().prepare().is_ok(),
+        "a zero-row direction keeps a resumable cursor"
+    );
+    let resumed = GraphReader::neighborhood_page(handle(&f, false, false), request.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        json!(resumed.incoming),
+        json!(incoming),
+        "incoming restarts at the first undisplayed row"
+    );
+    assert!(
+        resumed
+            .outgoing
+            .iter()
+            .all(|row| outgoing.iter().all(|kept| kept.rel_id != row.rel_id)),
+        "kept outgoing rows are not repeated"
+    );
+
+    // Both directions trimmed away resume at their own first undisplayed row.
+    let mut page = resumed;
+    let (outgoing, incoming) = (page.outgoing.clone(), page.incoming.clone());
+    page.trim_rows(0, 0);
+    assert!(page.outgoing.is_empty() && page.incoming.is_empty());
+    request.cursor = page.next_cursor.clone();
+    let again = GraphReader::neighborhood_page(handle(&f, false, false), request)
+        .await
+        .unwrap();
+    assert_eq!(json!(again.outgoing), json!(outgoing));
+    assert_eq!(json!(again.incoming), json!(incoming));
+}
+
+#[tokio::test]
 async fn canonical_filters_resume_and_scope_changes_fail_before_backend_reads() {
     let f = fixture();
     let mut request = query(&f);
@@ -462,7 +511,9 @@ async fn unavailable_build_and_malformed_cursor_never_fall_back_to_current() {
         );
     }
     for (outgoing, incoming) in [
-        (json!("start"), original["incoming"].clone()),
+        // A leading position is legal now: a trim to zero rows emits it. An
+        // empty `after` label is not.
+        (json!({"after": ""}), original["incoming"].clone()),
         (json!("done"), json!("done")),
         (json!({"after":"\n"}), original["incoming"].clone()),
     ] {
