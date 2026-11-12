@@ -894,35 +894,44 @@ pub(super) async fn serve_mcp(
                         }
                     } else if name.starts_with("intelligence_") {
                         graph = None;
-                        if let Some(reader) = federation.as_ref() {
-                            match reader.query(name, &params["arguments"]).await {
-                                Ok(value) => mcp_operator_result(&id, value, &params["arguments"]),
-                                Err(error) => mcp_error(&id, -32602, error.to_string(), None),
-                            }
-                        } else if let Some(reader) = current.as_mut() {
-                            match reader.query(name, &params["arguments"]).await {
-                                Ok(value) => mcp_operator_result(&id, value, &params["arguments"]),
-                                Err(error) => mcp_error(&id, -32602, error, None),
-                            }
-                        } else {
-                            match intelligence.as_ref() {
-                                Some(bundle) => match chaosbox::intelligence::mcp_query(
-                                    bundle,
-                                    name,
-                                    &params["arguments"],
-                                ) {
-                                    Ok(value) => {
-                                        mcp_operator_result(&id, value, &params["arguments"])
-                                    }
-                                    Err(error) => mcp_error(&id, -32602, error, None),
-                                },
-                                None => mcp_error(
+                        // Same shared argument handling as the graph tools: fill
+                        // the project's default repo and strip tool-local budget
+                        // fields before the strict backend decoders see them.
+                        let args = match mcp_args(name, &params, repo) {
+                            Ok(args) => args,
+                            Err(error) => {
+                                return mcp_error(
                                     &id,
-                                    -32601,
-                                    "no intelligence bundle configured".into(),
+                                    error["code"].as_i64().unwrap_or(-32602),
+                                    error["message"]
+                                        .as_str()
+                                        .unwrap_or("invalid params")
+                                        .to_owned(),
                                     None,
-                                ),
+                                );
                             }
+                        };
+                        let query = backend_args(args.clone());
+                        let result = if let Some(reader) = federation.as_ref() {
+                            reader
+                                .query(name, &query)
+                                .await
+                                .map_err(|error| error.to_string())
+                        } else if let Some(reader) = current.as_mut() {
+                            reader.query(name, &query).await
+                        } else if let Some(bundle) = intelligence.as_ref() {
+                            chaosbox::intelligence::mcp_query(bundle, name, &query)
+                        } else {
+                            return mcp_error(
+                                &id,
+                                -32601,
+                                "no intelligence bundle configured".into(),
+                                None,
+                            );
+                        };
+                        match result {
+                            Ok(value) => mcp_operator_result(&id, value, &Value::Object(args)),
+                            Err(error) => mcp_error(&id, -32602, error, None),
                         }
                     } else {
                         // Move ownership into this future. Cancellation drops all
@@ -1342,13 +1351,20 @@ fn workspace_call(
 /// Tool-level arguments never reach the strict query structs.
 const MCP_QUERY_LOCAL_ARGS: [&str; 3] = ["max_tokens", "include", "detail"];
 
-pub(super) fn prepare_path(
+/// Strict backend query structs see only their own fields.
+pub(super) fn backend_args(
     mut args: serde_json::Map<String, serde_json::Value>,
-) -> Result<chaosbox::PreparedPath, String> {
+) -> serde_json::Value {
     for key in MCP_QUERY_LOCAL_ARGS {
         args.remove(key);
     }
-    serde_json::from_value::<chaosbox::PathQuery>(Value::Object(args))
+    Value::Object(args)
+}
+
+pub(super) fn prepare_path(
+    args: serde_json::Map<String, serde_json::Value>,
+) -> Result<chaosbox::PreparedPath, String> {
+    serde_json::from_value::<chaosbox::PathQuery>(backend_args(args))
         .map_err(|error| error.to_string())
         .and_then(|query| query.prepare().map_err(|error| error.to_string()))
 }
@@ -1356,9 +1372,6 @@ pub(super) fn prepare_path(
 pub(super) fn prepare_neighborhood(
     mut args: serde_json::Map<String, serde_json::Value>,
 ) -> Result<chaosbox::PreparedNeighborhood, String> {
-    for key in MCP_QUERY_LOCAL_ARGS {
-        args.remove(key);
-    }
     if let Some(rel) = args.remove("rel") {
         if args.contains_key("rel_types") {
             return Err("rel and rel_types are mutually exclusive".into());
@@ -1385,8 +1398,7 @@ pub(super) fn prepare_neighborhood(
         super::backend_cmd::NEIGHBORHOOD_DEFAULT_LIMIT
     ));
     let query: chaosbox::NeighborhoodQuery =
-        serde_json::from_value(serde_json::Value::Object(args))
-            .map_err(|error| error.to_string())?;
+        serde_json::from_value(backend_args(args)).map_err(|error| error.to_string())?;
     query.prepare().map_err(|error| error.to_string())
 }
 

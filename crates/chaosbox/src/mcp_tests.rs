@@ -3,7 +3,7 @@
 use super::mcp_server::{
     ChangedFile, changed_entities, is_test_path, prepare_neighborhood, prepare_path,
     review_payload, safe_join, serve_source, trim_payload, SourceInclude, SourceTarget,
-    MCP_DESCRIPTION_LINE_MAX, MCP_NOT_ENABLED, char_budget, mcp_args, mcp_call_tool,
+    MCP_DESCRIPTION_LINE_MAX, MCP_NOT_ENABLED, backend_args, char_budget, mcp_args, mcp_call_tool,
     mcp_call_tool_without_opt_in, mcp_instructions, mcp_text_result, mcp_tool_defs, mcp_tool_list,
 };
 
@@ -1119,6 +1119,29 @@ fn review_keeps_every_affected_sibling_entity() {
         "both siblings survive; only the enclosing entity is dropped"
     );
     assert!(unmapped.is_empty());
+}
+
+#[test]
+fn intelligence_calls_accept_the_advertised_defaults() {
+    use serde_json::json;
+    let bundle = chaosbox::intelligence::Bundle::new("private");
+    let params = json!({"arguments": {"query": "deploy", "max_tokens": 500}});
+    let args = mcp_args("intelligence_context", &params, Some("demo")).unwrap();
+    assert_eq!(args["repo"], "demo");
+    // The advertised arguments include the budget field, which the strict
+    // decoder rejects; normalization strips it and fills the default repo.
+    assert!(chaosbox::intelligence::mcp_query(
+        &bundle,
+        "intelligence_context",
+        &serde_json::Value::Object(args.clone())
+    )
+    .is_err());
+    let answer =
+        chaosbox::intelligence::mcp_query(&bundle, "intelligence_context", &backend_args(args))
+            .unwrap();
+    assert_eq!(answer["scope"], "private");
+    assert_eq!(answer["records"], json!([]));
+    assert!(answer["snapshot"].as_str().is_some());
 }
 
 #[test]
