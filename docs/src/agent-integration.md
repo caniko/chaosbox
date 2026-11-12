@@ -154,7 +154,10 @@ are trimmed item by item, highest rank first, and report `truncated` counts:
 `{shown, total, next_cursor?}` for one trimmed collection, or
 `{"<collection>": {shown, total}}` when several lost items. Totals are the
 pre-trim counts and survive later budget passes; `neighbors` resumes with its
-existing cursor when rows are dropped.
+existing cursor when rows are dropped. When whole-item trimming cannot fit the
+budget, the answer is a small
+`{"error": "result exceeds max_tokens", "max_tokens": N, "needed_tokens": M,
+"hint": ...}` tool result, never an over-sized body or a protocol error.
 
 `context`, `lookup` and `explain` take `include: "source" | "signatures" |
 "none"` (default `source`). Verified working-tree text is line-numbered like

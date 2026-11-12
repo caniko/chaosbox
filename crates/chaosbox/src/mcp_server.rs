@@ -261,15 +261,35 @@ fn mcp_operator_result(
     value: serde_json::Value,
     args: &serde_json::Value,
 ) -> serde_json::Value {
-    match budget_any(value, args) {
-        Ok(value) => mcp_text_result(id, value),
-        Err(error) => mcp_error(id, -32602, error, None),
-    }
+    let budget = match operator_tokens(args) {
+        Ok(tokens) => tokens * MCP_CHARS_PER_TOKEN,
+        Err(error) => return mcp_error(id, -32602, error, None),
+    };
+    mcp_text_result(id, budget_any(value, budget), budget)
 }
 
-pub(super) fn mcp_text_result(id: &serde_json::Value, mut payload: Value) -> Value {
+/// The one finishing path every tool result goes through. A payload that
+/// still exceeds the budget after item trimming is answered with a small,
+/// valid tool result naming the overrun, not a protocol error.
+pub(super) fn mcp_text_result(id: &serde_json::Value, mut payload: Value, budget: usize) -> Value {
     flatten_truncated(&mut payload);
-    let Ok(bytes) = chaosbox::read_view::bounded_json(&payload, MCP_RESPONSE_BYTES) else {
+    let needed = encoded_len(&payload);
+    if needed > budget {
+        return text_result(
+            id,
+            &serde_json::json!({
+                "error": "result exceeds max_tokens",
+                "max_tokens": budget / MCP_CHARS_PER_TOKEN,
+                "needed_tokens": needed.div_ceil(MCP_CHARS_PER_TOKEN),
+                "hint": "narrow the query or raise max_tokens (max 20000)",
+            }),
+        );
+    }
+    text_result(id, &payload)
+}
+
+fn text_result(id: &serde_json::Value, payload: &Value) -> Value {
+    let Ok(bytes) = chaosbox::read_view::bounded_json(payload, MCP_RESPONSE_BYTES) else {
         return mcp_error(id, -32603, "MCP response byte budget exceeded".into(), None);
     };
     serde_json::json!({
@@ -463,7 +483,7 @@ async fn mcp_call_tool_connected(
         }
         .await
         {
-            Ok(page) => mcp_text_result(id, neighborhood_budget(page, budget)),
+            Ok(page) => mcp_text_result(id, neighborhood_budget(page, budget), budget),
             Err(error) => mcp_backend_error(id, name, &error),
         };
     }
@@ -483,7 +503,7 @@ async fn mcp_call_tool_connected(
         return match query.read(AnyReader::handle_cached(connection)).await {
             Ok(mut value) => {
                 fit_budget(&mut value, budget, &["/path"]);
-                mcp_text_result(id, value)
+                mcp_text_result(id, value, budget)
             }
             Err(error) => mcp_backend_error(id, name, &error),
         };
@@ -660,7 +680,7 @@ async fn mcp_call_tool_connected(
     match payload {
         Ok(v) => {
             let v = finish_payload(name, v, budget, enabled, &reader, include, detail).await;
-            mcp_text_result(id, v)
+            mcp_text_result(id, v, budget)
         }
         Err(e) => mcp_error(id, -32603, e, None),
     }
@@ -1530,18 +1550,21 @@ pub(super) fn trim_payload(name: &str, payload: &mut Value, budget: usize) {
     }
 }
 
-/// Budget for the operator tools whose shapes this module does not own: trim
-/// the longest top-level list, or leave scalar payloads untouched.
-fn budget_any(mut value: Value, args: &Value) -> Result<Value, String> {
-    let tokens = match args.get("max_tokens") {
-        None => MCP_MAX_TOKENS_DEFAULT,
+/// Tokens requested by an operator tool, validated like every other tool.
+fn operator_tokens(args: &Value) -> Result<usize, String> {
+    match args.get("max_tokens") {
+        None => Ok(MCP_MAX_TOKENS_DEFAULT),
         Some(value) => value
             .as_u64()
             .and_then(|tokens| usize::try_from(tokens).ok())
             .filter(|tokens| (1..=MCP_MAX_TOKENS_MAX).contains(tokens))
-            .ok_or_else(|| format!("max_tokens must be an integer in 1..{MCP_MAX_TOKENS_MAX}"))?,
-    };
-    let budget = tokens * MCP_CHARS_PER_TOKEN;
+            .ok_or_else(|| format!("max_tokens must be an integer in 1..{MCP_MAX_TOKENS_MAX}")),
+    }
+}
+
+/// Budget for the operator tools whose shapes this module does not own: trim
+/// the longest top-level list, or leave scalar payloads untouched.
+fn budget_any(mut value: Value, budget: usize) -> Value {
     let lists: Vec<String> = value
         .as_object()
         .map(|object| {
@@ -1556,7 +1579,7 @@ fn budget_any(mut value: Value, args: &Value) -> Result<Value, String> {
     if !pointers.is_empty() {
         fit_budget(&mut value, budget, &pointers);
     }
-    Ok(value)
+    value
 }
 
 /// Markdown has no item list: keep whole `##` sections and state the omission.

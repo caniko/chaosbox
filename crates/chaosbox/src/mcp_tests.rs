@@ -4,7 +4,7 @@ use super::mcp_server::{
     ChangedFile, changed_entities, is_test_path, prepare_neighborhood, prepare_path,
     review_payload, safe_join, serve_source, trim_payload, SourceInclude, SourceTarget,
     MCP_DESCRIPTION_LINE_MAX, MCP_NOT_ENABLED, char_budget, mcp_args, mcp_call_tool,
-    mcp_call_tool_without_opt_in, mcp_instructions, mcp_tool_defs, mcp_tool_list,
+    mcp_call_tool_without_opt_in, mcp_instructions, mcp_text_result, mcp_tool_defs, mcp_tool_list,
 };
 
 /// Signals when a pending backend future is dropped.
@@ -162,6 +162,34 @@ fn schemas_declare_every_default() {
         assert_eq!(schema["default"], 8000, "{}", tool["name"]);
         assert_eq!(schema["maximum"], 20000, "{}", tool["name"]);
     }
+}
+
+#[test]
+fn untrimmable_payloads_report_the_budget_as_a_tool_result() {
+    use serde_json::json;
+    let mut payload = json!({
+        "build_id": "build:1234",
+        "nodes": [{"id":"ent:a"},{"id":"ent:b"}],
+        "coverage": {"files": 12, "nodes": 40},
+    });
+    trim_payload("search", &mut payload, 60);
+    assert!(payload["nodes"].as_array().unwrap().is_empty());
+    assert!(
+        serde_json::to_string(&payload).unwrap().len() > 60,
+        "metadata alone exceeds the budget"
+    );
+    let answer = mcp_text_result(&json!(9), payload, 60);
+    assert!(
+        answer.get("error").is_none(),
+        "a budget overrun is a small tool result, not a protocol error: {answer}"
+    );
+    assert_eq!(answer["id"], 9);
+    let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+    let value: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(value["error"], "result exceeds max_tokens");
+    assert_eq!(value["max_tokens"], 15);
+    assert!(value["needed_tokens"].as_u64().unwrap() > 15);
+    assert!(value["hint"].as_str().unwrap().contains("max 20000"));
 }
 
 #[test]
