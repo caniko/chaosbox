@@ -26,6 +26,7 @@ use chaosbox_pg::{
 use clap::{Parser, Subcommand};
 
 mod backend_cmd;
+mod hint;
 mod jev_cmd;
 mod mcp_server;
 mod pipeline_cmd;
@@ -180,6 +181,10 @@ enum Command {
     Enable(setup_cmd::EnableArgs),
     /// Remove this project's marker and guidance.
     Disable(setup_cmd::DisableArgs),
+    /// Internal: harness `PostToolUse` hint hook (reads one JSON object on
+    /// stdin).
+    #[command(hide = true)]
+    Hint,
     /// Query helpers (read-only; PostgreSQL-backed, shared with MCP).
     Query {
         #[command(subcommand)]
@@ -633,6 +638,7 @@ async fn main() {
         Command::Uninstall(args) => std::process::exit(setup_cmd::install(&args, true)),
         Command::Enable(args) => std::process::exit(setup_cmd::enable(&args)),
         Command::Disable(args) => std::process::exit(setup_cmd::disable(&args)),
+        Command::Hint => std::process::exit(Box::pin(hint::run()).await),
         Command::Run(args) => std::process::exit(Box::pin(pipeline_cmd::run_cmd(&args)).await),
         Command::Watch { run, interval_secs } => {
             std::process::exit(Box::pin(pipeline_cmd::watch(&run, interval_secs)).await)
