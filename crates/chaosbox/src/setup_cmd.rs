@@ -100,6 +100,7 @@ fn write_file(path: &Path, text: &str, mode: u32) -> Result<(), String> {
 }
 
 /// One planned edit, printed as JSON; applied only when `contents` is set.
+#[derive(Debug)]
 struct Change {
     path: PathBuf,
     action: &'static str,
@@ -503,24 +504,23 @@ fn git_root(dir: &Path) -> Result<PathBuf, String> {
         .ok_or_else(|| "empty git root".to_owned())
 }
 
-fn plan_enable(root: &Path, repo: &str) -> Vec<Change> {
+fn plan_enable(root: &Path, repo: &str) -> Result<Vec<Change>, Change> {
+    let marker = plan_marker(&root.join(chaosbox::enablement::MARKER), Some(repo), false);
+    // A refused marker leaves the project alone entirely: guidance must never
+    // name a repository the marker does not record.
+    if marker.action == "refused" {
+        return Err(marker);
+    }
     let text = guidance(repo);
     let agents = root.join("AGENTS.md");
     let claude = root.join("CLAUDE.md");
-    let mut changes = vec![
-        plan_marker(
-            &root.join(chaosbox::enablement::MARKER),
-            Some(repo),
-            false,
-        ),
-        plan_block(&agents, &text, MARKDOWN, false),
-    ];
+    let mut changes = vec![marker, plan_block(&agents, &text, MARKDOWN, false)];
     // Keep the agent file the project already uses; a project with neither
     // gets CLAUDE.md (Claude Code reads it without extra configuration).
     if claude.exists() || !agents.exists() {
         changes.push(plan_block(&claude, &text, MARKDOWN, false));
     }
-    changes
+    Ok(changes)
 }
 
 fn plan_disable(root: &Path) -> Vec<Change> {
@@ -537,7 +537,13 @@ pub(super) fn enable(args: &EnableArgs) -> i32 {
         return 1;
     }
     match git_root(&args.dir) {
-        Ok(root) => apply(&plan_enable(&root, &args.repo), args.dry_run, &[], 0o644),
+        Ok(root) => {
+            let changes = match plan_enable(&root, &args.repo) {
+                Ok(changes) => changes,
+                Err(refusal) => vec![refusal],
+            };
+            apply(&changes, args.dry_run, &[], 0o644)
+        }
         Err(error) => {
             eprintln!("enable: not a git repository: {error}");
             1
@@ -555,7 +561,7 @@ pub(super) fn disable(args: &DisableArgs) -> i32 {
     }
 }
 
-/// The PostToolUse handler `install` adds to Claude Code.
+/// The `PostToolUse` handler `install` adds to Claude Code.
 const HINT_MATCHER: &str = "Grep|Glob|Bash|Read";
 const HINT_COMMAND: &str = "chaosbox hint";
 
@@ -564,7 +570,7 @@ fn is_our_hook(entry: &Value) -> bool {
         && entry.get("command").and_then(Value::as_str) == Some(HINT_COMMAND)
 }
 
-/// Plan the managed `chaosbox hint` PostToolUse hooks in a Claude Code
+/// Plan the managed `chaosbox hint` `PostToolUse` hooks in a Claude Code
 /// settings file. Foreign hooks are kept; only entries whose command is
 /// exactly ours are added or removed.
 fn plan_hooks(path: &Path, remove: bool) -> Change {
@@ -595,10 +601,7 @@ fn plan_hooks(path: &Path, remove: bool) -> Change {
         Ok(config @ Value::Object(_)) => config,
         _ => return refuse(path, "not a JSON object", &snippet),
     };
-    if config
-        .get("hooks")
-        .is_some_and(|hooks| !hooks.is_object())
-    {
+    if config.get("hooks").is_some_and(|hooks| !hooks.is_object()) {
         return if remove {
             change("unchanged", None)
         } else {
@@ -649,7 +652,10 @@ fn plan_hooks(path: &Path, remove: bool) -> Change {
         changed.push(entry);
         config["hooks"]["PostToolUse"] = Value::Array(changed);
     }
-    if config["hooks"].as_object().is_some_and(serde_json::Map::is_empty) {
+    if config["hooks"]
+        .as_object()
+        .is_some_and(serde_json::Map::is_empty)
+    {
         if let Some(config) = config.as_object_mut() {
             config.remove("hooks");
         }
@@ -748,7 +754,11 @@ mod tests {
     #[test]
     fn guidance_is_imperative_bounded_and_self_contained() {
         let text = guidance("canix");
-        assert!(text.chars().count() <= 1200, "{} chars", text.chars().count());
+        assert!(
+            text.chars().count() <= 1200,
+            "{} chars",
+            text.chars().count()
+        );
         assert!(text.contains("`canix`"));
         assert!(text.contains("MUST ask Chaosbox"));
         assert!(text.contains("Do not re-verify"));
@@ -760,7 +770,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir(root.join(".git")).unwrap();
-        apply_changes(&plan_enable(root, "canix"));
+        apply_changes(&plan_enable(root, "canix").unwrap());
         assert_eq!(
             std::fs::read_to_string(root.join(".chaosbox.json")).unwrap(),
             "{\n  \"repo\": \"canix\"\n}\n"
@@ -770,9 +780,9 @@ mod tests {
         assert!(root.join("CLAUDE.md").is_file());
 
         // Idempotent, and a different repo is refused.
-        let again = plan_enable(root, "canix");
+        let again = plan_enable(root, "canix").unwrap();
         assert!(again.iter().all(|change| change.action == "unchanged"));
-        assert_eq!(plan_enable(root, "other")[0].action, "refused");
+        assert_eq!(plan_enable(root, "other").unwrap_err().action, "refused");
 
         apply_changes(&plan_disable(root));
         assert!(!root.join(".chaosbox.json").exists());
@@ -785,7 +795,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::write(root.join("AGENTS.md"), "# House rules\n").unwrap();
-        apply_changes(&plan_enable(root, "canix"));
+        apply_changes(&plan_enable(root, "canix").unwrap());
         let agents = std::fs::read_to_string(root.join("AGENTS.md")).unwrap();
         assert!(agents.starts_with("# House rules\n"));
         assert!(
