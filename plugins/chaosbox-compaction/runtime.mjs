@@ -37,6 +37,40 @@ export function subprocess(binary, args, input, timeout = 120_000) {
   });
 }
 
+/** Harness-shaped PostToolUse payload for `chaosbox hint`. */
+export function hintPayload(event, cwd) {
+  return {
+    session_id: event.sessionID,
+    cwd,
+    tool_name: event.tool,
+    tool_input: event.input ?? {},
+  };
+}
+
+/** The injected hint text, or "" when Chaosbox stayed silent. */
+export function hintText(output) {
+  const text = output?.hookSpecificOutput?.additionalContext;
+  return typeof text === "string" ? text.trim() : "";
+}
+
+/**
+ * Append hint text to a completed tool result so the model reads it.
+ * Observation hooks may mutate the event result; the runtime rebuilds the
+ * model-visible content from it after every hook returns.
+ */
+export function appendHint(event, text) {
+  if (!text || event?.status !== "completed" || !event.result) return false;
+  const result = event.result;
+  const part = { type: "text", text: `\n${text}` };
+  result.content = Array.isArray(result.content)
+    ? [...result.content, part]
+    : [{ type: "text", text: result.content ?? "" }, part];
+  return true;
+}
+
+/** Tools whose arguments a hint can read. */
+const HINT_TOOLS = new Set(["grep", "glob", "bash", "shell", "read"]);
+
 /** Runtime seam tested with real Rust separately and an injected command runner. */
 export function coordinator(options, run, repository) {
   const { work, scope, repo } = options;
@@ -294,6 +328,16 @@ export function coordinator(options, run, repository) {
         workerRunning: Boolean(worker),
         archive: await command("status", archiveArgs),
       };
+    },
+    /** Steering hint for the search tool the model just ran; "" on silence. */
+    async hint(event, cwd) {
+      if (event?.status !== "completed") return "";
+      if (!HINT_TOOLS.has(String(event.tool).toLowerCase())) return "";
+      try {
+        return hintText(await run(binary, ["hint"], hintPayload(event, cwd), 5_000));
+      } catch {
+        return "";
+      }
     },
   };
 }
