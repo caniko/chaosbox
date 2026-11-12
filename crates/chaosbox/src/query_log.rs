@@ -71,16 +71,28 @@ pub fn line(
                 Some(out.len() + inc.len())
             })
     });
-    // The shared response contract puts served source at top level. Recording
-    // it makes "did the agent read again what it already had?" measurable.
-    let source = response
+    // The shared response contract puts served source at top level. Only text
+    // counts: a pointer entry says where the file is, not that the agent read it.
+    let served: Option<Vec<(&str, &str)>> = response
         .and_then(|r| r.get("source"))
-        .and_then(Value::as_array);
-    let served_files = source.map(|items| {
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let text = item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())?;
+                    Some((item.get("file")?.as_str()?, text))
+                })
+                .collect()
+        });
+    let served_files = served.as_ref().map(|items| {
         let mut files: Vec<String> = Vec::new();
-        for file in items.iter().filter_map(|item| item.get("file")?.as_str()) {
-            if !files.iter().any(|seen| seen == file) {
-                files.push(file.to_owned());
+        for (file, _) in items {
+            if !files.iter().any(|seen| seen.as_str() == *file) {
+                files.push((*file).to_owned());
             }
             if files.len() == SERVED_FILES_MAX {
                 break;
@@ -88,11 +100,10 @@ pub fn line(
         }
         files
     });
-    let served_chars = source.map(|items| {
+    let served_chars = served.map(|items| {
         items
             .iter()
-            .filter_map(|item| item.get("text").and_then(Value::as_str))
-            .map(|text| text.chars().count())
+            .map(|(_, text)| text.chars().count())
             .sum::<usize>()
     });
     let root =
@@ -258,6 +269,24 @@ mod tests {
             (plain["served_files"].clone(), plain["served_chars"].clone()),
             (json!(null), json!(null))
         );
+    }
+
+    #[test]
+    fn only_served_text_is_recorded_as_source() {
+        let entry = line(
+            "mcp",
+            "explain",
+            &json!({"repo":"r"}),
+            1,
+            0,
+            Some(&json!({"source": [
+                {"file":"src/a.rs","start_line":1,"end_line":2,"text":"1\tfn a() {}\n"},
+                {"file":"src/b.rs","start_line":3,"end_line":3,"stale":true},
+                {"file":"src/c.rs","start_line":4,"end_line":4,"text":""},
+            ]})),
+        );
+        assert_eq!(entry["served_files"], json!(["src/a.rs"]));
+        assert_eq!(entry["served_chars"], json!(12));
     }
 
     #[test]
