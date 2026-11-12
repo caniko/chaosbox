@@ -1,6 +1,10 @@
 //! MCP surface unit tests, moved verbatim from the former inline `mod tests` block.
 
-use super::mcp_server::{mcp_args, mcp_call_tool, mcp_tool_defs};
+use super::mcp_server::{
+    is_test_path, review_payload, safe_join, serve_source, trim_payload, SourceInclude,
+    SourceTarget, MCP_DESCRIPTION_LINE_MAX, MCP_NOT_ENABLED, char_budget, mcp_args, mcp_call_tool,
+    mcp_call_tool_without_opt_in, mcp_instructions, mcp_tool_defs, mcp_tool_list,
+};
 
 /// Signals when a pending backend future is dropped.
 struct Guard(tokio::sync::watch::Sender<bool>);
@@ -13,8 +17,8 @@ impl Drop for Guard {
 
 #[test]
 fn tool_defs_are_read_only_with_schemas() {
-    let defs = mcp_tool_defs();
-    assert_eq!(defs.len(), 13);
+    let defs = mcp_tool_defs(None);
+    assert_eq!(defs.len(), 14);
     for d in &defs {
         assert_eq!(d["annotations"]["readOnlyHint"], true);
         assert!(d["inputSchema"]["properties"].is_object(), "{d}");
@@ -37,8 +41,258 @@ fn tool_defs_are_read_only_with_schemas() {
 }
 
 #[test]
+fn enabled_projects_default_the_repo_argument() {
+    let defs = mcp_tool_defs(Some("demo"));
+    assert_eq!(defs.len(), 14);
+    for d in &defs {
+        let schema = &d["inputSchema"];
+        assert!(
+            !schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("repo")),
+            "repo is optional under an opt-in: {d}"
+        );
+        assert_eq!(schema["properties"]["repo"]["default"], "demo", "{d}");
+        assert_eq!(schema["properties"]["repo"]["minLength"], 1, "{d}");
+    }
+    // An omitted repo resolves to the marker's repository; an explicit one wins.
+    let args = mcp_args("status", &serde_json::json!({"arguments":{}}), Some("demo")).unwrap();
+    assert_eq!(args["repo"], "demo");
+    let args = mcp_args(
+        "status",
+        &serde_json::json!({"arguments":{"repo":"other"}}),
+        Some("demo"),
+    )
+    .unwrap();
+    assert_eq!(args["repo"], "other");
+    let args = mcp_args("status", &serde_json::json!({"arguments":{}}), None).unwrap();
+    assert!(args.get("repo").is_none());
+}
+
+#[tokio::test]
+async fn unmarked_projects_advertise_no_graph_tools_and_answer_with_the_opt_in() {
+    use serde_json::json;
+    let defs = mcp_tool_list(None, false, false, false);
+    assert!(defs.is_empty(), "no tools without an opt-in: {defs:?}");
+    // Operator flags keep exactly their own tools.
+    let defs = mcp_tool_list(None, true, false, true);
+    let names: Vec<_> = defs.iter().map(|d| d["name"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        [
+            "intelligence_context",
+            "intelligence_evidence",
+            "workspace_impact"
+        ]
+    );
+    for name in ["search", "context", "lookup", "review"] {
+        let response =
+            mcp_call_tool_without_opt_in(&json!(1), name, &json!({"arguments":{}})).await;
+        assert_eq!(response["error"]["code"], -32601, "{name}: {response}");
+        assert_eq!(response["error"]["message"], MCP_NOT_ENABLED, "{name}");
+    }
+}
+
+#[test]
+fn tool_descriptions_open_with_when_to_use_and_stay_small() {
+    // Baseline before the token-economy rewrite: 1439 characters.
+    let budget = 1439;
+    let defs = mcp_tool_defs(Some("demo"));
+    let total: usize = defs
+        .iter()
+        .map(|tool| {
+            tool["description"]
+                .as_str()
+                .unwrap_or_default()
+                .chars()
+                .count()
+        })
+        .sum();
+    assert!(total <= budget, "descriptions grew to {total} characters");
+    for tool in &defs {
+        let first = tool["description"]
+            .as_str()
+            .unwrap_or_default()
+            .lines()
+            .next()
+            .unwrap_or_default();
+        assert!(
+            first.chars().count() <= MCP_DESCRIPTION_LINE_MAX,
+            "{} first line is {} chars: {first}",
+            tool["name"],
+            first.chars().count()
+        );
+    }
+}
+
+#[test]
+fn schemas_declare_every_default() {
+    use serde_json::json;
+    let defs = mcp_tool_defs(Some("demo"));
+    let declared = [
+        ("search", "limit", json!(20)),
+        ("neighbors", "limit", json!(20)),
+        ("neighbors", "direction", json!("both")),
+        ("path", "max_hops", json!(4)),
+        ("status", "detail", json!("summary")),
+        ("lookup", "include", json!("source")),
+        ("explain", "include", json!("source")),
+        ("context", "depth", json!(3)),
+        ("context", "max_nodes", json!(20)),
+        ("context", "max_chars", json!(12000)),
+        ("context", "include", json!("source")),
+        ("stats", "limit", json!(10)),
+        ("stats", "resolution", json!(1.0)),
+        ("community", "limit", json!(100)),
+        ("community", "resolution", json!(1.0)),
+        ("report", "resolution", json!(1.0)),
+        ("review", "base", json!("HEAD")),
+    ];
+    for (name, field, default) in declared {
+        let tool = defs.iter().find(|tool| tool["name"] == name).unwrap();
+        assert_eq!(
+            tool["inputSchema"]["properties"][field]["default"], default,
+            "{name}.{field} must declare its default"
+        );
+    }
+    for tool in &defs {
+        let schema = &tool["inputSchema"]["properties"]["max_tokens"];
+        assert_eq!(schema["default"], 8000, "{}", tool["name"]);
+        assert_eq!(schema["maximum"], 20000, "{}", tool["name"]);
+    }
+}
+
+#[test]
+fn large_results_are_trimmed_item_wise_under_the_budget() {
+    use serde_json::json;
+    let nodes: Vec<_> = (0..200)
+        .map(|index| json!({"id": format!("ent:{index}"), "label": format!("symbol_{index}")}))
+        .collect();
+    let mut payload = json!({"nodes": nodes});
+    assert_eq!(char_budget(&serde_json::Map::new()), 32_000);
+    trim_payload("search", &mut payload, 4_000);
+    assert!(serde_json::to_string(&payload).unwrap().len() <= 4_000);
+    assert_eq!(payload["truncated"]["total"], 200);
+    let shown = payload["nodes"].as_array().unwrap().len();
+    assert_eq!(payload["truncated"]["shown"], shown);
+    assert!(shown < 200, "the fixture must be trimmed");
+    assert_eq!(payload["nodes"][0]["id"], "ent:0", "ranked order kept");
+}
+
+#[test]
+fn source_serves_verified_lines_and_refuses_stale_or_escaping_paths() {
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let text = "fn a() {}\nfn b() {\n    1\n}\n";
+    std::fs::write(root.join("src/lib.rs"), text).unwrap();
+    let mut digests = std::collections::BTreeMap::new();
+    digests.insert(
+        ("snap:one".to_owned(), "src/lib.rs".to_owned()),
+        chaosbox_core::sha256_hex(&[text]),
+    );
+    let target = |file: &str| SourceTarget {
+        file: file.to_owned(),
+        snapshot: "snap:one".to_owned(),
+        start: 2,
+        end: 3,
+    };
+    let (entries, stale, served) = serve_source(
+        root,
+        &[target("src/lib.rs")],
+        &digests,
+        SourceInclude::Source,
+        4096,
+    );
+    assert_eq!(entries[0]["file"], "src/lib.rs");
+    assert_eq!(entries[0]["start_line"], 2);
+    assert_eq!(entries[0]["end_line"], 3);
+    assert_eq!(entries[0]["text"], "     2\tfn b() {\n     3\t    1\n");
+    assert!(stale.is_empty());
+    assert_eq!(served, ["src/lib.rs"]);
+
+    // Indexed bytes no longer match the working tree: pointer only.
+    std::fs::write(root.join("src/lib.rs"), "changed\n").unwrap();
+    let (entries, stale, served) = serve_source(
+        root,
+        &[target("src/lib.rs")],
+        &digests,
+        SourceInclude::Source,
+        4096,
+    );
+    assert_eq!(entries[0]["stale"], true);
+    assert!(entries[0].get("text").is_none());
+    assert!(entries[0].get("end_line").is_some());
+    assert_eq!(stale, ["src/lib.rs"]);
+    assert!(served.is_empty());
+
+    // Never outside the enabled root.
+    assert!(safe_join(root, "../secret").is_none());
+    assert!(safe_join(root, "/etc/passwd").is_none());
+    assert!(safe_join(root, "src/../../secret").is_none());
+    let (entries, _, _) = serve_source(
+        root,
+        &[target("../secret")],
+        &digests,
+        SourceInclude::Source,
+        4096,
+    );
+    assert!(entries[0].get("text").is_none());
+
+    // Restore the indexed bytes: signatures fall back to the span's first line.
+    std::fs::write(root.join("src/lib.rs"), text).unwrap();
+    let (entries, _, _) = serve_source(
+        root,
+        &[target("src/lib.rs")],
+        &digests,
+        SourceInclude::Signatures,
+        4096,
+    );
+    assert_eq!(entries[0]["text"], "     2\tfn b() {\n");
+    let (entries, _, _) = serve_source(
+        root,
+        &[target("src/lib.rs")],
+        &digests,
+        SourceInclude::None,
+        4096,
+    );
+    assert!(entries[0].get("text").is_none());
+}
+
+#[test]
+fn test_paths_are_recognized_for_the_review_safety_net() {
+    for path in [
+        "tests/it.rs",
+        "src/test_helper.rs",
+        "src/foo_test.rs",
+        "web/app.test.ts",
+        "spec/models/user.rb",
+    ] {
+        assert!(is_test_path(path), "{path}");
+    }
+    for path in ["src/lib.rs", "docs/agent.md", "crates/api/src/main.rs"] {
+        assert!(!is_test_path(path), "{path}");
+    }
+}
+
+#[test]
+fn instructions_fit_the_mcp_prompt_budget() {
+    let text = mcp_instructions("demo");
+    assert!(text.len() <= 2000, "instructions are {} bytes", text.len());
+    for tool in mcp_tool_defs(Some("demo")) {
+        assert!(
+            text.contains(tool["name"].as_str().unwrap()),
+            "instructions omit {}",
+            tool["name"]
+        );
+    }
+}
+
+#[test]
 fn neighbors_advertises_bounded_continuation() {
-    let defs = mcp_tool_defs();
+    let defs = mcp_tool_defs(None);
     let neighbors = defs
         .iter()
         .find(|tool| tool["name"] == "neighbors")
@@ -60,7 +314,7 @@ fn neighbors_advertises_bounded_continuation() {
 
 #[test]
 fn historical_tools_advertise_optional_exact_publication() {
-    let defs = mcp_tool_defs();
+    let defs = mcp_tool_defs(None);
     for name in ["lookup", "explain", "evidence", "neighbors"] {
         let tool = defs.iter().find(|tool| tool["name"] == name).unwrap();
         let schema = &tool["inputSchema"];
@@ -126,7 +380,7 @@ async fn historical_cursor_conflicts_fail_before_credentials() {
 
 #[test]
 fn path_advertises_shared_bounds_and_rejects_unknown_fields() {
-    let defs = mcp_tool_defs();
+    let defs = mcp_tool_defs(None);
     let path = defs.iter().find(|tool| tool["name"] == "path").unwrap();
     let schema = &path["inputSchema"];
     assert_eq!(schema["additionalProperties"], false);
@@ -210,7 +464,7 @@ async fn neighbors_rejects_invalid_supplied_arguments_before_credentials() {
 
 #[test]
 fn missing_args_rejected_before_backend() {
-    let err = mcp_args("search", &serde_json::json!({})).unwrap_err();
+    let err = mcp_args("search", &serde_json::json!({}), None).unwrap_err();
     assert_eq!(err["code"], -32602);
 }
 
@@ -229,22 +483,17 @@ async fn unknown_tools_rejected_without_backend() {
 }
 
 #[tokio::test]
-async fn missing_repo_rejected_before_backend() {
-    // No backend needed: the explicit-repo rule fires first.
-    let resp = Box::pin(mcp_call_tool(
+async fn missing_repo_is_an_argument_error_without_an_opt_in() {
+    // No backend needed: the explicit-repo rule fires first when there is no
+    // marker to default from.
+    let resp = Box::pin(mcp_call_tool_without_opt_in(
         &serde_json::json!(1),
         "search",
         &serde_json::json!({"arguments": {"query": "alpha"}}),
     ))
     .await;
-    assert_eq!(resp["error"]["code"], -32602, "{resp}");
-    assert!(
-        resp["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("repo"),
-        "{resp}"
-    );
+    assert_eq!(resp["error"]["code"], -32601, "{resp}");
+    assert_eq!(resp["error"]["message"], MCP_NOT_ENABLED, "{resp}");
 }
 
 #[tokio::test]
@@ -317,8 +566,8 @@ fn mcp_tool_set_loads_no_provider_credentials() {
     // MCP path never calls `JevClient::api_key`: grep the source rather
     // than trusting the shape alone, so a future mutation tool cannot slip
     // past the closed set unnoticed.
-    let defs = mcp_tool_defs();
-    assert_eq!(defs.len(), 13);
+    let defs = mcp_tool_defs(None);
+    assert_eq!(defs.len(), 14);
     let names: Vec<_> = defs
         .iter()
         .map(|d| d["name"].as_str().unwrap_or_default())
@@ -551,4 +800,154 @@ async fn ordinary_slow_output_keeps_one_deadline_and_drops_the_active_read() {
     assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
     assert!(began.elapsed() >= std::time::Duration::from_secs(9));
     assert!(*drop_rx.borrow());
+}
+
+/// Disposable fixture identity: temp repositories never touch operator config.
+fn run_git(root: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "Chaosbox Test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Chaosbox Test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn span(file: &str, start: u32, end: u32) -> chaosbox_core::SourceSpan {
+    chaosbox_core::SourceSpan {
+        file: file.to_owned(),
+        start_line: start,
+        start_col: 1,
+        end_line: end,
+        end_col: 1,
+        byte_start: 0,
+        byte_end: 0,
+    }
+}
+
+#[tokio::test]
+async fn review_maps_diff_hunks_to_callers_and_tests() {
+    use chaosbox_core::{Entity, EntityKind, GraphBuild, Relation, RelationScope, RelationType};
+    use chaosbox_store::MemoryReader;
+
+    const REPO: &str = "demo";
+    const SNAP: &str = "snap:fixture";
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("tests")).unwrap();
+    std::fs::write(
+        root.join("src/lib.rs"),
+        "// header\nfn work() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("src/quiet.rs"), "fn quiet() {}\n").unwrap();
+    std::fs::write(root.join("src/user.rs"), "fn user() { work(); }\n").unwrap();
+    std::fs::write(root.join("tests/it.rs"), "#[test] fn t() { work(); }\n").unwrap();
+    run_git(root, &["init", "-q"]);
+    run_git(root, &["add", "."]);
+    run_git(root, &["commit", "-q", "-m", "fixture"]);
+    // One change inside the indexed definition, one outside every span.
+    std::fs::write(
+        root.join("src/lib.rs"),
+        "// changed header\nfn work() {\n    let x = 1;\n    let y = 2;\n    x * y\n}\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("src/quiet.rs"), "fn quiet() { }\n").unwrap();
+
+    let work = Entity::new(
+        EntityKind::Definition,
+        REPO,
+        SNAP,
+        "src/lib.rs",
+        "work",
+        "work",
+        span("src/lib.rs", 2, 6),
+    );
+    let quiet = Entity::new(
+        EntityKind::Definition,
+        REPO,
+        SNAP,
+        "src/quiet.rs",
+        "quiet",
+        "quiet",
+        span("src/quiet.rs", 1, 1),
+    );
+    let caller = Entity::new(
+        EntityKind::Definition,
+        REPO,
+        SNAP,
+        "src/user.rs",
+        "user",
+        "user",
+        span("src/user.rs", 1, 1),
+    );
+    let test = Entity::new(
+        EntityKind::Definition,
+        REPO,
+        SNAP,
+        "tests/it.rs",
+        "t",
+        "tests::t",
+        span("tests/it.rs", 1, 1),
+    );
+    let mut build = GraphBuild::new(REPO, vec![SNAP.to_owned()], 1);
+    for node in [&work, &quiet, &caller, &test] {
+        build.add_node(node.clone()).unwrap();
+    }
+    build
+        .add_edge(Relation::new(
+            RelationType::Calls,
+            &caller.id,
+            &work.id,
+            RelationScope::CrossFile,
+            &build.id,
+        ))
+        .unwrap();
+    build
+        .add_edge(Relation::new(
+            RelationType::References,
+            &test.id,
+            &work.id,
+            RelationScope::CrossFile,
+            &build.id,
+        ))
+        .unwrap();
+    let mut memory = MemoryReader::new();
+    memory.insert_build(build.clone());
+    memory.set_active(REPO, &build.id);
+    let reader = chaosbox::GraphReader::pinned(memory, REPO).await.unwrap();
+
+    let review = review_payload(&reader, root, "HEAD", 4_000).await.unwrap();
+    let entities = review["entities"].as_array().unwrap();
+    assert_eq!(entities.len(), 2, "{review}");
+    assert_eq!(entities[0]["id"], work.id);
+    assert_eq!(entities[0]["callers"], 2);
+    assert_eq!(entities[0]["test_count"], 1);
+    assert_eq!(entities[0]["tests"][0]["file"], "tests/it.rs");
+    assert_eq!(entities[1]["id"], quiet.id);
+    assert_eq!(entities[1]["callers"], 0);
+    assert_eq!(review["unmapped"][0]["file"], "src/lib.rs");
+    assert_eq!(review["unmapped"][0]["start_line"], 1);
+    assert_eq!(review["changed_files"], 2);
+    // MemoryReader retains no file versions, so text is never claimed fresh.
+    for entry in review["source"].as_array().unwrap() {
+        assert!(entry.get("text").is_none(), "{entry}");
+    }
+    assert!(serde_json::to_string(&review).unwrap().len() <= 4_000);
+
+    // `base` is verified before any diff runs; a flag is never a revision.
+    assert!(review_payload(&reader, root, "--help", 4_000)
+        .await
+        .is_err());
 }

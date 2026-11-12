@@ -380,6 +380,20 @@ impl<R: chaosbox_store::GraphQueries> GraphReader<R> {
         Ok(serde_json::json!({"rel": rel_id, "evidence": rows}))
     }
 
+    /// Name-resolved content digest the build recorded for one captured file.
+    /// `None` means the projection lacks file versions, so callers cannot
+    /// verify working-tree text against the indexed bytes.
+    pub async fn file_sha256(
+        &self,
+        snapshot: &str,
+        path: &str,
+    ) -> Result<Option<String>, PipelineError> {
+        self.handle
+            .file_version_sha256(snapshot, path)
+            .await
+            .map_err(|e| PipelineError::Consumer(e.to_string()))
+    }
+
     /// Source-backed entity explanation: structured info, no generated prose.
     pub async fn explain(&self, id: &str) -> Result<serde_json::Value, PipelineError> {
         let entity = self

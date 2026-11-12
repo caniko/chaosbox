@@ -401,6 +401,22 @@ impl GraphQueries for PgReader {
         .await
     }
 
+    async fn file_version_sha256(
+        &self,
+        snapshot: &str,
+        path: &str,
+    ) -> Result<Option<String>, StoreError> {
+        let row = self
+            .client()?
+            .query_opt(
+                "SELECT sha256 FROM file_versions WHERE snapshot_id = $1 AND path = $2",
+                &[&snapshot, &path],
+            )
+            .await
+            .map_err(pg_error)?;
+        Ok(row.map(|row| row.get(0)))
+    }
+
     async fn navigation_summary(
         &self,
         build_id: &str,

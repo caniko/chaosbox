@@ -24,14 +24,20 @@ struct Client {
     child: tokio::process::Child,
     input: Option<tokio::process::ChildStdin>,
     output: Lines<BufReader<tokio::process::ChildStdout>>,
+    /// Disposable enabled checkout the server resolves its opt-in from.
+    _project: tempfile::TempDir,
 }
 
 impl Client {
     async fn start(url: &str) -> Self {
         let binary = std::env::var_os("CHAOSBOX_TEST_BIN")
             .unwrap_or_else(|| env!("CARGO_BIN_EXE_chaosbox").into());
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir(project.path().join(".git")).unwrap();
+        std::fs::write(project.path().join(".chaosbox.json"), br#"{"repo":"demo"}"#).unwrap();
         let mut child = tokio::process::Command::new(binary)
             .arg("mcp")
+            .current_dir(project.path())
             .env("CHAOSBOX_DATABASE_URL", url)
             .env_remove("CHAOSBOX_JEV_API_KEY_FILE")
             .stdin(Stdio::piped())
@@ -46,6 +52,7 @@ impl Client {
             child,
             input,
             output,
+            _project: project,
         };
         client
             .send(json!({"jsonrpc":"2.0","id":0,"method":"initialize"}))
@@ -523,6 +530,7 @@ async fn check_cleanup(
                 mut child,
                 mut input,
                 output,
+                ..
             } = client;
             drop(output);
             input

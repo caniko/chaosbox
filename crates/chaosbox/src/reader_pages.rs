@@ -89,9 +89,81 @@ pub struct NeighborhoodPage {
     pub complete: bool,
     /// Resume both positions against the same immutable request and publication.
     pub next_cursor: Option<String>,
+    /// Exact request scope, retained so output trimming can rebuild a cursor.
+    #[serde(skip)]
+    pub scope: NeighborhoodQuery,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl NeighborhoodPage {
+    /// Keep at most `keep_out`/`keep_in` leading rows per direction and
+    /// rebuild the continuation, so rows dropped for an output budget are
+    /// resumed instead of lost. Complete flags follow what remains.
+    pub fn trim_rows(&mut self, keep_out: usize, keep_in: usize) {
+        let (out_full, in_full) = (self.outgoing.len(), self.incoming.len());
+        let keep_out = keep_out.min(out_full);
+        let keep_in = keep_in.min(in_full);
+        if keep_out == out_full && keep_in == in_full {
+            return;
+        }
+        let mut cursor: Cursor = self
+            .next_cursor
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or(Cursor {
+                contract: CONTRACT.into(),
+                version: VERSION,
+                order: ORDER.into(),
+                scope: self.scope.clone(),
+                build_id: self.build_id.clone(),
+                outgoing: Position::Done,
+                incoming: Position::Done,
+            });
+        self.outgoing.truncate(keep_out);
+        self.incoming.truncate(keep_in);
+        cursor.outgoing = trimmed_position(
+            &cursor.outgoing,
+            keep_out,
+            out_full,
+            self.outgoing.last().map(|row| row.rel_id.as_str()),
+        );
+        cursor.incoming = trimmed_position(
+            &cursor.incoming,
+            keep_in,
+            in_full,
+            self.incoming.last().map(|row| row.rel_id.as_str()),
+        );
+        self.next_cursor = if matches!(
+            (&cursor.outgoing, &cursor.incoming),
+            (Position::Done, Position::Done)
+        ) {
+            None
+        } else {
+            bounded_json(&cursor, REQUEST_BYTES_MAX)
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+        };
+        self.outgoing_complete = keep_out == out_full && self.outgoing_complete;
+        self.incoming_complete = keep_in == in_full && self.incoming_complete;
+        self.complete = self.outgoing_complete && self.incoming_complete;
+    }
+}
+
+/// Next-page position after keeping a prefix of the delivered rows.
+fn trimmed_position(original: &Position, kept: usize, full: usize, last: Option<&str>) -> Position {
+    if kept == full {
+        return original.clone();
+    }
+    if kept > 0 {
+        return last.map_or(Position::Start, |id| Position::After(id.to_owned()));
+    }
+    if matches!(original, Position::Done) {
+        Position::Start
+    } else {
+        original.clone()
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Position {
     Start,
@@ -254,6 +326,7 @@ impl PreparedNeighborhood {
             let bytes = bounded_json(&cursor, REQUEST_BYTES_MAX).map_err(|_| invalid("cursor"))?;
             Some(String::from_utf8(bytes).map_err(|_| invalid("cursor"))?)
         };
+        let scope = query.clone();
         Ok(NeighborhoodPage {
             version: VERSION,
             repo: query.repo,
@@ -267,6 +340,7 @@ impl PreparedNeighborhood {
             incoming_complete,
             complete,
             next_cursor,
+            scope,
         })
     }
 }
