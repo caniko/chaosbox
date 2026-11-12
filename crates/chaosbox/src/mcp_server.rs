@@ -1877,10 +1877,15 @@ async fn finish_payload(
 /// Changed entities by id, with the copy of the node they came from.
 type ChangedEntities<'a> = std::collections::BTreeMap<String, (&'a Value, Vec<(u32, u32)>)>;
 
-/// One changed file and the new-side line ranges `git diff -U0` reported.
-struct ChangedFile {
-    file: String,
-    hunks: Vec<(u32, u32)>,
+/// One changed file. Hunks are base-side line ranges (`-U0` old side), because
+/// the indexed spans describe the base content, not the new file.
+pub(super) struct ChangedFile {
+    /// Path in the base tree; `None` for a file added since `base`, whose hunks
+    /// can never map to an indexed span.
+    pub(super) base: Option<String>,
+    /// Reported path: the base path when it exists, else the added path.
+    pub(super) file: String,
+    pub(super) hunks: Vec<(u32, u32)>,
 }
 
 /// `git diff -U0 --no-ext-diff` against a verified revision, never a shell.
@@ -1912,19 +1917,17 @@ fn diff_path(value: &str) -> Option<String> {
     )
 }
 
+/// Old-side lines of a `-U0` hunk header, so hunks quote the content the
+/// indexed spans describe. A pure insertion (`b == 0`) has no old lines: its
+/// insertion point `a` names the enclosing entity instead.
 fn hunk_range(value: &str) -> Option<(u32, u32)> {
-    let plus = value
+    let minus = value
         .split_whitespace()
-        .find(|part| part.starts_with('+'))?;
-    let mut parts = plus[1..].split(',');
+        .find(|part| part.starts_with('-'))?;
+    let mut parts = minus[1..].split(',');
     let start: u32 = parts.next()?.parse().ok()?;
     let count: u32 = parts.next().map_or(Ok(1), str::parse).ok()?;
-    // A deletion has no new-side lines: map it to the line it followed.
-    let start = if count == 0 {
-        start.saturating_add(1)
-    } else {
-        start
-    };
+    // `-0,0` inserts before the first line and encloses no entity.
     Some((start, start + count.saturating_sub(1)))
 }
 
@@ -1939,10 +1942,11 @@ fn parse_diff(diff: &str) -> Vec<ChangedFile> {
         } else if let Some(path) = line.strip_prefix("--- ") {
             old_path = diff_path(path);
         } else if let Some(path) = line.strip_prefix("+++ ") {
-            let file = diff_path(path).or_else(|| old_path.take());
-            if let Some(file) = file {
+            let base = old_path.take();
+            if let Some(file) = base.clone().or_else(|| diff_path(path)) {
                 files.extend(current.take());
                 current = Some(ChangedFile {
+                    base,
                     file,
                     hunks: Vec::new(),
                 });
@@ -1966,13 +1970,78 @@ fn span_bounds(node: &Value) -> Option<(u32, u32)> {
     ))
 }
 
-/// Map every hunk to its innermost covering indexed entity; uncovered ranges
-/// stay explicitly unmapped.
-fn changed_entities(graph: &Value, files: &[ChangedFile]) -> (Vec<Value>, Vec<Value>) {
+/// Blob bytes at `commit:path`, `None` when the path is absent there. `commit`
+/// is a full resolved sha, so the single object argument cannot name an option.
+fn git_blob(root: &Path, commit: &str, path: &str) -> Option<Vec<u8>> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["cat-file", "blob", &format!("{commit}:{path}")])
+        .output()
+        .ok()?;
+    output.status.success().then_some(output.stdout)
+}
+
+/// Base-side files whose bytes still match the digest the build recorded, using
+/// the same content digest as the source-freshness check. Any other file was
+/// changed since indexing, so its indexed spans cannot describe the hunks.
+async fn verified_files<R: chaosbox_store::GraphQueries>(
+    reader: &chaosbox::GraphReader<R>,
+    root: &Path,
+    commit: &str,
+    graph: &Value,
+    files: &[ChangedFile],
+) -> std::collections::BTreeSet<String> {
+    let mut snapshots = std::collections::BTreeMap::new();
+    for node in graph["nodes"].as_array().into_iter().flatten() {
+        if let (Some(file), Some(snapshot)) =
+            (node["source_file"].as_str(), node["snapshot"].as_str())
+        {
+            snapshots.entry(file).or_insert(snapshot);
+        }
+    }
+    let mut verified = std::collections::BTreeSet::new();
+    for file in files {
+        let (Some(base), Some(snapshot)) =
+            (file.base.as_deref(), snapshots.get(file.file.as_str()))
+        else {
+            continue;
+        };
+        let Some(bytes) = git_blob(root, commit, base) else {
+            continue;
+        };
+        let text = String::from_utf8_lossy(&bytes);
+        let digest = chaosbox_core::sha256_hex(&[text.as_ref()]);
+        if reader
+            .file_sha256(snapshot, base)
+            .await
+            .ok()
+            .flatten()
+            .as_deref()
+            == Some(digest.as_str())
+        {
+            verified.insert(file.file.clone());
+        }
+    }
+    verified
+}
+
+/// Map every hunk to its affected innermost entities: an entity that encloses
+/// another affected entity is dropped, so one hunk may mark several siblings.
+/// Files changed since indexing and uncovered ranges stay explicitly unmapped.
+pub(super) fn changed_entities(
+    graph: &Value,
+    files: &[ChangedFile],
+    verified: &std::collections::BTreeSet<String>,
+) -> (Vec<Value>, Vec<Value>) {
     let nodes = graph["nodes"].as_array().map_or(&[][..], Vec::as_slice);
     let mut changed: ChangedEntities<'_> = std::collections::BTreeMap::new();
     let mut unmapped = Vec::new();
     for file in files {
+        if !verified.contains(&file.file) {
+            unmapped.push(serde_json::json!({"file": file.file, "reason": "stale"}));
+            continue;
+        }
         let candidates: Vec<&Value> = nodes
             .iter()
             .filter(|node| node["source_file"] == Value::String(file.file.clone()))
@@ -1986,18 +2055,17 @@ fn changed_entities(graph: &Value, files: &[ChangedFile]) -> (Vec<Value>, Vec<Va
                     (bounds.0 <= end && bounds.1 >= start).then_some((node, bounds))
                 })
                 .collect();
-            let innermost = overlapping
-                .iter()
-                .map(|(_, bounds)| bounds.1 - bounds.0)
-                .min();
-            let Some(innermost) = innermost else {
+            if overlapping.is_empty() {
                 unmapped.push(serde_json::json!({
                     "file": file.file, "start_line": start, "end_line": end,
                 }));
                 continue;
-            };
-            for (node, bounds) in overlapping {
-                if bounds.1 - bounds.0 != innermost {
+            }
+            for &(node, bounds) in &overlapping {
+                let encloses_other = overlapping.iter().any(|&(_, other)| {
+                    other != bounds && other.0 >= bounds.0 && other.1 <= bounds.1
+                });
+                if encloses_other {
                     continue;
                 }
                 let id = node["id"].as_str().unwrap_or_default().to_owned();
@@ -2098,7 +2166,8 @@ pub(super) async fn review_payload<R: chaosbox_store::GraphQueries>(
     }
     let (commit, files) = git_diff(root, base)?;
     let graph = reader.export().await.map_err(|error| error.to_string())?;
-    let (entities, unmapped) = changed_entities(&graph, &files);
+    let verified = verified_files(reader, root, &commit, &graph, &files).await;
+    let (entities, unmapped) = changed_entities(&graph, &files, &verified);
     let mut ranked: Vec<Value> = entities
         .into_iter()
         .map(|mut entity| {

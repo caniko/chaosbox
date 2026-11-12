@@ -1,10 +1,10 @@
 //! MCP surface unit tests, moved verbatim from the former inline `mod tests` block.
 
 use super::mcp_server::{
-    is_test_path, prepare_neighborhood, prepare_path, review_payload, safe_join, serve_source,
-    trim_payload, SourceInclude, SourceTarget, MCP_DESCRIPTION_LINE_MAX, MCP_NOT_ENABLED,
-    char_budget, mcp_args, mcp_call_tool, mcp_call_tool_without_opt_in, mcp_instructions,
-    mcp_tool_defs, mcp_tool_list,
+    ChangedFile, changed_entities, is_test_path, prepare_neighborhood, prepare_path,
+    review_payload, safe_join, serve_source, trim_payload, SourceInclude, SourceTarget,
+    MCP_DESCRIPTION_LINE_MAX, MCP_NOT_ENABLED, char_budget, mcp_args, mcp_call_tool,
+    mcp_call_tool_without_opt_in, mcp_instructions, mcp_tool_defs, mcp_tool_list,
 };
 
 /// Signals when a pending backend future is dropped.
@@ -927,6 +927,19 @@ async fn review_maps_diff_hunks_to_callers_and_tests() {
     let mut memory = MemoryReader::new();
     memory.insert_build(build.clone());
     memory.set_active(REPO, &build.id);
+    // The build indexed the base content of both changed files.
+    memory.set_file_digest(
+        SNAP,
+        "src/lib.rs",
+        &chaosbox_core::sha256_hex(&[
+            "// header\nfn work() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n",
+        ]),
+    );
+    memory.set_file_digest(
+        SNAP,
+        "src/quiet.rs",
+        &chaosbox_core::sha256_hex(&["fn quiet() {}\n"]),
+    );
     let reader = chaosbox::GraphReader::pinned(memory, REPO).await.unwrap();
 
     let review = review_payload(&reader, root, "HEAD", 4_000).await.unwrap();
@@ -941,9 +954,10 @@ async fn review_maps_diff_hunks_to_callers_and_tests() {
     assert_eq!(review["unmapped"][0]["file"], "src/lib.rs");
     assert_eq!(review["unmapped"][0]["start_line"], 1);
     assert_eq!(review["changed_files"], 2);
-    // MemoryReader retains no file versions, so text is never claimed fresh.
+    // The working tree moved past the indexed bytes, so text is not claimed fresh.
     for entry in review["source"].as_array().unwrap() {
         assert!(entry.get("text").is_none(), "{entry}");
+        assert_eq!(entry["stale"], true, "{entry}");
     }
     assert!(serde_json::to_string(&review).unwrap().len() <= 4_000);
 
@@ -951,6 +965,112 @@ async fn review_maps_diff_hunks_to_callers_and_tests() {
     assert!(review_payload(&reader, root, "--help", 4_000)
         .await
         .is_err());
+}
+
+#[allow(clippy::too_many_lines)] // one fixture spells out the whole repository
+#[tokio::test]
+async fn review_maps_base_side_hunks_and_refuses_files_changed_since_indexing() {
+    use chaosbox_core::{Entity, EntityKind, GraphBuild};
+    use chaosbox_store::MemoryReader;
+
+    const REPO: &str = "demo";
+    const SNAP: &str = "snap:fixture";
+    const BASE: &str =
+        "fn first() {\n    let a = 1;\n    a\n}\nfn second() {\n    let b = 2;\n    b\n}\n";
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/shift.rs"), BASE).unwrap();
+    std::fs::write(root.join("src/stale.rs"), "fn stale() {}\n").unwrap();
+    run_git(root, &["init", "-q"]);
+    run_git(root, &["add", "."]);
+    run_git(root, &["commit", "-q", "-m", "fixture"]);
+    // A line above every entity, plus one edit inside the second function.
+    std::fs::write(
+        root.join("src/shift.rs"),
+        "// inserted\nfn first() {\n    let a = 1;\n    a\n}\nfn second() {\n    let b = 2;\n    b + 10\n}\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("src/stale.rs"), "fn stale() { }\n").unwrap();
+
+    let entity = |file: &str, name: &str, start: u32, end: u32| {
+        Entity::new(
+            EntityKind::Definition,
+            REPO,
+            SNAP,
+            file,
+            name,
+            name,
+            span(file, start, end),
+        )
+    };
+    let first = entity("src/shift.rs", "first", 1, 4);
+    let second = entity("src/shift.rs", "second", 5, 8);
+    let stale = entity("src/stale.rs", "stale", 1, 1);
+    let mut build = GraphBuild::new(REPO, vec![SNAP.to_owned()], 1);
+    for node in [&first, &second, &stale] {
+        build.add_node(node.clone()).unwrap();
+    }
+    let mut memory = MemoryReader::new();
+    memory.insert_build(build.clone());
+    memory.set_active(REPO, &build.id);
+    memory.set_file_digest(SNAP, "src/shift.rs", &chaosbox_core::sha256_hex(&[BASE]));
+    // Indexed at different bytes: the spans do not describe this file at base.
+    memory.set_file_digest(
+        SNAP,
+        "src/stale.rs",
+        &chaosbox_core::sha256_hex(&["fn aged() {}"]),
+    );
+    let reader = chaosbox::GraphReader::pinned(memory, REPO).await.unwrap();
+
+    let review = review_payload(&reader, root, "HEAD", 4_000).await.unwrap();
+    let entities = review["entities"].as_array().unwrap();
+    assert_eq!(entities.len(), 1, "{review}");
+    assert_eq!(
+        entities[0]["id"], second.id,
+        "the insertion shifts nothing; only the edited function is affected"
+    );
+    let unmapped = review["unmapped"].as_array().unwrap();
+    assert!(
+        unmapped
+            .iter()
+            .any(|entry| entry["file"] == "src/stale.rs" && entry["reason"] == "stale"),
+        "{review}"
+    );
+    assert!(
+        !unmapped
+            .iter()
+            .any(|entry| entry["file"] == "src/stale.rs" && entry.get("start_line").is_some()),
+        "a stale file is reported once, not hunk by hunk"
+    );
+}
+
+#[test]
+fn review_keeps_every_affected_sibling_entity() {
+    use serde_json::json;
+    let node = |id: &str, start: u32, end: u32| json!({"id": id, "source_file": "src/lib.rs", "span": {"start_line": start, "end_line": end}});
+    let graph = json!({"nodes": [
+        node("ent:module", 1, 20),
+        node("ent:a", 1, 3),
+        node("ent:b", 4, 12),
+    ]});
+    let files = [ChangedFile {
+        base: Some("src/lib.rs".into()),
+        file: "src/lib.rs".into(),
+        hunks: vec![(3, 4)],
+    }];
+    let verified = std::collections::BTreeSet::from(["src/lib.rs".to_owned()]);
+    let (entities, unmapped) = changed_entities(&graph, &files, &verified);
+    let ids: Vec<_> = entities
+        .iter()
+        .map(|entity| entity["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        ["ent:a", "ent:b"],
+        "both siblings survive; only the enclosing entity is dropped"
+    );
+    assert!(unmapped.is_empty());
 }
 
 #[test]
