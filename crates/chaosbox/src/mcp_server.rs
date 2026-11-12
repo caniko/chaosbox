@@ -39,9 +39,12 @@ const MCP_MAX_TOKENS_MAX: usize = 20_000;
 const MCP_CHARS_PER_TOKEN: usize = 4;
 /// Distinct files one answer may pull source from (bounded backend reads).
 const MCP_SOURCE_FILES_MAX: usize = 32;
-/// First line of each tool description that OpenCode keeps.
+/// First line of each tool description that `OpenCode` keeps.
+#[cfg(test)]
 pub(super) const MCP_DESCRIPTION_LINE_MAX: usize = 120;
 
+// One data table: every tool and its schema, split only to hide the shape.
+#[allow(clippy::too_many_lines)]
 pub(super) fn mcp_tool_defs(default_repo: Option<&str>) -> Vec<serde_json::Value> {
     vec![
         mcp_tool(
@@ -178,7 +181,7 @@ pub(super) fn default_repo_tool(
     tool
 }
 
-/// Imperative routing prompt for an enabled project. OpenCode and Claude
+/// Imperative routing prompt for an enabled project. `OpenCode` and Claude
 /// append this to their system prompt, so it names every tool and its bounds;
 /// a test keeps it under 2000 characters.
 pub(super) fn mcp_instructions(repo: &str) -> String {
@@ -635,9 +638,7 @@ async fn mcp_call_tool_connected(
         }
         "review" => {
             let base = args.get("base").and_then(Value::as_str).unwrap_or("HEAD");
-            review_payload(&reader, &enabled.root, base, budget)
-                .await
-                .map_err(|e| e.to_string())
+            review_payload(&reader, &enabled.root, base, budget).await
         }
         _ => {
             return mcp_error(
@@ -1418,12 +1419,8 @@ fn prune_links(payload: &mut Value) {
 
 pub(super) fn trim_payload(name: &str, payload: &mut Value, budget: usize) {
     match name {
-        "search" => fit_budget(payload, budget, "/nodes", &["/nodes"]),
-        "context" => {
-            fit_budget(payload, budget, "/nodes", &["/links", "/nodes"]);
-            prune_links(payload);
-        }
-        "export" => {
+        "search" | "community" => fit_budget(payload, budget, "/nodes", &["/nodes"]),
+        "context" | "export" => {
             fit_budget(payload, budget, "/nodes", &["/links", "/nodes"]);
             prune_links(payload);
         }
@@ -1439,7 +1436,6 @@ pub(super) fn trim_payload(name: &str, payload: &mut Value, budget: usize) {
                 "/surprises",
             ],
         ),
-        "community" => fit_budget(payload, budget, "/nodes", &["/nodes"]),
         "diff" => fit_budget(
             payload,
             budget,
@@ -1558,7 +1554,7 @@ fn source_targets(name: &str, payload: &Value) -> Vec<SourceTarget> {
         "context" => payload["nodes"]
             .as_array()
             .map(|nodes| nodes.iter().collect()),
-        "lookup" | "explain" => Some(vec![payload]).filter(|_| payload.get("span").is_some()),
+        "lookup" | "explain" => payload.get("span").is_some().then(|| vec![payload]),
         _ => None,
     }
     .unwrap_or_default();
@@ -1716,7 +1712,7 @@ pub(super) fn serve_source(
         let remaining = allowance.saturating_sub(used);
         let Some(entry) = candidates
             .into_iter()
-            .find(|entry| encoded_len(entry) + 1 <= remaining)
+            .find(|entry| encoded_len(entry) < remaining)
         else {
             break;
         };
@@ -1865,6 +1861,9 @@ async fn finish_payload(
     payload
 }
 
+/// Changed entities by id, with the copy of the node they came from.
+type ChangedEntities<'a> = std::collections::BTreeMap<String, (&'a Value, Vec<(u32, u32)>)>;
+
 /// One changed file and the new-side line ranges `git diff -U0` reported.
 struct ChangedFile {
     file: String,
@@ -1958,8 +1957,7 @@ fn span_bounds(node: &Value) -> Option<(u32, u32)> {
 /// stay explicitly unmapped.
 fn changed_entities(graph: &Value, files: &[ChangedFile]) -> (Vec<Value>, Vec<Value>) {
     let nodes = graph["nodes"].as_array().map_or(&[][..], Vec::as_slice);
-    let mut changed: std::collections::BTreeMap<String, (&Value, Vec<(u32, u32)>)> =
-        std::collections::BTreeMap::new();
+    let mut changed: ChangedEntities<'_> = std::collections::BTreeMap::new();
     let mut unmapped = Vec::new();
     for file in files {
         let candidates: Vec<&Value> = nodes
@@ -2075,6 +2073,7 @@ pub(super) fn is_test_path(path: &str) -> bool {
         || path.contains("spec")
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) async fn review_payload<R: chaosbox_store::GraphQueries>(
     reader: &chaosbox::GraphReader<R>,
     root: &Path,

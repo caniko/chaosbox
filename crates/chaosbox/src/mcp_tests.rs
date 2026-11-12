@@ -182,7 +182,6 @@ fn large_results_are_trimmed_item_wise_under_the_budget() {
 
 #[test]
 fn source_serves_verified_lines_and_refuses_stale_or_escaping_paths() {
-    use serde_json::json;
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     std::fs::create_dir_all(root.join("src")).unwrap();
@@ -835,6 +834,7 @@ fn span(file: &str, start: u32, end: u32) -> chaosbox_core::SourceSpan {
     }
 }
 
+#[allow(clippy::too_many_lines)] // one fixture spells out the whole repository
 #[tokio::test]
 async fn review_maps_diff_hunks_to_callers_and_tests() {
     use chaosbox_core::{Entity, EntityKind, GraphBuild, Relation, RelationScope, RelationType};
