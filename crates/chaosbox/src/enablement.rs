@@ -10,7 +10,9 @@ pub const MARKER: &str = ".chaosbox.json";
 /// An enabled project: its checkout root and graph repository name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Enabled {
+    /// Git checkout root holding the marker.
     pub root: PathBuf,
+    /// Graph repository name the marker records.
     pub repo: String,
 }
 
