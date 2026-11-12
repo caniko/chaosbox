@@ -1,9 +1,10 @@
 //! MCP surface unit tests, moved verbatim from the former inline `mod tests` block.
 
 use super::mcp_server::{
-    is_test_path, review_payload, safe_join, serve_source, trim_payload, SourceInclude,
-    SourceTarget, MCP_DESCRIPTION_LINE_MAX, MCP_NOT_ENABLED, char_budget, mcp_args, mcp_call_tool,
-    mcp_call_tool_without_opt_in, mcp_instructions, mcp_tool_defs, mcp_tool_list,
+    is_test_path, prepare_neighborhood, prepare_path, review_payload, safe_join, serve_source,
+    trim_payload, SourceInclude, SourceTarget, MCP_DESCRIPTION_LINE_MAX, MCP_NOT_ENABLED,
+    char_budget, mcp_args, mcp_call_tool, mcp_call_tool_without_opt_in, mcp_instructions,
+    mcp_tool_defs, mcp_tool_list,
 };
 
 /// Signals when a pending backend future is dropped.
@@ -950,4 +951,27 @@ async fn review_maps_diff_hunks_to_callers_and_tests() {
     assert!(review_payload(&reader, root, "--help", 4_000)
         .await
         .is_err());
+}
+
+#[test]
+fn tool_level_arguments_do_not_reach_strict_query_structs() {
+    use serde_json::json;
+    for extra in [
+        ("max_tokens", json!(500)),
+        ("include", json!("source")),
+        ("detail", json!("full")),
+    ] {
+        let mut path = json!({"repo":"demo","from":"ent:a","to":"ent:b"});
+        path[extra.0] = extra.1.clone();
+        let args = path.as_object().unwrap().clone();
+        assert!(prepare_path(args).is_ok(), "path must ignore {}", extra.0);
+        let mut neighbors = json!({"repo":"demo","id":"ent:hub","limit":20});
+        neighbors[extra.0] = extra.1;
+        let args = neighbors.as_object().unwrap().clone();
+        assert!(
+            prepare_neighborhood(args).is_ok(),
+            "neighbors must ignore {}",
+            extra.0
+        );
+    }
 }

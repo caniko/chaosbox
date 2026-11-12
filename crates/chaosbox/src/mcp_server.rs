@@ -456,11 +456,7 @@ async fn mcp_call_tool_connected(
         };
     }
     if name == "path" {
-        let prepare = |args: serde_json::Map<String, Value>| {
-            serde_json::from_value::<chaosbox::PathQuery>(Value::Object(args))
-                .map_err(|error| error.to_string())
-                .and_then(|query| query.prepare().map_err(|error| error.to_string()))
-        };
+        let prepare = prepare_path;
         if let Err(error) = prepare(args.clone()) {
             return mcp_error(id, -32602, error, None);
         }
@@ -1311,9 +1307,26 @@ fn workspace_call(
         .map_err(|e| e.to_string())
 }
 
-fn prepare_neighborhood(
+/// Tool-level arguments never reach the strict query structs.
+const MCP_QUERY_LOCAL_ARGS: [&str; 3] = ["max_tokens", "include", "detail"];
+
+pub(super) fn prepare_path(
+    mut args: serde_json::Map<String, serde_json::Value>,
+) -> Result<chaosbox::PreparedPath, String> {
+    for key in MCP_QUERY_LOCAL_ARGS {
+        args.remove(key);
+    }
+    serde_json::from_value::<chaosbox::PathQuery>(Value::Object(args))
+        .map_err(|error| error.to_string())
+        .and_then(|query| query.prepare().map_err(|error| error.to_string()))
+}
+
+pub(super) fn prepare_neighborhood(
     mut args: serde_json::Map<String, serde_json::Value>,
 ) -> Result<chaosbox::PreparedNeighborhood, String> {
+    for key in MCP_QUERY_LOCAL_ARGS {
+        args.remove(key);
+    }
     if let Some(rel) = args.remove("rel") {
         if args.contains_key("rel_types") {
             return Err("rel and rel_types are mutually exclusive".into());
