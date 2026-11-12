@@ -57,7 +57,8 @@ chaosbox install --platform claude   # user scope: MCP server + hint hook
 chaosbox enable --repo canix         # per project: .chaosbox.json + AGENTS.md
 ```
 
-Nothing applies to a project without its committed `.chaosbox.json`. An
+Nothing applies to a project without a `.chaosbox.json` at its checkout root;
+commit it to share the opt-in. An
 enabled project gets a MUST block for definitions, caller/callee questions,
 change impact and architecture, PostToolUse hints after broad searches that
 would otherwise repeat in the graph, and a ledger that measures whether

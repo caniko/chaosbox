@@ -176,8 +176,8 @@ enum Command {
     Install(setup_cmd::InstallArgs),
     /// Remove exactly what `install` added.
     Uninstall(setup_cmd::InstallArgs),
-    /// Enable Chaosbox for this project: `.chaosbox.json` plus committed
-    /// agent guidance.
+    /// Enable Chaosbox for this project: `.chaosbox.json` plus managed agent
+    /// guidance.
     Enable(setup_cmd::EnableArgs),
     /// Remove this project's marker and guidance.
     Disable(setup_cmd::DisableArgs),

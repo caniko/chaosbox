@@ -779,7 +779,8 @@ pub(super) async fn serve_mcp(
     let mut frames = Frames::new(tokio::io::stdin());
     let mut initialized = false;
     // Explicit operator flags keep their own tools; graph tools need the
-    // project's committed `.chaosbox.json` opt-in, resolved once at startup.
+    // project's `.chaosbox.json` opt-in. `tools/list` uses this startup view;
+    // every graph call re-reads the marker.
     let enabled = chaosbox::enablement::current();
     let repo = enabled.as_ref().map(|enabled| enabled.repo.as_str());
     // ponytail: one idle driver per ordinary server; no result/header cache.

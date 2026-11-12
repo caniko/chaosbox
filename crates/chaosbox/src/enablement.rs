@@ -1,6 +1,7 @@
 //! Explicit per-project opt-in. Agent surfaces (MCP graph tools, hints,
-//! guidance) act only inside a Git checkout whose root holds a committed
-//! `.chaosbox.json` naming the graph repository: `{"repo": "<name>"}`.
+//! guidance) act only inside a Git checkout whose root holds a `.chaosbox.json`
+//! naming the graph repository: `{"repo": "<name>"}`. Commit it to share the
+//! opt-in; nothing else enables a project.
 
 use std::path::{Path, PathBuf};
 

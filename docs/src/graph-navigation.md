@@ -151,6 +151,9 @@ budget, the answer is a small tool result
 line-numbered (`cat -n` style), in a top-level `source` array. Files whose
 recorded snapshot digest no longer matches are pointers marked `stale: true`.
 A top-level `freshness` object names served files that are uncommitted or
-stale. `review` maps a `git diff -U0` against the pinned build's spans, ranks
-changed entities by incoming callers, lists test-file callers separately, and
-reports changes that no indexed span covers under `unmapped`.
+stale. `review` maps the base side of a `git diff -U0` against the pinned
+build's spans (an insertion maps its insertion point), keeps every affected
+sibling entity, ranks changed entities by incoming callers, lists test-file
+callers separately, reports changes that no indexed span covers under
+`unmapped`, and lists a file whose bytes at `base` no longer match the build's
+digest once with `"reason": "stale"` instead of asserting entities for it.

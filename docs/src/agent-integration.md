@@ -12,8 +12,9 @@ chaosbox enable --repo canix --dir src --dry-run
 chaosbox disable                      # removes the marker and both blocks
 ```
 
-A project is enabled only where its checkout root holds a committed
-`.chaosbox.json` (`{"repo": "canix"}`); no global switch turns one on.
+A project is enabled where its checkout root holds a `.chaosbox.json`
+(`{"repo": "canix"}`); commit it to share the opt-in, and note that no global
+switch turns one on.
 `enable` records the marker and upserts the managed block into `AGENTS.md`
 (and `CLAUDE.md` when that is the agent file the project already uses). The
 block is imperative and self-contained: ask Chaosbox before Grep, Glob or
@@ -179,7 +180,10 @@ rows; `detail: "full"` keeps them. `export` and `report` obey the same budget
 
 `review` runs `git diff -U0 --no-ext-diff <base>` in the enabled root (`base`
 defaults to `HEAD` and is validated with
-`git rev-parse --verify --end-of-options`), maps each hunk to the innermost
-indexed entity whose span covers it, and lists incoming `calls`/`references`
-callers plus test-file callers for every changed entity, most-called first.
-Hunks that no entity covers are listed under `unmapped`.
+`git rev-parse --verify --end-of-options`) and maps the old side of each hunk
+to the indexed entities whose spans cover it, keeping every affected sibling
+and dropping only entities that enclose another. Hunks that no entity covers
+are listed under `unmapped`. A file whose bytes at `base` no longer match the
+build's recorded digest is listed once with `"reason": "stale"` and asserts no
+entities. For every changed entity the answer lists incoming
+`calls`/`references` callers plus test-file callers, most-called first.
