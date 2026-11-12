@@ -95,7 +95,8 @@ pub fn line(
             .map(|text| text.chars().count())
             .sum::<usize>()
     });
-    let root = crate::enablement::current().map(|enabled| enabled.root.to_string_lossy().into_owned());
+    let root =
+        crate::enablement::current().map(|enabled| enabled.root.to_string_lossy().into_owned());
     json!({"ts_ms":now_ms(),"surface":surface,"tool":tool,"repo":args["repo"],
         "build_id":response.map_or(&Value::Null, |r| &r["build_id"]),
         "duration_ms":duration_ms,"ok":code == 0,"code":code,
@@ -161,7 +162,13 @@ pub fn served_recent(root: &str, file: &str) -> bool {
     )
 }
 
-fn served_recent_in(path: Option<&Path>, root: &str, file: &str, now_ms: u64, window_ms: u64) -> bool {
+fn served_recent_in(
+    path: Option<&Path>,
+    root: &str,
+    file: &str,
+    now_ms: u64,
+    window_ms: u64,
+) -> bool {
     let Some(text) = path.and_then(|path| tail(path, SERVED_TAIL_BYTES).ok()) else {
         return false;
     };
@@ -176,9 +183,7 @@ fn served_recent_in(path: Option<&Path>, root: &str, file: &str, now_ms: u64, wi
                     .as_array()
                     .is_some_and(|files| files.iter().any(|served| served.as_str() == Some(file)))
                     || entry["source"].as_array().is_some_and(|items| {
-                        items
-                            .iter()
-                            .any(|item| item["file"].as_str() == Some(file))
+                        items.iter().any(|item| item["file"].as_str() == Some(file))
                     }))
         })
 }
@@ -249,7 +254,10 @@ mod tests {
         );
         assert_eq!(entry["served_chars"], json!(4 * (SERVED_FILES_MAX + 5)));
         let plain = line("mcp", "status", &json!({"repo":"r"}), 1, 0, None);
-        assert_eq!((plain["served_files"].clone(), plain["served_chars"].clone()), (json!(null), json!(null)));
+        assert_eq!(
+            (plain["served_files"].clone(), plain["served_chars"].clone()),
+            (json!(null), json!(null))
+        );
     }
 
     #[test]
@@ -260,7 +268,8 @@ mod tests {
         // Push the old line out of the 1 MiB tail window.
         let mut noise = String::new();
         for _ in 0..(super::SERVED_TAIL_BYTES / 1024 + 64) {
-            noise.push_str(&format!("{}\n", "x".repeat(1023)));
+            noise.push_str(&"x".repeat(1023));
+            noise.push('\n');
         }
         std::fs::write(&path, format!("{old}\n{noise}")).unwrap();
         let now = 10_000u64;
@@ -278,7 +287,13 @@ mod tests {
             served_recent_in(Some(&path), "/repo", "src/new.rs", now, 60 * 60 * 1000),
             "a recent served file is found"
         );
-        assert!(!served_recent_in(Some(&path), "/other", "src/new.rs", now, 60 * 60 * 1000));
+        assert!(!served_recent_in(
+            Some(&path),
+            "/other",
+            "src/new.rs",
+            now,
+            60 * 60 * 1000
+        ));
         assert!(!served_recent_in(
             Some(&path),
             "/repo",
@@ -286,7 +301,13 @@ mod tests {
             now,
             500
         ));
-        assert!(!served_recent_in(Some(&dir.path().join("absent")), "/repo", "src/new.rs", now, 60_000));
+        assert!(!served_recent_in(
+            Some(&dir.path().join("absent")),
+            "/repo",
+            "src/new.rs",
+            now,
+            60_000
+        ));
     }
 
     #[test]
