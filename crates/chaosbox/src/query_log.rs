@@ -292,6 +292,12 @@ mod tests {
     #[test]
     fn read_after_served_reads_only_the_recent_tail() {
         let dir = tempfile::tempdir().unwrap();
+        // The ledger's parent must be private; tempdir follows the umask.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
         let path = dir.path().join("queries.jsonl");
         let old = json!({"ts_ms": 1_000u64, "root": "/repo", "served_files": ["src/old.rs"]});
         // Push the old line out of the 1 MiB tail window.
