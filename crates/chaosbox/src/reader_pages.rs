@@ -91,7 +91,9 @@ pub struct NeighborhoodPage {
     pub next_cursor: Option<String>,
     /// Positions this page read from, not serialized: a trim that drops every
     /// row resumes there instead of past an undisplayed row.
+    #[serde(skip)]
     pre_outgoing: Position,
+    #[serde(skip)]
     pre_incoming: Position,
     /// Exact request scope, retained so output trimming can rebuild a cursor.
     #[serde(skip)]
