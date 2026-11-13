@@ -13,6 +13,12 @@ use serde_json::{json, Value};
 const ROTATE_BYTES: u64 = 64 * 1024 * 1024;
 /// Arguments longer than this are summarized, not stored.
 const ARGS_BYTES_MAX: usize = 1024;
+/// Distinct source files recorded per response.
+const SERVED_FILES_MAX: usize = 50;
+/// The read-after-served reader scans only this tail of the ledger.
+const SERVED_TAIL_BYTES: u64 = 1024 * 1024;
+/// A read counts as redundant when the same file was served this recently.
+const READ_AFTER_MS: u64 = 30 * 60 * 1000;
 
 /// `$CHAOSBOX_QUERY_LOG` (`off` disables), else
 /// `$XDG_STATE_HOME/chaosbox/queries.jsonl`, else `~/.local/state/...`.
@@ -34,7 +40,8 @@ pub fn log_path(
 }
 
 /// One ledger line. `response` (when the caller has it) supplies the pinned
-/// build, a result count and the payload size; cursors are redacted.
+/// build, a result count, the payload size and the source it served; cursors
+/// are redacted.
 #[must_use]
 pub fn line(
     surface: &str,
@@ -64,13 +71,54 @@ pub fn line(
                 Some(out.len() + inc.len())
             })
     });
-    let ts_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis());
-    json!({"ts_ms":ts_ms,"surface":surface,"tool":tool,"repo":args["repo"],
+    // The shared response contract puts served source at top level. Only text
+    // counts: a pointer entry says where the file is, not that the agent read it.
+    let served: Option<Vec<(&str, &str)>> = response
+        .and_then(|r| r.get("source"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let text = item
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .filter(|text| !text.is_empty())?;
+                    Some((item.get("file")?.as_str()?, text))
+                })
+                .collect()
+        });
+    let served_files = served.as_ref().map(|items| {
+        let mut files: Vec<String> = Vec::new();
+        for (file, _) in items {
+            if !files.iter().any(|seen| seen.as_str() == *file) {
+                files.push((*file).to_owned());
+            }
+            if files.len() == SERVED_FILES_MAX {
+                break;
+            }
+        }
+        files
+    });
+    let served_chars = served.map(|items| {
+        items
+            .iter()
+            .map(|(_, text)| text.chars().count())
+            .sum::<usize>()
+    });
+    let root =
+        crate::enablement::current().map(|enabled| enabled.root.to_string_lossy().into_owned());
+    json!({"ts_ms":now_ms(),"surface":surface,"tool":tool,"repo":args["repo"],
         "build_id":response.map_or(&Value::Null, |r| &r["build_id"]),
         "duration_ms":duration_ms,"ok":code == 0,"code":code,
-        "bytes":response.map(|r| r.to_string().len()),"count":count,"args":args})
+        "bytes":response.map(|r| r.to_string().len()),"count":count,
+        "served_files":served_files,"served_chars":served_chars,"root":root,"args":args})
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
 
 /// Append one line to the configured ledger, ignoring every failure.
@@ -82,11 +130,7 @@ pub fn record(
     code: i64,
     response: Option<&Value>,
 ) {
-    let Some(path) = log_path(
-        std::env::var("CHAOSBOX_QUERY_LOG").ok(),
-        std::env::var("XDG_STATE_HOME").ok(),
-        std::env::var("HOME").ok(),
-    ) else {
+    let Some(path) = configured_path() else {
         return;
     };
     let entry = line(
@@ -98,6 +142,80 @@ pub fn record(
         response,
     );
     let _ = append(&path, &entry);
+}
+
+/// Record a harness measurement event (never agent-visible).
+pub fn record_hook(tool: &str, file: &str) {
+    let Some(path) = configured_path() else {
+        return;
+    };
+    let entry = json!({"ts_ms":now_ms(),"surface":"hook","tool":tool,"file":file});
+    let _ = append(&path, &entry);
+}
+
+fn configured_path() -> Option<PathBuf> {
+    log_path(
+        std::env::var("CHAOSBOX_QUERY_LOG").ok(),
+        std::env::var("XDG_STATE_HOME").ok(),
+        std::env::var("HOME").ok(),
+    )
+}
+
+/// Whether `file` was served as source for `root` within the read window.
+#[must_use]
+pub fn served_recent(root: &str, file: &str) -> bool {
+    served_recent_in(
+        configured_path().as_deref(),
+        root,
+        file,
+        now_ms(),
+        READ_AFTER_MS,
+    )
+}
+
+fn served_recent_in(
+    path: Option<&Path>,
+    root: &str,
+    file: &str,
+    now_ms: u64,
+    window_ms: u64,
+) -> bool {
+    let Some(text) = path.and_then(|path| tail(path, SERVED_TAIL_BYTES).ok()) else {
+        return false;
+    };
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .any(|entry| {
+            entry["root"].as_str() == Some(root)
+                && entry["ts_ms"]
+                    .as_u64()
+                    .is_some_and(|ts| now_ms.saturating_sub(ts) <= window_ms)
+                && (entry["served_files"]
+                    .as_array()
+                    .is_some_and(|files| files.iter().any(|served| served.as_str() == Some(file)))
+                    || entry["source"].as_array().is_some_and(|items| {
+                        items.iter().any(|item| item["file"].as_str() == Some(file))
+                    }))
+        })
+}
+
+/// The last `bytes` of a file, with a leading partial line dropped.
+fn tail(path: &Path, bytes: u64) -> std::io::Result<String> {
+    use std::io::{Read as _, Seek as _};
+    let mut file = std::fs::File::open(path)?;
+    let start = file.metadata()?.len().saturating_sub(bytes);
+    if start > 0 {
+        file.seek(std::io::SeekFrom::Start(start))?;
+    }
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer)?;
+    let mut text = String::from_utf8_lossy(&buffer).into_owned();
+    if start > 0 {
+        if let Some(end) = text.find('\n') {
+            text.drain(..=end);
+        }
+    }
+    Ok(text)
 }
 
 fn append(path: &Path, entry: &Value) -> std::io::Result<()> {
@@ -123,9 +241,109 @@ fn append(path: &Path, entry: &Value) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{append, line, log_path};
+    use super::{append, line, log_path, served_recent_in, SERVED_FILES_MAX};
     use serde_json::json;
     use std::path::PathBuf;
+
+    #[test]
+    fn ledger_lines_record_served_source_deduped_and_bounded() {
+        let source: Vec<serde_json::Value> = (0..SERVED_FILES_MAX + 5)
+            .map(|i| json!({"file": format!("src/f{}.rs", i % 3), "text": "abcd"}))
+            .collect();
+        let entry = line(
+            "mcp",
+            "context",
+            &json!({"repo":"r"}),
+            3,
+            0,
+            Some(&json!({"source": source})),
+        );
+        assert_eq!(
+            entry["served_files"],
+            json!(["src/f0.rs", "src/f1.rs", "src/f2.rs"]),
+            "relative paths, deduped"
+        );
+        assert_eq!(entry["served_chars"], json!(4 * (SERVED_FILES_MAX + 5)));
+        let plain = line("mcp", "status", &json!({"repo":"r"}), 1, 0, None);
+        assert_eq!(
+            (plain["served_files"].clone(), plain["served_chars"].clone()),
+            (json!(null), json!(null))
+        );
+    }
+
+    #[test]
+    fn only_served_text_is_recorded_as_source() {
+        let entry = line(
+            "mcp",
+            "explain",
+            &json!({"repo":"r"}),
+            1,
+            0,
+            Some(&json!({"source": [
+                {"file":"src/a.rs","start_line":1,"end_line":2,"text":"1\tfn a() {}\n"},
+                {"file":"src/b.rs","start_line":3,"end_line":3,"stale":true},
+                {"file":"src/c.rs","start_line":4,"end_line":4,"text":""},
+            ]})),
+        );
+        assert_eq!(entry["served_files"], json!(["src/a.rs"]));
+        assert_eq!(entry["served_chars"], json!(12));
+    }
+
+    #[test]
+    fn read_after_served_reads_only_the_recent_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        // The ledger's parent must be private; tempdir follows the umask.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let path = dir.path().join("queries.jsonl");
+        let old = json!({"ts_ms": 1_000u64, "root": "/repo", "served_files": ["src/old.rs"]});
+        // Push the old line out of the 1 MiB tail window.
+        let mut noise = String::new();
+        for _ in 0..(super::SERVED_TAIL_BYTES / 1024 + 64) {
+            noise.push_str(&"x".repeat(1023));
+            noise.push('\n');
+        }
+        std::fs::write(&path, format!("{old}\n{noise}")).unwrap();
+        let now = 10_000u64;
+        assert!(
+            !served_recent_in(Some(&path), "/repo", "src/old.rs", now, 60 * 60 * 1000),
+            "an entry outside the tail is not found"
+        );
+
+        append(
+            &path,
+            &json!({"ts_ms": 9_000u64, "root": "/repo", "served_files": ["src/new.rs"]}),
+        )
+        .unwrap();
+        assert!(
+            served_recent_in(Some(&path), "/repo", "src/new.rs", now, 60 * 60 * 1000),
+            "a recent served file is found"
+        );
+        assert!(!served_recent_in(
+            Some(&path),
+            "/other",
+            "src/new.rs",
+            now,
+            60 * 60 * 1000
+        ));
+        assert!(!served_recent_in(
+            Some(&path),
+            "/repo",
+            "src/new.rs",
+            now,
+            500
+        ));
+        assert!(!served_recent_in(
+            Some(&dir.path().join("absent")),
+            "/repo",
+            "src/new.rs",
+            now,
+            60_000
+        ));
+    }
 
     #[test]
     fn ledger_lines_redact_cursors_bound_args_and_honor_opt_out() {

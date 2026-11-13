@@ -1,5 +1,5 @@
 import type { Plugin } from "@opencode/plugin";
-import { coordinator, subprocess } from "./runtime.mjs";
+import { appendHint, coordinator, subprocess } from "./runtime.mjs";
 
 export default {
   id: "chaosbox-compaction",
@@ -25,6 +25,12 @@ export default {
       );
     });
     await ctx.tool.hook("execute.after", memory.tool);
+    // Registered after custody capture so archives keep the unmodified result.
+    // A hint is advisory: a missing binary or disabled project stays silent.
+    await ctx.tool.hook("execute.after", async (event) => {
+      const text = await memory.hint(event, ctx.location.project.canonical);
+      appendHint(event, text);
+    });
     await ctx.session.hook("context", (event) =>
       memory.context(event, (sessionID) => ctx.session.context({ sessionID })),
     );

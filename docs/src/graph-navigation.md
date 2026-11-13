@@ -131,3 +131,29 @@ lexical context, depth 2, 200 nodes) narrow any format.
 - **wiki**: `index.md` plus one note per multi-member community, linked with
   plain Markdown links so the folder works as an Obsidian vault and on any
   forge. Single-node communities are listed in the index.
+
+## MCP answer shape
+
+The MCP server is one page and one budget. `tools/list` returns every tool at
+once (never `nextCursor`); each result is bounded by `max_tokens` (default
+8000, maximum 20000, four characters per token) and reports what it dropped:
+`truncated: {shown,total}` when one collection lost whole items, or
+`{"<collection>": {shown, total}}` when several did, so no count is ambiguous.
+Totals are the counts before trimming and survive later budget passes.
+`neighbors` keeps its cursor: a budget-trimmed page returns a `next_cursor`
+that resumes at the first omitted row. If whole-item trimming cannot fit the
+budget, the answer is a small tool result
+`{"error": "result exceeds max_tokens", "max_tokens": N, "needed_tokens": M,
+"hint": ...}` rather than an oversized body.
+
+`context`, `lookup` and `explain` accept `include=source|signatures|none`
+(default `source`): verified working-tree text for the entity span,
+line-numbered (`cat -n` style), in a top-level `source` array. Files whose
+recorded snapshot digest no longer matches are pointers marked `stale: true`.
+A top-level `freshness` object names served files that are uncommitted or
+stale. `review` maps the base side of a `git diff -U0` against the pinned
+build's spans (an insertion maps its insertion point), keeps every affected
+sibling entity, ranks changed entities by incoming callers, lists test-file
+callers separately, reports changes that no indexed span covers under
+`unmapped`, and lists a file whose bytes at `base` no longer match the build's
+digest once with `"reason": "stale"` instead of asserting entities for it.

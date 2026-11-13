@@ -18,6 +18,7 @@ pub struct MemoryReader {
     active: BTreeMap<String, String>,
     evidence: BTreeMap<(String, String), Vec<EvidenceRow>>,
     navigation: BTreeMap<String, Result<serde_json::Value, String>>,
+    files: BTreeMap<(String, String), String>,
 }
 
 impl MemoryReader {
@@ -48,6 +49,7 @@ impl MemoryReader {
             active: store.active.clone(),
             evidence: store.sealed.clone(),
             navigation,
+            files: BTreeMap::new(),
         }
     }
 
@@ -84,6 +86,12 @@ impl MemoryReader {
             self.evidence
                 .insert((build.id.clone(), rel_id.to_owned()), rows.to_owned());
         }
+    }
+
+    /// Record a file-version digest the way a published build does.
+    pub fn set_file_digest(&mut self, snapshot: &str, path: &str, sha256: &str) {
+        self.files
+            .insert((snapshot.to_owned(), path.to_owned()), sha256.to_owned());
     }
 
     /// Member entities of one build, ordered by qualified name.
@@ -380,5 +388,16 @@ impl GraphQueries for MemoryReader {
             .take(usize::try_from(limit.max(0)).unwrap_or(usize::MAX))
             .cloned()
             .collect())
+    }
+
+    async fn file_version_sha256(
+        &self,
+        snapshot: &str,
+        path: &str,
+    ) -> Result<Option<String>, StoreError> {
+        Ok(self
+            .files
+            .get(&(snapshot.to_owned(), path.to_owned()))
+            .cloned())
     }
 }

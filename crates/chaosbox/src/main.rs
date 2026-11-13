@@ -26,6 +26,7 @@ use chaosbox_pg::{
 use clap::{Parser, Subcommand};
 
 mod backend_cmd;
+mod hint;
 mod jev_cmd;
 mod mcp_server;
 mod pipeline_cmd;
@@ -170,11 +171,20 @@ enum Command {
         #[command(subcommand)]
         action: setup_cmd::HookCmd,
     },
-    /// Register the read-only MCP server and agent guidance for Claude Code,
-    /// `OpenCode` or Codex (user-wide, or `--project`).
+    /// Register the read-only MCP server and hint hook for an agent platform
+    /// (user scope; enable each project with `chaosbox enable`).
     Install(setup_cmd::InstallArgs),
     /// Remove exactly what `install` added.
     Uninstall(setup_cmd::InstallArgs),
+    /// Enable Chaosbox for this project: `.chaosbox.json` plus managed agent
+    /// guidance.
+    Enable(setup_cmd::EnableArgs),
+    /// Remove this project's marker and guidance.
+    Disable(setup_cmd::DisableArgs),
+    /// Internal: harness `PostToolUse` hint hook (reads one JSON object on
+    /// stdin).
+    #[command(hide = true)]
+    Hint,
     /// Query helpers (read-only; PostgreSQL-backed, shared with MCP).
     Query {
         #[command(subcommand)]
@@ -626,6 +636,9 @@ async fn main() {
         Command::Hook { action } => std::process::exit(setup_cmd::hook(&action)),
         Command::Install(args) => std::process::exit(setup_cmd::install(&args, false)),
         Command::Uninstall(args) => std::process::exit(setup_cmd::install(&args, true)),
+        Command::Enable(args) => std::process::exit(setup_cmd::enable(&args)),
+        Command::Disable(args) => std::process::exit(setup_cmd::disable(&args)),
+        Command::Hint => std::process::exit(Box::pin(hint::run()).await),
         Command::Run(args) => std::process::exit(Box::pin(pipeline_cmd::run_cmd(&args)).await),
         Command::Watch { run, interval_secs } => {
             std::process::exit(Box::pin(pipeline_cmd::watch(&run, interval_secs)).await)

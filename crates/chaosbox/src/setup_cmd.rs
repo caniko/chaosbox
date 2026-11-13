@@ -1,7 +1,8 @@
-//! Agent and git integration (Graphify's `install` and `hook install`).
-//! Edits are marked, idempotent blocks or single JSON entries; foreign
-//! content, symlinked (home-manager managed), read-only or unparseable
-//! targets are never rewritten. The exact snippet is printed instead.
+//! Agent and git integration: per-project `enable`, user-scope `install` and
+//! `hook install`. Edits are marked, idempotent blocks or single JSON entries;
+//! foreign content, symlinked (home-manager managed), read-only or
+//! unparseable targets are never rewritten. The exact snippet is printed
+//! instead.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -99,6 +100,7 @@ fn write_file(path: &Path, text: &str, mode: u32) -> Result<(), String> {
 }
 
 /// One planned edit, printed as JSON; applied only when `contents` is set.
+#[derive(Debug)]
 struct Change {
     path: PathBuf,
     action: &'static str,
@@ -118,6 +120,51 @@ fn refuse(path: &Path, why: &str, snippet: &str) -> Change {
         action: "refused",
         contents: None,
         note: Some(format!("{why}; add this yourself:\n{snippet}")),
+    }
+}
+
+/// Plan the project marker: create, leave alone, delete, or refuse a marker
+/// that records a different repository.
+fn plan_marker(path: &Path, repo: Option<&str>, remove: bool) -> Change {
+    let contents = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&json!({ "repo": repo.unwrap_or_default() }))
+            .unwrap_or_default()
+    );
+    let existing = match editable(path) {
+        Ok(existing) => existing,
+        Err(why) => return refuse(path, &why, &contents),
+    };
+    let recorded = existing
+        .as_deref()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .and_then(|value| value.get("repo")?.as_str().map(str::to_owned));
+    if existing.is_some() && recorded.is_none() {
+        return refuse(path, "not a Chaosbox marker", &contents);
+    }
+    let change = |action, contents| Change {
+        path: path.to_owned(),
+        action,
+        contents,
+        note: None,
+    };
+    if remove {
+        return match recorded {
+            Some(_) => change("delete", None),
+            None => change("unchanged", None),
+        };
+    }
+    let Some(repo) = repo else {
+        return change("unchanged", None);
+    };
+    match recorded.as_deref() {
+        Some(current) if current == repo => change("unchanged", None),
+        Some(current) => refuse(
+            path,
+            &format!("a different repo is already recorded ({current})"),
+            &contents,
+        ),
+        None => change("create", Some(contents)),
     }
 }
 
@@ -387,46 +434,61 @@ pub(super) fn hook(cmd: &HookCmd) -> i32 {
 /// Agent platforms `install` can configure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub(super) enum Platform {
-    /// Claude Code (`.mcp.json`, `CLAUDE.md`).
+    /// Claude Code (`~/.claude/settings.json` hooks; MCP via its CLI).
     Claude,
-    /// `OpenCode` (`opencode.json`, `AGENTS.md`).
+    /// `OpenCode` (`~/.config/opencode/opencode.json`).
     Opencode,
-    /// Codex (`.codex/config.toml`, `AGENTS.md`).
+    /// Codex (`~/.codex/config.toml`).
     Codex,
 }
 
-/// `chaosbox install` / `uninstall`.
+/// `chaosbox install` / `uninstall` (user scope only).
 #[derive(Debug, clap::Args)]
 pub(super) struct InstallArgs {
     #[arg(long, value_enum)]
     platform: Platform,
-    /// Configure the project in `--dir` instead of the user's global setup.
-    #[arg(long)]
-    project: bool,
-    #[arg(long, default_value = ".")]
-    dir: PathBuf,
-    /// Graph repository name agents should pass as `repo`.
-    #[arg(long)]
-    repo: Option<String>,
     /// Print the planned edits without writing.
     #[arg(long)]
     dry_run: bool,
 }
 
-fn guidance(repo: Option<&str>) -> String {
-    let repo = repo.map_or_else(
-        || "the repository name the operator indexed".to_owned(),
-        |r| format!("`{r}`"),
-    );
+/// `chaosbox enable`: record a project's marker and steering guidance.
+#[derive(Debug, clap::Args)]
+pub(super) struct EnableArgs {
+    /// Graph repository name recorded in `.chaosbox.json`.
+    #[arg(long)]
+    repo: String,
+    /// Any directory inside the checkout.
+    #[arg(long, default_value = ".")]
+    dir: PathBuf,
+    /// Print the planned edits without writing.
+    #[arg(long)]
+    dry_run: bool,
+}
+
+/// `chaosbox disable`.
+#[derive(Debug, clap::Args)]
+pub(super) struct DisableArgs {
+    #[arg(long, default_value = ".")]
+    dir: PathBuf,
+    #[arg(long)]
+    dry_run: bool,
+}
+
+/// Imperative, self-contained steering for the project's agents (including
+/// subagents, which never see MCP instructions).
+fn guidance(repo: &str) -> String {
     format!(
-        "## Chaosbox code graph\n\n\
-         This code is indexed by Chaosbox; pass {repo} as `repo`. Ask the graph before \
-         grepping for callers, dependencies or architecture: `context` (a question \
-         becomes a bounded subgraph), `neighbors` (`direction: incoming` lists callers), \
-         `path`, `explain`, and `stats` or `report` (communities, god nodes, surprising \
-         connections, suggested questions). Entity arguments take ids or exact names. \
-         Every relationship cites evidence (`evidence`); INFERRED edges are unique \
-         lexical matches, and a missing edge is not proof that nothing uses a symbol.\n"
+        "## Chaosbox is enabled for this project\n\n\
+         This project is indexed by Chaosbox as repo `{repo}`. You MUST ask Chaosbox \
+         before Grep, Glob or Read for: a definition, the source of a symbol, callers \
+         or callees, the impact of a change (`review` for a diff), or architecture.\n\n\
+         - Source returned by Chaosbox is the file content: do not Read it again.\n\
+         - Read directly only lines Chaosbox did not return or marked `stale`.\n\
+         - Do not re-verify a Chaosbox answer with grep.\n\
+         - If Chaosbox is unavailable or says this project is not enabled, fall back \
+         to the normal tools.\n\
+         - Subagents do not see MCP instructions: pass this rule on when you delegate.\n"
     )
 }
 
@@ -434,69 +496,216 @@ fn home() -> PathBuf {
     std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
 }
 
-fn plan_install(args: &InstallArgs, remove: bool) -> (Vec<Change>, Vec<String>) {
-    let base = if args.project {
-        args.dir.clone()
-    } else {
-        home()
+/// Checkout root of `dir` (linked worktrees included).
+fn git_root(dir: &Path) -> Result<PathBuf, String> {
+    let root = git(dir, &["rev-parse", "--show-toplevel"])?;
+    (!root.is_empty())
+        .then(|| PathBuf::from(root))
+        .ok_or_else(|| "empty git root".to_owned())
+}
+
+fn plan_enable(root: &Path, repo: &str) -> Result<Vec<Change>, Change> {
+    let marker = plan_marker(&root.join(chaosbox::enablement::MARKER), Some(repo), false);
+    // A refused marker leaves the project alone entirely: guidance must never
+    // name a repository the marker does not record.
+    if marker.action == "refused" {
+        return Err(marker);
+    }
+    let text = guidance(repo);
+    let agents = root.join("AGENTS.md");
+    let claude = root.join("CLAUDE.md");
+    let mut changes = vec![marker, plan_block(&agents, &text, MARKDOWN, false)];
+    // Keep the agent file the project already uses; a project with neither
+    // gets CLAUDE.md (Claude Code reads it without extra configuration).
+    if claude.exists() || !agents.exists() {
+        changes.push(plan_block(&claude, &text, MARKDOWN, false));
+    }
+    Ok(changes)
+}
+
+fn plan_disable(root: &Path) -> Vec<Change> {
+    vec![
+        plan_marker(&root.join(chaosbox::enablement::MARKER), None, true),
+        plan_block(&root.join("AGENTS.md"), "", MARKDOWN, true),
+        plan_block(&root.join("CLAUDE.md"), "", MARKDOWN, true),
+    ]
+}
+
+pub(super) fn enable(args: &EnableArgs) -> i32 {
+    if let Err(error) = hook_word(&args.repo) {
+        eprintln!("enable: {error}");
+        return 1;
+    }
+    match git_root(&args.dir) {
+        Ok(root) => {
+            let changes = match plan_enable(&root, &args.repo) {
+                Ok(changes) => changes,
+                Err(refusal) => vec![refusal],
+            };
+            apply(&changes, args.dry_run, &[], 0o644)
+        }
+        Err(error) => {
+            eprintln!("enable: not a git repository: {error}");
+            1
+        }
+    }
+}
+
+pub(super) fn disable(args: &DisableArgs) -> i32 {
+    match git_root(&args.dir) {
+        Ok(root) => apply(&plan_disable(&root), args.dry_run, &[], 0o644),
+        Err(error) => {
+            eprintln!("disable: not a git repository: {error}");
+            1
+        }
+    }
+}
+
+/// The `PostToolUse` handler `install` adds to Claude Code. The harness caps
+/// the hook at two seconds so a stuck graph lookup cannot stall the tool call.
+const HINT_MATCHER: &str = "Grep|Glob|Bash|Read";
+const HINT_COMMAND: &str = "chaosbox hint";
+const HINT_TIMEOUT_SECONDS: u64 = 2;
+
+fn is_our_hook(entry: &Value) -> bool {
+    entry.get("type").and_then(Value::as_str) == Some("command")
+        && entry.get("command").and_then(Value::as_str) == Some(HINT_COMMAND)
+}
+
+/// Plan the managed `chaosbox hint` `PostToolUse` hooks in a Claude Code
+/// settings file. Foreign hooks are kept; only entries whose command is
+/// exactly ours are added, upgraded or removed.
+// One plan/apply branch per action; splitting it would hide the shared refusal.
+#[allow(clippy::too_many_lines)]
+fn plan_hooks(path: &Path, remove: bool) -> Change {
+    let entry = json!({
+        "matcher": HINT_MATCHER,
+        "hooks": [{"type": "command", "command": HINT_COMMAND, "timeout": HINT_TIMEOUT_SECONDS}],
+    });
+    let snippet = serde_json::to_string_pretty(&json!({"hooks": {"PostToolUse": [entry]}}))
+        .unwrap_or_default();
+    let change = |action, contents| Change {
+        path: path.to_owned(),
+        action,
+        contents,
+        note: None,
     };
-    let text = guidance(args.repo.as_deref());
+    let existing = match editable(path) {
+        Ok(existing) => existing,
+        Err(why) => return refuse(path, &why, &snippet),
+    };
+    let Some(text) = existing else {
+        return if remove {
+            change("unchanged", None)
+        } else {
+            change("create", Some(format!("{snippet}\n")))
+        };
+    };
+    let mut config: Value = match serde_json::from_str(&text) {
+        Ok(config @ Value::Object(_)) => config,
+        _ => return refuse(path, "not a JSON object", &snippet),
+    };
+    if config.get("hooks").is_some_and(|hooks| !hooks.is_object()) {
+        return if remove {
+            change("unchanged", None)
+        } else {
+            refuse(path, "`hooks` is not a JSON object", &snippet)
+        };
+    }
+    let groups = match config["hooks"].get("PostToolUse") {
+        None => Vec::new(),
+        Some(Value::Array(groups)) => groups.clone(),
+        Some(_) if remove => return change("unchanged", None),
+        Some(_) => return refuse(path, "`hooks.PostToolUse` is not an array", &snippet),
+    };
+    let mut changed = groups.clone();
+    if remove {
+        for group in &mut changed {
+            if let Some(hooks) = group.get_mut("hooks").and_then(Value::as_array_mut) {
+                hooks.retain(|hook| !is_our_hook(hook));
+            }
+        }
+        changed.retain(|group| {
+            !group
+                .get("hooks")
+                .and_then(Value::as_array)
+                .is_some_and(Vec::is_empty)
+        });
+        if changed == groups {
+            return change("unchanged", None);
+        }
+        if changed.is_empty() {
+            if let Some(hooks) = config["hooks"].as_object_mut() {
+                hooks.remove("PostToolUse");
+            }
+        } else {
+            config["hooks"]["PostToolUse"] = Value::Array(changed);
+        }
+    } else {
+        let mut found = false;
+        let mut upgraded = false;
+        for group in &mut changed {
+            let Some(hooks) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
+                continue;
+            };
+            for hook in hooks.iter_mut().filter(|hook| is_our_hook(hook)) {
+                found = true;
+                if hook.get("timeout").is_none() {
+                    hook["timeout"] = json!(HINT_TIMEOUT_SECONDS);
+                    upgraded = true;
+                }
+            }
+        }
+        if found && !upgraded {
+            return change("unchanged", None);
+        }
+        if !config["hooks"].is_object() {
+            config["hooks"] = json!({});
+        }
+        if !found {
+            changed.push(entry);
+        }
+        config["hooks"]["PostToolUse"] = Value::Array(changed);
+    }
+    if config["hooks"]
+        .as_object()
+        .is_some_and(serde_json::Map::is_empty)
+    {
+        if let Some(config) = config.as_object_mut() {
+            config.remove("hooks");
+        }
+    }
+    change(
+        "update",
+        Some(format!(
+            "{}\n",
+            serde_json::to_string_pretty(&config).unwrap_or_default()
+        )),
+    )
+}
+
+fn plan_install(args: &InstallArgs, remove: bool) -> (Vec<Change>, Vec<String>) {
+    let base = home();
     let mut notes = Vec::new();
-    let changes = match (args.platform, args.project) {
-        (Platform::Claude, true) => vec![
-            plan_json(
-                &base.join(".mcp.json"),
-                "mcpServers",
-                "chaosbox",
-                &json!({"command":"chaosbox","args":["mcp"]}),
-                remove,
-            ),
-            plan_block(&base.join("CLAUDE.md"), &text, MARKDOWN, remove),
-        ],
-        (Platform::Claude, false) => {
+    let mut changes = match args.platform {
+        Platform::Claude => {
             // Claude Code owns ~/.claude.json; let its CLI make the edit.
             notes.push(if remove {
                 "run: claude mcp remove --scope user chaosbox".to_owned()
             } else {
                 "run: claude mcp add --scope user chaosbox -- chaosbox mcp".to_owned()
             });
-            vec![plan_block(
-                &base.join(".claude/CLAUDE.md"),
-                &text,
-                MARKDOWN,
-                remove,
-            )]
+            vec![plan_hooks(&base.join(".claude/settings.json"), remove)]
         }
-        (Platform::Opencode, project) => {
-            let config = if project {
-                base.join("opencode.json")
-            } else {
-                base.join(".config/opencode/opencode.json")
-            };
-            let agents = if project {
-                base.join("AGENTS.md")
-            } else {
-                base.join(".config/opencode/AGENTS.md")
-            };
-            vec![
-                plan_json(
-                    &config,
-                    "mcp",
-                    "chaosbox",
-                    &json!({"type":"local","command":["chaosbox","mcp"],"enabled":true}),
-                    remove,
-                ),
-                plan_block(&agents, &text, MARKDOWN, remove),
-            ]
-        }
-        (Platform::Codex, project) => {
-            let root = base.join(".codex");
-            let config = root.join("config.toml");
-            let agents = if project {
-                base.join("AGENTS.md")
-            } else {
-                root.join("AGENTS.md")
-            };
+        Platform::Opencode => vec![plan_json(
+            &base.join(".config/opencode/opencode.json"),
+            "mcp",
+            "chaosbox",
+            &json!({"type":"local","command":["chaosbox","mcp"],"enabled":true}),
+            remove,
+        )],
+        Platform::Codex => {
+            let config = base.join(".codex/config.toml");
             let table = "[mcp_servers.chaosbox]\ncommand = \"chaosbox\"\nargs = [\"mcp\"]\n";
             let foreign = editable(&config).ok().flatten().is_some_and(|t| {
                 let outside = remove_block(&t, SHELL).unwrap_or(t);
@@ -511,9 +720,19 @@ fn plan_install(args: &InstallArgs, remove: bool) -> (Vec<Change>, Vec<String>) 
             } else {
                 plan_block(&config, table, SHELL, remove)
             };
-            vec![toml, plan_block(&agents, &text, MARKDOWN, remove)]
+            vec![toml]
         }
     };
+    // An older `install` wrote a global guidance block; remove it on
+    // uninstall, but never write one now (enable is per project).
+    if remove {
+        let (path, marks) = match args.platform {
+            Platform::Claude => (base.join(".claude/CLAUDE.md"), MARKDOWN),
+            Platform::Opencode => (base.join(".config/opencode/AGENTS.md"), MARKDOWN),
+            Platform::Codex => (base.join(".codex/AGENTS.md"), MARKDOWN),
+        };
+        changes.push(plan_block(&path, "", marks, true));
+    }
     (changes, notes)
 }
 
@@ -524,8 +743,150 @@ pub(super) fn install(args: &InstallArgs, remove: bool) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{hook_body, plan_hook, plan_json, remove_block, upsert_block, MARKDOWN, SHELL};
+    use super::{
+        guidance, hook_body, plan_disable, plan_enable, plan_hook, plan_hooks, plan_json,
+        remove_block, upsert_block, Change, MARKDOWN, SHELL,
+    };
     use serde_json::json;
+
+    fn apply_changes(changes: &[Change]) {
+        for change in changes {
+            match (change.action, &change.contents) {
+                (_, Some(text)) => {
+                    if let Some(parent) = change.path.parent() {
+                        std::fs::create_dir_all(parent).unwrap();
+                    }
+                    std::fs::write(&change.path, text).unwrap();
+                }
+                ("delete", None) => {
+                    let _ = std::fs::remove_file(&change.path);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn guidance_is_imperative_bounded_and_self_contained() {
+        let text = guidance("canix");
+        assert!(
+            text.chars().count() <= 1200,
+            "{} chars",
+            text.chars().count()
+        );
+        assert!(text.contains("`canix`"));
+        assert!(text.contains("MUST ask Chaosbox"));
+        assert!(text.contains("Do not re-verify"));
+        assert!(text.contains("Subagents"));
+    }
+
+    #[test]
+    fn enable_and_disable_round_trip_a_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        apply_changes(&plan_enable(root, "canix").unwrap());
+        assert_eq!(
+            std::fs::read_to_string(root.join(".chaosbox.json")).unwrap(),
+            "{\n  \"repo\": \"canix\"\n}\n"
+        );
+        let agents = std::fs::read_to_string(root.join("AGENTS.md")).unwrap();
+        assert!(agents.contains(">>> chaosbox >>>"));
+        assert!(root.join("CLAUDE.md").is_file());
+
+        // Idempotent, and a different repo is refused.
+        let again = plan_enable(root, "canix").unwrap();
+        assert!(again.iter().all(|change| change.action == "unchanged"));
+        assert_eq!(plan_enable(root, "other").unwrap_err().action, "refused");
+
+        apply_changes(&plan_disable(root));
+        assert!(!root.join(".chaosbox.json").exists());
+        assert_eq!(std::fs::read_to_string(root.join("AGENTS.md")).unwrap(), "");
+        assert_eq!(std::fs::read_to_string(root.join("CLAUDE.md")).unwrap(), "");
+    }
+
+    #[test]
+    fn enable_keeps_existing_agent_files_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("AGENTS.md"), "# House rules\n").unwrap();
+        apply_changes(&plan_enable(root, "canix").unwrap());
+        let agents = std::fs::read_to_string(root.join("AGENTS.md")).unwrap();
+        assert!(agents.starts_with("# House rules\n"));
+        assert!(
+            !root.join("CLAUDE.md").exists(),
+            "an existing AGENTS.md is the project's agent file"
+        );
+        apply_changes(&plan_disable(root));
+        assert_eq!(
+            std::fs::read_to_string(root.join("AGENTS.md")).unwrap(),
+            "# House rules\n"
+        );
+    }
+
+    #[test]
+    fn hint_hooks_are_added_idempotently_and_removed_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            serde_json::to_string_pretty(&json!({
+                "model": "opus",
+                "hooks": {"PostToolUse": [{
+                    "matcher": "Write",
+                    "hooks": [{"type": "command", "command": "my-hook"}],
+                }]},
+            }))
+            .unwrap()
+                + "\n",
+        )
+        .unwrap();
+        let created = plan_hooks(&path, false);
+        assert_eq!(created.action, "update");
+        apply_changes(std::slice::from_ref(&created));
+        assert_eq!(plan_hooks(&path, false).action, "unchanged");
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let groups = config["hooks"]["PostToolUse"].as_array().unwrap();
+        assert_eq!(groups.len(), 2, "the foreign hook group survives");
+        assert_eq!(groups[0]["matcher"], "Write");
+        assert_eq!(groups[1]["hooks"][0]["command"], "chaosbox hint");
+        assert_eq!(
+            groups[1]["hooks"][0]["timeout"], 2,
+            "the hook is time-capped"
+        );
+
+        // A previously installed entry without the timeout is upgraded in place.
+        let mut legacy: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        legacy["hooks"]["PostToolUse"][1]["hooks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("timeout");
+        std::fs::write(&path, format!("{legacy}\n")).unwrap();
+        let upgrade = plan_hooks(&path, false);
+        assert_eq!(upgrade.action, "update");
+        apply_changes(std::slice::from_ref(&upgrade));
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let groups = config["hooks"]["PostToolUse"].as_array().unwrap();
+        assert_eq!(groups.len(), 2, "the upgrade does not duplicate the hook");
+        assert_eq!(groups[1]["hooks"][0]["timeout"], 2);
+
+        let removed = plan_hooks(&path, true);
+        apply_changes(std::slice::from_ref(&removed));
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(config["hooks"]["PostToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(config["model"], "opus");
+        assert_eq!(plan_hooks(&path, true).action, "unchanged");
+
+        // A missing settings file is never created by uninstall.
+        let missing = dir.path().join("absent.json");
+        assert_eq!(plan_hooks(&missing, true).action, "unchanged");
+        assert!(!missing.exists());
+        assert_eq!(plan_hooks(&missing, false).action, "create");
+    }
 
     #[test]
     fn marked_blocks_are_idempotent_and_reversible() {

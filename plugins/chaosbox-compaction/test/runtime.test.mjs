@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { coordinator, subprocess } from "../runtime.mjs";
+import { appendHint, coordinator, hintText, subprocess } from "../runtime.mjs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -292,3 +292,49 @@ test(
     }
   },
 );
+
+test("hints ride on completed tool results and fail open", async () => {
+  const calls = [];
+  const memory = coordinator(options, async (binary, args, input, timeout) => {
+    calls.push({ binary, args, input, timeout });
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PostToolUse",
+        additionalContext: "parse_config function src/config.rs:42 (2 callers)",
+      },
+    };
+  });
+  const event = {
+    sessionID: "ses_hint",
+    tool: "grep",
+    status: "completed",
+    input: { pattern: "parse_config" },
+    result: { content: [{ type: "text", text: "old output" }] },
+  };
+  const text = await memory.hint(event, "/projects/alpha");
+  assert.deepEqual(calls[0], {
+    binary: "chaosbox",
+    args: ["hint"],
+    input: {
+      session_id: "ses_hint",
+      cwd: "/projects/alpha",
+      tool_name: "grep",
+      tool_input: { pattern: "parse_config" },
+    },
+    timeout: 1_000,
+  });
+  assert.match(text, /parse_config/);
+  assert.equal(appendHint(event, text), true);
+  assert.equal(event.result.content.length, 2);
+  assert.equal(event.result.content[1].type, "text");
+
+  // Silent for tools that cannot search, failed calls and broken binaries.
+  assert.equal(await memory.hint({ ...event, tool: "write" }, "/projects/alpha"), "");
+  assert.equal(await memory.hint({ ...event, status: "error" }, "/projects/alpha"), "");
+  const broken = coordinator(options, async () => {
+    throw new Error("chaosbox missing");
+  });
+  assert.equal(await broken.hint(event, "/projects/alpha"), "");
+  assert.equal(appendHint({ ...event, status: "error" }, "text"), false);
+  assert.equal(hintText({ hookSpecificOutput: {} }), "");
+});

@@ -56,6 +56,8 @@ struct Mcp {
     input: tokio::process::ChildStdin,
     output: Lines<BufReader<tokio::process::ChildStdout>>,
     id: u64,
+    /// Disposable enabled checkout: graph tools need the project opt-in.
+    _project: tempfile::TempDir,
 }
 
 impl Mcp {
@@ -64,8 +66,12 @@ impl Mcp {
     }
 
     async fn start_command(mut command: tokio::process::Command) -> Self {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir(project.path().join(".git")).unwrap();
+        std::fs::write(project.path().join(".chaosbox.json"), br#"{"repo":"demo"}"#).unwrap();
         let mut child = command
             .arg("mcp")
+            .current_dir(project.path())
             .env_remove("CHAOSBOX_JEV_API_KEY_FILE")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -80,6 +86,7 @@ impl Mcp {
             input,
             output,
             id: 0,
+            _project: project,
         };
         let response = client
             .rpc("initialize", json!({"protocolVersion":"2025-06-18"}))

@@ -4,9 +4,38 @@
 
 ### Added
 
+- Explicit per-project enablement: `chaosbox enable --repo NAME` writes a
+  committed `.chaosbox.json` at the checkout root and a marked, imperative
+  guidance block into `AGENTS.md` (and `CLAUDE.md` when the project uses it);
+  `chaosbox disable` removes the marker and both blocks, and a marker naming a
+  different repository is refused. `install` is now user scope only and writes
+  no global guidance (uninstall still removes an old block).
+- Harness hints: the hidden `chaosbox hint` PostToolUse hook answers a
+  `Grep`/`Glob` search or a simple `rg`/`grep`/`ag`/`ack` command in an
+  enabled project with up to five definitions (`name kind file:line
+  (N callers)`) and a `context`/`lookup` pointer. At most five hints per
+  session, duplicate patterns skipped, whole hook bounded to ~300 ms and
+  failing open. OpenCode's compaction plugin appends the same hint to a tool
+  result; a `Read` of a recently served file is recorded as
+  `read_after_served` instead of answering the agent.
+- Usage ledger lines record `served_files`, `served_chars` and the enabled
+  `root`, so calls per tool, bytes returned and the read-after-served rate
+  are three `jq` queries (documented in agent integration).
 - `services.chaosbox.federation.projects` declares a shared project once on an
   integrated Home Manager host and renders each owner's repo mapping and grants
   to every other participant (moved from Canix's `canix.chaosbox.federation`).
+
+### Changed
+
+- MCP token economy: graph tools exist only inside a project whose committed
+  `.chaosbox.json` enables it, and there the `repo` argument defaults to the
+  marker; `tools/list` is one page and `initialize` sends imperative routing
+  instructions; every tool takes `max_tokens` (default 8000) and trims whole
+  items with `truncated` counts; `context`/`lookup`/`explain` embed verified,
+  line-numbered working-tree source in `source[]` and mark other files
+  `stale`; `status` defaults to a summary; and `review` maps a `git diff` to
+  changed entities with callers and tests. `search` now returns
+  `{"nodes": [...]}`.
 
 ### Breaking: PostgreSQL + pgvector replaces TypeDB (0.2.0)
 

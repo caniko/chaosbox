@@ -1,6 +1,11 @@
 //! MCP surface unit tests, moved verbatim from the former inline `mod tests` block.
 
-use super::mcp_server::{mcp_args, mcp_call_tool, mcp_tool_defs};
+use super::mcp_server::{
+    ChangedFile, changed_entities, graph_enabled, is_test_path, prepare_neighborhood, prepare_path,
+    review_payload, safe_join, serve_source, trim_payload, SourceInclude, SourceTarget,
+    MCP_DESCRIPTION_LINE_MAX, MCP_NOT_ENABLED, backend_args, char_budget, mcp_args, mcp_call_tool,
+    mcp_call_tool_without_opt_in, mcp_instructions, mcp_text_result, mcp_tool_defs, mcp_tool_list,
+};
 
 /// Signals when a pending backend future is dropped.
 struct Guard(tokio::sync::watch::Sender<bool>);
@@ -13,8 +18,8 @@ impl Drop for Guard {
 
 #[test]
 fn tool_defs_are_read_only_with_schemas() {
-    let defs = mcp_tool_defs();
-    assert_eq!(defs.len(), 13);
+    let defs = mcp_tool_defs(None);
+    assert_eq!(defs.len(), 14);
     for d in &defs {
         assert_eq!(d["annotations"]["readOnlyHint"], true);
         assert!(d["inputSchema"]["properties"].is_object(), "{d}");
@@ -37,8 +42,305 @@ fn tool_defs_are_read_only_with_schemas() {
 }
 
 #[test]
+fn enabled_projects_default_the_repo_argument() {
+    let defs = mcp_tool_defs(Some("demo"));
+    assert_eq!(defs.len(), 14);
+    for d in &defs {
+        let schema = &d["inputSchema"];
+        assert!(
+            !schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("repo")),
+            "repo is optional under an opt-in: {d}"
+        );
+        assert_eq!(schema["properties"]["repo"]["default"], "demo", "{d}");
+        assert_eq!(schema["properties"]["repo"]["minLength"], 1, "{d}");
+    }
+    // An omitted repo resolves to the marker's repository; an explicit one wins.
+    let args = mcp_args("status", &serde_json::json!({"arguments":{}}), Some("demo")).unwrap();
+    assert_eq!(args["repo"], "demo");
+    let args = mcp_args(
+        "status",
+        &serde_json::json!({"arguments":{"repo":"other"}}),
+        Some("demo"),
+    )
+    .unwrap();
+    assert_eq!(args["repo"], "other");
+    let args = mcp_args("status", &serde_json::json!({"arguments":{}}), None).unwrap();
+    assert!(args.get("repo").is_none());
+}
+
+#[tokio::test]
+async fn unmarked_projects_advertise_no_graph_tools_and_answer_with_the_opt_in() {
+    use serde_json::json;
+    let defs = mcp_tool_list(None, false, false, false);
+    assert!(defs.is_empty(), "no tools without an opt-in: {defs:?}");
+    // Operator flags keep exactly their own tools.
+    let defs = mcp_tool_list(None, true, false, true);
+    let names: Vec<_> = defs.iter().map(|d| d["name"].as_str().unwrap()).collect();
+    assert_eq!(
+        names,
+        [
+            "intelligence_context",
+            "intelligence_evidence",
+            "workspace_impact"
+        ]
+    );
+    for name in ["search", "context", "lookup", "review"] {
+        let response =
+            mcp_call_tool_without_opt_in(&json!(1), name, &json!({"arguments":{}})).await;
+        assert_eq!(response["error"]["code"], -32601, "{name}: {response}");
+        assert_eq!(response["error"]["message"], MCP_NOT_ENABLED, "{name}");
+    }
+}
+
+#[test]
+fn tool_descriptions_open_with_when_to_use_and_stay_small() {
+    // Baseline before the token-economy rewrite: 1439 characters.
+    let budget = 1439;
+    let defs = mcp_tool_defs(Some("demo"));
+    let total: usize = defs
+        .iter()
+        .map(|tool| {
+            tool["description"]
+                .as_str()
+                .unwrap_or_default()
+                .chars()
+                .count()
+        })
+        .sum();
+    assert!(total <= budget, "descriptions grew to {total} characters");
+    for tool in &defs {
+        let first = tool["description"]
+            .as_str()
+            .unwrap_or_default()
+            .lines()
+            .next()
+            .unwrap_or_default();
+        assert!(
+            first.chars().count() <= MCP_DESCRIPTION_LINE_MAX,
+            "{} first line is {} chars: {first}",
+            tool["name"],
+            first.chars().count()
+        );
+    }
+}
+
+#[test]
+fn schemas_declare_every_default() {
+    use serde_json::json;
+    let defs = mcp_tool_defs(Some("demo"));
+    let declared = [
+        ("search", "limit", json!(20)),
+        ("neighbors", "limit", json!(20)),
+        ("neighbors", "direction", json!("both")),
+        ("path", "max_hops", json!(4)),
+        ("status", "detail", json!("summary")),
+        ("lookup", "include", json!("source")),
+        ("explain", "include", json!("source")),
+        ("context", "depth", json!(3)),
+        ("context", "max_nodes", json!(20)),
+        ("context", "max_chars", json!(12000)),
+        ("context", "include", json!("source")),
+        ("stats", "limit", json!(10)),
+        ("stats", "resolution", json!(1.0)),
+        ("community", "limit", json!(100)),
+        ("community", "resolution", json!(1.0)),
+        ("report", "resolution", json!(1.0)),
+        ("review", "base", json!("HEAD")),
+    ];
+    for (name, field, default) in declared {
+        let tool = defs.iter().find(|tool| tool["name"] == name).unwrap();
+        assert_eq!(
+            tool["inputSchema"]["properties"][field]["default"], default,
+            "{name}.{field} must declare its default"
+        );
+    }
+    for tool in &defs {
+        let schema = &tool["inputSchema"]["properties"]["max_tokens"];
+        assert_eq!(schema["default"], 8000, "{}", tool["name"]);
+        assert_eq!(schema["maximum"], 20000, "{}", tool["name"]);
+    }
+}
+
+#[test]
+fn untrimmable_payloads_report_the_budget_as_a_tool_result() {
+    use serde_json::json;
+    let mut payload = json!({
+        "build_id": "build:1234",
+        "nodes": [{"id":"ent:a"},{"id":"ent:b"}],
+        "coverage": {"files": 12, "nodes": 40},
+    });
+    trim_payload("search", &mut payload, 60);
+    assert!(payload["nodes"].as_array().unwrap().is_empty());
+    assert!(
+        serde_json::to_string(&payload).unwrap().len() > 60,
+        "metadata alone exceeds the budget"
+    );
+    let answer = mcp_text_result(&json!(9), payload, 60);
+    assert!(
+        answer.get("error").is_none(),
+        "a budget overrun is a small tool result, not a protocol error: {answer}"
+    );
+    assert_eq!(answer["id"], 9);
+    let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+    let value: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(value["error"], "result exceeds max_tokens");
+    assert_eq!(value["max_tokens"], 15);
+    assert!(value["needed_tokens"].as_u64().unwrap() > 15);
+    assert!(value["hint"].as_str().unwrap().contains("max 20000"));
+}
+
+#[test]
+fn repeated_budget_passes_keep_the_original_total() {
+    use serde_json::json;
+    let nodes: Vec<_> = (0..10)
+        .map(|index| json!({"id": format!("ent:{index}")}))
+        .collect();
+    let mut payload = json!({"nodes": nodes});
+    trim_payload("search", &mut payload, 120);
+    assert_eq!(payload["truncated"]["nodes"]["total"], 10);
+    let shown = payload["nodes"].as_array().unwrap().len();
+    assert!(shown < 10, "the fixture must be trimmed");
+    // A later pass only sees the trimmed list; the total stays the original.
+    trim_payload("search", &mut payload, 80);
+    assert_eq!(
+        payload["truncated"]["nodes"]["total"], 10,
+        "a second pass must not report the trimmed length as the total"
+    );
+    assert!(payload["nodes"].as_array().unwrap().len() < shown);
+}
+
+#[test]
+fn large_results_are_trimmed_item_wise_under_the_budget() {
+    use serde_json::json;
+    let nodes: Vec<_> = (0..200)
+        .map(|index| json!({"id": format!("ent:{index}"), "label": format!("symbol_{index}")}))
+        .collect();
+    let mut payload = json!({"nodes": nodes});
+    assert_eq!(char_budget(&serde_json::Map::new()), 32_000);
+    trim_payload("search", &mut payload, 4_000);
+    assert!(serde_json::to_string(&payload).unwrap().len() <= 4_000);
+    assert_eq!(payload["truncated"]["nodes"]["total"], 200);
+    let shown = payload["nodes"].as_array().unwrap().len();
+    assert_eq!(payload["truncated"]["nodes"]["shown"], shown);
+    assert!(shown < 200, "the fixture must be trimmed");
+    assert_eq!(payload["nodes"][0]["id"], "ent:0", "ranked order kept");
+}
+
+#[test]
+fn source_serves_verified_lines_and_refuses_stale_or_escaping_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    let text = "fn a() {}\nfn b() {\n    1\n}\n";
+    std::fs::write(root.join("src/lib.rs"), text).unwrap();
+    let mut digests = std::collections::BTreeMap::new();
+    digests.insert(
+        ("snap:one".to_owned(), "src/lib.rs".to_owned()),
+        chaosbox_core::sha256_hex(&[text]),
+    );
+    let target = |file: &str| SourceTarget {
+        file: file.to_owned(),
+        snapshot: "snap:one".to_owned(),
+        start: 2,
+        end: 3,
+    };
+    let (entries, stale, served) = serve_source(
+        root,
+        &[target("src/lib.rs")],
+        &digests,
+        SourceInclude::Source,
+        4096,
+    );
+    assert_eq!(entries[0]["file"], "src/lib.rs");
+    assert_eq!(entries[0]["start_line"], 2);
+    assert_eq!(entries[0]["end_line"], 3);
+    assert_eq!(entries[0]["text"], "     2\tfn b() {\n     3\t    1\n");
+    assert!(stale.is_empty());
+    assert_eq!(served, ["src/lib.rs"]);
+
+    // Indexed bytes no longer match the working tree: pointer only.
+    std::fs::write(root.join("src/lib.rs"), "changed\n").unwrap();
+    let (entries, stale, served) = serve_source(
+        root,
+        &[target("src/lib.rs")],
+        &digests,
+        SourceInclude::Source,
+        4096,
+    );
+    assert_eq!(entries[0]["stale"], true);
+    assert!(entries[0].get("text").is_none());
+    assert!(entries[0].get("end_line").is_some());
+    assert_eq!(stale, ["src/lib.rs"]);
+    assert!(served.is_empty());
+
+    // Never outside the enabled root.
+    assert!(safe_join(root, "../secret").is_none());
+    assert!(safe_join(root, "/etc/passwd").is_none());
+    assert!(safe_join(root, "src/../../secret").is_none());
+    let (entries, _, _) = serve_source(
+        root,
+        &[target("../secret")],
+        &digests,
+        SourceInclude::Source,
+        4096,
+    );
+    assert!(entries[0].get("text").is_none());
+
+    // Restore the indexed bytes: signatures fall back to the span's first line.
+    std::fs::write(root.join("src/lib.rs"), text).unwrap();
+    let (entries, _, _) = serve_source(
+        root,
+        &[target("src/lib.rs")],
+        &digests,
+        SourceInclude::Signatures,
+        4096,
+    );
+    assert_eq!(entries[0]["text"], "     2\tfn b() {\n");
+    let (entries, _, _) = serve_source(
+        root,
+        &[target("src/lib.rs")],
+        &digests,
+        SourceInclude::None,
+        4096,
+    );
+    assert!(entries[0].get("text").is_none());
+}
+
+#[test]
+fn test_paths_are_recognized_for_the_review_safety_net() {
+    for path in [
+        "tests/it.rs",
+        "src/test_helper.rs",
+        "src/foo_test.rs",
+        "web/app.test.ts",
+        "spec/models/user.rb",
+    ] {
+        assert!(is_test_path(path), "{path}");
+    }
+    for path in ["src/lib.rs", "docs/agent.md", "crates/api/src/main.rs"] {
+        assert!(!is_test_path(path), "{path}");
+    }
+}
+
+#[test]
+fn instructions_fit_the_mcp_prompt_budget() {
+    let text = mcp_instructions("demo");
+    assert!(text.len() <= 2000, "instructions are {} bytes", text.len());
+    for tool in mcp_tool_defs(Some("demo")) {
+        assert!(
+            text.contains(tool["name"].as_str().unwrap()),
+            "instructions omit {}",
+            tool["name"]
+        );
+    }
+}
+
+#[test]
 fn neighbors_advertises_bounded_continuation() {
-    let defs = mcp_tool_defs();
+    let defs = mcp_tool_defs(None);
     let neighbors = defs
         .iter()
         .find(|tool| tool["name"] == "neighbors")
@@ -60,7 +362,7 @@ fn neighbors_advertises_bounded_continuation() {
 
 #[test]
 fn historical_tools_advertise_optional_exact_publication() {
-    let defs = mcp_tool_defs();
+    let defs = mcp_tool_defs(None);
     for name in ["lookup", "explain", "evidence", "neighbors"] {
         let tool = defs.iter().find(|tool| tool["name"] == name).unwrap();
         let schema = &tool["inputSchema"];
@@ -126,7 +428,7 @@ async fn historical_cursor_conflicts_fail_before_credentials() {
 
 #[test]
 fn path_advertises_shared_bounds_and_rejects_unknown_fields() {
-    let defs = mcp_tool_defs();
+    let defs = mcp_tool_defs(None);
     let path = defs.iter().find(|tool| tool["name"] == "path").unwrap();
     let schema = &path["inputSchema"];
     assert_eq!(schema["additionalProperties"], false);
@@ -210,7 +512,7 @@ async fn neighbors_rejects_invalid_supplied_arguments_before_credentials() {
 
 #[test]
 fn missing_args_rejected_before_backend() {
-    let err = mcp_args("search", &serde_json::json!({})).unwrap_err();
+    let err = mcp_args("search", &serde_json::json!({}), None).unwrap_err();
     assert_eq!(err["code"], -32602);
 }
 
@@ -229,22 +531,17 @@ async fn unknown_tools_rejected_without_backend() {
 }
 
 #[tokio::test]
-async fn missing_repo_rejected_before_backend() {
-    // No backend needed: the explicit-repo rule fires first.
-    let resp = Box::pin(mcp_call_tool(
+async fn missing_repo_is_an_argument_error_without_an_opt_in() {
+    // No backend needed: the explicit-repo rule fires first when there is no
+    // marker to default from.
+    let resp = Box::pin(mcp_call_tool_without_opt_in(
         &serde_json::json!(1),
         "search",
         &serde_json::json!({"arguments": {"query": "alpha"}}),
     ))
     .await;
-    assert_eq!(resp["error"]["code"], -32602, "{resp}");
-    assert!(
-        resp["error"]["message"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("repo"),
-        "{resp}"
-    );
+    assert_eq!(resp["error"]["code"], -32601, "{resp}");
+    assert_eq!(resp["error"]["message"], MCP_NOT_ENABLED, "{resp}");
 }
 
 #[tokio::test]
@@ -317,8 +614,8 @@ fn mcp_tool_set_loads_no_provider_credentials() {
     // MCP path never calls `JevClient::api_key`: grep the source rather
     // than trusting the shape alone, so a future mutation tool cannot slip
     // past the closed set unnoticed.
-    let defs = mcp_tool_defs();
-    assert_eq!(defs.len(), 13);
+    let defs = mcp_tool_defs(None);
+    assert_eq!(defs.len(), 14);
     let names: Vec<_> = defs
         .iter()
         .map(|d| d["name"].as_str().unwrap_or_default())
@@ -551,4 +848,360 @@ async fn ordinary_slow_output_keeps_one_deadline_and_drops_the_active_read() {
     assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
     assert!(began.elapsed() >= std::time::Duration::from_secs(9));
     assert!(*drop_rx.borrow());
+}
+
+/// Disposable fixture identity: temp repositories never touch operator config.
+fn run_git(root: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .env("GIT_AUTHOR_NAME", "Chaosbox Test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Chaosbox Test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn span(file: &str, start: u32, end: u32) -> chaosbox_core::SourceSpan {
+    chaosbox_core::SourceSpan {
+        file: file.to_owned(),
+        start_line: start,
+        start_col: 1,
+        end_line: end,
+        end_col: 1,
+        byte_start: 0,
+        byte_end: 0,
+    }
+}
+
+#[allow(clippy::too_many_lines)] // one fixture spells out the whole repository
+#[tokio::test]
+async fn review_maps_diff_hunks_to_callers_and_tests() {
+    use chaosbox_core::{Entity, EntityKind, GraphBuild, Relation, RelationScope, RelationType};
+    use chaosbox_store::MemoryReader;
+
+    const REPO: &str = "demo";
+    const SNAP: &str = "snap:fixture";
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("tests")).unwrap();
+    std::fs::write(
+        root.join("src/lib.rs"),
+        "// header\nfn work() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("src/quiet.rs"), "fn quiet() {}\n").unwrap();
+    std::fs::write(root.join("src/user.rs"), "fn user() { work(); }\n").unwrap();
+    std::fs::write(root.join("tests/it.rs"), "#[test] fn t() { work(); }\n").unwrap();
+    run_git(root, &["init", "-q"]);
+    run_git(root, &["add", "."]);
+    run_git(root, &["commit", "-q", "-m", "fixture"]);
+    // One change inside the indexed definition, one outside every span.
+    std::fs::write(
+        root.join("src/lib.rs"),
+        "// changed header\nfn work() {\n    let x = 1;\n    let y = 2;\n    x * y\n}\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("src/quiet.rs"), "fn quiet() { }\n").unwrap();
+
+    let work = Entity::new(
+        EntityKind::Definition,
+        REPO,
+        SNAP,
+        "src/lib.rs",
+        "work",
+        "work",
+        span("src/lib.rs", 2, 6),
+    );
+    let quiet = Entity::new(
+        EntityKind::Definition,
+        REPO,
+        SNAP,
+        "src/quiet.rs",
+        "quiet",
+        "quiet",
+        span("src/quiet.rs", 1, 1),
+    );
+    let caller = Entity::new(
+        EntityKind::Definition,
+        REPO,
+        SNAP,
+        "src/user.rs",
+        "user",
+        "user",
+        span("src/user.rs", 1, 1),
+    );
+    let test = Entity::new(
+        EntityKind::Definition,
+        REPO,
+        SNAP,
+        "tests/it.rs",
+        "t",
+        "tests::t",
+        span("tests/it.rs", 1, 1),
+    );
+    let mut build = GraphBuild::new(REPO, vec![SNAP.to_owned()], 1);
+    for node in [&work, &quiet, &caller, &test] {
+        build.add_node(node.clone()).unwrap();
+    }
+    build
+        .add_edge(Relation::new(
+            RelationType::Calls,
+            &caller.id,
+            &work.id,
+            RelationScope::CrossFile,
+            &build.id,
+        ))
+        .unwrap();
+    build
+        .add_edge(Relation::new(
+            RelationType::References,
+            &test.id,
+            &work.id,
+            RelationScope::CrossFile,
+            &build.id,
+        ))
+        .unwrap();
+    let mut memory = MemoryReader::new();
+    memory.insert_build(build.clone());
+    memory.set_active(REPO, &build.id);
+    // The build indexed the base content of both changed files.
+    memory.set_file_digest(
+        SNAP,
+        "src/lib.rs",
+        &chaosbox_core::sha256_hex(&[
+            "// header\nfn work() {\n    let x = 1;\n    let y = 2;\n    x + y\n}\n",
+        ]),
+    );
+    memory.set_file_digest(
+        SNAP,
+        "src/quiet.rs",
+        &chaosbox_core::sha256_hex(&["fn quiet() {}\n"]),
+    );
+    let reader = chaosbox::GraphReader::pinned(memory, REPO).await.unwrap();
+
+    let review = review_payload(&reader, root, "HEAD", 4_000).await.unwrap();
+    let entities = review["entities"].as_array().unwrap();
+    assert_eq!(entities.len(), 2, "{review}");
+    assert_eq!(entities[0]["id"], work.id);
+    assert_eq!(entities[0]["callers"], 2);
+    assert_eq!(entities[0]["test_count"], 1);
+    assert_eq!(entities[0]["tests"][0]["file"], "tests/it.rs");
+    assert_eq!(entities[1]["id"], quiet.id);
+    assert_eq!(entities[1]["callers"], 0);
+    assert_eq!(review["unmapped"][0]["file"], "src/lib.rs");
+    assert_eq!(review["unmapped"][0]["start_line"], 1);
+    assert_eq!(review["changed_files"], 2);
+    // The working tree moved past the indexed bytes, so text is not claimed fresh.
+    for entry in review["source"].as_array().unwrap() {
+        assert!(entry.get("text").is_none(), "{entry}");
+        assert_eq!(entry["stale"], true, "{entry}");
+    }
+    assert!(serde_json::to_string(&review).unwrap().len() <= 4_000);
+
+    // `base` is verified before any diff runs; a flag is never a revision.
+    assert!(review_payload(&reader, root, "--help", 4_000)
+        .await
+        .is_err());
+}
+
+#[allow(clippy::too_many_lines)] // one fixture spells out the whole repository
+#[tokio::test]
+async fn review_maps_base_side_hunks_and_refuses_files_changed_since_indexing() {
+    use chaosbox_core::{Entity, EntityKind, GraphBuild};
+    use chaosbox_store::MemoryReader;
+
+    const REPO: &str = "demo";
+    const SNAP: &str = "snap:fixture";
+    const BASE: &str =
+        "fn first() {\n    let a = 1;\n    a\n}\nfn second() {\n    let b = 2;\n    b\n}\n";
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/shift.rs"), BASE).unwrap();
+    std::fs::write(root.join("src/stale.rs"), "fn stale() {}\n").unwrap();
+    run_git(root, &["init", "-q"]);
+    run_git(root, &["add", "."]);
+    run_git(root, &["commit", "-q", "-m", "fixture"]);
+    // A line above every entity, plus one edit inside the second function.
+    std::fs::write(
+        root.join("src/shift.rs"),
+        "// inserted\nfn first() {\n    let a = 1;\n    a\n}\nfn second() {\n    let b = 2;\n    b + 10\n}\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("src/stale.rs"), "fn stale() { }\n").unwrap();
+
+    let entity = |file: &str, name: &str, start: u32, end: u32| {
+        Entity::new(
+            EntityKind::Definition,
+            REPO,
+            SNAP,
+            file,
+            name,
+            name,
+            span(file, start, end),
+        )
+    };
+    let first = entity("src/shift.rs", "first", 1, 4);
+    let second = entity("src/shift.rs", "second", 5, 8);
+    let stale = entity("src/stale.rs", "stale", 1, 1);
+    let mut build = GraphBuild::new(REPO, vec![SNAP.to_owned()], 1);
+    for node in [&first, &second, &stale] {
+        build.add_node(node.clone()).unwrap();
+    }
+    let mut memory = MemoryReader::new();
+    memory.insert_build(build.clone());
+    memory.set_active(REPO, &build.id);
+    memory.set_file_digest(SNAP, "src/shift.rs", &chaosbox_core::sha256_hex(&[BASE]));
+    // Indexed at different bytes: the spans do not describe this file at base.
+    memory.set_file_digest(
+        SNAP,
+        "src/stale.rs",
+        &chaosbox_core::sha256_hex(&["fn aged() {}"]),
+    );
+    let reader = chaosbox::GraphReader::pinned(memory, REPO).await.unwrap();
+
+    let review = review_payload(&reader, root, "HEAD", 4_000).await.unwrap();
+    let entities = review["entities"].as_array().unwrap();
+    assert_eq!(entities.len(), 1, "{review}");
+    assert_eq!(
+        entities[0]["id"], second.id,
+        "the insertion shifts nothing; only the edited function is affected"
+    );
+    let unmapped = review["unmapped"].as_array().unwrap();
+    assert!(
+        unmapped
+            .iter()
+            .any(|entry| entry["file"] == "src/stale.rs" && entry["reason"] == "stale"),
+        "{review}"
+    );
+    assert!(
+        !unmapped
+            .iter()
+            .any(|entry| entry["file"] == "src/stale.rs" && entry.get("start_line").is_some()),
+        "a stale file is reported once, not hunk by hunk"
+    );
+}
+
+#[test]
+fn review_keeps_every_affected_sibling_entity() {
+    use serde_json::json;
+    let node = |id: &str, start: u32, end: u32| json!({"id": id, "source_file": "src/lib.rs", "span": {"start_line": start, "end_line": end}});
+    let graph = json!({"nodes": [
+        node("ent:module", 1, 20),
+        node("ent:a", 1, 3),
+        node("ent:b", 4, 12),
+    ]});
+    let files = [ChangedFile {
+        base: Some("src/lib.rs".into()),
+        file: "src/lib.rs".into(),
+        hunks: vec![(3, 4)],
+    }];
+    let verified = std::collections::BTreeSet::from(["src/lib.rs".to_owned()]);
+    let (entities, unmapped) = changed_entities(&graph, &files, &verified);
+    let ids: Vec<_> = entities
+        .iter()
+        .map(|entity| entity["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        ["ent:a", "ent:b"],
+        "both siblings survive; only the enclosing entity is dropped"
+    );
+    assert!(unmapped.is_empty());
+}
+
+#[test]
+fn intelligence_calls_accept_the_advertised_defaults() {
+    use serde_json::json;
+    let bundle = chaosbox::intelligence::Bundle::new("private");
+    let params = json!({"arguments": {"query": "deploy", "max_tokens": 500}});
+    let args = mcp_args("intelligence_context", &params, Some("demo")).unwrap();
+    assert_eq!(args["repo"], "demo");
+    // The advertised arguments include the budget field, which the strict
+    // decoder rejects; normalization strips it and fills the default repo.
+    assert!(chaosbox::intelligence::mcp_query(
+        &bundle,
+        "intelligence_context",
+        &serde_json::Value::Object(args.clone())
+    )
+    .is_err());
+    let answer =
+        chaosbox::intelligence::mcp_query(&bundle, "intelligence_context", &backend_args(args))
+            .unwrap();
+    assert_eq!(answer["scope"], "private");
+    assert_eq!(answer["records"], json!([]));
+    assert!(answer["snapshot"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn graph_tools_reread_the_project_marker_on_every_call() {
+    use serde_json::json;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir(root.join(".git")).unwrap();
+    std::fs::write(root.join(".chaosbox.json"), r#"{"repo":"demo"}"#).unwrap();
+    let startup = chaosbox::enablement::enabled(root);
+    assert!(startup.is_some());
+    assert!(graph_enabled(startup.as_ref()).is_some());
+    // The agent deletes the marker mid-session: the next call is disabled.
+    std::fs::remove_file(root.join(".chaosbox.json")).unwrap();
+    let enabled = graph_enabled(startup.as_ref());
+    assert!(enabled.is_none(), "startup state must not be reused");
+    let answer = mcp_call_tool_without_opt_in(&json!(1), "status", &json!({"arguments": {}})).await;
+    assert_eq!(answer["error"]["code"], -32601);
+    assert_eq!(answer["error"]["message"], MCP_NOT_ENABLED);
+}
+
+#[test]
+fn tool_level_arguments_do_not_reach_strict_query_structs() {
+    use serde_json::json;
+    for extra in [
+        ("max_tokens", json!(500)),
+        ("include", json!("source")),
+        ("detail", json!("full")),
+    ] {
+        let mut path = json!({"repo":"demo","from":"ent:a","to":"ent:b"});
+        path[extra.0] = extra.1.clone();
+        let args = path.as_object().unwrap().clone();
+        assert!(prepare_path(args).is_ok(), "path must ignore {}", extra.0);
+        let mut neighbors = json!({"repo":"demo","id":"ent:hub","limit":20});
+        neighbors[extra.0] = extra.1;
+        let args = neighbors.as_object().unwrap().clone();
+        assert!(
+            prepare_neighborhood(args).is_ok(),
+            "neighbors must ignore {}",
+            extra.0
+        );
+    }
+}
+
+#[test]
+fn context_trim_counts_links_pruned_with_their_endpoints() {
+    let mut payload = serde_json::json!({
+        "nodes": [{"id": "a"}, {"id": "b"}, {"id": "c", "pad": "x".repeat(300)}],
+        "links": [{"source": "a", "target": "b"}, {"source": "b", "target": "c"}],
+    });
+    // Room for everything but the padded node c.
+    let budget = serde_json::to_string(&payload).unwrap().len() - 200;
+    trim_payload("context", &mut payload, budget);
+    assert_eq!(payload["links"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        payload["truncated"]["links"],
+        serde_json::json!({"shown": 1, "total": 2})
+    );
+    assert_eq!(
+        payload["truncated"]["nodes"],
+        serde_json::json!({"shown": 2, "total": 3})
+    );
 }

@@ -12,6 +12,12 @@ const SNAP: &str = "s-mcp-lifecycle";
 /// Nothing listens here: acquisition fails immediately.
 const REFUSED: &str = "host=127.0.0.1 port=1 dbname=refused user=refused";
 
+/// Fits the 20k-token cap while name and `qualified_name` together frame a
+/// response larger than a 64 KiB pipe, so the writer must block.
+fn wide_name() -> String {
+    "wide".repeat(9_750)
+}
+
 /// A loopback listener that accepts TCP but never answers the startup message.
 fn stalled(listener: &tokio::net::TcpListener) -> String {
     format!(
@@ -24,14 +30,20 @@ struct Client {
     child: tokio::process::Child,
     input: Option<tokio::process::ChildStdin>,
     output: Lines<BufReader<tokio::process::ChildStdout>>,
+    /// Disposable enabled checkout the server resolves its opt-in from.
+    _project: tempfile::TempDir,
 }
 
 impl Client {
     async fn start(url: &str) -> Self {
         let binary = std::env::var_os("CHAOSBOX_TEST_BIN")
             .unwrap_or_else(|| env!("CARGO_BIN_EXE_chaosbox").into());
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir(project.path().join(".git")).unwrap();
+        std::fs::write(project.path().join(".chaosbox.json"), br#"{"repo":"demo"}"#).unwrap();
         let mut child = tokio::process::Command::new(binary)
             .arg("mcp")
+            .current_dir(project.path())
             .env("CHAOSBOX_DATABASE_URL", url)
             .env_remove("CHAOSBOX_JEV_API_KEY_FILE")
             .stdin(Stdio::piped())
@@ -46,6 +58,7 @@ impl Client {
             child,
             input,
             output,
+            _project: project,
         };
         client
             .send(json!({"jsonrpc":"2.0","id":0,"method":"initialize"}))
@@ -523,6 +536,7 @@ async fn check_cleanup(
                 mut child,
                 mut input,
                 output,
+                ..
             } = client;
             drop(output);
             input
@@ -554,7 +568,7 @@ async fn check_wide(mut client: Client, mode: &str, server: &server::Server, id:
     // A wide real lookup guarantees pipe backpressure. Its reads must already
     // have finished while bytes remain unread, and EOF must not strand a
     // Tokio blocking stdout worker during runtime shutdown.
-    client.send(json!({"jsonrpc":"2.0","id":201,"method":"tools/call","params":{"name":"lookup","arguments":{"repo":REPO,"id":id}}})).await;
+    client.send(json!({"jsonrpc":"2.0","id":201,"method":"tools/call","params":{"name":"lookup","arguments":{"repo":REPO,"id":id,"max_tokens":20000,"include":"none"}}})).await;
     wait_sessions(
         server,
         "state = 'idle' AND query LIKE '%JOIN entities e ON%'",
@@ -659,7 +673,9 @@ async fn live_pg_ordinary_mcp_cleanup_and_retention() {
     };
     let hub = node("hub");
     let isolated = node("isolated");
-    let large = node(&"wide".repeat(150_000));
+    // Under the 20k-token cap, a name still large enough that the framed
+    // response cannot fit a 64 KiB pipe: name and qualified_name each carry it.
+    let large = node(&wide_name());
     let mut build = GraphBuild::new(REPO, vec![SNAP.into()], 1);
     for node in [&hub, &isolated, &large] {
         build.add_node(node.clone()).unwrap();
@@ -747,7 +763,7 @@ async fn hold_wide_response(
 ) -> String {
     client
         .send(json!({"jsonrpc":"2.0","id":id,"method":"tools/call",
-        "params":{"name":"lookup","arguments":{"repo":REPO,"id":entity}}}))
+        "params":{"name":"lookup","arguments":{"repo":REPO,"id":entity,"max_tokens":20000,"include":"none"}}}))
         .await;
     wait_sessions(
         server,
@@ -847,8 +863,8 @@ async fn live_pg_queued_calls_repin_and_retain_bounded_state() {
         REPO,
         SNAP,
         "f.rs",
-        &"wide".repeat(150_000),
-        "wide",
+        &wide_name(),
+        &wide_name(),
         SourceSpan::point("f.rs", 1, 1, 0),
     );
     build.add_node(wide.clone()).unwrap();

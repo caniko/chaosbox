@@ -140,6 +140,16 @@ pub trait GraphQueries: Send + Sync {
         build_id: &str,
         rel_id: &str,
     ) -> Result<Vec<EvidenceRow>, StoreError>;
+    /// Content digest the build recorded for one captured file, when the
+    /// projection retains file versions. `None` means the caller cannot verify
+    /// working-tree text against the indexed bytes and must not serve it.
+    async fn file_version_sha256(
+        &self,
+        _snapshot: &str,
+        _path: &str,
+    ) -> Result<Option<String>, StoreError> {
+        Ok(None)
+    }
     /// Evidence bounded at the backend, ordered by evidence id. Callers fetch
     /// one extra row to distinguish a complete result from a budget failure.
     async fn evidence_for_limited(

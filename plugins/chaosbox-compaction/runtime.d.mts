@@ -4,6 +4,18 @@ import type {
 } from "@opencode/plugin/promise/session";
 import type { Result, Error } from "@opencode/plugin/promise/tool";
 
+/** Harness-shaped PostToolUse payload for `chaosbox hint`. */
+export function hintPayload(
+  event: Settlement,
+  cwd: string,
+): Record<string, unknown>;
+
+/** The injected hint text, or "" when Chaosbox stayed silent. */
+export function hintText(output: unknown): string;
+
+/** Append hint text to a completed tool result; false when silent. */
+export function appendHint(event: Settlement, text: string): boolean;
+
 /** Typed adapter seam; command responses are checked by the runtime before use. */
 export function subprocess(
   binary: string,
@@ -41,4 +53,5 @@ export function coordinator(
   archive(input: unknown): Promise<unknown>;
   retrieve(input: unknown, sessionID?: string): Promise<unknown>;
   status(): Promise<unknown>;
+  hint(event: Settlement, cwd: string): Promise<string>;
 };
