@@ -94,6 +94,8 @@ struct Mcp {
     input: tokio::process::ChildStdin,
     output: Lines<BufReader<tokio::process::ChildStdout>>,
     id: u64,
+    /// Disposable enabled checkout the server resolves its opt-in from.
+    _project: tempfile::TempDir,
 }
 
 impl Mcp {
@@ -102,8 +104,12 @@ impl Mcp {
     }
 
     async fn start_binary(binary: std::ffi::OsString) -> Self {
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir(project.path().join(".git")).unwrap();
+        std::fs::write(project.path().join(".chaosbox.json"), br#"{"repo":"demo"}"#).unwrap();
         let mut child = tokio::process::Command::new(binary)
             .arg("mcp")
+            .current_dir(project.path())
             .env_remove("CHAOSBOX_JEV_API_KEY_FILE")
             .env("CHAOSBOX_DATABASE_URL", database_url())
             .stdin(Stdio::piped())
@@ -119,6 +125,7 @@ impl Mcp {
             input,
             output,
             id: 0,
+            _project: project,
         };
         let response = client
             .rpc(
@@ -159,6 +166,15 @@ impl Mcp {
     }
 
     async fn call(&mut self, name: &str, args: &Value) -> Value {
+        let mut args = args.clone();
+        if let Some(object) = args.as_object_mut() {
+            // These tests compare MCP with the CLI byte for byte: ask for
+            // the full page and skip source embedding, which the CLI lacks.
+            object.entry("max_tokens").or_insert(json!(20000));
+            if matches!(name, "lookup" | "explain" | "context") {
+                object.entry("include").or_insert(json!("none"));
+            }
+        }
         let response = self
             .rpc("tools/call", json!({"name":name,"arguments":args}))
             .await;

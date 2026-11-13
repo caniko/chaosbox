@@ -281,6 +281,15 @@ async fn live_pg_counts_and_native_cli_mcp_preserve_explanations() {
         expected(&hub, DEGREE + 2, 2)
     );
 
+    // The MCP process resolves its opt-in from the checkout it starts in.
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join(".git")).unwrap();
+    std::fs::write(
+        project.path().join(".chaosbox.json"),
+        br#"{"repo":"explain-counts"}"#,
+    )
+    .unwrap();
+
     // All calls below share one MCP process; CLI runs use the same exact executable.
     let ids = [&hub.id, &isolated.id, "ent:missing"];
     let mut requests = vec![
@@ -288,9 +297,10 @@ async fn live_pg_counts_and_native_cli_mcp_preserve_explanations() {
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
     ];
     for (index, id) in ids.iter().cycle().take(9).enumerate() {
-        requests.push(json!({"jsonrpc":"2.0","id":index+2,"method":"tools/call","params":{"name":"explain","arguments":{"repo":REPO,"id":id}}}));
+        // Counts and payload bytes only: source embedding is covered elsewhere.
+        requests.push(json!({"jsonrpc":"2.0","id":index+2,"method":"tools/call","params":{"name":"explain","arguments":{"repo":REPO,"id":id,"include":"none"}}}));
     }
-    let responses = native(&url, &["mcp"], &requests).await;
+    let responses = native(project.path(), &url, &["mcp"], &requests).await;
     assert_eq!(responses.len(), 10);
     assert_eq!(responses[0]["result"]["protocolVersion"], "2024-11-05");
     let expected_values = [
@@ -309,9 +319,14 @@ async fn live_pg_counts_and_native_cli_mcp_preserve_explanations() {
     }
     for (id, value) in ids.iter().zip(&expected_values) {
         assert_eq!(
-            native(&url, &["query", "explain", id, "--repo", REPO], &[])
-                .await
-                .as_slice(),
+            native(
+                project.path(),
+                &url,
+                &["query", "explain", id, "--repo", REPO],
+                &[]
+            )
+            .await
+            .as_slice(),
             std::slice::from_ref(value)
         );
     }
@@ -322,11 +337,12 @@ async fn live_pg_counts_and_native_cli_mcp_preserve_explanations() {
     );
 }
 
-async fn native(url: &str, args: &[&str], requests: &[Value]) -> Vec<Value> {
+async fn native(dir: &std::path::Path, url: &str, args: &[&str], requests: &[Value]) -> Vec<Value> {
     use std::{process::Stdio, time::Duration};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_chaosbox"))
         .args(args)
+        .current_dir(dir)
         .env_remove("CHAOSBOX_JEV_API_KEY_FILE")
         .env("CHAOSBOX_DATABASE_URL", url)
         .stdin(Stdio::piped())
