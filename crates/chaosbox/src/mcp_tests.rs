@@ -883,7 +883,10 @@ fn span(file: &str, start: u32, end: u32) -> chaosbox_core::SourceSpan {
     }
 }
 
-#[allow(clippy::too_many_lines)] // one fixture spells out the whole repository
+#[allow(
+    clippy::too_many_lines,
+    reason = "The fixture spells out the whole repository"
+)]
 #[tokio::test]
 async fn review_maps_diff_hunks_to_callers_and_tests() {
     use chaosbox_core::{Entity, EntityKind, GraphBuild, Relation, RelationScope, RelationType};
@@ -1015,7 +1018,10 @@ async fn review_maps_diff_hunks_to_callers_and_tests() {
         .is_err());
 }
 
-#[allow(clippy::too_many_lines)] // one fixture spells out the whole repository
+#[allow(
+    clippy::too_many_lines,
+    reason = "The fixture spells out the whole repository"
+)]
 #[tokio::test]
 async fn review_maps_base_side_hunks_and_refuses_files_changed_since_indexing() {
     use chaosbox_core::{Entity, EntityKind, GraphBuild};

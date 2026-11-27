@@ -204,7 +204,10 @@ impl<R: GraphQueries> GraphReader<R> {
             .navigation_summary(&self.build_id)
             .await
             .map_err(|e| PipelineError::Consumer(e.to_string()))?;
-        #[allow(clippy::float_cmp)] // exact default, never a computed value
+        #[allow(
+            clippy::float_cmp,
+            reason = "Compares against the exact default, not a computed value"
+        )]
         let default = resolution == DEFAULT_RESOLUTION;
         let packet = match stored {
             Some(packet) if default && packet["algorithm"] == ALGORITHM => packet,

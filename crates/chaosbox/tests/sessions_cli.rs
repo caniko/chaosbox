@@ -383,7 +383,7 @@ fn adopt_registers_a_store_and_exits_zero() {
     assert_eq!(record["health"]["quickCheck"], "ok");
     assert_eq!(record["holders"]["clear"], true);
     assert_eq!(record["held"], false);
-    assert_eq!(record["boundaryRecord"], serde_json::Value::Null);
+    assert_eq!(record["boundaryRecord"], Value::Null);
     let stored: Value = serde_json::from_str(
         &fs::read_to_string(campaign.join("adoption/staging.json")).expect("record on disk"),
     )

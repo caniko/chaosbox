@@ -8,7 +8,7 @@ pub(super) struct Positions<'a> {
 }
 
 impl<'a> Positions<'a> {
-    pub fn new(text: &'a str) -> Result<Self, CompilerError> {
+    pub(super) fn new(text: &'a str) -> Result<Self, CompilerError> {
         if text.len() > u32::MAX as usize {
             return Err(invalid("source exceeds span byte limit"));
         }
@@ -58,7 +58,7 @@ impl<'a> Positions<'a> {
         ))
     }
 
-    pub fn span(
+    pub(super) fn span(
         &self,
         file: &str,
         occurrence: &Occurrence,

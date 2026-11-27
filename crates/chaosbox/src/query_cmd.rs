@@ -4,7 +4,10 @@ use super::{QueryCmd, AnyReader, consumer_err, EXPORT_NODE_CAP, EXPORT_EDGE_CAP}
 
 // Long CLI/dispatch functions; splitting them apart is the owning
 // session's refactor. Allowed to keep CI unblocked.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keeps query dispatch and its output formatting together"
+)]
 pub(super) async fn run_query(q: QueryCmd) -> i32 {
     match q {
         QueryCmd::Context {

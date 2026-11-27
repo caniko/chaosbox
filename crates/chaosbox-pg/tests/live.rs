@@ -138,7 +138,10 @@ async fn live_pg_store_passes_write_conformance() {
     check_write_conformance(&mut open(&server).await).await;
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keeps live database setup and assertions together"
+)]
 #[tokio::test]
 #[ignore = "disposable PostgreSQL with pgvector (initdb/pg_ctl/psql)"]
 async fn live_pg_reader_passes_reference_conformance() {
@@ -317,7 +320,10 @@ async fn live_pg_reader_passes_reference_conformance() {
 
 #[tokio::test]
 #[ignore = "disposable PostgreSQL with pgvector (initdb/pg_ctl/psql)"]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Checks citation reads before and after publication in the same database"
+)]
 async fn live_pg_direct_fact_citations_survive_a_fresh_reader_and_later_claims() {
     use chaosbox_core::coverage::{BuildCoverage, FileCoverage, SyntaxStatus};
     let server = Server::start();
@@ -790,7 +796,10 @@ async fn live_pg_decisions_and_inferences_are_durable_first_and_converge() {
 
 #[tokio::test]
 #[ignore = "disposable PostgreSQL with pgvector (initdb/pg_ctl/psql)"]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Exercises successive writes against the same live database"
+)]
 async fn live_pg_private_session_knowledge_is_pinned_idempotent_and_predecessor_guarded() {
     use chaosbox_core::intelligence::{
         Intelligence, IntelligenceKind, IntelligenceStatus, SessionEvidence,

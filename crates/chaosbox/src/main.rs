@@ -468,9 +468,10 @@ fn effective_policy(
         .map_err(|e| e.to_string())
 }
 
-// Long dispatch function; splitting it apart is the owning session's
-// refactor. Allowed to keep CI unblocked.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keeps top-level CLI dispatch and exit handling together"
+)]
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();

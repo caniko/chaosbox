@@ -426,7 +426,7 @@ fn definitions_and_headings_carry_bounded_text() {
     );
     let long = format!("fn big() {{ {} }}\n", "é".repeat(2000));
     let capped = text_of("b.rs", &long, "big").unwrap();
-    assert!(capped.len() <= crate::extractors::ENTITY_TEXT_MAX && capped.starts_with("fn big()"));
+    assert!(capped.len() <= extractors::ENTITY_TEXT_MAX && capped.starts_with("fn big()"));
 }
 
 #[test]

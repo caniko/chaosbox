@@ -81,7 +81,10 @@ pub(crate) async fn connect(config: &PgConfig) -> Result<Client, StoreError> {
 
 /// Classify a driver failure. A missing database reads as "not found" (the
 /// pending `db check` state); a missing table means migrations never ran.
-#[allow(clippy::needless_pass_by_value)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Used directly as a Result::map_err callback"
+)]
 pub(crate) fn pg_error(e: tokio_postgres::Error) -> StoreError {
     match e.code() {
         Some(code) if *code == SqlState::INVALID_CATALOG_NAME => {

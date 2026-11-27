@@ -157,7 +157,7 @@ async fn knowledge_context(
 ) -> Result<Value, String> {
     let (pin, bundle) = pinned(scope).await?;
     let embedder = crate::embed::Embedder::from_env()?;
-    let semantic = crate::intelligence::semantic_order(
+    let semantic = intelligence::semantic_order(
         &bundle.records,
         query,
         embedder.as_ref(),

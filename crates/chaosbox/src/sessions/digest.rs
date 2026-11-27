@@ -256,7 +256,10 @@ fn encode_value(
 /// Integers stay integers while they fit in a JavaScript number; beyond that
 /// the reader already rounded them to an `f64`, so the `f64` form is what
 /// `JSON.stringify` saw. Precision loss is the point of this branch.
-#[allow(clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "Computes approximate statistics from integral session counters"
+)]
 fn encode_integer(value: i64, out: &mut String) {
     if (-JS_MAX_SAFE_INTEGER..=JS_MAX_SAFE_INTEGER).contains(&value) {
         out.push_str(&value.to_string());
@@ -455,7 +458,10 @@ fn encode_canonical(value: &serde_json::Value, out: &mut String) {
 
 /// Unsigned integers: exact while they fit in a JavaScript number, otherwise
 /// the rounded `f64` rendering `JSON.stringify` saw.
-#[allow(clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "Computes approximate ratios from integral session counters"
+)]
 fn encode_canonical_u64(value: u64, out: &mut String) {
     if value <= JS_MAX_SAFE_INTEGER as u64 {
         out.push_str(&value.to_string());

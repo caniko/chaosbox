@@ -94,7 +94,10 @@ fn is_symbol(node: &Value) -> bool {
 }
 
 /// `part / whole` for graph counts, far below f64's exact-integer range.
-#[allow(clippy::cast_precision_loss)]
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "Graph counts are floating-point inputs to the modularity score"
+)]
 fn ratio(part: usize, whole: usize) -> f64 {
     part as f64 / whole.max(1) as f64
 }

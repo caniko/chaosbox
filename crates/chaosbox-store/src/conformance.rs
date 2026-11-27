@@ -92,8 +92,10 @@ pub fn conformance_seed() -> ConformanceSeed {
 /// Relationship/evidence lists compare as sets (live order is unspecified);
 /// entity lists compare ordered by qualified name. The live PostgreSQL test
 /// seeds the same fixture through the insert path and calls this function.
-// Long shared test helper; splitting it apart is the owning session's call.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Checks all store implementations against a single fixture"
+)]
 pub async fn check_conformance<R: GraphQueries>(
     r: &R,
     a1: &str,

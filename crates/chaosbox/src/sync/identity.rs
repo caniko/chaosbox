@@ -34,14 +34,14 @@ fn key(bytes: &[u8]) -> Result<Ed25519KeyPair, String> {
 }
 
 /// Generate a PKCS#8 private key using the operating system random source.
-pub fn generate_key() -> Result<Vec<u8>, String> {
+pub(super) fn generate_key() -> Result<Vec<u8>, String> {
     Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
         .map(|k| k.as_ref().to_vec())
         .map_err(|_| "key generation failed".into())
 }
 
 /// A random session challenge; it contains no credential material.
-pub fn nonce() -> Result<String, String> {
+pub(super) fn nonce() -> Result<String, String> {
     let mut bytes = [0u8; 32];
     SystemRandom::new()
         .fill(&mut bytes)
@@ -50,12 +50,12 @@ pub fn nonce() -> Result<String, String> {
 }
 
 /// Hex encoding of a private key's public identity.
-pub fn public_key(bytes: &[u8]) -> Result<String, String> {
+pub(super) fn public_key(bytes: &[u8]) -> Result<String, String> {
     Ok(hex::encode(key(bytes)?.public_key().as_ref()))
 }
 
 /// Verify a domain-separated Ed25519 signature.
-pub fn verify(public: &str, domain: &str, bytes: &[u8], signed: &str) -> Result<(), String> {
+pub(super) fn verify(public: &str, domain: &str, bytes: &[u8], signed: &str) -> Result<(), String> {
     let public = hex::decode(public).map_err(|_| "invalid public key")?;
     let signed = hex::decode(signed).map_err(|_| "invalid signature")?;
     if public.len() != 32 || signed.len() != 64 {

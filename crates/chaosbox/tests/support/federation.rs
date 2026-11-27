@@ -4,11 +4,11 @@ use chaosbox_jev::{
     Answer, ChoiceAnswer, JEV_MODEL_PINNED, NoulAnswer, Question, SystemOneResponse, Usage,
 };
 
-pub fn bundle(owner: &str, messages: &[(&str, &str, &str)]) -> Bundle {
+pub(crate) fn bundle(owner: &str, messages: &[(&str, &str, &str)]) -> Bundle {
     related_bundle(owner, messages, None)
 }
 
-pub fn related_bundle(
+pub(crate) fn related_bundle(
     owner: &str,
     messages: &[(&str, &str, &str)],
     relationship: Option<&str>,
@@ -80,7 +80,7 @@ fn response(
     }
 }
 
-pub fn withhold(bundle: &mut Bundle, message: &str, statement: &str, repo: &str) {
+pub(crate) fn withhold(bundle: &mut Bundle, message: &str, statement: &str, repo: &str) {
     let input = serde_json::json!({"id":message,"type":"user","text":statement});
     let candidate = extract(
         &input.to_string(),

@@ -53,7 +53,7 @@ fn catalog_is_order_independent_and_rejects_tampering_or_wrong_scope() {
     let mut reordered = original;
     reordered.records.reverse();
     assert_eq!(capture, Capture::new(reordered, 1000).unwrap());
-    let mut changed = capture.clone();
+    let mut changed = capture;
     changed.catalog.records[0].name.push_str("tampered");
     assert!(changed.validate().is_err());
     let mut wrong = catalog();

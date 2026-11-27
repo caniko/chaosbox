@@ -2,13 +2,16 @@
 //! per test, superuser `fixture_owner`, database `chaosbox`. `PG_BIN` names
 //! the directory of a server build that ships pgvector; otherwise
 //! `initdb`/`pg_ctl`/`psql` come from `PATH`.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "Each integration test binary uses a different subset of this harness"
+)]
 
 use std::process::Command;
 
-pub const PORT: &str = "55439";
+pub(crate) const PORT: &str = "55439";
 
-pub struct Server {
+pub(crate) struct Server {
     directory: tempfile::TempDir,
 }
 
@@ -30,7 +33,7 @@ fn run(command: &mut Command) -> String {
 }
 
 impl Server {
-    pub fn start() -> Self {
+    pub(crate) fn start() -> Self {
         let server = Self {
             directory: tempfile::tempdir().unwrap(),
         };
@@ -59,7 +62,7 @@ impl Server {
     }
 
     /// Connection string for the test database.
-    pub fn url(&self) -> String {
+    pub(crate) fn url(&self) -> String {
         format!(
             "host={} port={PORT} user=fixture_owner dbname=chaosbox",
             self.directory.path().display()
@@ -67,7 +70,7 @@ impl Server {
     }
 
     /// Run SQL as the superuser and return unaligned tuples-only output.
-    pub fn psql(&self, database: &str, sql: &str) -> String {
+    pub(crate) fn psql(&self, database: &str, sql: &str) -> String {
         run(bin("psql").args([
             "-XAt",
             "--set",

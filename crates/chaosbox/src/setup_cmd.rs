@@ -575,8 +575,10 @@ fn is_our_hook(entry: &Value) -> bool {
 /// Plan the managed `chaosbox hint` `PostToolUse` hooks in a Claude Code
 /// settings file. Foreign hooks are kept; only entries whose command is
 /// exactly ours are added, upgraded or removed.
-// One plan/apply branch per action; splitting it would hide the shared refusal.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keeps the plan/apply branches and their shared refusal together"
+)]
 fn plan_hooks(path: &Path, remove: bool) -> Change {
     let entry = json!({
         "matcher": HINT_MATCHER,

@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use super::{Payload, Replica, View};
 
 /// Version every change to reconciliation semantics, vocabulary or thresholds.
-pub const RUBRIC: &str = "peer-reconciliation-v1";
+pub(super) const RUBRIC: &str = "peer-reconciliation-v1";
 
 /// Closed semantic actions; original records remain recoverable for every action.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]

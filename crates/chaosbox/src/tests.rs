@@ -44,7 +44,7 @@ fn diff_reports_add_remove() {
         SourceSpan::point("a.rs", 1, 1, 0),
     );
     a.add_node(e.clone()).unwrap();
-    b.add_node(e.clone()).unwrap();
+    b.add_node(e).unwrap();
     let e2 = Entity::new(
         chaosbox_core::EntityKind::Symbol,
         "r",
@@ -639,7 +639,10 @@ async fn ensure_a_rs(store: &mut MemoryStore) {
 #[tokio::test]
 // Per-axis invalidation legs; splitting them apart is the owning session's
 // refactor. Allowed to keep CI unblocked.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Checks changes on each cache axis against the same baseline"
+)]
 async fn cache_invalidates_per_axis() {
     let (cand, entities) = one_candidate();
     let mat = Materialization::default();
@@ -846,7 +849,7 @@ async fn policy_change_mints_new_decision_and_evidence() {
     assert_eq!(kept.raw_answer, new_dec.raw_answer);
     // Preflight agrees under the new policy (cached), and the old policy
     // still resolves to its own inference (no cross-consent reuse).
-    let pending_new = crate::uncached_decisions(
+    let pending_new = uncached_decisions(
         std::slice::from_ref(&cand),
         &entities,
         &snap,
@@ -858,7 +861,7 @@ async fn policy_change_mints_new_decision_and_evidence() {
     .await
     .unwrap();
     assert_eq!(pending_new, 0);
-    let pending_old = crate::uncached_decisions(
+    let pending_old = uncached_decisions(
         std::slice::from_ref(&cand),
         &entities,
         &snap,
@@ -1058,7 +1061,7 @@ fn find_foo_bar(
     (cand, from, to)
 }
 
-fn write_two_file_repo(root: &std::path::Path, a_rs: &str, unrelated: &str) {
+fn write_two_file_repo(root: &Path, a_rs: &str, unrelated: &str) {
     std::fs::write(root.join("a.rs"), a_rs).unwrap();
     std::fs::write(root.join("unrelated.txt"), unrelated).unwrap();
 }
@@ -1237,7 +1240,10 @@ fn reuse_identity_invalidates_on_endpoint_edit() {
 /// returned outcome (no stale rows), preflight must agree (zero uncached),
 /// and publication must follow the rematerialized outcome.
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Checks rematerialization and spend across successive runs"
+)]
 async fn reuse_rematerializes_threshold_change_without_respend() {
     let (cand, entities) = one_candidate();
     let snap = test_snapshot();
@@ -1302,7 +1308,7 @@ async fn reuse_rematerializes_threshold_change_without_respend() {
     assert!(second[0].2.supports);
     assert_eq!(second[0].2.class, second[0].1.evidence_class);
     // Preflight agrees: validated reuse costs nothing.
-    let pending = crate::uncached_decisions(
+    let pending = uncached_decisions(
         std::slice::from_ref(&cand),
         &entities,
         &snap,
@@ -1372,7 +1378,7 @@ async fn reuse_rematerializes_threshold_change_without_respend() {
     assert_eq!(kept_strict.id, remat[0].1.id);
     assert_eq!(kept_strict.outcome, DecisionOutcome::Abstained);
     assert!(!remat[0].2.supports);
-    let pending2 = crate::uncached_decisions(
+    let pending2 = uncached_decisions(
         std::slice::from_ref(&cand),
         &entities,
         &snap,
@@ -1438,7 +1444,7 @@ async fn failed_retry_blocks_reuse_until_respend() {
     assert_eq!(failed.reuse_key, rkey);
     store.put_decision(failed).await.unwrap();
     // Preflight and execution agree: uncached, and decide spends.
-    let pending = crate::uncached_decisions(
+    let pending = uncached_decisions(
         std::slice::from_ref(&cand),
         &entities,
         &snap,
@@ -1476,7 +1482,10 @@ async fn failed_retry_blocks_reuse_until_respend() {
 /// substituted/empty returned model, and invalid raws are `Err`, never silent reuse and
 /// never spend-every-run misses against first-write-wins poison.
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Checks successive corruption cases against the same fixture"
+)]
 async fn corrupt_inferences_fail_closed() {
     use chaosbox_core::{InferenceRecord, RawAnswer};
     let (cand, entities) = one_candidate();
@@ -1502,7 +1511,7 @@ async fn corrupt_inferences_fail_closed() {
     let valid_raw = paid[0].1.raw_answer.clone().expect("paid has raw");
     // A nonempty but substituted returned identity must not be reused, even
     // when every other field is from a valid paid inference.
-    let poisoned = chaosbox_core::InferenceRecord {
+    let poisoned = InferenceRecord {
         reuse_key: rkey.clone(),
         raw: valid_raw.clone(),
         model_requested: chaosbox_jev::JEV_MODEL_PINNED.into(),
@@ -1511,7 +1520,7 @@ async fn corrupt_inferences_fail_closed() {
     let mut poisoned_store = MemoryStore::new();
     ensure_a_rs(&mut poisoned_store).await;
     poisoned_store.put_inference(poisoned).await.unwrap();
-    assert!(crate::uncached_decisions(
+    assert!(uncached_decisions(
         std::slice::from_ref(&cand),
         &entities,
         &snap,
@@ -1537,7 +1546,7 @@ async fn corrupt_inferences_fail_closed() {
     };
     let s = mk_store(wrong_model).await;
     assert!(
-        crate::uncached_decisions(
+        uncached_decisions(
             std::slice::from_ref(&cand),
             &entities,
             &snap,
@@ -1559,7 +1568,7 @@ async fn corrupt_inferences_fail_closed() {
     };
     let s = mk_store(empty_returned).await;
     assert!(
-        crate::uncached_decisions(
+        uncached_decisions(
             std::slice::from_ref(&cand),
             &entities,
             &snap,
@@ -1575,7 +1584,7 @@ async fn corrupt_inferences_fail_closed() {
     // Invalid raw: distribution does not sum to one.
     let bad_raw = RawAnswer::Choice {
         choice: "accept".into(),
-        probabilities: std::collections::BTreeMap::from([
+        probabilities: BTreeMap::from([
             ("accept".into(), 0.1),
             ("reject".into(), 0.1),
             ("none".into(), 0.1),
@@ -1590,7 +1599,7 @@ async fn corrupt_inferences_fail_closed() {
     };
     let mut s = mk_store(bad).await;
     assert!(
-        crate::uncached_decisions(
+        uncached_decisions(
             std::slice::from_ref(&cand),
             &entities,
             &snap,
@@ -1644,7 +1653,7 @@ async fn fresh_substituted_model_never_enters_the_cache() {
     .await
     .is_err());
     assert_eq!(
-        crate::uncached_decisions(
+        uncached_decisions(
             std::slice::from_ref(&cand),
             &entities,
             &snap,
@@ -1710,7 +1719,10 @@ async fn publication_rejects_substituted_model_before_mutation() {
 /// eligible reuse (zero spend on the untouched relation), an endpoint edit
 /// misses, and a removed candidate never reappears.
 #[tokio::test]
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Checks reuse across successive repository snapshots"
+)]
 async fn cross_snapshot_reuse_survives_unrelated_edit() {
     let policy = test_policy();
     let mat = Materialization::default();

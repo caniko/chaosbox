@@ -1,7 +1,12 @@
 //! Pipeline state, the uncached-decision preflight, decisions, and publication.
 
-#[allow(clippy::wildcard_imports)]
-use super::*;
+use super::{
+    assemble_evidence, build_candidates, catalog_digest, decision_id_for, deterministic_id,
+    extract_snapshot, file_hashes_for, materialize_raw, reuse, structural, BTreeMap, Candidate,
+    CandidateCatalog, Claim, Decision, DecisionOutcome, Entity, Evidence, EvidenceClass,
+    Extraction, GraphBuild, InferenceRecord, Materialization, MemoryStore, Path, PipelineError,
+    Relation, RelationScope, Responder, ReuseContext, Snapshot,
+};
 
 /// Full pipeline state held by the operator commands.
 /// Generic over [`chaosbox_store::Store`] with [`MemoryStore`] as the default.
@@ -54,8 +59,7 @@ pub async fn uncached_decisions<S: chaosbox_store::Store>(
             .get(&cand.to_entity)
             .ok_or_else(|| PipelineError::Validation("missing to".into()))?;
         let attempt =
-            crate::reuse::resolve_reuse(cand, from, to, &snapshot.id, &ctx, mat, &catalog, store)
-                .await?;
+            reuse::resolve_reuse(cand, from, to, &snapshot.id, &ctx, mat, &catalog, store).await?;
         if attempt.hit.is_none() {
             uncached += 1;
         }
@@ -109,10 +113,14 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
     /// Threshold changes replace stored decisions/evidence via the
     /// materialization digest in their identity — returned and persisted
     /// rows agree.
-    // Long decision pipeline; splitting stages apart is the owning
-    // session's refactor. Allowed to keep CI unblocked.
-    #[allow(clippy::too_many_lines)]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keeps decision stages and their shared state in order"
+    )]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Takes independent decision inputs explicitly"
+    )]
     pub async fn decide(
         candidates: &[Candidate],
         entities: &BTreeMap<String, Entity>,
@@ -142,17 +150,9 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
             let to = entities
                 .get(&cand.to_entity)
                 .ok_or_else(|| PipelineError::Validation("missing to".into()))?;
-            let attempt = crate::reuse::resolve_reuse(
-                cand,
-                from,
-                to,
-                &snapshot.id,
-                &ctx,
-                mat,
-                &catalog,
-                &*store,
-            )
-            .await?;
+            let attempt =
+                reuse::resolve_reuse(cand, from, to, &snapshot.id, &ctx, mat, &catalog, &*store)
+                    .await?;
             let rkey = attempt.reuse_key.clone();
             let qid = attempt.qid.clone();
             let audit_key = attempt.audit_cache_key.clone();
@@ -260,7 +260,7 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
                     "expected exactly one answer for one question".into(),
                 ));
             }
-            let valid = crate::reuse::valid_options_for(&qid);
+            let valid = reuse::valid_options_for(&qid);
             chaosbox_jev::validate_response_for_model(&resp, &questions, &valid, model_requested)
                 .map_err(|e| PipelineError::Validation(e.to_string()))?;
             let (answered_qid, ans) = resp.answers.iter().next().expect("checked above");
@@ -287,7 +287,7 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
                 .ok_or_else(|| PipelineError::Store("inference missing after put".into()))?;
             // Shared validation (key, provenance, current-question
             // semantics) — never materialize an unvalidated winner.
-            let _checked = crate::reuse::validate_stored_inference(
+            let _checked = reuse::validate_stored_inference(
                 &winner,
                 &rkey,
                 model_requested,
@@ -363,7 +363,7 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
         self.generation += 1;
         let mut build = GraphBuild::new(repo, vec![snapshot.id.clone()], self.generation);
         if let Some(compiler) = &extraction.compiler {
-            build.id = chaosbox_core::deterministic_id("build", &[&build.id, &compiler.context.id]);
+            build.id = deterministic_id("build", &[&build.id, &compiler.context.id]);
         }
         build.predecessor = expected_predecessor.clone();
         build.nodes = extraction
@@ -371,7 +371,7 @@ impl<S: chaosbox_store::Store + Default> Pipeline<S> {
             .iter()
             .map(|e| (e.id.clone(), e.clone()))
             .collect();
-        crate::structural::publish_facts(&mut self.store, &mut build, snapshot, extraction).await?;
+        structural::publish_facts(&mut self.store, &mut build, snapshot, extraction).await?;
         let direct_relations = build.edges.len();
         let resolved_relations = extraction.facts.iter().filter(|f| f.resolved).count();
         self.materialize_decisions(&mut build, decided, mat).await?;
