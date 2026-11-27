@@ -24,7 +24,7 @@ pub struct Settings {
 }
 
 /// Default state root; remote SSH exchange uses the same environment/config convention.
-pub fn default_directory() -> Result<PathBuf, String> {
+pub(crate) fn default_directory() -> Result<PathBuf, String> {
     if let Some(path) = std::env::var_os("CHAOSBOX_SYNC_DIR") {
         return Ok(path.into());
     }

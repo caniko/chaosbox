@@ -13,7 +13,7 @@ use chaosbox_core::InferenceRecord;
 /// Validated hit: the stored inference plus its rematerialization under
 /// current thresholds.
 #[derive(Clone, Debug)]
-pub struct ReuseHit {
+pub(crate) struct ReuseHit {
     /// Stored reusable inference (authoritative winner).
     pub inference: InferenceRecord,
     /// Rematerialized outcome under current thresholds.
@@ -32,7 +32,7 @@ pub struct ReuseHit {
 /// invalid raw); `Ok` with `hit: None` is a miss (no inference, Failed
 /// retry).
 #[derive(Clone, Debug)]
-pub struct ReuseAttempt {
+pub(crate) struct ReuseAttempt {
     /// Relation-local reuse key (`jev-reuse:...`).
     pub reuse_key: String,
     /// Current questions (single entry; multi-question is `Err`).
@@ -51,7 +51,7 @@ pub struct ReuseAttempt {
 /// Valid options for the single pipeline question: accept/reject/none.
 /// Shared by fresh validation and reuse validation so both agree.
 #[must_use]
-pub fn valid_options_for(qid: &str) -> BTreeMap<String, BTreeSet<String>> {
+pub(crate) fn valid_options_for(qid: &str) -> BTreeMap<String, BTreeSet<String>> {
     BTreeMap::from([(
         qid.to_owned(),
         BTreeSet::from(["accept".into(), "reject".into(), "none".into()]),
@@ -72,7 +72,7 @@ pub fn valid_options_for(qid: &str) -> BTreeMap<String, BTreeSet<String>> {
 /// Returns the typed answer for rematerialization. `Err` is fail-closed
 /// corruption (never silent reuse, never spend-every-run misses against
 /// first-write-wins poison).
-pub fn validate_stored_inference(
+pub(crate) fn validate_stored_inference(
     inf: &InferenceRecord,
     expected_reuse_key: &str,
     ctx_model: &str,
@@ -123,8 +123,11 @@ pub fn validate_stored_inference(
 ///   (`Err`), not spend-every-run misses against first-write-wins poison;
 /// * no `Failed` decision with the same reuse key blocks reuse (retries
 ///   always re-ask — `Ok(None)` miss).
-#[allow(clippy::too_many_arguments)]
-pub async fn resolve_reuse<S: chaosbox_store::Store>(
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Takes independent reuse inputs explicitly"
+)]
+pub(crate) async fn resolve_reuse<S: chaosbox_store::Store>(
     cand: &Candidate,
     from: &Entity,
     to: &Entity,

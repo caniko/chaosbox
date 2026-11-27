@@ -39,7 +39,7 @@ pub(super) struct Record<'a> {
 }
 
 impl<'a> Record<'a> {
-    pub fn parse(raw: &'a Value, session: &str) -> Result<Self, String> {
+    pub(super) fn parse(raw: &'a Value, session: &str) -> Result<Self, String> {
         let header = Header::deserialize(raw).map_err(|e| format!("invalid native record: {e}"))?;
         if header.id.trim().is_empty() || header.session.is_some_and(|s| s != session) {
             return Err("empty or cross-session native identity".into());

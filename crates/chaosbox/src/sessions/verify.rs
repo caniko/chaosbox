@@ -429,7 +429,7 @@ pub enum VerifyError {
 }
 
 /// Reopen a database read-only, so verification can never perturb a campaign.
-fn read_only(path: &std::path::Path) -> Result<Connection, VerifyError> {
+fn read_only(path: &Path) -> Result<Connection, VerifyError> {
     Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|source| {
         VerifyError::Open {
             path: path.to_path_buf(),
@@ -472,7 +472,7 @@ impl Snapshot {
     /// snapshot and the first check. One read at open time closes it, so the
     /// generation reported alongside the pass is the generation the pass
     /// actually reads.
-    fn open(path: &std::path::Path) -> Result<Self, VerifyError> {
+    fn open(path: &Path) -> Result<Self, VerifyError> {
         let connection = read_only(path)?;
         let version_before = data_version(&connection).map_err(|source| VerifyError::Read {
             path: path.to_path_buf(),
@@ -908,7 +908,7 @@ fn open_boundary_snapshot(campaign: &Campaign, boundary: &str) -> Result<Snapsho
     ) else {
         return Err(format!("{} names no snapshot", path.display()));
     };
-    let actual = crate::sessions::tool::file_sha256(std::path::Path::new(snapshot))
+    let actual = crate::sessions::tool::file_sha256(Path::new(snapshot))
         .map_err(|error| format!("cannot hash {snapshot}: {error}"))?;
     if actual != expected {
         return Err(format!(
@@ -923,18 +923,17 @@ fn open_boundary_snapshot(campaign: &Campaign, boundary: &str) -> Result<Snapsho
     );
     match (converted, converted_expected) {
         (Some(converted), Some(converted_expected)) => {
-            let converted_actual =
-                crate::sessions::tool::file_sha256(std::path::Path::new(converted))
-                    .map_err(|error| format!("cannot hash {converted}: {error}"))?;
+            let converted_actual = crate::sessions::tool::file_sha256(Path::new(converted))
+                .map_err(|error| format!("cannot hash {converted}: {error}"))?;
             if converted_actual != converted_expected {
                 return Err(format!(
                     "{converted} digests as {converted_actual} instead of the recorded {converted_expected}"
                 ));
             }
-            Snapshot::open(std::path::Path::new(converted))
+            Snapshot::open(Path::new(converted))
                 .map_err(|error| format!("cannot open {converted}: {error}"))
         }
-        (None, None) => Snapshot::open(std::path::Path::new(snapshot))
+        (None, None) => Snapshot::open(Path::new(snapshot))
             .map_err(|error| format!("cannot open {snapshot}: {error}")),
         _ => Err(format!(
             "{} names a converted snapshot without its digest, or vice versa",
@@ -1332,7 +1331,10 @@ fn check_sources(
 /// Nothing here reads the mapping the driver wrote except through the pin
 /// the pass already verified: the mapping entry is looked up for
 /// cross-checking, but every digest is recomputed from first principles.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the verification inputs explicit"
+)]
 fn check_variant_remap(
     entry: &Effective,
     source: &Snapshot,
@@ -1420,7 +1422,10 @@ fn check_variant_remap(
 /// # Errors
 ///
 /// Returns [`VerifyError::Read`] when either id list cannot be read.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the verification inputs explicit"
+)]
 fn check_message_pairs(
     session: &str,
     receipt: &Receipt,

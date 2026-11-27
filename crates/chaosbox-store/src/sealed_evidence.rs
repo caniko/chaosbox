@@ -331,8 +331,7 @@ mod tests {
         );
         let empty = GraphBuild::new("empty", vec![], 1);
         let canonical =
-            serde_json::to_string(&(&empty, BTreeMap::<String, Vec<crate::EvidenceRow>>::new()))
-                .unwrap();
+            serde_json::to_string(&(&empty, BTreeMap::<String, Vec<EvidenceRow>>::new())).unwrap();
         assert_eq!(
             store.publication_digest(&empty).unwrap(),
             chaosbox_core::deterministic_id("publication", &[&canonical])

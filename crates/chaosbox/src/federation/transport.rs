@@ -293,7 +293,7 @@ async fn read_frame(reader: impl AsyncRead + Unpin, limit: u64) -> Result<Vec<u8
 }
 
 /// Serve exactly one request as a fixed recipient; no federation/recursion here.
-pub async fn serve(path: &Path, recipient: &str) -> Result<(), ErrorCode> {
+pub(super) async fn serve(path: &Path, recipient: &str) -> Result<(), ErrorCode> {
     if std::env::var("SSH_ORIGINAL_COMMAND").is_ok_and(|c| c != "chaosbox federation serve") {
         return Err(ErrorCode::Denied);
     }

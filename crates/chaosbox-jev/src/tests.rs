@@ -252,7 +252,7 @@ fn reuse_key_is_snapshot_and_catalog_independent() {
     other_rel.to = endpoint("c.rs", "c", "hash-c");
     assert_ne!(key, reuse_key(&other_rel));
     // Question semantics changed: must re-ask even under identical keys.
-    let mut edited_q = base.clone();
+    let mut edited_q = base;
     edited_q.canonical_questions = vec![Question::Noul {
         instructions: "different?".into(),
         criteria: None,

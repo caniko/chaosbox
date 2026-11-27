@@ -188,7 +188,7 @@ fn relative_imports(body: &str) -> Vec<String> {
 /// Returns a message when neither names a root.
 pub fn tool_root(root: Option<PathBuf>) -> Result<PathBuf, String> {
     root.or_else(|| {
-        std::env::var("CHAOSBOX_SESSION_CAMPAIGN")
+        env::var("CHAOSBOX_SESSION_CAMPAIGN")
             .map(PathBuf::from)
             .ok()
     })

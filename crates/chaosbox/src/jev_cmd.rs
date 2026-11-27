@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 const MAX_BYTES: u64 = 200_000;
 
 #[derive(Debug, Subcommand)]
-pub enum Command {
+pub(crate) enum Command {
     /// Report the enforced inference policy; no input, credentials or network.
     Capabilities,
     /// Evaluate up to 16 independent Choice questions using pinned Typesafe Jev.
@@ -105,7 +105,7 @@ fn complete_choices(response: &SystemOneResponse, questions: &BTreeMap<String, Q
     })
 }
 
-pub async fn run(command: Command) -> (Value, bool) {
+pub(crate) async fn run(command: Command) -> (Value, bool) {
     let (input, privacy_reviewed) = match command {
         Command::Capabilities => {
             return (

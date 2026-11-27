@@ -32,13 +32,19 @@ pub struct CandidateCatalog {
 /// [`CandidateCatalog`]).
 // Over the default line budget; splitting the bounded pipeline stages
 // apart is the owning session's refactor. Allowed to keep CI unblocked.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keeps candidate construction and its shared budget in one pass"
+)]
 #[must_use]
 pub fn build_candidates(extraction: &Extraction, max_candidates: usize) -> CandidateCatalog {
     // Nested helper first: items exist from scope start (clarity lint).
     // Eight parameters are a smell the owning session should refactor
     // (e.g. a builder struct); allowed to keep this integration unblocked.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Takes the candidate inputs and shared budget explicitly"
+    )]
     fn push<'a>(
         cat: &mut CandidateCatalog,
         seen: &mut HashSet<(RelationType, &'a str, &'a str)>,

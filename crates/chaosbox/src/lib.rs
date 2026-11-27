@@ -204,7 +204,7 @@ pub async fn decide_cached<S: chaosbox_store::Store>(
             .get(&cand.to_entity)
             .ok_or_else(|| PipelineError::Validation("missing to".into()))?;
         let attempt =
-            crate::reuse::resolve_reuse(cand, from, to, &snapshot.id, &ctx, mat, &catalog, &*store)
+            reuse::resolve_reuse(cand, from, to, &snapshot.id, &ctx, mat, &catalog, &*store)
                 .await?;
         let Some(hit) = attempt.hit else {
             continue;

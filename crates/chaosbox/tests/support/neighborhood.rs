@@ -4,17 +4,17 @@ use chaosbox_core::{Entity, EntityKind, GraphBuild, Relation, RelationScope, Rel
 use chaosbox_store::NeighborhoodDirection;
 use serde_json::{Value, json};
 
-pub const DEGREE: usize = 1024;
-pub const REPO: &str = "neighborhood-pages";
+pub(crate) const DEGREE: usize = 1024;
+pub(crate) const REPO: &str = "neighborhood-pages";
 
-pub struct Fixture {
+pub(crate) struct Fixture {
     pub builds: [GraphBuild; 3],
     pub hub: String,
     pub isolated: String,
     pub foreign: String,
 }
 
-pub fn fixture() -> Fixture {
+pub(crate) fn fixture() -> Fixture {
     let entity = |repo, snapshot, name: &str| {
         Entity::new(
             EntityKind::Symbol,
@@ -122,14 +122,14 @@ fn add_edge(build: &mut GraphBuild, kind: RelationType, from: &str, to: &str) {
         .unwrap();
 }
 
-pub fn anchored(edge: &Relation, id: &str, direction: NeighborhoodDirection) -> bool {
+pub(crate) fn anchored(edge: &Relation, id: &str, direction: NeighborhoodDirection) -> bool {
     match direction {
         NeighborhoodDirection::Outgoing => edge.from == id,
         NeighborhoodDirection::Incoming => edge.to == id,
     }
 }
 
-pub fn projection(edge: &Relation) -> Value {
+pub(crate) fn projection(edge: &Relation) -> Value {
     json!({"rel_id":edge.id,"rel_type":chaosbox_core::relation_type_name(&edge.rel_type),
         "from_entity":{"entity_id":edge.from},"to_entity":{"entity_id":edge.to}})
 }

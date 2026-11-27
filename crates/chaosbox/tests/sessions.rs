@@ -232,7 +232,7 @@ fn a_single_receipt_is_its_own_effective_receipt() {
         &receipt(SESSION, "abc"),
     );
 
-    let effective = Campaign::open(Some(root.clone()))
+    let effective = Campaign::open(Some(root))
         .expect("campaign")
         .effective_receipts()
         .expect("chain resolves");
@@ -269,7 +269,7 @@ fn a_supersession_chain_resolves_to_the_newest_receipt() {
         &superseding(SESSION, &digest, "journal-v3/ses_fixture01.json"),
     );
 
-    let effective = Campaign::open(Some(root.clone()))
+    let effective = Campaign::open(Some(root))
         .expect("campaign")
         .effective_receipts()
         .expect("chain resolves");
@@ -299,7 +299,7 @@ fn a_dangling_supersession_is_rejected() {
         &superseding(SESSION, "abc", "journal-v2/ses_fixture01.json"),
     );
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .effective_receipts()
         .expect_err("must fail");
@@ -338,7 +338,7 @@ fn a_foreign_supersession_is_rejected() {
         &superseding(SESSION, "ghi", "journal-v9/ses_other0009x.json"),
     );
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .effective_receipts()
         .expect_err("must fail");
@@ -367,7 +367,7 @@ fn competing_unreferenced_receipts_are_ambiguous() {
         &receipt(SESSION, "two"),
     );
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .effective_receipts()
         .expect_err("must fail");
@@ -398,7 +398,7 @@ fn a_cyclic_chain_is_rejected() {
         &superseding(SESSION, "def", "journal-v9/ses_fixture01.json"),
     );
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .effective_receipts()
         .expect_err("must fail");
@@ -438,7 +438,7 @@ fn a_disconnected_chain_is_rejected() {
         &superseding(SESSION, "def", "journal-v9/ses_fixture01.json"),
     );
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .effective_receipts()
         .expect_err("must fail");
@@ -469,7 +469,7 @@ fn a_receipt_whose_body_disagrees_with_its_filename_is_rejected() {
         &receipt("ses_other0009x", "abc"),
     );
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .effective_receipts()
         .expect_err("must fail");
@@ -503,7 +503,7 @@ fn a_journal_v2_receipt_must_not_carry_supersedes() {
         &receipt(SESSION, "def"),
     );
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .effective_receipts()
         .expect_err("must fail");
@@ -533,7 +533,7 @@ fn a_plain_v3_receipt_may_only_reattest_its_own_v2_base() {
         &superseding(SESSION, "def", "journal-v2/ses_other0009x.json"),
     );
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .effective_receipts()
         .expect_err("must fail");
@@ -583,7 +583,7 @@ fn an_indexed_receipt_must_continue_its_predecessor() {
         &superseding(SESSION, &digest, "journal-v3/ses_fixture01.json"),
     );
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .effective_receipts()
         .expect_err("must fail");
@@ -624,7 +624,7 @@ fn a_branch_on_one_file_is_rejected_at_the_link() {
         &superseding(SESSION, "two", "journal-v2/ses_fixture01.json"),
     );
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .effective_receipts()
         .expect_err("must fail");
@@ -661,7 +661,7 @@ fn a_zero_generation_is_not_a_receipt_name() {
         &receipt(SESSION, "other"),
     );
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let receipts = campaign.receipts().expect("receipts");
     assert!(
         receipts
@@ -689,7 +689,7 @@ fn a_mistyped_supersedes_is_rejected_instead_of_being_read_as_absent() {
     body["supersedes"] = json!(42);
     write_receipt(&root, "journal-v3", "ses_fixture01.json", &body);
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .effective_receipts()
         .expect_err("must fail");
@@ -717,7 +717,7 @@ fn a_receipt_missing_required_attestation_is_rejected() {
         .expect("source was there");
     write_receipt(&root, "journal-v2", "ses_fixture01.json", &body);
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .receipts()
         .expect_err("must fail");
@@ -744,7 +744,7 @@ fn a_missing_session_id_is_distinct_from_a_mismatched_one() {
         .expect("sessionID was there");
     write_receipt(&root, "journal-v2", "ses_fixture01.json", &body);
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .receipts()
         .expect_err("must fail");
@@ -768,7 +768,7 @@ fn a_receipt_with_a_malformed_digest_is_rejected() {
     body["destinationDigest"] = json!("deadbeef");
     write_receipt(&root, "journal-v2", "ses_fixture01.json", &body);
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .receipts()
         .expect_err("must fail");
@@ -793,7 +793,7 @@ fn a_negative_message_count_is_rejected() {
     body["messages"] = json!(-1);
     write_receipt(&root, "journal-v2", "ses_fixture01.json", &body);
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .receipts()
         .expect_err("must fail");
@@ -818,7 +818,7 @@ fn a_source_name_that_would_escape_the_campaign_is_rejected() {
     body["source"] = json!("../../secrets");
     write_receipt(&root, "journal-v2", "ses_fixture01.json", &body);
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .receipts()
         .expect_err("must fail");
@@ -839,7 +839,7 @@ fn a_malformed_receipt_is_reported_with_its_path() {
     let (held, root) = fixture();
     fs::write(root.join("journal-v2/ses_fixture01.json"), "{not json").expect("receipt");
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .receipts()
         .expect_err("must fail");
@@ -887,7 +887,7 @@ fn an_empty_journal_cannot_pass_over_an_inventory_that_is_not_empty() {
     let (held, root) = fixture();
     declare(&root, &[SESSION, OTHER]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("report still produced");
 
     assert_eq!(report.sessions_effective, 0, "there are no receipts at all");
@@ -921,7 +921,7 @@ fn a_receipt_the_inventory_never_sanctioned_is_reported() {
     );
     declare(&root, &[]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("verifies");
 
     assert_eq!(
@@ -949,7 +949,7 @@ fn a_destination_row_no_receipt_accounts_for_is_reported() {
     );
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("verifies");
 
     assert_eq!(
@@ -983,7 +983,7 @@ fn a_receipt_with_no_destination_row_is_reported_across_the_whole_inventory() {
     );
     declare(&root, &[SESSION, ABSENT]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(
         &campaign,
         // Bound the pass to one session: reconciliation still has to see the
@@ -1029,7 +1029,7 @@ fn a_deferred_session_fails_reconciliation() {
         }),
     );
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("verifies");
 
     assert_eq!(report.inventory.deferred, 1);
@@ -1061,7 +1061,7 @@ fn an_inventory_whose_total_disagrees_with_its_entries_is_not_reconciled() {
         }),
     );
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("verifies");
 
     assert_eq!(report.inventory.total, 5);
@@ -1087,7 +1087,7 @@ fn an_unreadable_inventory_is_reported_instead_of_invented() {
     );
     write_progress(&root, &json!({ "verified": "not an array" }));
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("report still produced");
 
     let error = report.inventory.error.as_deref().expect("reported");
@@ -1113,7 +1113,7 @@ fn an_inventory_listing_a_session_twice_is_refused() {
         }),
     );
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .inventory()
         .expect_err("must fail");
@@ -1205,7 +1205,7 @@ fn a_mistyped_completion_is_refused_rather_than_read_as_false() {
         }),
     );
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .inventory()
         .expect_err("a string is not a completion state");
@@ -1235,7 +1235,7 @@ fn a_present_but_malformed_campaign_digest_is_refused() {
         }),
     );
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .inventory()
         .expect_err("a short hex string is not a digest");
@@ -1262,7 +1262,7 @@ fn a_clean_complete_pass_succeeds() {
     );
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("verifies");
 
     assert_eq!(report.sessions_effective, 1);
@@ -1300,7 +1300,7 @@ fn a_bounded_pass_is_incomplete_until_partial_is_allowed() {
     );
     declare(&root, &[SESSION, OTHER]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let bounded = verify(
         &campaign,
         &VerifyOptions {
@@ -1340,7 +1340,7 @@ fn a_digest_mismatch_fails_the_pass() {
     );
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("verifies");
 
     assert_eq!(report.sessions_checked, 1);
@@ -1366,7 +1366,7 @@ fn a_message_count_mismatch_fails_the_pass() {
     write_receipt(&root, "journal-v2", "ses_fixture01.json", &body);
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("verifies");
 
     assert_eq!(
@@ -1402,7 +1402,7 @@ fn a_session_missing_from_the_destination_is_reported() {
     );
     declare(&root, &[SESSION, ABSENT]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("verifies");
 
     assert_eq!(report.sessions_checked, 2);
@@ -1430,7 +1430,7 @@ fn an_unknown_session_is_an_error() {
     );
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let error = verify(
         &campaign,
         &VerifyOptions {
@@ -1460,7 +1460,7 @@ fn a_chain_error_makes_the_pass_fail() {
     );
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("report still produced");
 
     assert_eq!(report.chain_errors.len(), 1);
@@ -1487,7 +1487,7 @@ fn source_digests_are_reported_as_unchecked_unless_requested() {
     );
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("verifies");
 
     assert!(!report.checked_sources, "sources were never requested");
@@ -1583,7 +1583,7 @@ fn a_source_pass_covers_every_session_it_checks() {
     write_receipt(&root, "journal-v2", "ses_fixture01.json", &body);
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(
         &campaign,
         &VerifyOptions {
@@ -1635,7 +1635,7 @@ fn a_source_missing_the_session_is_an_error_not_a_skip() {
     write_receipt(&root, "journal-v2", "ses_fixture01.json", &body);
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(
         &campaign,
         &VerifyOptions {
@@ -1664,7 +1664,7 @@ fn a_source_pass_without_its_snapshots_cannot_run() {
     );
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let error = verify(
         &campaign,
         &VerifyOptions {
@@ -1696,10 +1696,7 @@ fn status_exits_zero() {
     );
     declare(&root, &[SESSION]);
 
-    let code = cli::run(Command::Status {
-        root: Some(root.clone()),
-    })
-    .expect("status runs");
+    let code = cli::run(Command::Status { root: Some(root) }).expect("status runs");
     assert_eq!(code, 0);
     drop(held);
 }
@@ -1818,7 +1815,7 @@ fn a_changed_session_needing_reverification_is_not_a_base_failure() {
     );
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("verifies");
 
     assert_eq!(report.sessions_checked, 1);
@@ -1842,7 +1839,7 @@ fn an_unknown_receipt_kind_is_rejected() {
     body["kind"] = json!("reimported");
     write_receipt(&root, "journal-v3", "ses_fixture01.json", &body);
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .effective_receipts()
         .expect_err("must fail");
@@ -1866,7 +1863,7 @@ fn a_malformed_source_session_id_is_rejected() {
     body["sourceSessionID"] = json!("not a session id");
     write_receipt(&root, "journal-v3", "ses_fixture01.json", &body);
 
-    let error = Campaign::open(Some(root.clone()))
+    let error = Campaign::open(Some(root))
         .expect("campaign")
         .effective_receipts()
         .expect_err("must fail");
@@ -2049,7 +2046,7 @@ fn a_variant_receipt_verifies_source_digests_against_its_source_session() {
     );
     declare(&root, &[SESSION, DERIVED]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(
         &campaign,
         &VerifyOptions {
@@ -2233,7 +2230,7 @@ fn a_supersession_receipt_verifies_against_its_boundary_snapshot() {
     write_receipt(&root, "journal-v3", "ses_fixture01.json", &successor);
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(
         &campaign,
         &VerifyOptions {
@@ -2284,7 +2281,7 @@ fn an_unresolvable_boundary_is_a_source_error() {
     write_receipt(&root, "journal-v3", "ses_fixture01.json", &successor);
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(
         &campaign,
         &VerifyOptions {
@@ -2321,7 +2318,7 @@ fn a_supersession_without_a_boundary_digest_is_uncovered() {
     write_receipt(&root, "journal-v3", "ses_fixture01.json", &successor);
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(
         &campaign,
         &VerifyOptions {
@@ -2415,7 +2412,7 @@ fn a_wrong_boundary_digest_is_a_source_error() {
     write_receipt(&root, "journal-v3", "ses_fixture01.json", &successor);
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(
         &campaign,
         &VerifyOptions {
@@ -2535,8 +2532,8 @@ fn delta_new_receipt(root: &Path, session: &str) -> Value {
         "source": "primary",
         "kind": "delta-new",
         "provenance": { "boundary": "v1", "boundaryRecordSha256": sha("record") },
-        "destinationDigest": digest.clone(),
-        "inputDigest": digest.clone(),
+        "destinationDigest": digest,
+        "inputDigest": digest,
         "recoveryDigest": digest,
         "messages": 1,
         "transformation": "interrupted-draft-v1",
@@ -2565,7 +2562,7 @@ fn a_pinned_delta_inventory_sanctions_delta_new_receipts() {
     declare(&root, &[SESSION]);
     write_delta_pin(&root, &[OTHER]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("verifies");
 
     assert_eq!(report.inventory.delta_expected, 1);
@@ -2598,7 +2595,7 @@ fn a_delta_new_receipt_without_a_pin_is_unexpected() {
     );
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("verifies");
 
     assert_eq!(report.inventory.delta_expected, 0);
@@ -2627,7 +2624,7 @@ fn a_tampered_delta_inventory_is_a_hard_error() {
     let parent = root.parent().expect("parent").to_path_buf();
     fs::write(parent.join("delta-inventory.json"), r#"{"tampered":true}"#).expect("tamper");
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let error = verify(&campaign, &every_receipt()).expect_err("must fail");
     assert!(
         matches!(error, VerifyError::Mapping { .. }),
@@ -2652,7 +2649,7 @@ fn a_duplicate_delta_id_is_a_hard_error() {
     );
     write_delta_pin(&root, &[OTHER, OTHER]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let error = verify(&campaign, &every_receipt()).expect_err("must fail");
     assert!(
         matches!(error, VerifyError::Mapping { .. }),
@@ -2686,7 +2683,7 @@ fn a_preliminary_delta_inventory_is_a_hard_error() {
     )
     .expect("delta");
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let error = verify(&campaign, &every_receipt()).expect_err("must fail");
     assert!(
         matches!(error, VerifyError::Mapping { .. }),
@@ -2736,7 +2733,7 @@ fn a_delta_chain_pointing_elsewhere_is_a_hard_error() {
     )
     .expect("identity");
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let error = verify(&campaign, &every_receipt()).expect_err("must fail");
     assert!(
         matches!(error, VerifyError::Mapping { .. }),
@@ -2759,7 +2756,7 @@ fn a_delta_without_a_variant_identity_is_a_hard_error() {
     write_delta_pin(&root, &[OTHER]);
     fs::remove_file(root.join("journal-v3/identity-v3.json")).expect("remove variant");
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let error = verify(&campaign, &every_receipt()).expect_err("must fail");
     assert!(
         matches!(error, VerifyError::Mapping { .. }),
@@ -2791,7 +2788,7 @@ fn a_malformed_boundary_pin_fails_without_sources() {
     write_receipt(&root, "journal-v3", "ses_fixture01.json", &successor);
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(&campaign, &every_receipt()).expect("report still produced");
 
     assert_eq!(report.source_errors.len(), 1);
@@ -2921,7 +2918,7 @@ fn a_converted_snapshot_is_verified_and_read() {
     write_receipt(&root, "journal-v3", "ses_fixture01.json", &successor);
     declare(&root, &[SESSION]);
 
-    let campaign = Campaign::open(Some(root.clone())).expect("campaign");
+    let campaign = Campaign::open(Some(root)).expect("campaign");
     let report = verify(
         &campaign,
         &VerifyOptions {

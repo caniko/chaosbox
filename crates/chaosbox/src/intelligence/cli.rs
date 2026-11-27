@@ -242,7 +242,7 @@ fn read_json<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
 
 // Publish immutable files only. hard_link installs the completed bytes
 // atomically and fails if the target exists; it never clobbers a last-good file.
-fn write_new(path: &Path, value: &impl serde::Serialize) -> Result<(), String> {
+fn write_new(path: &Path, value: &impl Serialize) -> Result<(), String> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())

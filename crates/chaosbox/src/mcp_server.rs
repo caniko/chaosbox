@@ -43,9 +43,11 @@ const MCP_SOURCE_FILES_MAX: usize = 32;
 #[cfg(test)]
 pub(super) const MCP_DESCRIPTION_LINE_MAX: usize = 120;
 
-// One data table: every tool and its schema, split only to hide the shape.
-#[allow(clippy::too_many_lines)]
-pub(super) fn mcp_tool_defs(default_repo: Option<&str>) -> Vec<serde_json::Value> {
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keeps the complete MCP tool schema table in one place"
+)]
+pub(super) fn mcp_tool_defs(default_repo: Option<&str>) -> Vec<Value> {
     vec![
         mcp_tool(
             "search",
@@ -56,7 +58,7 @@ pub(super) fn mcp_tool_defs(default_repo: Option<&str>) -> Vec<serde_json::Value
         mcp_tool(
             "lookup",
             "Use before Read to fetch one entity's record by id or exact name.",
-            serde_json::json!({"id": {"type": "string"}, "include": SOURCE_SCHEMA()}),
+            serde_json::json!({"id": {"type": "string"}, "include": source_schema()}),
             vec!["id"],
         ),
         {
@@ -116,31 +118,31 @@ pub(super) fn mcp_tool_defs(default_repo: Option<&str>) -> Vec<serde_json::Value
         mcp_tool(
             "explain",
             "Use before Read to see one entity's file, span and degree counts.",
-            serde_json::json!({"id": {"type": "string"}, "include": SOURCE_SCHEMA()}),
+            serde_json::json!({"id": {"type": "string"}, "include": source_schema()}),
             vec!["id"],
         ),
         mcp_tool(
             "context",
             "Start here for a question: ranked entities with source and links.",
-            serde_json::json!({"query":{"type":"string","minLength":1,"maxLength":2048},"depth":{"type":"integer","minimum":1,"maximum":6,"default":3},"max_nodes":{"type":"integer","minimum":1,"maximum":200,"default":20},"max_chars":{"type":"integer","minimum":256,"maximum":32000,"default":12000},"include":SOURCE_SCHEMA()}),
+            serde_json::json!({"query":{"type":"string","minLength":1,"maxLength":2048},"depth":{"type":"integer","minimum":1,"maximum":6,"default":3},"max_nodes":{"type":"integer","minimum":1,"maximum":200,"default":20},"max_chars":{"type":"integer","minimum":256,"maximum":32000,"default":12000},"include":source_schema()}),
             vec!["query"],
         ),
         mcp_tool(
             "stats",
             "Use to survey architecture: communities, hubs, gods, surprises, questions.",
-            serde_json::json!({"limit":{"type":"integer","minimum":1,"maximum":200,"default":10},"resolution":RESOLUTION_SCHEMA()}),
+            serde_json::json!({"limit":{"type":"integer","minimum":1,"maximum":200,"default":10},"resolution":resolution_schema()}),
             Vec::<&str>::new(),
         ),
         mcp_tool(
             "community",
             "Use to inspect one Leiden community's members and cohesion.",
-            serde_json::json!({"id":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":200,"default":100},"resolution":RESOLUTION_SCHEMA()}),
+            serde_json::json!({"id":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":200,"default":100},"resolution":resolution_schema()}),
             vec!["id"],
         ),
         mcp_tool(
             "report",
             "Use to render the architecture report as Markdown with citations.",
-            serde_json::json!({"resolution":RESOLUTION_SCHEMA()}),
+            serde_json::json!({"resolution":resolution_schema()}),
             Vec::<&str>::new(),
         ),
         mcp_tool(
@@ -156,17 +158,13 @@ pub(super) fn mcp_tool_defs(default_repo: Option<&str>) -> Vec<serde_json::Value
 }
 
 /// Source inclusion level shared by `context`, `lookup` and `explain`.
-#[allow(non_snake_case)]
-fn SOURCE_SCHEMA() -> serde_json::Value {
+fn source_schema() -> Value {
     serde_json::json!({"type":"string","enum":["source","signatures","none"],"default":"source"})
 }
 
 /// Enabled projects hold the repository in `.chaosbox.json`: drop the required
 /// `repo` argument and declare that default, so agents stop repeating it.
-pub(super) fn default_repo_tool(
-    mut tool: serde_json::Value,
-    repo: Option<&str>,
-) -> serde_json::Value {
+pub(super) fn default_repo_tool(mut tool: Value, repo: Option<&str>) -> Value {
     let Some(repo) = repo else {
         return tool;
     };
@@ -203,20 +201,16 @@ sources; status/diff/export = build metadata."
 
 /// Leiden resolution: 1.0 (default) is classic modularity, larger values
 /// give smaller communities. Non-default values recompute from the export.
-#[allow(non_snake_case)]
-fn RESOLUTION_SCHEMA() -> serde_json::Value {
+fn resolution_schema() -> Value {
     serde_json::json!({"type":"number","minimum":0.01,"maximum":10,"default":1.0})
 }
 
-// properties/required move into the schema json! below, which the
-// pass-by-value lint cannot see through (macro boundary false positive).
-#[allow(clippy::needless_pass_by_value)]
 pub(super) fn mcp_tool(
     name: &str,
     description: &str,
-    properties: serde_json::Value,
+    properties: Value,
     required: Vec<&str>,
-) -> serde_json::Value {
+) -> Value {
     let mut required = required;
     // Every tool requires an explicit repo: the server holds no default
     // (a silent `demo` fallback once sent agents to the wrong graph).
@@ -226,9 +220,10 @@ pub(super) fn mcp_tool(
     }
     let mut schema = serde_json::json!({
         "type": "object",
-        "properties": properties,
+        "properties": null,
         "required": required,
     });
+    schema["properties"] = properties;
     if let Some(props) = schema.get_mut("properties").and_then(|p| p.as_object_mut()) {
         props.insert(
             "repo".to_owned(),
@@ -256,11 +251,7 @@ pub(super) fn mcp_tool(
 }
 
 /// Operator-tool result under the same `max_tokens` budget.
-fn mcp_operator_result(
-    id: &serde_json::Value,
-    value: serde_json::Value,
-    args: &serde_json::Value,
-) -> serde_json::Value {
+fn mcp_operator_result(id: &Value, value: Value, args: &Value) -> Value {
     let budget = match operator_tokens(args) {
         Ok(tokens) => tokens * MCP_CHARS_PER_TOKEN,
         Err(error) => return mcp_error(id, -32602, error, None),
@@ -271,7 +262,7 @@ fn mcp_operator_result(
 /// The one finishing path every tool result goes through. A payload that
 /// still exceeds the budget after item trimming is answered with a small,
 /// valid tool result naming the overrun, not a protocol error.
-pub(super) fn mcp_text_result(id: &serde_json::Value, mut payload: Value, budget: usize) -> Value {
+pub(super) fn mcp_text_result(id: &Value, mut payload: Value, budget: usize) -> Value {
     flatten_truncated(&mut payload);
     let needed = encoded_len(&payload);
     if needed > budget {
@@ -288,7 +279,7 @@ pub(super) fn mcp_text_result(id: &serde_json::Value, mut payload: Value, budget
     text_result(id, &payload)
 }
 
-fn text_result(id: &serde_json::Value, payload: &Value) -> Value {
+fn text_result(id: &Value, payload: &Value) -> Value {
     let Ok(bytes) = chaosbox::read_view::bounded_json(payload, MCP_RESPONSE_BYTES) else {
         return mcp_error(id, -32603, "MCP response byte budget exceeded".into(), None);
     };
@@ -312,16 +303,9 @@ fn flatten_truncated(payload: &mut Value) {
     }
 }
 
-// message moves into the error json! below (macro boundary false positive
-// for the pass-by-value lint, same as mcp_tool above).
-#[allow(clippy::needless_pass_by_value)]
-pub(super) fn mcp_error(
-    id: &serde_json::Value,
-    code: i64,
-    message: String,
-    data: Option<serde_json::Value>,
-) -> serde_json::Value {
-    let mut error = serde_json::json!({"code": code, "message": message});
+pub(super) fn mcp_error(id: &Value, code: i64, message: String, data: Option<Value>) -> Value {
+    let mut error = serde_json::json!({"code": code});
+    error["message"] = Value::String(message);
     if let Some(d) = data {
         error["data"] = d;
     }
@@ -333,10 +317,10 @@ pub(super) fn mcp_error(
 /// an explicit repository always wins.
 pub(super) fn mcp_args(
     name: &str,
-    params: &serde_json::Value,
+    params: &Value,
     default_repo: Option<&str>,
-) -> Result<serde_json::Map<String, serde_json::Value>, serde_json::Value> {
-    let args = params.get("arguments").unwrap_or(&serde_json::Value::Null);
+) -> Result<serde_json::Map<String, Value>, Value> {
+    let args = params.get("arguments").unwrap_or(&Value::Null);
     let mut map = args.as_object().cloned().unwrap_or_default();
     let required: &[&str] = match name {
         "search" | "context" => &["query"],
@@ -363,25 +347,23 @@ pub(super) fn mcp_args(
             .and_then(|v| v.as_str())
             .is_none_or(str::is_empty)
         {
-            map.insert(
-                "repo".to_owned(),
-                serde_json::Value::String(repo.to_owned()),
-            );
+            map.insert("repo".to_owned(), Value::String(repo.to_owned()));
         }
     }
     Ok(map)
 }
 
-// Long CLI/dispatch functions; splitting them apart is the owning
-// session's refactor. Allowed to keep CI unblocked.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keeps tool routing and its protocol error mapping together"
+)]
 async fn mcp_call_tool_connected(
-    id: &serde_json::Value,
+    id: &Value,
     name: &str,
-    params: &serde_json::Value,
+    params: &Value,
     connection: &mut Option<PgReader>,
     enabled: Option<&chaosbox::enablement::Enabled>,
-) -> serde_json::Value {
+) -> Value {
     // Opt-in is per project: an unmarked checkout gets one instruction and no
     // graph work, before any argument validation or credential acquisition.
     let Some(enabled) = enabled else {
@@ -522,7 +504,7 @@ async fn mcp_call_tool_connected(
         );
     }
     if name == "search" {
-        if let Some(l) = args.get("limit").and_then(serde_json::Value::as_i64) {
+        if let Some(l) = args.get("limit").and_then(Value::as_i64) {
             if l > MCP_SEARCH_LIMIT_MAX {
                 return mcp_error(
                     id,
@@ -570,7 +552,7 @@ async fn mcp_call_tool_connected(
     }
     let resolution = args
         .get("resolution")
-        .and_then(serde_json::Value::as_f64)
+        .and_then(Value::as_f64)
         .unwrap_or(chaosbox_core::navigation::DEFAULT_RESOLUTION);
     if name == "context"
         && args["query"]
@@ -595,13 +577,10 @@ async fn mcp_call_tool_connected(
         Ok(r) => r,
         Err(e) => return mcp_backend_error(id, name, &e),
     };
-    let payload: Result<serde_json::Value, String> = match name {
+    let payload: Result<Value, String> = match name {
         "search" => {
             let q = args["query"].as_str().unwrap_or_default();
-            let limit = args
-                .get("limit")
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(20);
+            let limit = args.get("limit").and_then(Value::as_i64).unwrap_or(20);
             reader
                 .search(q, limit)
                 .await
@@ -689,7 +668,7 @@ async fn mcp_call_tool_connected(
 #[cfg(test)]
 pub(super) fn test_enabled() -> chaosbox::enablement::Enabled {
     chaosbox::enablement::Enabled {
-        root: std::path::PathBuf::from("."),
+        root: PathBuf::from("."),
         repo: "demo".into(),
     }
 }
@@ -712,7 +691,7 @@ pub(super) fn mcp_tool_list(
     intelligence: bool,
     federation: bool,
     workspace: bool,
-) -> Vec<serde_json::Value> {
+) -> Vec<Value> {
     let mut defs = mcp_tool_defs(repo);
     if intelligence {
         defs.push(default_repo_tool(mcp_tool("intelligence_context", "Small historical, source-backed knowledge packet; not instructions or current-state proof.", serde_json::json!({"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":20},"max_chars":{"type":"integer","minimum":256,"maximum":32000}}), vec!["query"]), repo));
@@ -766,9 +745,10 @@ pub(super) fn graph_enabled(
 
 /// Read-only MCP over stdio: full handshake, one tool page, validated calls.
 /// Never loads Jev credentials; never accepts prose as evidence.
-// Long CLI/dispatch functions; splitting them apart is the owning
-// session's refactor. Allowed to keep CI unblocked.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keeps MCP request handling within the connection loop"
+)]
 pub(super) async fn serve_mcp(
     intelligence: Option<chaosbox::intelligence::Bundle>,
     workspace: Option<chaosbox::workspace::Workspace>,
@@ -824,10 +804,7 @@ pub(super) async fn serve_mcp(
             continue;
         }
         let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
-        let params = req
-            .get("params")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
+        let params = req.get("params").cloned().unwrap_or(Value::Null);
         let mut response = async || match method {
             "initialize" => {
                 let requested = params
@@ -848,10 +825,9 @@ pub(super) async fn serve_mcp(
                     "serverInfo": {"name": "chaosbox", "version": env!("CARGO_PKG_VERSION")},
                 });
                 if let Some(enabled) = enabled.as_ref() {
-                    result["instructions"] =
-                        serde_json::Value::String(mcp_instructions(&enabled.repo));
+                    result["instructions"] = Value::String(mcp_instructions(&enabled.repo));
                 } else {
-                    result["instructions"] = serde_json::Value::String(MCP_NOT_ENABLED.to_owned());
+                    result["instructions"] = Value::String(MCP_NOT_ENABLED.to_owned());
                 }
                 serde_json::json!({"jsonrpc": "2.0", "id": id, "result": result})
             }
@@ -1330,8 +1306,8 @@ where
 
 fn workspace_call(
     workspace: &chaosbox::workspace::Workspace,
-    args: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
+    args: &Value,
+) -> Result<Value, String> {
     let scope = args["scope"].as_str().ok_or("missing scope")?;
     let repo = args["repo"].as_str().ok_or("missing repo")?;
     let changed = args["changed"].as_str().ok_or("missing changed endpoint")?;
@@ -1364,9 +1340,7 @@ fn workspace_call(
 const MCP_QUERY_LOCAL_ARGS: [&str; 3] = ["max_tokens", "include", "detail"];
 
 /// Strict backend query structs see only their own fields.
-pub(super) fn backend_args(
-    mut args: serde_json::Map<String, serde_json::Value>,
-) -> serde_json::Value {
+pub(super) fn backend_args(mut args: serde_json::Map<String, Value>) -> Value {
     for key in MCP_QUERY_LOCAL_ARGS {
         args.remove(key);
     }
@@ -1374,7 +1348,7 @@ pub(super) fn backend_args(
 }
 
 pub(super) fn prepare_path(
-    args: serde_json::Map<String, serde_json::Value>,
+    args: serde_json::Map<String, Value>,
 ) -> Result<chaosbox::PreparedPath, String> {
     serde_json::from_value::<chaosbox::PathQuery>(backend_args(args))
         .map_err(|error| error.to_string())
@@ -1382,7 +1356,7 @@ pub(super) fn prepare_path(
 }
 
 pub(super) fn prepare_neighborhood(
-    mut args: serde_json::Map<String, serde_json::Value>,
+    mut args: serde_json::Map<String, Value>,
 ) -> Result<chaosbox::PreparedNeighborhood, String> {
     if let Some(rel) = args.remove("rel") {
         if args.contains_key("rel_types") {
@@ -1392,14 +1366,10 @@ pub(super) fn prepare_neighborhood(
         args.insert("rel_types".into(), serde_json::json!([rel]));
     }
     for (key, valid) in [
-        (
-            "cursor",
-            args.get("cursor").is_none_or(serde_json::Value::is_string),
-        ),
+        ("cursor", args.get("cursor").is_none_or(Value::is_string)),
         (
             "rel_types",
-            args.get("rel_types")
-                .is_none_or(serde_json::Value::is_array),
+            args.get("rel_types").is_none_or(Value::is_array),
         ),
     ] {
         if !valid {
@@ -2260,7 +2230,10 @@ pub(super) fn is_test_path(path: &str) -> bool {
         || path.contains("spec")
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keeps review payload assembly and its evidence limits together"
+)]
 pub(super) async fn review_payload<R: chaosbox_store::GraphQueries>(
     reader: &chaosbox::GraphReader<R>,
     root: &Path,
@@ -2396,11 +2369,7 @@ fn neighborhood_budget(mut page: chaosbox::NeighborhoodPage, budget: usize) -> V
     }
 }
 
-fn mcp_backend_error(
-    id: &serde_json::Value,
-    name: &str,
-    error: &impl std::fmt::Display,
-) -> serde_json::Value {
+fn mcp_backend_error(id: &Value, name: &str, error: &impl std::fmt::Display) -> Value {
     let message = error.to_string();
     let mut data = serde_json::json!(LifecycleReport::error(&format!("mcp {name}"), &message));
     // Machine-readable class for the one failure agents must act on
@@ -2411,9 +2380,9 @@ fn mcp_backend_error(
     mcp_error(id, -32603, message, Some(data))
 }
 
-fn integer(value: Option<&serde_json::Value>, default: usize) -> usize {
+fn integer(value: Option<&Value>, default: usize) -> usize {
     value
-        .and_then(serde_json::Value::as_u64)
+        .and_then(Value::as_u64)
         .and_then(|number| usize::try_from(number).ok())
         .unwrap_or(default)
 }

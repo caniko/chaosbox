@@ -542,7 +542,10 @@ impl JevClient {
     /// Evaluate one batch with bounded retries + full validation.
     /// Over the default line budget; splitting validation stages apart is
     /// the owning session's refactor. Allowed to keep CI unblocked.
-    #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "Keeps the judgment workflow and its outcome handling together"
+    )]
     pub async fn evaluate(
         &mut self,
         state: serde_json::Value,
@@ -780,8 +783,8 @@ fn truncate(s: &str, n: usize) -> String {
 mod tests;
 
 #[cfg(test)]
-// The mock server holds test-only env-serialization locks across awaits by
-// design (no production deadlock surface); allowed to keep the wire tests
-// readable. Production paths never hold a guard across await.
-#[allow(clippy::await_holding_lock)]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "Environment mutation must stay serialized through the wire tests"
+)]
 mod http_tests;

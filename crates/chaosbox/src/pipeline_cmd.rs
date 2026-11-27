@@ -5,10 +5,14 @@ use super::{
     Ordering, FixtureResponder,
 };
 
-// Long CLI/dispatch functions; splitting them apart is the owning
-// session's refactor. Allowed to keep CI unblocked.
-#[allow(clippy::too_many_lines)]
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keeps pipeline stages and their CLI reporting in order"
+)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Takes independent run inputs explicitly"
+)]
 pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
     mut pipe: Pipeline<S>,
     path: &Path,
@@ -335,7 +339,10 @@ pub(super) async fn run_pipeline_with<S: chaosbox_store::Store + Default>(
 
 /// The `run` command: validate policy, select the backend, run once, and
 /// print the live-spend line exactly once on every exit.
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "Keeps backend selection and spend reporting in the same command"
+)]
 pub(super) async fn run_cmd(args: &super::RunArgs) -> i32 {
     use super::{backend, pg_config_from_env, pg_publication_chain, Backend, MemoryStore, PgStore};
     let policy = match super::effective_policy(

@@ -134,7 +134,10 @@ pub(crate) fn rrf<T>(lists: Vec<Vec<T>>, key: impl Fn(&T) -> &str, limit: usize)
     let mut seen = 0;
     for list in lists {
         for (rank, item) in list.into_iter().enumerate() {
-            #[allow(clippy::cast_precision_loss)]
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "Ranks are bounded by the number of returned search results"
+            )]
             let score = 1.0 / (61.0 + rank as f64);
             let slot = fused.entry(key(&item).to_owned()).or_insert_with(|| {
                 seen += 1;

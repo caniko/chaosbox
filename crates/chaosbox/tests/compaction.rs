@@ -449,7 +449,7 @@ async fn live_pg_private_cross_session_memory_publishes_and_recovers_from_databa
         published
             .context(&scope, "other-repo", "provenance", 5, 12000)
             .unwrap(),
-        Vec::<serde_json::Value>::new()
+        Vec::<Value>::new()
     );
     source.session = "ses_second".into();
     source.records[0]["id"] = json!("msg_second");

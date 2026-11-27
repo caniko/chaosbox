@@ -135,7 +135,7 @@ pub(crate) fn visit_selected(
             .hidden(false)
             .require_git(false)
             .follow_links(false)
-            .sort_by_file_path(std::cmp::Ord::cmp)
+            .sort_by_file_path(Ord::cmp)
             .filter_entry(|entry| {
                 if entry.depth() == 0 {
                     return true;

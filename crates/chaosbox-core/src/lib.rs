@@ -713,16 +713,10 @@ impl GraphBuild {
     /// Insert an edge; both endpoints must be members of this build.
     pub fn add_edge(&mut self, r: Relation) -> Result<(), ValidationError> {
         if !self.nodes.contains_key(&r.from) {
-            return Err(ValidationError::CrossBuildEdge(
-                r.from.clone(),
-                self.id.clone(),
-            ));
+            return Err(ValidationError::CrossBuildEdge(r.from, self.id.clone()));
         }
         if !self.nodes.contains_key(&r.to) {
-            return Err(ValidationError::CrossBuildEdge(
-                r.to.clone(),
-                self.id.clone(),
-            ));
+            return Err(ValidationError::CrossBuildEdge(r.to, self.id.clone()));
         }
         if self.edges.contains_key(&r.id) {
             return Err(ValidationError::DuplicateMember(r.id));
