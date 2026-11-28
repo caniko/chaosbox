@@ -1,8 +1,8 @@
 # Session efficiency and complete workspace traversal
 
-Status: revised execution plan, 2026-10-19. Task checkboxes and individual
-workcards are in [todo.md](todo.md). This plan is separate from the unfinished
-compiler/cutover plan in `tasks/plan.md` and `tasks/todo.md`.
+Status: revised execution plan, 2026-10-19. See [todo.md](todo.md) for workcards
+and checkboxes. The unfinished compiler/cutover plan is separate:
+`tasks/plan.md` and `tasks/todo.md`.
 
 ## Objective and fixed contracts
 
@@ -57,16 +57,16 @@ cluster.
   reads and shared CLI/MCP explanations pass the collection-forbidden regression,
   high-degree disposable fixture and required backend conformance. Counts retain
    exact build/type/direction semantics. Signed savepoint: `92d635848ae0b57443a4cebb21cb1ef69b140ffe`.
-- [S02b.1](../../docs/s02b1-directional-pages.md): directional backend pages are
-  implemented and finally qualified through reference/required-disposable paging,
-  affected libraries, existing required conformance, treefmt and scoped Clippy.
-  Exact-size and three-page sparse filters pass; tested source/executables/logs are
-  frozen. S02b.3 below establishes ordinary-client integration.
+- [S02b.1](../../docs/s02b1-directional-pages.md): the directional backend-page
+  gate is complete across reference/required-disposable paging, affected library
+  tests, existing required conformance, treefmt and scoped Clippy. Exact-size
+  and three-page sparse filters pass; tested source/executables/logs are frozen.
+  S02b.3 establishes ordinary-client integration.
 - [S02b.2](../../docs/s02b2-neighborhood-continuation.md): shared repository-level
   continuation and exact historical pinning pass reference/required-TypeDB tests,
-  affected suites, treefmt and Clippy. One cursor binds the two positions and
-  immutable request; ordinary CLI/MCP integration and fresh-process proof are
-  established by S02b.3 below. Scoped-view admission and complete evidence validation remain intact.
+  affected suites, treefmt and Clippy. One cursor binds both positions and the
+  immutable request. S02b.3 proves ordinary CLI/MCP integration and fresh-process
+  behavior. Scoped-view admission and complete evidence validation remain intact.
   Signed local savepoint: `436f830283967509eee0a5d0093f3fbad327e614`.
 - [S02b.3](../../docs/s02b3-ordinary-neighborhood-pages.md): ordinary CLI/MCP
   paging passes exact historical enumeration through fresh CLI, fresh MCP and
@@ -75,9 +75,9 @@ cluster.
   transition remain open. The recorded native environment is unchanged rooted
   reuse, not verified normal preparation or clean-release qualification.
   Signed local savepoint: `d42a93c04efca667a8b5b05c4b9324465c26e1ed`.
-- [S02c.1](../../docs/s02c1-bounded-path-search.md): the shared pinned reader now
-  uses directional pages with aggregate local budgets. The retained qualification
-  passed 98 tests; two disposable-TypeDB cases were ignored. Signed local
+- [S02c.1](../../docs/s02c1-bounded-path-search.md): the shared pinned reader uses
+  directional pages with aggregate local budgets. Retained qualification:
+  98 tests passed; two disposable-TypeDB cases were ignored. Signed local
   savepoint: `accc0e5b1289b10c6c51733acc8b11737430c7a1`. S02c.2 owns shared
   argument validation, acquisition-inclusive request budgets and ordinary-client
   TypeDB proof; S02c.3 owns transport lifecycle and retention evidence.
@@ -94,7 +94,7 @@ cluster.
   historical path/page parity pass; 153 affected tests and five required live
   cases pass. Signed implementation/test savepoint:
   `39d94d6022fa03cd6154dda16e41df69701d8aed`; signed report savepoint:
-   `c81b877f05f555be8a7b524c577dd163610debea`. S04a.2 below completes graph batching;
+   `c81b877f05f555be8a7b524c577dd163610debea`. S04a.2 completes graph batching;
    S03b.1 can investigate knowledge independently.
 - [S04a.2](../../docs/s04a2-graph-header-batching.md): the shared publication
   header/fingerprint read uses one request-owned transaction. Twenty lookups open
@@ -104,7 +104,7 @@ cluster.
   pass. Signed implementation/test savepoint:
   `ea51f2ed7ae638787e28c679ee4fc30ab44999e6`; signed report savepoint:
   `e89a768bcfdcbf02ff9a69f6989d80ffe841d97d`. S04a's fixture-backed gate is complete;
-  S03b.1 below is complete. The existing multiple-snapshot TypeDB publication
+  S03b.1 is complete. The existing multiple-snapshot TypeDB publication
   ceiling is an S05 contract/migration follow-up after S01b, not a batching-schema
   change.
 - [S03b.1](../../docs/s03b1-knowledge-validation.md): complete-generation hash,
@@ -121,7 +121,7 @@ cluster.
   eight required disposable-TypeDB cases, treefmt and scoped Clippy pass. Signed
   implementation/test savepoint: `75198f14c21df448cc14b033b9fbd2a070e781be`;
   signed report savepoint: `8b30ab76d4a151adf9298b08aac451d0e1d9d854`.
-  S02b.4 below completes exact-publication hydration and new-anchor historical expansion.
+  S02b.4 completes exact-publication hydration and new-anchor historical expansion.
 - [S02b.4](../../docs/s02b4-historical-followups.md): optional exact selection
   reuses the published reader across ordinary MCP hydration and fresh-anchor
   neighborhoods, with existing CLI counterparts. Retained version-1 cursors,
@@ -165,7 +165,7 @@ cluster.
 
 ## Sequence and checkpoints
 
-The implementation review added two ordinary-client gates before promotion of a
+The implementation review added two ordinary-client gates before promoting a
 candidate containing the reviewed MCP/reader changes: **S02c.4** bounded FIFO
 admission, then **S02b.4** exact-publication follow-up reads and recursive
 historical expansion. Both are locally qualified; exact consumer/release gates
@@ -222,7 +222,7 @@ architecture release or S23/S24 qualification. Live MCP acceptance requires a
 separately authorized consumer transition and a fresh executable-chain check.
 S09a explicitly gates S25b native acceptance; pin/Pkl preparation can proceed
 before the isolated runtime/adapter proof is complete.
-The S09a report additionally retains the complete five-patch isolated package
+The S09a report retains the complete five-patch isolated package
 proof and the published-dependency blocker. Refresh the owning Pklr release,
 qualify/publish Fleetix and qualify Toolbelt before fresh Canix reconciliation;
 do not substitute a path/fork dependency for that release gate. Live assessment
@@ -260,9 +260,9 @@ Reassess scope using the new measurements before starting the next phase.
 ## Session execution contract
 
 Use one workcard per fresh session. Prefer 1–5 changed files and one subsystem
-invariant. Trace real callers before choosing the smallest shared fix. If the
-work needs more than three independent acceptance criteria or expands across
-unrelated subsystems, split it before implementation.
+invariant. Trace real callers before choosing the smallest shared fix. Split
+before implementation if the work needs more than three independent acceptance
+criteria or crosses unrelated subsystems.
 
 Target 80–160k total context; stop expanding around 200k and hand off by 240k,
 leaving output/recovery headroom below 300k. Count instructions, tools, source,
@@ -279,7 +279,7 @@ these execution limits are not production resource acceptance. Real backend
 acceptance uses the hermetic `live_pg_` tests on disposable PostgreSQL clusters;
 a skipped or unselected live test is not evidence.
 
-Later workcards are bounded scopes, not permission to guess APIs or rewrite
-uninspected code. Resolve their exact focused test names and file set at entry.
+Later workcards define scope; do not guess APIs or rewrite uninspected code.
+Identify exact focused tests and files at entry.
 The report/receipt pair remains the authority for measured outcomes; a checkbox
 alone is not a qualification receipt.

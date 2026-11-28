@@ -1,9 +1,8 @@
 # S01 — session-efficiency baseline
 
-S01 records the starting point for the session-efficiency work. The machine-readable
-[receipt](s01-efficiency-baseline.json) binds the measured binaries, frozen corpus,
-complete exports and local evidence. Measurements were taken on Atlas on
-2026-10-16. This is a baseline, not acceptance of a production resource budget.
+S01 establishes the session-efficiency baseline on Atlas on 2026-10-16, not a
+production resource budget. The machine-readable [receipt](s01-efficiency-baseline.json)
+binds the measured binaries, frozen corpus, complete exports and local evidence.
 
 ## Results
 
@@ -23,9 +22,9 @@ Both contain 65,872 nodes, 45,946 edges and the same build/snapshot identity.
 This run uses the memory backend and no inference; it does not measure TypeDB
 publication, server memory, session capture or context assembly.
 
-The runs were sequential, baseline first, with one sample per binary. Page cache,
-binary loading and background activity were uncontrolled. The input-block increase
-and small timing difference are observations, not I/O or latency improvements.
+The runs sampled each binary once in sequence, baseline first, without controlling
+page cache, binary loading or background activity. The input-block increase and
+small timing difference are observations, not I/O or latency improvements.
 GNU time block counters are not byte counts or whole-host disk traffic.
 
 ### Normal managed MCP calls
@@ -41,7 +40,7 @@ The search includes the `RuntimeManifest` definition at
 Its snapshot matches the observed live build `build:8ac2e28136c3`, generation 3,
 snapshot `snap:cba2b1e91c07`. MCP search duration includes the tool round trip;
 its serialized-result size is neither provider tokens nor transport bytes.
-The fresh CLI measurement does not measure the resident MCP host's RSS.
+The fresh CLI sample does not measure resident MCP host RSS.
 
 The live build has 1,714 captured files and 45,815 structural relationships;
 compiler/catalog coverage is absent. Its export caps are 10,000 nodes and
@@ -60,16 +59,16 @@ comparison or this session's reads.
 A later cgroup sample separates anonymous memory (3,587,751,936 bytes), file cache
 (1,107,288,064 bytes) and kernel memory (2,815,606,784 bytes). Its 2,722,478,888
 bytes of compressed zswap memory overlap kernel accounting; do not add them again.
-The samples are non-simultaneous and cannot be reconciled as an exact allocation
-profile. Process `smaps_rollup`, process I/O and database disk usage were inaccessible
-to this user and remain unknown. The evidence directory retains the empty failed
-process capture; it is not a zero-usage measurement.
+The samples were taken at different times, so they cannot form an exact allocation
+profile. This user could not access process `smaps_rollup`, process I/O or database
+disk usage; those values remain unknown. The evidence directory retains the empty
+failed process capture, which does not indicate zero usage.
 
 At 13:42:06 UTC the host had 35,402,043,392 bytes available RAM, but swap use was
 40,179,482,624 of 41,184,194,560 bytes. The snapshot timer's service was running
 during initial inspection and inactive by the final capture; the decisions unit
-was failed. Host pressure and unit snapshots are retained. These conditions make
-the host unsuitable for treating a new large run as an isolated experiment.
+was failed. The evidence retains host pressure and unit snapshots. A new large
+run under these conditions would not be an isolated experiment.
 
 The deployed TypeDB 3.13.0 configuration has `cache-size: 1gb`,
 `write-buffers-limit: 512mb` and MVCC cleanup disabled. Those cache settings are
@@ -133,7 +132,7 @@ selection, readiness, resource observations and pre-existing Git-state snapshots
 The committed receipt binds the checksum manifest. Retain these artifacts, or
 relocate them with checksum verification, before scratch cleanup.
 
-The following examples explicitly use **Bash**. Verify the existing evidence:
+Verify the existing evidence in **Bash**:
 
 ```bash
 cd /data/scratch/tmp/opencode/chaosbox-s01-20261016
@@ -144,9 +143,9 @@ cmp baseline.json candidate.json
 jq -e '.build_id == "build:760ac5e00503" and .generation == 1 and .snapshots == ["snap:5f76b151537a"] and (.nodes | length) == 65872 and (.links | length) == 45946 and .coverage.file_count == 1721 and .coverage.structural_relations == 45946 and .coverage.parse_errors == 0' candidate.json
 ```
 
-To recreate the Canix archive, run from its canonical checkout, writing to a
-**new** evidence directory. This uses Git's committed tree, not a live filesystem
-copy with mutable build/workspace state:
+Recreate the Canix archive from its canonical checkout in a **new** evidence
+directory. This reads Git's committed tree, not a live filesystem copy with
+mutable build/workspace state:
 
 ```bash
 git archive --format=tar --output="$EVIDENCE/canix-corpus.tar" d4586fb6cd1da86be3f57f84da7f93aeea298263 flake cli home lib pkgs root website docs/src/design docs/src/guides docs/src/operations docs/src/reference
@@ -167,10 +166,10 @@ systemd-run --user --scope --quiet --unit=chaosbox-s01-candidate -p MemoryHigh=1
 cmp "$EVIDENCE/baseline.json" "$EVIDENCE/candidate.json"
 ```
 
-The existing `crates/chaosbox/tests/pipeline_memory.rs` and
-[memory verification guide](memory-performance.md) already supply a runnable
-generated/real-corpus regression. S01 needs no additional benchmark implementation.
-The commands above retain outputs/metrics and use the exact production binaries.
+`crates/chaosbox/tests/pipeline_memory.rs` and the
+[memory verification guide](memory-performance.md) already provide the runnable
+generated/real-corpus regression S01 needs. The commands above retain outputs/metrics
+and use the exact production binaries.
 
 For the live read case, first capture `chaosbox-canix query status --repo canix`
 and `chaosbox-canix db check --repo canix --json`. Record any build movement before
@@ -187,10 +186,10 @@ truncation/coverage reporting. A new build requires a new receipt.
 
 ## Handoff and acceptance boundaries
 
-**Next: S01b, resource attribution before substantial schema/storage work.** Its
-single invariant is that client allocations, TypeDB anonymous/cache/kernel/zswap
-memory, historical retained generations and background writers have separately
-identified costs. Start with these snapshots and bounded read cases; obtain
+**Next: S01b, resource attribution before substantial schema/storage work.**
+S01b's single invariant: identify separate costs for client allocations, TypeDB
+anonymous/cache/kernel/zswap memory, retained historical generations and
+background writers. Start with these snapshots and bounded read cases; obtain
 authorized process/disk evidence where permissions blocked it. Establish agreed
 RAM, I/O, swap, latency and context acceptance criteria from representative
 observations. No absolute limits have been accepted by S01.

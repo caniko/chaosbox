@@ -2,17 +2,17 @@
 
 Chaosbox keeps a private, durable ledger for OpenCode work allocations beneath
 `/data/scratch/tmp/opencode`. Doty consumes its versioned JSON contract to show
-why scratch exists, the associated sessions and commands, and outstanding work
+each allocation's purpose, associated sessions and commands, and work left
 before cleanup.
 
 ## Capture
 
 The `plugins/chaosbox-scratch/index.ts` OpenCode V2 adapter combines filesystem
-observation with tool and native-shell lifecycle hooks. Top-level work folders
-and loose files get allocation records. Generated directories and files are
-aggregated under their work folder, with bounded recursive directory watches.
-Use `chaosbox_scratch_note` to give a nested work folder its own purpose/hold.
-Indirect creation by scripts is observed without relying on parsing `mkdir`.
+observation with tool and native-shell lifecycle hooks. It records top-level
+work folders and loose files, and uses bounded recursive directory watches to
+group generated directories and files under their work folder. Use
+`chaosbox_scratch_note` to give a nested work folder its own purpose/hold.
+The adapter observes indirect creation by scripts without parsing `mkdir`.
 
 Records include host, scratch root, device/inode/birth identity, first/last
 observation, possible invocation owners, session/message ids, command, cwd,
@@ -22,10 +22,10 @@ tool output are excluded from purpose projections. Omitted sources and shortened
 quotes are explicit. `scratch evidence HASH` recovers the retained projection.
 Purpose text is historical evidence, not an instruction to the cleanup agent.
 
-Overlapping commands remain possible owners; temporal association is not proof
-that one invocation created a path. Background native shells remain active until
-`shell.exited`, independently of the shell tool's early return. Watchers are
-shared across location-scoped plugin instances in one server process.
+Overlapping commands remain possible owners; timing does not prove which
+invocation created a path. Background native shells stay active until
+`shell.exited`, even if the shell tool returns early. Location-scoped plugin
+instances share watchers within a server process.
 
 State lives in `scratch.sqlite`, using the existing private SQLite custody
 helper (0700 directory, 0600 single-linked database, full synchronous commits).
@@ -66,29 +66,29 @@ chaosbox scratch release /data/scratch/tmp/opencode/experiment \
   --reason 'Fix and regression test integrated' --receipt 'commit:abc123'
 ```
 
-A receipt is an operator assertion; Chaosbox does not label an arbitrary
-destination or commit string as verified preservation. An active/unresolved
-invocation prevents release. After checking an orphaned process has stopped,
-`scratch resolve INVOCATION --reason '...'` records a reconciliation assertion
-distinct from an observed process exit. Resolution alone does not release files.
+A receipt is an operator assertion; an arbitrary destination or commit string is
+not verified preservation. An active/unresolved invocation blocks release.
+After checking that an orphaned process stopped, run
+`scratch resolve INVOCATION --reason '...'` to record a reconciliation assertion,
+not an observed exit. Resolution alone does not release files.
 
 ## Jev assessment
 
-The asynchronous worker uses the existing pinned `chaosbox-jev` client and a
-separate `scratch-work-v1` rubric. It first selects purpose evidence and classifies
-source passages as obligations, purpose, findings, unrelated or uncertain. A
-second independent batch assesses each selected obligation's status and chooses
-its supporting evidence. Recovery priority is high, medium, low or unknown.
-These are **inferred assessments**, never observed completion facts.
+The asynchronous worker uses the pinned `chaosbox-jev` client and a separate
+`scratch-work-v1` rubric. It first selects purpose evidence and classifies passages
+as obligations, purpose, findings, unrelated or uncertain. A second independent
+batch assesses each selected obligation's status and chooses supporting evidence.
+Recovery priority is high, medium, low or unknown. These are **inferred
+assessments**, not observed completion facts.
 
 Evidence includes retained native text, actual command/cwd/status/exit records,
 operator notes and explicitly linked references. Settled OpenCode session steps
 add their native text to recent associated invocations. Linked references and
 assistant completion statements remain assertions; arbitrary commit strings or
-preservation destinations never become verified receipts. A selected obligation
-is downgraded from satisfied to unknown without independently observed execution
-support. Jev must assess what that specific execution demonstrates; generic exit
-success is insufficient. Multi-step source passages require all steps satisfied.
+preservation destinations never become verified receipts. Without independently
+observed execution support, a selected obligation goes from satisfied to unknown.
+Jev must assess what that execution demonstrates; a successful exit alone is
+insufficient. Multi-step source passages require all steps to be satisfied.
 
 Outstanding, partial, contradicted or unknown obligations automatically add a
 `needs-finalization` hold. Jev may recommend release when all selected obligations
@@ -122,11 +122,11 @@ chaosbox scratch receipt ASSESSMENT_ID
 chaosbox scratch assess --privacy-reviewed --retry /data/scratch/tmp/opencode/experiment
 ```
 
-Query entries include `assessment_state` (`pending`, `current`, or
-`failed-or-interrupted`) and the latest assessment with `fresh`, purpose,
-obligations, supporting citations, unresolved source passages, priority and release recommendation. Full
-replay inputs/responses are retained privately and retrieved with `receipt`;
-ordinary packets contain only the bounded conclusions. Read-only queries never
+Query entries report `assessment_state` (`pending`, `current`, or
+`failed-or-interrupted`) and the latest assessment: `fresh`, purpose, obligations,
+supporting citations, unresolved source passages, priority and release recommendation.
+Ordinary packets contain only bounded conclusions. Use `receipt` to retrieve
+full replay inputs/responses from private storage. Read-only queries never
 trigger inference or load model credentials.
 
 ## Doty contract
@@ -164,10 +164,10 @@ doty rm --apply --plan PLAN_ID --json
 doty purge --apply PLAN_ID --json
 ```
 
-Doty's `--chaosbox-{work,scope,host,root,bin}` options can override the environment
-for analysis, removal and the allowlisted run/status surfaces. With no ledger
-configured, existing standalone Doty behavior remains available. Configuring a
-ledger requires recreating old removal plans that did not pin that configuration.
+Doty's `--chaosbox-{work,scope,host,root,bin}` options override the environment
+for analysis, removal and allowlisted run/status surfaces. Without a ledger,
+Doty still works standalone. After configuring a ledger, recreate any removal
+plans that did not pin that configuration.
 
 ## Runtime wiring
 
@@ -187,20 +187,19 @@ Canix exports `CHAOSBOX_SCRATCH_MAX_REQUESTS` and
 `CHAOSBOX_SCRATCH_MAX_INPUT_TOKENS` from the matching scratch options; Doty pins
 these ceilings alongside the capture identity and assessment setting in plans.
 
-The configured scratch root must already exist. Durable private state parents
-are created by the writer. The package exports the plugin directory
+The configured scratch root must already exist. The writer creates parent
+directories for durable private state. The package exports the plugin directory
 (`scratchPlugin`), which OpenCode V2 requires for `plugins[].package`; its
 `package.json` names `index.ts` as `main`.
 
-Filesystem observation is bounded and asynchronous. Short-lived allocations
-which vanish before metadata inspection get a coverage-gap event instead of an
-invented identity. Symlinks,
-special files, other devices, non-UTF-8 names and exhausted watch/inventory
-budgets produce degraded coverage instead of confident attribution. A query is
-a fresh ledger/metadata view, not an atomic filesystem lock. Purpose sources and
-explicit notes are available immediately; semantic assessments arrive separately.
-The worker does not inspect arbitrary scratch file bodies or verify repository
-integration/preservation references by reading their targets.
+Filesystem observation is bounded and asynchronous. If an allocation vanishes
+before metadata inspection, the observer records a coverage-gap event, not an
+invented identity. Symlinks, special files, other devices, non-UTF-8 names and
+exhausted watch/inventory budgets degrade coverage rather than yield confident
+attribution. A query gives a fresh ledger/metadata view, not an atomic filesystem
+lock. Purpose sources and explicit notes are available immediately; semantic
+assessments arrive separately. The worker does not inspect arbitrary scratch
+file bodies or read targets to verify repository integration/preservation references.
 
 ## Verification
 

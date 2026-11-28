@@ -4,11 +4,10 @@ Status: shared repository-reader layer implemented and locally qualified, 2026-1
 
 `NeighborhoodQuery::prepare()` validates requests before a transport acquires
 credentials or connects. `PreparedNeighborhood::read(handle)` selects the active
-publication for a first page, or resolves the exact recorded historical build
-through `published_build(repo, build)` on every continuation. There is no active
-pointer lookup or fallback on resume. `GraphReader::published` exposes the same
-exact-publication route; `GraphReader::neighborhood_page` is the convenience entry
-for callers that already own a handle.
+publication on the first page. Every continuation resolves the exact recorded
+historical build through `published_build(repo, build)`. There is no active pointer
+lookup or fallback on resume. `GraphReader::published` exposes the same
+exact-publication route; callers with a handle can use `GraphReader::neighborhood_page`.
 
 ## Contract
 
@@ -50,9 +49,9 @@ raw backend pages or grant their access through a repository cursor.
 
 The aggregate suite covers library (44), binary/MCP (9), count-reference (2),
 continuation (4), S02b.1 page-reference (1), scoped views (20) and navigation (7).
-The S02b.2 disposable case was then explicitly executed with
-`CHAOSBOX_REQUIRE_TYPEDB=1`. S02a/S02b.1 live fixtures were not rerun in this slice;
-their earlier receipts remain separate evidence.
+After the aggregate, the S02b.2 disposable case ran explicitly with
+`CHAOSBOX_REQUIRE_TYPEDB=1`. S02a/S02b.1 live fixtures were not rerun in this
+slice; their earlier receipts remain separate evidence.
 
 Reference tests forbid unbounded collection APIs, count header calls to prove
 scope rejection before reads, alternate absent/new active pointers on fresh
@@ -67,10 +66,10 @@ and 19 outgoing / 3 incoming hub rows. After publishing empty-neighborhood build
 complete old-build rows, exactly equal to the reference fixture. Fresh-process
 CLI/MCP continuation is the subsequent S02b.3 gate.
 
-Native environment preparation succeeded using the existing approved cache;
-the unchanged GC-rooted profile was entered through the previously authorized
-read-only local-store route. This is not claimed as fresh Nix evaluation or
-realization. Workers used two Cargo jobs/two CPU cores, 4 GiB memory ceilings and
+Native preparation used the approved cache and entered the unchanged GC-rooted
+profile through the previously authorized read-only local-store route.
+This is not claimed as fresh Nix evaluation or realization.
+Workers used two Cargo jobs/two CPU cores, 4 GiB memory ceilings and
 zero swap, without holding evaluation capacity. The live worker's native summary
 records 789 ms wall time / 66.8 MiB peak, with compilation already warm. The
 disposable server's observed peak was 136,437,760 bytes with zero current swap.
@@ -93,9 +92,8 @@ new regression and report/receipt. This is not clean-release qualification of
 that savepoint alone. Canix staging and production TypeDB PID/start identity
 compare unchanged. The disposable server was stopped with SIGTERM; data/logs remain.
 
-S02b.3 must construct/prepare this query **before** the ordinary MCP dispatch's
-current unconditional `AnyReader::connect(repo)`, acquire a `TypeDbReader`, then
-call the prepared read. Extend the advertised CLI/MCP schema and verify fresh
-processes, exact relationship identities and historical continuation. Ordinary
-`neighbors` remains on its existing route until that integration; parent S02b
-remains open.
+In S02b.3, construct/prepare the query **before** ordinary MCP dispatch calls
+`AnyReader::connect(repo)` unconditionally. Acquire a `TypeDbReader`, then run the
+prepared read. Extend the advertised CLI/MCP schema; verify fresh processes,
+exact relationship identities and historical continuation. Until then, ordinary
+`neighbors` stays on its existing route and parent S02b remains open.

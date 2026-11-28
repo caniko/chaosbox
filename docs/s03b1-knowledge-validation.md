@@ -3,12 +3,12 @@
 Status: investigation complete, 2026-10-18. The [receipt](s03b1-knowledge-validation.json)
 binds the source, focused checks and retained evidence. S03b.2 remains open.
 
-The current and exact TypeDB queries already select one keyed generation. Their
-large result is the complete knowledge envelope. The existing record/evidence
-mirrors cannot replace that envelope while preserving its hash and complete
-reference checks. Backend-targeted retrieval therefore needs S05's versioned
-validation contract and the unresolved S01b gate. This investigation changes no
-runtime code, schema, historical identity or publication guard.
+Current and exact TypeDB queries already select one keyed generation but return
+the complete knowledge envelope. The record/evidence mirrors cannot replace it
+while preserving its hash and complete reference checks. Backend-targeted
+retrieval needs S05's versioned validation contract and resolution of S01b.
+This investigation changes no runtime code, schema, historical identity or
+publication guard.
 
 ## Read paths and identity boundaries
 
@@ -30,7 +30,7 @@ Sources: `chaosbox-typedb/src/knowledge.rs:9–32`, `reader.rs:181–190`,
 `intelligence/mod.rs:48–55`, `sync/current.rs:29–64`, and
 `chaosbox-core/src/lib.rs:19–28`. Paths are relative to `crates/`.
 
-Two compatibility details matter:
+Compatibility:
 
 - A version-2 artifact manifest deliberately loads only receipts referenced by its
   records for ordinary consumers; writer loading can request all receipts. The
@@ -99,7 +99,7 @@ validate the owner's full bundle. See `policy.rs:125–153`,
 `transport.rs:45–90` and `reader.rs:108–153`. This is request-observed policy and
 current eligibility, not continuous revocation checking during output.
 
-Exact storage lookup itself is not historical authorization. In particular,
+Exact storage lookup itself is not historical authorization.
 `stage_knowledge` inserts the full build envelope **before** staging mirrors and
 advancing the pointer. `knowledge_at` has no separate “was published” predicate.
 Do not infer a graph-style publication seal or complete mirror admission from the
@@ -138,7 +138,7 @@ Sources: `sync/sources.rs:9–74`, `mod.rs:44–123,166–255,293–345`,
 `current.rs:29–152`, `chaosbox-store/src/replica.rs:56–96`, and
 `chaosbox-typedb/src/store/replica.rs:116–230`.
 
-The live test named `signed_history_and_live_consumers_survive_real_typedb_restarts`
+The live test `signed_history_and_live_consumers_survive_real_typedb_restarts`
 reopens a store handle; it does not restart the TypeDB server. This session proves
 fresh-handle readback, not server-crash recovery.
 
@@ -184,10 +184,10 @@ ignored**. The plugin/live-model opt-ins and 17 other backend live cases were no
 run. Treefmt CI and whitespace checks pass. No runtime source changed, so Clippy
 was not rerun.
 
-The first compaction invocation omitted its documented migrated-schema
-prerequisite and failed with `INF2` for `session-knowledge-pointer`. Its log is
-retained. Explicit CLI migration of a fresh disposable database preceded the
-successful run; no product code or test was changed to obtain the pass.
+The first compaction run ran without the documented migrated-schema prerequisite
+and failed with `INF2` for `session-knowledge-pointer`. Its log is retained. The
+next run passed after explicit CLI migration of a fresh disposable database; no
+product code or test was changed to obtain the pass.
 
 Evidence: `/data/scratch/tmp/opencode/chaosbox-s03b1-20261018/`, including
 `commands.txt`, raw logs, caller/schema traces, exact source/test executables,

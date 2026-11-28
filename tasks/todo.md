@@ -19,7 +19,7 @@
   command with its bundled Git runtime. Currently blocked by another session's
   shared Canix evaluation lock, including on retry.
 
-Verification record: `docs/WORKSPACE_IMPACT.md`. Native workspace tests, the
+See `docs/WORKSPACE_IMPACT.md` for verification. Native workspace tests, the
 opt-in plugin/CLI experiment, disposable TypeDB 3.13.0 readback and mdBook pass.
 The real query returns seven endpoints and one scoped historical-evidence
 constraint; the Canix bridge remains blocked by its older Chaosbox revision pin.
@@ -65,8 +65,9 @@ Production-package retry log:
 lock is held by PID 164642 building
 `.#checks.x86_64-linux.stalwart016-proxy-vmtest`; the package and packaged Git/CLI
 checks remain pending. Canix still pins `a4dcdc2dc7f9bd82f22d2dc57f2f8c7a2aac0b0d`;
-the new CLI can be selected through `SESSION_RESEARCH_CHAOSBOX_BIN` until package
-adoption is completed. This follow-up is local and does not claim deployment.
+the new CLI can be selected through `SESSION_RESEARCH_CHAOSBOX_BIN` until
+package adoption completes. This follow-up is local and does not claim
+deployment.
 
 ## Graphify retirement and Chaosbox cutover
 
@@ -81,13 +82,13 @@ adoption is completed. This follow-up is local and does not claim deployment.
 - [ ] Retire Graphify runtime state, PostgreSQL grants and workspace registration.
 
 Initial facade verification: the scoped-selection regression failed before the
-repair and the commands-crate Chaosbox tests pass after it. End-to-end facade
-tests currently encounter a concurrent Canix dependency change: the locked
-Fleetix crate lacks `fleetix::health`, imported by `publish_health.rs`.
+repair; the commands-crate Chaosbox tests pass after it. A concurrent Canix
+dependency change blocks end-to-end facade tests: the locked Fleetix crate lacks
+`fleetix::health`, which `publish_health.rs` imports.
 
-The operator subsequently requested the default-branch source cutover and full
-Graphify removal without deployment verification. That supersedes the previous
-verification-before-retirement order. Local PostgreSQL SELECT-only capture and
+The operator later requested the default-branch source cutover and full Graphify
+removal without deployment verification, superseding the verification-before-retirement
+order. Local PostgreSQL SELECT-only capture and
 continuation/replay checks passed before that instruction; no live Hermes
 verification or deployment is claimed. Package pins and source retirement are
 recorded in Canix's cutover commit.

@@ -10,7 +10,7 @@ Native Rust fork/rewrite of [Graphify](https://github.com/Graphify-Labs/graphify
 deterministic code-graph extraction, bounded Jev decisions, versioned graph
 builds in PostgreSQL with pgvector semantic retrieval, read-only CLI/MCP consumers.
 
-Deployment storage contracts are described in [Storage lifecycle integration](docs/src/storage-lifecycle.md).
+See [Storage lifecycle integration](docs/src/storage-lifecycle.md) for deployment storage contracts.
 
 Pipeline: `source snapshot -> certified syntax facts + bounded candidates ->
 optional Jev decisions -> validated evidence/claims -> policy build ->
@@ -21,7 +21,7 @@ Typesafe Jev decisions for bounded semantic judgments. Every Chaosbox-owned live
 inference must use `jev-1.13.0` at the approved Typesafe endpoint; aliases,
 endpoint overrides, returned-model substitutions and HTTP redirects are rejected.
 Session research uses Jev for span classification, candidate priority/status and
-cross-repository comparison; citations and report text are rendered
+cross-repository comparison; Chaosbox renders citations and report text
 deterministically. See the
 [typed research workflow](docs/SESSION_RESEARCH_PILOT.md) for request receipts,
 shared budgets, abstentions and migration from the earlier generative pilot.
@@ -35,11 +35,11 @@ preserves native OpenCode evidence before context reduction, assembles
 source-backed checkpoints, and defers intelligence assessment and private
 PostgreSQL publication through a restartable journal.
 
-Chaosbox should connect repository structure with the decisions, findings and
-constraints discovered while working on it. Extract at meaningful evidence
-boundaries, use Jev's typed decisions to assess support, scope, novelty and value,
-and admit only useful, grounded knowledge. Other LLM sessions should retrieve a
-small, applicable set with citations instead of receiving another large summary.
+Chaosbox should connect repository structure to decisions, findings and
+constraints from the work. Extract at meaningful evidence boundaries, assess
+support, scope, novelty and value with typed Jev decisions, and admit only
+useful, grounded knowledge. Other LLM sessions should retrieve a small,
+applicable set with citations instead of another large summary.
 
 Source archives, admitted intelligence and continuation checkpoints
 have different roles. Continuation will use Jev selections and deterministic
@@ -57,12 +57,11 @@ chaosbox install --platform claude   # user scope: MCP server + hint hook
 chaosbox enable --repo canix         # per project: .chaosbox.json + AGENTS.md
 ```
 
-Nothing applies to a project without a `.chaosbox.json` at its checkout root;
-commit it to share the opt-in. An
-enabled project gets a MUST block for definitions, caller/callee questions,
-change impact and architecture, PostToolUse hints after broad searches that
-would otherwise repeat in the graph, and a ledger that measures whether
-answers replaced file reads. See
+Without a `.chaosbox.json` at the checkout root, no project integration applies.
+Commit it to share the opt-in. Enabled projects get a MUST block for definitions,
+caller/callee questions, change impact and architecture; PostToolUse hints
+after broad searches that would otherwise repeat in the graph; and a ledger
+that tracks whether answers replaced file reads. See
 [agent and git integration](docs/src/agent-integration.md).
 
 ## Crates
@@ -93,8 +92,8 @@ retrieval](docs/src/storage.md).
 For a trusted host connector, `chaosbox reader --admission /private/read-view.json`
 serves a run-isolated, source-scoped and version-pinned MCP connection. See
 [run-bound read views](docs/READ_VIEWS.md) for its admission contract, budgets,
-revocation, and worker-integration gates. The admission file is not a credential;
-the existing `chaosbox mcp` command remains an operator surface.
+revocation and worker-integration gates. The admission file is not a credential;
+`chaosbox mcp` remains an operator surface.
 
 Choose `--no-decisions`, `--live-jev`, or `--fixture-decisions` explicitly.
 Fixture graphs are disposable/test-only and recorded under `fixture-test`.
@@ -106,11 +105,11 @@ receipt-bound SCIP definitions, resolved references and explicit implementation
 links with the same zero-model publication path. Other relationships remain
 bounded decision proposals.
 
-Previously paid, validated inferences can still be reused. A structural-only
-build can refresh without any model coverage. A decision-bearing or legacy
-build keeps the conservative exit-4 guard when current candidates lack reusable
-decisions. See the [certified fact contract](docs/STRUCTURAL_FACTS.md) for the
-exact syntax subset, citation format, coverage limits, and regression baseline.
+Chaosbox can reuse paid, validated inferences. Structural-only builds can refresh
+without model coverage. Decision-bearing and legacy builds retain the exit-4
+guard when current candidates lack reusable decisions. See the
+[certified fact contract](docs/STRUCTURAL_FACTS.md) for the exact syntax subset,
+citation format, coverage limits and regression baseline.
 Run `chaosbox db migrate` once per database (idempotent) before the first `run`.
 Run-bound readers require a published, source-complete sealed build. See
 [`docs/READ_VIEWS.md`](docs/READ_VIEWS.md).
@@ -128,8 +127,8 @@ chaosbox workspace impact /path/to/new-workspace.json response-endpoint --scope 
 
 ### Machine-readable run contract
 
-`run` speaks three stable stderr lines so a batching caller can budget and
-defer without parsing prose, alongside these exit codes:
+Batch callers can budget and defer without parsing prose: `run` exposes three
+stable stderr lines and these exit codes:
 
 | Exit | Meaning |
 | --- | --- |
@@ -137,20 +136,17 @@ defer without parsing prose, alongside these exit codes:
 | 1 | Configuration, budget preflight, or pipeline failure |
 | 4 | `--no-decisions` kept a decision-bearing or legacy active build because current candidates lacked reusable decisions. Nothing was published or spent; assess the candidates with `run --live-jev` |
 
-- `usage: requests=N input_tokens=M` — printed on **every** live-Jev exit
-  path, including failures and pre-spend refusals (which report zeros), so
-  a caller debits what this run dispatched (retries and timed-out sends
-  included) rather than assuming a failed run spent nothing. Non-live runs
-  print no `usage:` line: they cannot dispatch.
+- `usage: requests=N input_tokens=M` — **every** live-Jev exit prints this,
+  including failures and pre-spend refusals (zeros). Debit all dispatches,
+  including retries and timed-out sends, even if the run fails. Non-live runs
+  cannot dispatch and print no `usage:` line.
 - `budget: pending=N allowed=M` — accompanies the human `live-jev budget:`
-  refusal: `N` uncached candidates still need a decision each and `M` requests
-  were allowed. `N <=` the caller's own batch cap means "defer this one to a
-  fresh allowance", `N >` the cap means it can never fit.
-- `coverage: …` — the exit-4 condition above, one human-readable line.
-  Only exit 4 in `--no-decisions` mode carries it. An unreadable active
-  build prints `active build: …` instead and exits 1: it keeps the current
-  build untouched but fails, so a batching caller never mistakes an
-  operational backend failure for a successful deferral.
+  refusal: `N` uncached candidates each need a decision and the run allowed
+  `M` requests. `N <=` the caller's batch cap means defer to a fresh allowance;
+  `N >` the cap means it can never fit.
+- `coverage: …` — one human-readable line, only on exit 4 in `--no-decisions`
+  mode. If the active build is unreadable, `active build: …` and exit 1 signal
+  a backend failure, not a successful deferral. The current build stays untouched.
 Database: `CHAOSBOX_DATABASE_URL` (libpq key=value or URL; unix socket or
 loopback only, e.g. `host=/run/postgresql dbname=chaosbox`; peer auth needs no
 password). Embeddings: `CHAOSBOX_EMBED_URL` (loopback `/v1/embeddings`),
@@ -160,18 +156,17 @@ OpenAI/Anthropic/Gemini/Ollama env vars are never read.
 ## Docs
 
 - [Documentation overview](docs/src/index.md) and [book contents](docs/src/SUMMARY.md).
-- `docs/BASELINE.md` — pinned revisions, Graphify audit
-- `docs/CAPABILITY.md` — implemented / removed / pending matrix
-- `docs/HANDOFF.md` — results, handoffs, next commands
-- `docs/SESSION_INTELLIGENCE.md` — selective session knowledge, Jev admission,
+- [Documentation index](docs/README.md)
+- [`docs/BASELINE.md`](docs/BASELINE.md) — pinned revisions, Graphify audit
+- [`docs/CAPABILITY.md`](docs/CAPABILITY.md) — implemented / removed / pending matrix
+- [`docs/SESSION_INTELLIGENCE.md`](docs/SESSION_INTELLIGENCE.md) — selective session knowledge, Jev admission,
   private artifacts and read-only context/evidence retrieval
 
 The docs-only mdBook uses [Harbor](https://github.com/caniko/harbor)'s
-`lib.docs` namespace. Rust toolchains and database lifecycle modules consume
-the same revision-qualified input. Build with
-`canix cache build .#docs`; `.#site` resolves to the same output. The
-`docs-summary` check verifies chapter coverage. Preview with `mdbook serve docs`
-inside the docs dev shell. This wires packaging, not hosted-site deployment.
+`lib.docs` namespace. Rust toolchains and database lifecycle modules use the same
+revision-qualified input. Build with `canix cache build .#docs`; `.#site` resolves
+to the same output. `docs-summary` checks chapter coverage. Preview with
+`mdbook serve docs` in the docs dev shell. This packages the site without deploying it.
 
 ## License
 

@@ -5,7 +5,7 @@ acquisition-inclusive budgets pass through ordinary CLI and MCP clients.
 **Parent S02c remains open for S02c.3's transport lifecycle and retention gate.**
 
 Implementation savepoint: `1836030050f0c5c260d5848303a4af829d43e0af`.
-The commit containing this report adds the ordinary-client regression and
+This report's commit adds the ordinary-client regression and
 [qualification receipt](s02c2-whole-path-requests.json).
 
 ## Request contract
@@ -29,7 +29,7 @@ acquisition. Both use `PreparedPath::read` through `AnyReader::path_query`.
 ## One monotonic budget
 
 The prepared request starts one `Work` instance before acquisition. Acquisition
-and `active_build` each consume one logical operation; endpoints and every
+and `active_build` each consume one logical operation, and endpoints and every
 directional page consume the same remaining counter. Build-header, endpoint and
 page JSON consume one aggregate projected-byte allowance. Neither acquisition nor
 pinning resets the deadline, counters or BFS. Existing pinned-reader APIs reuse
@@ -55,7 +55,7 @@ accepted production RAM budget.
 | Scoped warnings-denied Clippy | Passed |
 | Scoped treefmt CI / Git whitespace | Passed |
 
-Four new instrumented cases extend S02c.1's ten path tests. They prove exact
+Four instrumented cases extend S02c.1's ten path tests. They prove exact
 operation/row completion (eight operations succeed where seven cannot prove
 completion), no acquisition poll at zero operations, exact header-plus-endpoint
 byte accounting, cancellation of pending acquisition/pinning futures, and one
@@ -96,8 +96,8 @@ cargo clippy --locked --offline -p chaosbox --lib --bin chaosbox --test path_bud
 
 The live command, explicit disposable configuration, scope limits and original
 worker logs are retained at `/data/scratch/tmp/opencode/chaosbox-s02c2-20261018/`.
-Require `CHAOSBOX_REQUIRE_TYPEDB=1`, an isolated `s02c2_*` database and disposable
-credentials when explicitly running the ignored live test. The normal suite
+Run the ignored live test explicitly with `CHAOSBOX_REQUIRE_TYPEDB=1`, an isolated
+`s02c2_*` database and disposable credentials. The normal suite
 does not turn ignored live cases into acceptance evidence.
 
 Qualification uses the dirty canonical checkout based on
@@ -116,7 +116,7 @@ diff context moves with the new re-exports. No consumer promotion is established
 
 ## Next-session handoff
 
-Continue with **S02c.3**. Refresh Git/index state and read this report plus the
+Next: **S02c.3**. Refresh Git/index state and read this report and the
 ordinary `serve_mcp` loop. Implement bounded frames and output backpressure,
 matching-ID cancellation, EOF/output-failure cleanup and measured repeated-process
 retention. Verify unrelated cancellation IDs preserve work, and retain actual

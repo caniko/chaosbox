@@ -4,9 +4,9 @@
 
 The first evidence-foundation slice publishes source-level `defines` and
 file/module `contains` relationships independently of Jev and candidate caps.
-These observations describe declarations present in the source, including
-conditional declarations. They do not assert that a symbol exists in a
-particular compiled or evaluated configuration.
+These facts cover declarations in source, including conditional ones. They do
+not establish that a symbol exists in any particular compiled or evaluated
+configuration.
 
 | Source | Certified declarations | Producer |
 | --- | --- | --- |
@@ -14,7 +14,7 @@ particular compiled or evaluated configuration.
 | TypeScript / TSX / MTS / CTS | Named functions/signatures, classes, interfaces, aliases, enums, methods, identifier variable declarations (including arrow-function bindings) | tree-sitter 0.25.10 + tree-sitter-typescript 0.23.2 |
 | Nix | Static identifier attribute-path assignments in sets and `let` expressions | rnix 0.14.0 |
 
-Each producer identity also contains the interpretation contract:
+Each producer identity includes its interpretation contract:
 `declarations-v2` for Rust/TS (v1 plus syntactic nesting and rationale
 annotations, below) and `declarations-v1` for Nix. Grammar dependencies are
 exact-pinned. Changing the certified subset requires a contract-version bump.
@@ -41,19 +41,18 @@ mentions remain uncertified proposals; call and heritage sites resolve only
 under the separate INFERRED contract below. Python, JavaScript, Markdown and
 text retain their existing heuristic path.
 
-Any syntax error withholds all certified facts for that file and reports
-`parse_error`; the captured file remains visible. `parsed` means that the
-documented subset ran successfully, not that every possible fact was extracted.
+On any syntax error, the producer withholds all certified facts for the file
+and reports `parse_error`; the file remains visible. `parsed` means the
+documented subset ran successfully, not that extraction was exhaustive.
 Comments, literal text and unexpanded Rust macro input cannot become certified
 declarations (marked comments become annotations, never declarations). Nix string interpolations and TS template interpolations can
 contain real expressions; those expressions are traversed normally.
 
 ## Resolved relations (INFERRED, no decisions)
 
-Graphify labels name-matched calls EXTRACTED. Chaosbox does not: a unique
-lexical match is evidence, not proof, so these relationships publish with
-INFERRED evidence, a producer, and the exact use-site span, and never create
-model decisions.
+Graphify labels name-matched calls EXTRACTED. Chaosbox treats a unique lexical
+match as evidence, not proof: it publishes the relationship with INFERRED
+evidence, a producer and the exact use-site span, without model decisions.
 
 | Producer | Relationship | Rule |
 | --- | --- | --- |
@@ -72,9 +71,9 @@ never resolved; receiver typing is SCIP's job. External RFCs without a
 captured document get no node (the text stays searchable on the rationale).
 **A missing `calls` edge never means nothing calls a symbol.**
 
-Ambiguous sites are skipped rather than proposed to Jev; add a `call-site`
-candidate reason (never `structural`, which materializes EXTRACTED) when a
-consenting repository needs them adjudicated.
+The resolver skips ambiguous sites instead of proposing them to Jev. When a
+consenting repository needs adjudication, add a `call-site` candidate reason,
+never `structural`, which materializes EXTRACTED.
 
 ## Evidence and publication
 
@@ -95,7 +94,7 @@ consenting repository needs them adjudicated.
 
 Schema v3 adds optional `producer` and `coverage-json` attributes. Run
 `chaosbox db migrate` before using the new reader with an existing database.
-Old rows survive migration; missing provenance/coverage is reported as unknown.
+Migration preserves old rows; missing provenance/coverage is reported as unknown.
 No entity-ID migration is part of this slice.
 
 Coverage `resolved_relations` counts the INFERRED tier separately. Publication
@@ -106,19 +105,17 @@ derives every bucket from retained evidence: `structural_relations` (+ compiler
 the no-decisions refresh gate, which reads only `decision_relations`, treats
 resolved builds as structural and refreshes them freely.
 
-Build coverage records the file-level producer/outcome, certified relation
-count and decision-backed relation count. It applies to the captured source
-set only; ignored/unsupported files and semantic completeness are not measured.
-Candidate selection/omission accounting remains in the existing catalog/run
-report. Coverage accompanies CLI/MCP status and exports, with at most 100 file
-detail rows plus total/error/heuristic counts and `omitted_files`. Full file
-records remain stored with the build.
+Build coverage records file-level producer/outcome and counts of certified and
+decision-backed relations. It covers only captured source, not ignored/unsupported
+files or semantic completeness. Candidate selection/omission accounting stays in the
+catalog/run report. CLI/MCP status and exports include at most 100 file detail
+rows plus total/error/heuristic counts and `omitted_files`. The build retains
+full file records.
 
 `--no-decisions` refreshes a known structural-only build even when semantic
 proposals are uncached. For builds containing decision-backed relationships,
-or legacy relationships with unknown provenance, the existing conservative
-exit-4 rule continues to protect the active view. A failed decision batch still
-blocks publication.
+or legacy relationships with unknown provenance, the conservative exit-4 rule
+still protects the active view. A failed decision batch still blocks publication.
 
 ## Regression baseline
 

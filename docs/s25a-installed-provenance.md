@@ -1,9 +1,9 @@
 # S25a — installed consumer provenance audit
 
 **The installed consumer uses pre-fix source, which explains the export-cap
-failure.** The operator supplied the missing derivation excerpt; inspection of
-its immutable source shows both CLI and MCP exporting the complete graph before
-context selection. This is an early read-only slice of S25; promotion is pending.
+failure.** The operator supplied the missing derivation excerpt. The immutable
+source it identifies shows both CLI and MCP export the complete graph before
+selecting context. This is an early read-only slice of S25; promotion is pending.
 
 See the [receipt](s25a-installed-provenance.json),
 [S02 qualification](s02-bounded-navigation.md) and
@@ -24,13 +24,13 @@ The audit's shell processes have that same parent.
 S01b correctly identified its sampled service process. That process is not the
 listener serving this session. Future session/custody receipts must use the
 session's serving process rather than infer it from `systemctl MainPID` or PATH.
-The loaded unit command and on-disk unit also differ; their separate observations
-are retained without changing either.
+The loaded unit command also differs from the on-disk unit. The audit records
+both separately without changing either.
 
 ## Configuration and executable chain
 
-`opencode debug config` returned this location's configuration sources through
-the native authenticated client. The global JSON declares Chaosbox; the global
+The native authenticated client returned this location's configuration sources
+via `opencode debug config`. The global JSON declares Chaosbox; the global
 JSONC and two ancestor/project JSONC documents contain no Chaosbox override.
 `opencode api mcp.list` reports it connected for the exact Canix location.
 
@@ -44,14 +44,14 @@ session location /data/nvme0/can/canix
   -> /nix/store/aamrc152yl781cs8fy5nrk1nzgip19a7-chaosbox-0.1.0/bin/.chaosbox-wrapped
 ```
 
-The observed Chaosbox child of the serving process is PID 2985990. Its ELF hash
+The serving process's observed Chaosbox child is PID 2985990. Its ELF hash
 is `7f4aa0f7b301b27e1677f6af29510cb653fce15c2e3cdd2b3c12f9d3853a6878`,
 matching S02's installed binary. The sampled systemd process's Chaosbox child
 uses the same ELF. The facade selects the loopback TypeDB database and credential
 file; it does not rewrite query arguments. No credential values were collected.
 
-The returned plugin package list has no Chaosbox compaction adapter entry. The
-inspected configuration directories add none. This establishes configuration
+Neither the returned plugin package list nor the inspected configuration
+directories list a Chaosbox compaction adapter. This establishes configuration
 absence for the observed sources, not native lifecycle compatibility; S09a still
 requires its own proof.
 
@@ -85,14 +85,14 @@ The operator-provided partial derivation JSON binds the installed output
 /nix/store/9p9p6p8ds3zz8dpgvrx44kzqdc2yl3n4-source
 ```
 
-Every one of its **151 files** matches the corresponding file in archived Git
+All **151 files** match their counterparts in archived Git
 revision `e6698a34c380b11c0216f3157a548868b7823f79` (2026-09-30). Its filtered
 contents omit other Git paths, so this establishes byte identity for the complete
 installed source without uniquely determining its original Git revision metadata.
 There are no source symlinks. The selected-file manifest has SHA-256
 `a72ad2fea189da5d0f99e5b8c75da1d59cf97b897350eec994fac9eedeb7a317`.
 
-The shared failure follows directly from those source bytes:
+The installed source explains the export-cap failure on both paths:
 
 - `crates/chaosbox/src/query_cmd.rs:177` calls `reader.export()` before the CLI
   navigation function.
@@ -100,18 +100,17 @@ The shared failure follows directly from those source bytes:
   and `community`.
 - `crates/chaosbox/src/reader.rs:67` sets the 10,000-node export cap.
 - `reader_navigation.rs` is absent; the old pure navigation algorithm is
-  `lexical-bfs-v1`, rather than the declared pin's bounded reader.
+   `lexical-bfs-v1`, not the declared pin's bounded reader.
 
-The installed source therefore predates the existing bounded fix. The current
-declared pin contains that fix, but the active consumer still selects an older
-realization. Reconciliation must select and verify the qualified output through
-the managed consumer path; no additional navigation fix is needed for this case.
+The installed source predates the bounded fix. The declared pin contains the
+fix, but the active consumer still selects an older realization. Reconciliation
+must select and verify the qualified output through the managed consumer path;
+no additional navigation fix is needed for this case.
 
 The original direct derivation inspection was denied before execution. The
-operator's supplied excerpt resolved the source-attribution blocker without
-retrying or bypassing that rejection. Its source/output binding is explicitly
-operator-provided; the full derivation and build flags were not independently
-collected.
+operator's excerpt resolved source attribution without retrying or bypassing
+the denial. Its source/output binding is operator-provided; the full derivation
+and build flags were not independently collected.
 
 ## Evidence and handoff
 

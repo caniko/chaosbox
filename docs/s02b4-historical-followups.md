@@ -4,15 +4,15 @@ Status: locally qualified, 2026-10-18. Signed implementation/test savepoint:
 `4fbdca424a2e8408eedbdc2df0b995800ee8523c`.
 The [receipt](s02b4-historical-followups.json) binds the tested source and evidence.
 
-Ordinary clients can hydrate and recursively expand an endpoint returned by an
-old neighborhood after the repository's active pointer moves. The implementation
-reuses `GraphReader::published`, including its existing repository/publication
-ownership checks. Selection grants no scoped-view authorization.
+Ordinary clients can hydrate and recursively expand historical neighborhood
+endpoints after the repository's active pointer moves. They reuse
+`GraphReader::published` and its repository/publication ownership checks.
+Selection grants no scoped-view authorization.
 
 ## Request contract
 
 MCP `lookup`, `explain`, `evidence`, and `neighbors` accept optional `build_id`.
-The existing CLI `query lookup`, `query explain`, and `query neighbors` accept
+CLI `query lookup`, `query explain`, and `query neighbors` accept
 `--build-id`.
 
 | Selection | Resolution |
@@ -42,17 +42,17 @@ chaosbox query explain ent:example --repo example --build-id build:example
 chaosbox query neighbors ent:example --repo example --build-id build:example --limit 20
 ```
 
-An MCP evidence follow-up has arguments such as
+Example MCP evidence follow-up:
 `{"repo":"example","rel":"rel:example","build_id":"build:example"}`.
 Existing default result shapes and count-only explanations are preserved.
 
 ## Behavioral proof
 
-The native regression first runs against the retained S02c.4 executable. An
-exact historical lookup returns `null` instead of its independently expected
-entity (`red-hydration.log`). An earlier retained run also exposes the CLI's
-missing flag. Preparation regressions separately fail on the old credential
-lookup and unknown neighborhood field, then pass after the fix.
+On the retained S02c.4 executable, the first native regression returns `null`
+for exact historical lookup instead of the independently expected entity
+(`red-hydration.log`). An earlier retained run exposes the missing CLI flag.
+Preparation regressions fail separately on the old credential lookup and unknown
+neighborhood field, then pass after the fix.
 
 The final required-server fixture advances from `build:157daab9acb0` to
 `build:aaf20ac77017`, removing the old leaf endpoints from current. Fresh CLI,
@@ -70,8 +70,8 @@ fresh MCP, and persistent MCP then establish:
 - Two successive fresh-anchor expansions preserve the old publication and
   independently expected complete directional rows.
 - A cursor produced by the retained pre-change executable resumes with omitted
-  or matching selection. An explicit historical first page is byte-identical
-  in its cursor to that legacy response. Conflicting selection fails.
+   or matching selection. An explicit historical first page returns a cursor
+   byte-identical to that legacy response's cursor. Conflicting selection fails.
 - Missing and foreign builds fail through each applicable client surface even
   when current contains the requested endpoint. An instrumented page backend
   forbids active-pointer reads on exact starts and continuations. A separate
@@ -84,11 +84,10 @@ fresh MCP, and persistent MCP then establish:
 eight were selected and passed explicitly, alongside two required native backend
 cases: **ten required disposable-TypeDB cases passed, zero ignored**. Six other
 aggregate opt-in cases and 18 other backend live cases were not selected.
-Warnings-denied scoped Clippy, treefmt CI, and whitespace checks pass. Initial
-Clippy findings in the test code were corrected with a focused expansion helper
-and `String::new()`, without adding lint suppressions. The first test-filter
-attempt selected zero cases and is retained separately from the actual failing
-and passing runs.
+Warnings-denied scoped Clippy, treefmt CI, and whitespace checks pass. A focused
+expansion helper and `String::new()` fix the initial Clippy findings in test code
+without lint suppressions. The first test filter selected zero cases; its run
+is retained separately from the failing and passing runs.
 
 The final candidate also passes S02c.4 admission/credential refresh, native
 cleanup, successful/error-eviction retention, connection reuse/idle expiry,

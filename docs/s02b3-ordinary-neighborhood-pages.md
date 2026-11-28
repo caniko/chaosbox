@@ -2,11 +2,11 @@
 
 Status: locally qualified, 2026-10-16. Parent S02b's ordinary-client gate passes.
 
-Both `query neighbors` and the ordinary MCP `neighbors` tool now prepare the
-shared S02b.2 request before acquiring backend credentials. The private connection
-helper returns an unpinned handle; preparation selects active for first pages or
-the exact historical publication on continuation. The old ordinary unbounded
-neighborhood dispatch is removed.
+`query neighbors` and ordinary MCP `neighbors` prepare the shared S02b.2 request
+before acquiring backend credentials. The private connection helper returns an
+unpinned handle; the prepared request selects the active publication for first
+pages and the exact historical publication on continuation. The old ordinary
+unbounded dispatch is gone.
 
 ## Client contract
 
@@ -23,11 +23,11 @@ neighborhood dispatch is removed.
   cursor/scope mismatches with `-32602` before acquiring credentials. Unavailable
   historical publications fail explicitly with `-32603`; CLI failures exit nonzero.
 
-The old array fields remain, but the default response is now a bounded first
-page. Consumers needing a complete neighborhood must follow continuation.
+The array fields remain, but the default response is a bounded first page.
+Follow continuation for the complete neighborhood.
 There is no implicit auto-drain into an unbounded response.
 
-For example, retain the returned opaque cursor as `$cursor` and repeat:
+Save the opaque cursor as `$cursor` for the next request:
 
 ```nu
 chaosbox query neighbors ent:example --repo example --limit 20
@@ -53,17 +53,16 @@ validation and its separate cursor contract are preserved.
 
 The affected suites cover library (44), binary/MCP (11), count-reference (2),
 client argument validation (1), continuation (5), page-reference (1), scoped views
-(20), and navigation (7). The existing high-degree fixture is shared between
-backend and client tests; its identity and complete reference observations remain
-unchanged. Added reference coverage advances both directional positions and tests
-incoming-longer exhaustion with unbounded collection APIs forbidden.
+(20), and navigation (7). Backend and client tests share the high-degree fixture
+with unchanged identity and complete reference observations. New reference tests
+forbid unbounded collection APIs, advance both directional positions and test
+exhaustion when the incoming direction is longer.
 
-The required TypeDB CE 3.13.0 test runs on `127.0.0.1:24729`, fresh database
-`s02b3_clients_20261016`. Its fixture contains 1,026 nodes / 2,056 relationships,
-with 1,029 hub rows in each direction. First pages pin `build:5eff79a93a12`,
-generation 2. After publishing the empty hub neighborhood `build:9d87aa123524`,
-generation 3, all continuations retain the old build and new first pages use the
-new one.
+The required TypeDB CE 3.13.0 run uses fresh database `s02b3_clients_20261016`
+on `127.0.0.1:24729`: 1,026 nodes / 2,056 relationships and 1,029 hub rows in
+each direction. First pages pin `build:5eff79a93a12`, generation 2. After
+publication of the empty hub neighborhood `build:9d87aa123524`, generation 3,
+all continuations keep the old build; new first pages pin the new one.
 
 Every response agrees across **fresh CLI, fresh MCP and one persistent MCP
 process**. Each transport enumerates 29 pages, 4,124 delivered rows and 597,217

@@ -8,23 +8,23 @@ Parent S04a continues with S04a.2, bounded graph query batching/reuse.
 ## Ownership and lifetime
 
 The ordinary MCP server keeps **at most one reusable TypeDB driver**. Connected
-`TypeDbReader` clones share that driver through `Arc`; every graph query still
-opens and closes its own read transaction through the existing `read_rows` path.
+`TypeDbReader` clones share it through `Arc`; each graph query still opens and
+closes its own read transaction through the existing `read_rows` path.
 No build header, graph row, query result, transaction or publication pin is cached.
 
 - Each prepared graph call rereads the operator's credential file. Reuse requires
   the same address, database, username and normalized password bytes. A changed
-  identity drops the old driver before connecting. The four identity fields have
-  a focused unit regression; live qualification replaces the credential file.
-- Every request pins its current publication afresh. Neighborhood continuation
-  selects and validates its exact historical build through the existing prepared
-  request. Repository membership and scoped-view authority remain distinct.
-- A graph call takes ownership of the reusable slot. Matching cancellation drops
-  its connection clones; a graph-dispatch error also evicts the driver. A later call
+  identity drops the old driver before connecting. A focused unit regression
+  covers all four fields; live qualification replaces the credential file.
+- Each request pins the current publication anew. Neighborhood continuation
+  uses the prepared request to select and validate its exact historical build.
+  Repository membership and scoped-view authority remain distinct.
+- A graph call owns the reusable slot. Matching cancellation drops its
+  connection clones; a graph-dispatch error also evicts the driver. A later call
   can acquire a new driver. There is no automatic retry that hides failed work.
 - Successful graph completion sets one **30-second monotonic idle deadline**.
-  Waiting for input also waits for expiry, and every graph reuse checks the
-  deadline again. Pings, notifications and protocol responses do not renew it.
+  The input loop waits for expiry too, and each graph reuse checks the deadline.
+  Pings, notifications and protocol responses do not renew it.
   Expiry during a non-graph protocol exchange is serviced on return to the input
   loop; that exchange retains the existing fixed 10-second output deadline.
   This idle policy is not a hard timer that preempts synchronous computation.
@@ -45,10 +45,11 @@ knowledge-generation validation were not changed.
 
 ## Native before/after comparison
 
-The same fresh three-node/two-edge fixture was read by the retained S02c.3 binary
-and this candidate, serially against TypeDB CE 3.13.0. Native diagnostics count
-`CONNECTION_OPEN` globally and `TRANSACTION_QUERY` for the fixture database; no
-other graph workload ran on that disposable server during either interval.
+The retained S02c.3 binary and this candidate read the same fresh
+three-node/two-edge fixture serially against TypeDB CE 3.13.0. Native diagnostics
+count `CONNECTION_OPEN` globally and `TRANSACTION_QUERY` for the fixture
+database; no other graph workload ran on that disposable server during either
+interval.
 
 | Twenty successful lookups | S02c.3 baseline | S04a.1 candidate |
 |---|---:|---:|
@@ -58,9 +59,9 @@ other graph workload ran on that disposable server during either interval.
 | Threads at sample | 4 | 7 |
 | File descriptors at sample | 10 | 15 |
 
-The connection regression first failed behaviorally on the pre-change executable:
-both sides opened 20 connections. The candidate then passed. This establishes
-connection reuse, not fewer queries or a measured latency improvement.
+The pre-change executable failed the behavioral regression: both sides opened
+20 connections. The candidate passed. This establishes connection reuse, not
+fewer queries or a measured latency improvement.
 
 One candidate MCP process handled **140 successful lookups in seven batches**:
 
@@ -72,16 +73,17 @@ One candidate MCP process handled **140 successful lookups in seven batches**:
   it: after 31 seconds the process had zero TCP sockets, four threads and ten FDs.
   A following graph request reacquired successfully.
 
-The same client observed an empty successor publication instead of its old
-entity, resumed an old neighborhood cursor against the original build, rejected
-a cursor in another repository, failed after bad credential replacement with
-zero retained TCP sockets, and recovered after restoring the credential file.
+The same client saw an empty successor publication, not the old entity. It
+resumed an old neighborhood cursor on the original build and rejected a cursor
+in another repository. After bad credentials replaced the file, the next graph
+call failed with zero retained TCP sockets; restoring the credential file
+recovered the client.
 
 ## Retained lifecycle and parity gates
 
-The existing 653-node/650-edge lifecycle fixture now primes a successful graph
-call before each active-read failure. Native monitoring observed an active read
-then zero reads in all five warmed-connection cases:
+The existing 653-node/650-edge lifecycle fixture warms the connection with a
+successful graph call before each active-read failure. Native monitoring saw
+an active read, then zero reads, in all five cases:
 
 | Event | Cleanup |
 |---|---:|
@@ -96,10 +98,10 @@ ping. The wide lookup released its read before output stalled; EOF exited in
 3 ms, and blocked output expired after another 9,925 ms. The real silent-TCP
 acquisition cancellation/EOF regression also passes.
 
-The persistent path fixture passed 147 calls, ending each batch with an exhausted
-request that evicted the reused driver. Its RSS samples were
-`32196, 32232, 32232, 32236, 32240, 32268, 32272` KiB, with four threads, ten FDs,
-zero TCP sockets and zero swap at every batch boundary.
+The persistent path fixture passed 147 calls. An exhausted request evicted the
+reused driver at each batch boundary, leaving four threads, ten FDs, zero TCP
+sockets and zero swap. RSS samples were
+`32196, 32232, 32232, 32236, 32240, 32268, 32272` KiB.
 
 Fresh CLI, fresh MCP and persistent MCP retained exact parity across:
 
@@ -116,8 +118,8 @@ reuse, lifecycle, path, neighborhood and explanation cases then passed explicitl
 with zero ignored. Six other opt-in cases were not run. Scoped warnings-denied
 Clippy, treefmt CI and whitespace checks passed.
 
-Commands and native worker observations are retained in `commands.txt` and
-`worker-resources.txt` in the evidence directory. Use the approved project
+The evidence directory retains commands in `commands.txt` and native worker
+observations in `worker-resources.txt`. Use the approved project
 environment and a fresh disposable database for each live test. The reuse case
 requires `CHAOSBOX_REQUIRE_TYPEDB=1`, an `s04a1_*` database,
 `CHAOSBOX_TYPEDB_ADDR`, `CHAOSBOX_TYPEDB_PASSWORD_FILE`,
@@ -153,7 +155,7 @@ foreign source work. This is not clean-release or installed-consumer qualificati
 - Baseline CLI SHA-256:
   `9d47955929934532cbabd29b72c48adac5023d85dec5dbfaa3399b1ff6721ccf`.
 
-The implementation commit contains only the reader ownership/config identity,
+The implementation commit covers only reader ownership/config identity,
 ordinary acquisition/dispatch and lifecycle tests. Foreign tracked edits and
 Canix staging compared byte-identical through qualification. Production TypeDB's
 PID/start identity remained unchanged; the disposable server was stopped with

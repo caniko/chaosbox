@@ -9,14 +9,14 @@ schemas, configuration and retained observations.
 
 The listener on `127.0.0.1:4096` still belongs to PID **2985490**, running
 OpenCode `2.0.12+f18083c78e`. The systemd unit names a different executable,
-`2.0.22+047c74e`, with MainPID 3464594. This refresh agrees with the
+`2.0.22+047c74e`, with MainPID 3464594. Both observations match the
 [S25a provenance audit](s25a-installed-provenance.md). The current global plugin
 configuration has no Chaosbox compaction entry.
 
 Both isolated tests used the same packaged Chaosbox binary and adapter from
 `64d65bea35e97f6221aeca8d809bacb740fb8779`. They created fresh backend homes,
-projects, SQLite archives and disposable loopback TypeDB servers. The model was
-the local credential-free `custody/custody-recorder` recording provider.
+projects, SQLite archives and disposable loopback TypeDB servers and used the
+local credential-free `custody/custody-recorder` recording provider as the model.
 
 | Executable | Adapter loading and complete tool/reply custody | Checkpoint reaches model | Interrupted settlement and restart recovery |
 | --- | --- | --- | --- |
@@ -30,10 +30,10 @@ The production r10 package carries `environment-recovery.patch`,
 carries `service-readiness.patch`; the newly edited checkout additionally requests
 `session-cancellation.patch`. These are distinct tuples. The r10 result does not
 qualify the checkout's later patch set or establish native TypeScript checking of
-the new adapter against that patch set. A subsequent native-source check does
-qualify the adapter against the clean custody host described below.
+the new adapter against that patch set. A later native-source check qualifies
+the adapter against the clean custody host below.
 
-In r11, the backend log explicitly reports:
+The r11 backend log reports:
 
 ```text
 Chaosbox requires the OpenCode compaction.plan extension.
@@ -46,9 +46,9 @@ adapter fails closed instead of invoking the older lossy compaction policy.
 ## Runnable lifecycle proof
 
 Canix's `tests/opencode/chaosbox-custody.mjs` runs the real packaged backend,
-configured adapter and Rust custody commands. Its r10 source and shared backend
-helper are frozen in `tested-consumer-source.tar`, under the evidence directory
-below. After extracting that archive, run from its root:
+configured adapter and Rust custody commands. The evidence directory below
+holds the frozen r10 source and shared backend helper in
+`tested-consumer-source.tar`. Extract the archive and run from its root:
 
 ```sh
 node tests/opencode/chaosbox-custody.mjs \
@@ -69,10 +69,10 @@ and SQLite file modes are checked.
 
 An earlier production attempt, r9, exposed a test-observer race: SQLite's default
 zero busy timeout could fail while the independent Rust writer held its lock.
-The observer now uses SQLite's bounded five-second busy timeout. The same
-production test passes as r10 after that focused fix. Earlier r7 incorrectly
-expected live text in persisted context; the corrected fixture uses native text
-events and checks persisted content after interruption settlement.
+The observer now uses SQLite's bounded five-second busy timeout; the same
+production test passes in r10. Earlier r7 wrongly expected persisted context
+to contain live text. The corrected fixture uses native text events and checks
+persisted content after interruption settlement.
 
 The successful run used approved root direnv and a user scope with two CPUs,
 `MemoryHigh=2G`, `MemoryMax=4G` and no swap. Those are execution containment,
@@ -87,19 +87,19 @@ The separate live Jev diagnostic returned HTTP **402**, with the provider's
 explicit no-credits billing message. Live assessment, admission and model-bound
 retrieval of published knowledge remain unqualified.
 
-The initial registered `chaosbox-compaction-consumer` build and full
-registry profile both failed before realization: Git's filtered snapshot omitted the
+Both the initial registered `chaosbox-compaction-consumer` build and full
+registry profile failed before realization: Git's filtered snapshot omitted the
 other worker's untracked `root/packages/opencode-v2-candidate/session-cancellation.patch`.
 The earlier selected pin reconciliation also reached the Roborev assertion
 requiring `opencodeCancellationVersion=1`, absent from the currently pinned
 Toolbelt package. Its recovery completed without changing the live pins.
 
-The recovery sequence requires the actual runtime patch and tests in the
-snapshot, then a qualified cancellation-capable Toolbelt revision. Refresh the
-selected reconciliation request, load the reconciled root
-direnv, rerun native typing and both consumer checks, and finish the registry
-profile and authorized non-activating Atlas build. A separately authorized live
-transition and executable-chain recheck are still required for serving acceptance.
+Include the actual runtime patch and tests in the snapshot, then qualify a
+cancellation-capable Toolbelt revision. Refresh the selected reconciliation
+request, load the reconciled root direnv, rerun native typing and both consumer
+checks, and finish the registry profile and authorized non-activating Atlas
+build. Serving acceptance still requires a separately authorized live transition
+and an executable-chain recheck.
 
 ## Retained evidence
 
@@ -123,7 +123,7 @@ was performed. Broader S23/S24 resource and quality qualification remains open.
 
 ## Native typing follow-up
 
-The producer's existing `scripts/test-opencode-compaction.py` now passes with
+The producer's `scripts/test-opencode-compaction.py` now passes with
 the new adapter and packaged Rust binary against clean OpenCode source
 `db48c4233c2d6a8af49bcf1d28aa3202c77e3dd1` (base `047c74ec…`). It runs the
 core's `bun run typecheck` and its native Promise-host regression: **1 passed,
@@ -134,8 +134,8 @@ the verifier's temporary fixture is removed. The initial launcher lacked
 approved root environment's immutable Python interpreter.
 
 The eight-file `native-typecheck-followup.sha256` manifest preserves both logs,
-the verifier, adapter type surface, exact host patch and clean status. Its
-SHA-256 is `98729b3b3a364348aa48efd4727fe84c463851325c8aec32f82698713fb1fe24`.
+the verifier, adapter type surface, exact host patch and clean status.
+SHA-256: `98729b3b3a364348aa48efd4727fe84c463851325c8aec32f82698713fb1fe24`.
 This adds source-host typing evidence; the current Canix patch set still needs
 its own immutable native-package gate.
 
@@ -148,9 +148,9 @@ after that source change fails manifest evaluation at the explicit Roborev
 cancellation assertion. Its log is `full-profile-after-cancellation-commit.log`
 under the parent evidence directory, SHA-256
 `97c5ad13ec93a5db59e55225e4b2abef88586f564ada7ec3c55436511d33a606`.
-Foreign staging also advanced during
-the owner's work; the original index comparison above applies to the isolated
-fixture runs, rather than asserting that no other worker subsequently staged.
+Foreign staging also advanced during the owner's work. The original index
+comparison covers only the isolated fixture runs, not later staging by other
+workers.
 
 ## Complete patch-set package and fixture repair
 
@@ -204,7 +204,7 @@ Toolbelt `509622ba…` passed **all 34** Nix installable jobs in run
 [`39116513011`](https://github.com/caniko/canix-toolbelt/actions/runs/39116513011).
 Its main CI run
 [`39116513125`](https://github.com/caniko/canix-toolbelt/actions/runs/39116513125)
-passed five jobs and failed dependency audit in the sixth. The exact chain is
+passed five jobs; the sixth failed dependency audit. The chain is
 `Fleetix 0.6.0 → pklx 0.1.0 → Pklr 1.5.1 → zip 8.6.0`; the three ZIP advisories
 are RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369. The source-evidence
 retention gate correctly rejected the failed original producer. Nix packaging
@@ -212,8 +212,8 @@ success therefore does not qualify this pin.
 
 The operator authorized expanding this task into the dependency release.
 The existing Fleetix `0.7.0` candidate at
-`2afddcf1dc8df43b7aec151292ec73b69038c936` already consumes published pklx `0.2.0`,
-Pklr `5.1.2` and ZIP `9.0.5`. Its metadata audit passes after repairing the audit
+`2afddcf1dc8df43b7aec151292ec73b69038c936` already uses published pklx `0.2.0`,
+Pklr `5.1.2` and ZIP `9.0.5`. Its metadata audit passes after a fix for the audit
 helper's rejection of Cargo workspace root members (`"."`, `"./"`, `"./."`).
 The helper repair is signed local AI-skills commit
 `e95c70712154b101aa5556c9736b399a7fce635d`: all five tests pass against its staged
@@ -235,7 +235,7 @@ repair and releasing it to crates.io; the operator account has only `READ`
 permission on that repository. A fork/path override does not satisfy the
 published-dependency release gate.
 
-Once that owning release is available, select its verified registry version in
+When that release is available, select its verified registry version in
 Fleetix, rerun the shipped-topology and full release gates, publish both Fleetix
 workspace members, then adapt and requalify Toolbelt before Canix consumption.
 The prepared Canix request binds `500aa3b4…`; a concurrent documentation commit
@@ -248,8 +248,8 @@ assertion. Thus this current-source check, the immutable compaction gates, full
 registry profile and Atlas top-level build remain open. The independent live
 assessment gate still needs TypeSafe credits.
 
-The **27-file** `dependency-release-blockers.sha256` manifest under the existing
-fixture evidence directory verifies and hashes to
+The fixture evidence directory's **27-file** `dependency-release-blockers.sha256`
+manifest verifies and hashes to
 `cb491b1f45117d1316059b93d9fb3efc233fd6c3aa62aef624d7a142c5554b54`.
 It retains exact producer logs, the Fleetix source/reproduction patch, upstream
 CI/authority evidence, helper red/green checks and the focused Canix failure.

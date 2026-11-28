@@ -1,9 +1,7 @@
 # OpenCode v1 → v2 Cutover Runbook
 
-Operational runbook for the OpenCode store and Home Manager transition.
-
-> **This is not `docs/CUTOVER.md`.** That file covers the Gel → TypeDB migration and is
-> owned elsewhere. This runbook covers OpenCode's v1 → v2 store transition only.
+> This runbook covers only the OpenCode v1 → v2 store and Home Manager transition.
+> **`docs/CUTOVER.md`** covers the TypeDB → PostgreSQL cutover and has a separate owner.
 
 **Status: prepared and rehearsed. Not executed.**
 Production cutover belongs to the integration session and is gated on G1–G5.
@@ -84,17 +82,16 @@ Tools in `cutover-c/`, one job each, each its own process:
 | 1.10 | Staging destination healthy | read-only `quick_check` + `foreign_key_check` | `ok`, `0` violations |
 | 1.11 | Nobody holds staging | `node verify-holders.mjs --db …/destination.db` | exit 0 (Session A's verifier must be stopped first) |
 
-**Verify 1.9** is the credential guarantee for the whole run: it writes the baseline
-`auth.json`/`account.json` digests that §6 re-verifies after install and §8 re-verifies after
-rollback. If it cannot record a baseline, stop — a missing credential is a condition to fix
-before installing, not to discover afterwards.
+**Verify 1.9** records baseline `auth.json`/`account.json` digests; both the
+post-install and post-rollback checks re-verify them. If it cannot record a
+baseline, stop and fix any missing credentials before installing.
 
 ---
 
 ## 2. Freeze sequence — three boundaries
 
-Each boundary is **three externally-observable processes in order**, never steps buried in a
-script that also does other work:
+Run **three externally-observable processes in order** at each boundary. Do not
+bury them in a script that also does other work:
 
 ```
 freeze.mjs     → stops the writers, records what it stopped     (its own exit code)
@@ -102,8 +99,7 @@ verify-holders.mjs → proves no fd still holds the database      (exit 1 names 
 snapshot.mjs   → checkpoints, copies, records the digest        (refuses if held or unhealthy)
 ```
 
-The freeze and the check are deliberately separate: a freeze that also "checked itself"
-would be the only witness to its own success.
+Keep the freeze and holder check separate so the check is independent.
 
 ### Boundary 1 — v1 store
 
@@ -152,16 +148,15 @@ node $C/verify-holders.mjs --db $V1 --json > b3-holders.json
 node $C/snapshot.mjs --db $V1 --out b3.db --record b3.json --boundary target --supersedes b2.json
 ```
 
-`--mode none` records that the boundary is already frozen by hand and still verifies — it
-performs no action, it does not skip the check.
+`--mode none` records the manual freeze without stopping anything. It still verifies.
 
 **Verify 2.3** — the supersede chain `v1 ← canary ← target` resolves (`b3.supersedes`
 points at `b2`, `b2.supersedes` at `b1`), and every record carries `createdAt`,
 `snapshotSha256`, `schema`, `counts`, `quickCheck`. (Confirmed against the rehearsal
 records: `b1.supersedes = null`, `b2.supersedes = b1`, `b3.supersedes = b2`.)
 
-> Boundary 3's digest is what §8 rollback restores *to*. It is recorded before the install,
-> not observed afterwards — the file present at rollback time is the one being replaced.
+> Rollback restores to the digest recorded at boundary 3, before installation,
+> not to the digest of the file it replaces.
 
 ---
 
@@ -188,9 +183,9 @@ the stores were still growing — the point of recomputing at the boundary):
 
 Composition: `7644 + 204 + 65`. Never `7848 + delta`.
 
-These figures are **derived, not transcribed** — `build-final-counts.mjs` sums the three
-terms out of `reconciliation.json` and `delta-inventory.json`, and the sum is checked against
-the file afterwards. Regenerating the whole chain is three commands:
+`build-final-counts.mjs` sums the three terms from `reconciliation.json` and
+`delta-inventory.json`; the resulting sum is checked against the output file
+afterward. Regenerate the chain with these three commands:
 
 ```bash
 C=/data/scratch/tmp/opencode/cutover-c
@@ -221,10 +216,9 @@ node $C/build-identity-v3.mjs --identity $R/canonical-staging-FP6mrj/journal-v2/
      --out identity-v3.json --status pinned
 ```
 
-`build-identity-v3.mjs` refuses to pin if any link in that chain disagrees: it verifies
-`reconciliation.json` is still `7ecd9b6e…`, that the delta was built against *that*
-reconciliation, and that `final-counts.json` was built against *that* delta. A total
-assembled from mismatched inputs is precisely the failure this guards against.
+`build-identity-v3.mjs` refuses to pin unless `reconciliation.json` still hashes
+to `7ecd9b6e…`, the delta uses that reconciliation, and `final-counts.json` uses
+that delta.
 
 **Changed sessions are not added to the count** — they become supersession receipts
 (§4.2). The earlier "1111 changed" figure compared non-primary sources and is superseded.
@@ -253,9 +247,8 @@ that was still growing.
 Native import, create-only. Because `newIdsAlreadyInStagingDestination == 0`, no 409 is
 expected. Sessions over `MAX_IMPORT_MESSAGES = 8192` use the oversize inventory path.
 
-**Verify 4.1** — for every imported id, a receipt exists in `journal-v2/`; re-importing the
-same id is *expected* to 409, which confirms create-only semantics were honoured rather
-than silently overwriting.
+**Verify 4.1** — check `journal-v2/` for a receipt for every imported id.
+Re-importing the same id is expected to return 409, confirming it did not overwrite the session.
 
 ### 4.2 Changed sessions (886) → `journal-v3/`
 
@@ -304,10 +297,9 @@ been replaced yet.
 
 ## 6. SQLite-aware publish
 
-`install.mjs` runs phases in order, **writing the state file before the next phase starts**,
-so an interrupted install resumes from its own state rather than from whatever partial files
-happen to be on disk. A completed phase is skipped only when its recorded artifact still
-exists *and* still digests the same way.
+`install.mjs` runs phases in order and **writes the state file before the next
+phase starts**. It resumes from that state, not from partial files on disk, and
+skips a completed phase only if its recorded artifact still exists and its digest matches.
 
 ```bash
 node $C/install.mjs \
@@ -317,10 +309,9 @@ node $C/install.mjs \
   --expect-sessions 7913 --expect-messages 609542 --expect-user-version 0
 ```
 
-The `--expect-*` figures are transcribed from the §5.1 recompute, not from this
-document: if the recompute moves (the stores grow until the freeze), the command moves
-with it and the state file — not this page — is the authority afterwards. A resume that
-supplies a different `--expect-*` is refused rather than silently adopted.
+Take the `--expect-*` figures from the §5.1 recompute, not this example. Adjust
+the command if counts change as the stores grow before the freeze. Afterward,
+the state file is authoritative: a resume with a different `--expect-*` is refused.
 
 | Phase | What it does |
 |---|---|
@@ -431,16 +422,16 @@ therefore not the gate; the unit build above is.
 | 8.9 | **Credentials** | `preserve-check.mjs --phase verify` exit 0 |
 | 8.10 | Store location | `~/.local/share/opencode/opencode.db`, no `-v2-canary` path |
 
-8.6 and 8.7 are deliberately *native reads*: a row that exists but cannot be paginated back
-is not materialised.
+8.6 and 8.7 require *native reads*: an existing row does not count as materialised
+unless it can be paginated back.
 
 ---
 
 ## 9. Rollback
 
-One operation covering **package, config and store together**. Restoring the old database
-while the service still pointed at the new package would leave a mismatched pair — which is
-why §7 puts all three behind one flag and this command reverses them together.
+§7 switches **package, config and store** behind one flag; rollback reverses all
+three in one operation. Restoring just the database would leave the service
+using the new package with the old store.
 
 New writes are frozen **before** any restore starts; a writer still attached is a hard
 refusal, not a warning.
@@ -453,10 +444,9 @@ node $C/rollback.mjs \
   --config-restore "home-manager switch --switch-generation <N>"
 ```
 
-`--config-baseline` is recorded *before* the cutover (`hm-generation.mjs --snapshot`);
-`--config-live` names the record the probe refreshes. All three `--config-*` arguments
-are required — a store-only rollback that reported ok would leave the service pointed at
-the wrong package, which is the mismatched pair this one operation exists to prevent.
+Record `--config-baseline` *before* cutover (`hm-generation.mjs --snapshot`).
+`--config-live` names the record the probe refreshes. All three `--config-*`
+arguments are required to prevent a store-only rollback.
 
 Order, enforced:
 
@@ -467,12 +457,11 @@ Order, enforced:
    foreign `-wal`/`-shm`, then `quick_check`, FK check, counts vs **recorded pre-install
    counts**, fingerprint vs **recorded pre-install fingerprint**
 3. **config + package** — run the recorded restore command, probe the live generation
-   separately, and require it to **equal the baseline generation** ("it changed" is not the
-   claim; "it went back to the one the baseline names" is)
+    separately, and require it to **equal the baseline generation**, not merely change
 4. **verify** — no holders, `quick_check` ok, marker equals the pre-install marker
 
-Refuses when: the install state is not `done`; the backup or its digest is missing; the
-state records no pre-install shape (there is nothing to restore *to*, so it will not guess).
+Refuses if the install state is not `done`, the backup or its digest is missing,
+or the state lacks a pre-install shape to restore.
 
 **Verify 9.1** — rollback record `ok == true`, and
 `phases.store.restoredSha256 == b3.json snapshotSha256` — the digest proves the store is
@@ -509,14 +498,12 @@ afterwards to prove they were untouched.
 
 > **Clippy note (2026-09-23):** `cargo clippy -p chaosbox --all-targets -- --deny warnings`
 > exits `0` with zero warnings — the `chaosbox-typedb` refactor landed, and there are no
-> findings in `crates/chaosbox/src/sessions/` either. Re-run before execution: another
-> session's in-flight work can re-break it, and this gate belongs to the moment of use,
-> not to the moment of writing.
+> findings in `crates/chaosbox/src/sessions/` either. Re-run before execution:
+> another session's in-flight work can invalidate this result.
 
 ### Rehearsal-only observations worth keeping
 
-- The canary digest changed *between* two rehearsal runs — direct evidence the delta is a
-  moving target and why the count must be taken after the freeze.
+- The canary digest changed between rehearsal runs. Count the delta after the freeze.
 - **The count is 51 passed plus one INFO line when the canary moves mid-run (52 when it
   holds still), and never a failure.** One assertion (`rehearse.sh:337`) checks the live
   canary digest and deliberately degrades to an `INFO` line when that digest has moved,

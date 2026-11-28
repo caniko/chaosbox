@@ -8,10 +8,9 @@ fixtures. Exact-publication follow-up reads remain **S02b.4**.
 
 ## Admission and request lifetime
 
-The ordinary stdio loop now admits overlapping calls into a FIFO instead of
-rejecting every overlap with `one request is already in flight`. The existing
-`Frames` owner retains raw frames, typed IDs and admission deadlines. `exchange`
-still owns at most one active backend future.
+The ordinary stdio loop queues overlapping calls in a FIFO instead of rejecting
+them with `one request is already in flight`. `Frames` retains raw frames, typed
+IDs and admission deadlines; `exchange` still owns at most one active backend future.
 
 | Control | Selected bound |
 |---|---:|
@@ -55,10 +54,10 @@ with FIFO dispatch and typed queued/active cancellation. Count exhaustion, byte
 exhaustion, capacity recovery, duplicate IDs and admission expiry pass. The expiry
 case observes no second acquisition during the queued wait.
 
-Final review extended the backpressured-output regression to reuse the active ID
-after its final response flushed. That exposed an overly long duplicate-ID
-lifetime (`id-reuse-red.log`); the final implementation releases the ID at flush.
-The same test now passes in `affected-qualified.log`.
+Reusing the active ID after its final response flushed exposed an overly long
+duplicate-ID lifetime in the backpressured-output regression (`id-reuse-red.log`).
+The implementation now releases the ID at flush; the test passes in
+`affected-qualified.log`.
 
 The new required disposable-TypeDB case proves:
 
@@ -96,8 +95,8 @@ Seven selected opt-in cases then passed explicitly, along with required backend
 conformance: **eight required disposable-TypeDB cases passed, zero ignored**.
 The other six aggregate opt-in cases and 18 other backend live cases were not
 selected. Scoped warnings-denied Clippy, treefmt CI and whitespace checks pass.
-The initial Clippy failure for a long fixture function was resolved by extracting
-focused fixture helpers; no new lint suppression was added.
+Extracting focused fixture helpers fixed Clippy's initial long-function failure
+without a new lint suppression.
 
 Qualification used the harness-approved project environment with two Cargo jobs,
 two Tokio workers, 200% CPU, `MemoryHigh=2G`, `MemoryMax=4G` and

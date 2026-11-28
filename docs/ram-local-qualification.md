@@ -22,9 +22,9 @@ contracts are unchanged.
 Applied only memory commit `1cb8def7f1af0bcbd65f1411edc71ab1b05ac18a` to
 `a6883f2a898527bea56cd86ba7919e9e4fea02a2`. A private index produced immutable
 tree `863ec3a5e71481c438a5c8b5acf75a8adbfc1cfd`; its archive supplied every
-accepted client build/test. The final normal signed commit has exactly that
-tree and patch. A full branch merge preview conflicted in unrelated files and
-was not adopted. Existing dirty source and staging were preserved.
+accepted client build/test. The final normal signed commit matches that tree and
+patch exactly. The full branch merge preview showed conflicts in unrelated files,
+so the merge did not proceed. Existing dirty source and staging were preserved.
 
 The integration reuses borrowed candidate/staging rows, streamed publication
 hashing and export, and removes redundant graph copies. It includes the existing
@@ -36,12 +36,12 @@ Affected libraries and CLI/MCP suites, scoped warnings-denied Clippy and treefmt
 pass. Ten required disposable-TypeDB cases each ran exactly once with zero
 ignored: historical hydration/recursive expansion, admission, cleanup/retention,
 connection reuse, header batching, paths, historical pages, counts, reference
-conformance and unpublished-build rejection. Optional unselected live/model
-tests are not claimed as qualified by these focused suites.
+conformance and unpublished-build rejection. These focused suites do not qualify
+unselected optional live/model tests.
 
 The existing isolated publication-digest check grew peak RSS by **2,088 KiB**,
-below its unchanged fixture tolerance. The explicit pipeline-memory test also
-passed complete-export equality and lower peak RSS. Neither tolerance is a
+below its unchanged fixture tolerance. The explicit pipeline-memory test verified
+equal complete exports and lower peak RSS. Neither tolerance is a
 production memory budget.
 
 ## Sampler: repair initialization once
@@ -60,13 +60,13 @@ replaced. The process-map and metrics regression passes; all **12 diagnostics
 tests**, including the explicit memory case, pass with zero ignored.
 
 Strict diagnostics Clippy was not relaxed. Baseline and candidate both exit 101
-and normalize to the identical **23 errors**, with matching locations/codes/text,
-all outside `diagnostics/metrics/system_sampler.rs`. This remains a failed
-producer gate, not a passing check or a reason to absorb unrelated cleanup.
+and normalize to the same **23 errors**, with matching locations/codes/text, all
+outside `diagnostics/metrics/system_sampler.rs`. The producer gate still fails;
+this does not justify unrelated cleanup.
 
 ## Comparative measurements
 
-`protocol.json` was recorded before the paired comparisons. Each track ran three
+The run recorded `protocol.json` before the comparisons. Each track ran three
 pairs in alternating order (baseline/candidate, candidate/baseline,
 baseline/candidate). These are one-shot workloads: no warm-up, cache flush or
 idle/steady-state window was claimed. GNU time records peak RSS, elapsed/user/
@@ -98,7 +98,7 @@ savings. They cannot be subtracted from another process/run's RSS or swap.
 Before any representative server replay, separately establish:
 
 1. Exact executable-to-producer/source provenance. The installed executable's
-   unknown deriver is not resolved by this independent source repair.
+   deriver remains unknown after this independent source repair.
 2. A native measurement mechanism with demonstrated live-object, allocator and
    cache semantics; Massif and aggregate RSS/swap alone are insufficient.
 3. Authorized, complete-history capture/restoration covering retained graph and
@@ -108,8 +108,8 @@ Before any representative server replay, separately establish:
 5. A predeclared representative comparison: workload, repetitions, warm-up, idle
    interval, duration and method, distinguishing legitimate history growth from
    unexplained retention and assessing RAM, swap, latency and I/O separately.
-   Residual attribution and marginal per-build storage acceptance must be agreed
-   before claiming S01b closure.
+    Agree on residual attribution and marginal per-build storage acceptance
+    before claiming S01b closure.
 
 A failed prerequisite blocks that track; it does not authorize broader profiling,
 history pruning, service lifecycle changes or gate revision.

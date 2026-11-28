@@ -1,8 +1,8 @@
 # S03a — keyed build and membership read audit
 
 **The production TypeDB readers already satisfy S03a's materialization invariant.**
-No production reader rewrite is warranted. This slice strengthens the existing
-shared conformance check and records its real-backend result. It does not establish
+No production reader rewrite is warranted. The audit strengthens shared
+conformance and records the real-backend result. It does not establish
 whole-stack resource acceptance or bounded reads across the entire MCP surface.
 
 See the [receipt](s03a-keyed-membership-audit.json),
@@ -11,9 +11,8 @@ See the [receipt](s03a-keyed-membership-audit.json),
 ## Read contracts and actual callers
 
 The audit uses canonical HEAD `42f0e64fddd50f612516e39e82d5c2ea4d2ead45` plus
-its retained dirty patch. Only `crates/chaosbox-store/src/conformance.rs` changes
-code in this slice. Copied sources, the tested patch and binary hashes are in the
-evidence bundle.
+its retained dirty patch. The only code change is in `crates/chaosbox-store/src/conformance.rs`.
+The evidence bundle holds source copies, the tested patch and binary hashes.
 
 | Read | Existing implementation | Materialization/query bound |
 | --- | --- | --- |
@@ -29,7 +28,7 @@ snapshot materialization is proportional to the selected build's snapshot list;
 truncating it would weaken freshness/authorization checks. Coverage metadata also
 remains complete. Existing prefix APIs are not cursor-pagination APIs.
 
-All production callers of these methods were traced:
+Traced all production callers of these methods:
 
 - Ordinary CLI/MCP uses `AnyReader::connect` in `chaosbox/src/backend_cmd.rs`,
   then `GraphReader::pinned`; lookups/status/context use that pinned identity.
@@ -54,17 +53,17 @@ All production callers of these methods were traced:
 
 ## Checks and measurements
 
-The shared conformance fixture already checked current/historical ownership
-and missing membership. Its live seed also checks another repository's snapshot
-isolation. Both seeds supply source spans; this helper does not assert span equality.
+The shared fixture already checked current/historical ownership and missing
+membership. Its live seed also checks snapshot isolation for another repository.
+Both seeds supply source spans; this helper does not assert span equality.
 The extension adds current/historical snapshot assertions and **10 prefix cases**:
 limits `-1, 0, 1, 2, 3` against each two-node/one-edge build, plus absent-build
 relationship membership. It checks ordered names, snapshots and exact lengths.
 Each case records returned counts, serialized JSON bytes and elapsed query time.
 
-A deliberate negative control changed the memory reader to return one extra
-entity. The new check failed at limit `-1` (`Alpha` instead of an empty result).
-That mutation was restored byte-for-byte before qualification.
+For the negative control, the memory reader returned one extra entity. The new
+check failed at limit `-1` (`Alpha` instead of an empty result). The original
+reader was restored byte-for-byte before qualification.
 
 | Gate | Result |
 | --- | --- |

@@ -1,21 +1,21 @@
 # Selective intelligence
 
-Status: proposed direction. This extends Chaosbox's existing evidence pipeline;
-it does not describe capabilities already shipped. The first application is
+This proposed extension of Chaosbox's evidence pipeline hasn't shipped. Its
+first application is
 [preserving session knowledge during migration](session-migration.md).
 
 ## Objective
 
-Extract intelligence whenever meaningful new evidence becomes available, and
-make it accessible to other LLM sessions. Intelligence is scarce: the goal is
-better future decisions, not a larger graph or a catalogue of every utterance.
+Extract intelligence when meaningful new evidence appears and make it available
+to other LLM sessions. Intelligence is scarce; judge it by whether it improves
+decisions, not by graph size or a catalogue of every utterance.
 
 An intelligence item is a supported, scoped proposition or decision that reduces
-uncertainty, prevents repeated mistakes, or preserves a consequential insight.
-It must carry enough provenance and applicability information to be used safely
-outside the session that discovered it.
+uncertainty, prevents repeated mistakes or preserves a consequential insight.
+Record enough provenance and applicability to use it safely outside its source
+session.
 
-Three different artifacts must not be confused:
+Keep three artifacts distinct:
 
 | Artifact | Purpose | Authority |
 | --- | --- | --- |
@@ -23,10 +23,9 @@ Three different artifacts must not be confused:
 | Admitted intelligence | Reusable findings, decisions, constraints and relationships | Supporting evidence plus explicit admission policy |
 | Continuation checkpoint | Help an agent resume a particular session | A generated view of a specified source range |
 
-A checkpoint is not new evidence for its own claims. Repeating an assertion in
-several summaries does not provide independent corroboration. Conservatively
-preserving sources during migration is compatible with admitting very little
-into the reusable intelligence store.
+A checkpoint isn't new evidence for its own claims. Repeated summaries don't
+corroborate an assertion independently. Preserve sources conservatively during
+migration even if little qualifies for reusable intelligence.
 
 ## Pipeline and ownership
 
@@ -53,17 +52,17 @@ Candidates use exact source spans or deterministic templates. Jev selects and
 classifies supplied records; Rust renders explanations and continuation packets
 from those selections, with citations and explicit unresolved states.
 
-Keep the existing code-extraction contract: source labels and evidence text are
-copied or deterministically constructed. Rendered explanations belong to a
-separate derived-artifact category. Do not loosen that contract to make session
-summaries look like extracted code facts.
+Keep the code-extraction contract: copy or deterministically construct source
+labels and evidence text. Classify rendered explanations separately as derived
+artifacts. Don't loosen the contract to pass session summaries off as extracted
+code facts.
 
 ## Evidence and candidate construction
 
-Repository evidence is addressed by repository, snapshot/revision and source
-span. Session evidence needs a source snapshot, native session ID, message/part
-ID and an exact excerpt or structured result field. Add an explicit session
-source-reference type; do not disguise messages as repository files.
+Address repository evidence by repository, snapshot/revision and source span.
+Session evidence needs a source snapshot, native session ID, message/part ID
+and an exact excerpt or structured result field. Add a session source-reference
+type instead of treating messages as repository files.
 
 Sessions may span several repositories. Their working directory is an observed
 location, not proof of sole ownership. Links to files, symbols and components
@@ -71,18 +70,17 @@ must preserve repository identity and the applicable revision or artifact hash.
 Never merge entities merely because labels or paths look alike. Respect the
 existing graph's build-membership guards when adding cross-repository links.
 
-Cheap deterministic extraction comes first: source spans, explicit user
-decisions, command/result metadata, file/revision references and relationships
-already known to the repository graph. Language interpretation may produce
-additional candidates, but each needs evidence anchors that resolve before Jev
-assessment. Missing or oversized context causes an explicit abstention or a
-bounded context-expansion request, not silent truncation.
+Start with cheap deterministic extraction: source spans, explicit user
+decisions, command/result metadata, file/revision references and known
+repository graph relationships. Language interpretation can add candidates,
+but their evidence anchors must resolve before Jev assessment. For missing or
+oversized context, abstain explicitly or request bounded expansion. Never
+truncate silently.
 
-An assistant saying "the build passed" supports the observation that the
-assistant made that claim. It does not establish a successful build. A relevant
-tool result, its exit status, exact command, and tested source identity are
-needed for the stronger finding. A pipeline ending in a successful output
-filter is not automatically evidence that the build itself succeeded.
+"The build passed" from an assistant establishes only that the assistant made
+the claim. To establish success, require a relevant tool result, its exit
+status, the exact command and the tested source identity. A successful output
+filter at the end of a pipeline doesn't by itself prove the build passed.
 
 ## Jev: standardize and dissect, not generate an archive
 
@@ -97,30 +95,30 @@ Reuse `chaosbox-jev` and its Noul, Choice and Score contracts:
 | Consolidation | Duplicate, refinement, supersession, contradiction, unrelated, or abstain? |
 | Value | Explicit scored criteria for usefulness and likely durability |
 
-These are proposed rubrics, not a claim that the current code-relation catalog
-already implements them. A compound candidate must be split into independently
-grounded propositions and reassessed. Choice options contain descriptions, not
-bare opaque IDs. Compare against a bounded relevant set of existing items;
-never compare every historical item with every other item.
+These rubrics are proposed; this document does not claim the current
+code-relation catalog implements them. Split compound candidates into
+independently grounded propositions and reassess them. Give Choice options
+descriptions, not bare opaque IDs. Compare against a bounded set of relevant
+existing items, never every historical pair.
 
 Questions within a Jev request are independent. Assessments that depend on an
 earlier answer belong in a later stage. Noul supplies a probability; Choice and
 Score have their own distribution/confidence fields. Do not conflate them.
 
 The current client pins `jev-1.13.0`, checks requested and returned identity,
-enforces context and response limits, and has deadline, concurrency, token and
-request budgets. Use its existing retry and abstention behavior. Do not retry an
-abstention until it becomes an acceptance or switch to another model silently.
+and enforces context and response limits plus deadline, concurrency, token and
+request budgets. Reuse its retries and abstentions. Don't retry abstentions
+until accepted or quietly switch models.
 
-Deterministic processing makes a decision reproducible; it does not make the
-interpretation true. Persist exact inputs, rubric/version, model identities and
-validated raw answers. Publication from those records must be deterministic.
-The system must not depend on a fresh remote request returning bit-identical
-output. Confidence never upgrades INFERRED or AMBIGUOUS evidence to EXTRACTED.
+Deterministic processing makes decisions reproducible, not necessarily true.
+Persist exact inputs, rubric/version, model identities and validated raw answers.
+Publish deterministically from those records without relying on a fresh remote
+request for bit-identical output. Confidence never upgrades INFERRED or AMBIGUOUS
+evidence to EXTRACTED.
 
 ## Admission: high precision by default
 
-An item normally earns durable admission only when all of these hold:
+Durable admission normally requires all of the following:
 
 1. **Grounded:** the supporting records exist and actually address the claim.
 2. **Atomic:** one proposition with understandable conditions and exceptions.
@@ -145,10 +143,11 @@ The outcome vocabulary should distinguish:
 - abstain pending evidence;
 - reject as noise.
 
-Rejected/abstained candidates retain a compact decision fingerprint and reason
-for reproducibility and cache reuse, not another permanent copy of the entire
-paragraph. Source custody and its retention policy remain separate. The initial
-migration never deletes originals merely because a candidate was rejected.
+Rejected/abstained candidates keep a compact decision fingerprint and reason
+for reproducibility and cache reuse, not another permanent copy of the paragraph.
+Keep source custody and its retention policy independent of candidate
+disposition. Initial migration never deletes originals just because a candidate
+was rejected.
 
 ## What an admitted item contains
 
@@ -161,11 +160,11 @@ migration never deletes originals merely because a candidate was rejected.
 - Related repository entities and other intelligence items.
 - Admission decision, rubric and model provenance.
 
-Lifecycle is independent of evidence class and confidence. A user policy choice
-is recorded as a policy choice, not a universal engineering recommendation.
-New evidence may supersede an item without erasing the old decision and its
-rationale. A changed dependency marks applicability for revalidation; it does
-not automatically make the historical claim false.
+Lifecycle is independent of evidence class and confidence. Record the user's
+policy as a choice, not a universal engineering recommendation. New evidence can
+supersede an item without erasing its old decision or rationale. A dependency
+change flags applicability for revalidation; it doesn't make the historical
+claim false by itself.
 
 For example, distinguish:
 
@@ -182,9 +181,9 @@ Useful triggers include newly ingested records, settled investigations, user
 corrections, consequential code changes and their verification, compaction,
 pruning, and evidence that affects an existing item.
 
-Extract before compaction removes material from the model-facing window. Use
-the original records, including the counterevidence, not only a generated
-checkpoint. Treat a checkpoint as a navigation aid back to sources.
+Extract before compaction removes material the model can see. Use original
+records, including counterevidence. A generated checkpoint can point back to
+sources, but isn't enough on its own.
 
 "Every opportunity" does not mean a request per streamed token. Deduplicate
 unchanged source ranges, batch bounded candidates, and process settled evidence
@@ -199,12 +198,11 @@ applicability, decisions and relationships; it should not become a dump of
 hundreds of gigabytes of logs. Full digests identify archived content and
 transform inputs; preserve native runtime IDs as namespaced aliases.
 
-Session-derived knowledge must have an explicit user/workspace visibility scope
-before publication. Repository membership alone does not authorize disclosure
-of private conversation content. Cross-repository retrieval must preserve that
-boundary. Credentials remain out of prompts, logs, summaries and published
-evidence. Do not retain a reusable intelligence item whose usefulness depends on
-revealing a credential value.
+Require explicit user/workspace visibility scope before publishing session
+knowledge. Repository membership alone doesn't authorize sharing private
+conversation content. Preserve that boundary across repositories. Keep
+credentials out of prompts, logs, summaries and published evidence. Don't retain
+reusable items whose use requires disclosing a credential value.
 
 Do not revive a second authoritative backend for this feature. Reuse the
 PostgreSQL backend and the existing publication contracts, with explicit schema
@@ -229,21 +227,20 @@ Extend the existing read-only CLI/MCP query path with two capabilities:
 2. **Evidence drill-down:** show source records, contradictions, supersession
    history and the exact code snapshot behind an item.
 
-These are proposed capabilities, not current tool names. Do not inject the whole
-knowledge store into every prompt. Retrieved content is historical evidence,
-not authority to override current user instructions or execution permissions.
-Consumers never perform inference, ingestion or writes as a side effect of
-retrieval; those remain explicit operator operations.
+These capabilities are proposals, not current tool names. Don't inject the
+whole store into every prompt. Retrieved content is historical evidence and has
+no authority to override current user instructions or execution permissions.
+Retrieval never triggers inference, ingestion or writes; operators explicitly
+run those.
 
 ## How to judge quality
 
-Use labelled support, duplication, contradiction and applicability examples,
-including negative and uncertain cases. Hold some examples out when tuning
-admission thresholds. Measure unsupported admissions, duplicate admissions,
-stale recommendations and whether the retrieved context improves continuation.
-Track important rejected findings as well: high precision must not hide
-systematic loss of valuable knowledge. Item count and graph size are not success
-metrics.
+Label examples for support, duplication, contradiction and applicability,
+including negative and uncertain cases. Hold some out when tuning admission
+thresholds. Measure unsupported and duplicate admissions, stale recommendations
+and whether retrieval improves continuation. Track important rejections so
+high precision doesn't hide systematic loss of valuable knowledge. Item count
+and graph size aren't success metrics.
 
 Publish only when evidence resolution, schemas, visibility and the selected
 materialization policy validate. Keep enough provenance to explain admission,
