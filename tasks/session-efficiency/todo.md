@@ -2,9 +2,9 @@
 
 See [plan.md](plan.md) for scope, checkpoints and the shared execution contract.
 Dependencies are gates, except where explicitly marked as observational inputs.
-Each session retains its focused commands/results in its handoff. The initial
-estimates are small/medium (1–5 files); split a workcard when source tracing
-shows a larger independent change. None of the future verification below has
+Retain focused commands/results in each session's handoff. Initial estimates
+are small/medium (1–5 files); split a workcard when source tracing shows a
+larger independent change. None of the future verification below has
 been claimed as run by this planning task.
 
 ## Resource attribution and graph reads
@@ -29,7 +29,7 @@ Unblock: the operator supplied the protected process/filesystem totals; the [fol
 Depends: S01/S01b observations; independent of physical allocation attribution.
 Invariant: credential-file-backed read-only inspection separates stored status from the current pointer and bounds returned metadata.
 Exit: validated native CLI pagination, scalar membership counts, acquisition deadline and disposable/native readback pass.
-Handoff: [report](../../docs/s01b1-retained-build-inventory.md) and [receipt](../../docs/s01b1-retained-build-inventory.json). Signed implementation/test savepoint `4704623025ee23a977ee5759043bc73e9c209836`. 94 affected tests and three explicitly required disposable-TypeDB cases pass, with scoped Clippy and treefmt. The live read independently found three retained Canix headers, with generation 3 current, in 0.91 seconds at 25,724 KiB client peak RSS. `physical_bytes` remains null; S01b stays open. Production TypeDB identity is unchanged and the disposable server is stopped.
+Handoff: [report](../../docs/s01b1-retained-build-inventory.md) and [receipt](../../docs/s01b1-retained-build-inventory.json). Signed implementation/test savepoint `4704623025ee23a977ee5759043bc73e9c209836`. 94 affected tests, three explicitly required disposable-TypeDB cases, scoped Clippy and treefmt pass. The live read independently found three retained Canix headers, with generation 3 current, in 0.91 seconds at 25,724 KiB client peak RSS. `physical_bytes` remains null; S01b stays open. Production TypeDB identity is unchanged and the disposable server is stopped.
 
 ### [x] S02 — Bounded graph navigation
 Depends: S01 and S01b observations.
@@ -70,7 +70,7 @@ Invariant: continuation resumes the exact authorized immutable request.
 Exit: versioned continuation binds repository/build/anchor/direction/canonical filter/order and applicable authorization/view identity. Resolve recorded builds through `published_build(repo, build)`; unavailable or wrong-scope builds fail without active-pointer fallback.
 Likely scope: existing continuation facilities and shared reader.
 Verify: token/scope/version rejection, active-pointer movement without generation mixing, unavailable builds and a new reader resuming historical pages.
-Handoff: [report](../../docs/s02b2-neighborhood-continuation.md) and [receipt](../../docs/s02b2-neighborhood-continuation.json). The shared ordinary repository-reader layer is qualified: 87 affected tests plus the explicit required TypeDB case pass, as do treefmt and scoped Clippy. Preparation precedes transport credential acquisition; exact ownership is rechecked on every resume. One cursor carries two positions and independent completion. It is untrusted query state in a repository-specific domain; scoped-view admission/evidence checks remain a separate contract. Fresh-handle historical readback passes after pointer movement; fresh-process CLI/MCP integration remains S02b.3. Signed local savepoint: `436f830283967509eee0a5d0093f3fbad327e614`; author, committer and signature verified.
+Handoff: [report](../../docs/s02b2-neighborhood-continuation.md) and [receipt](../../docs/s02b2-neighborhood-continuation.json). The shared ordinary repository reader qualifies: 87 affected tests, the explicit required TypeDB case, treefmt and scoped Clippy pass. Preparation precedes transport credential acquisition; each resume rechecks exact ownership. One cursor carries two positions and independent completion. It is untrusted query state in a repository-specific domain; scoped-view admission/evidence checks remain a separate contract. Fresh-handle historical readback passes after pointer movement; fresh-process CLI/MCP integration remains S02b.3. Signed local savepoint: `436f830283967509eee0a5d0093f3fbad327e614`; author, committer and signature verified.
 
 ### [x] S02b.3 — Ordinary CLI/MCP paging
 Depends: S02b.2.
@@ -78,7 +78,7 @@ Invariant: ordinary clients can enumerate the complete authorized neighborhood w
 Exit: advertised arguments and compatible responses expose exact build, completion and continuation metadata through the shared path.
 Likely scope: CLI/MCP definitions/dispatch, shared reader and focused integration tests.
 Verify: every relationship ID/direction/type/endpoint against the pinned backend, repeated calls and fresh-process continuation. Parent S02b closes only after this gate passes.
-Handoff: [report](../../docs/s02b3-ordinary-neighborhood-pages.md) and [receipt](../../docs/s02b3-ordinary-neighborhood-pages.json). 91 affected tests, explicit required TypeDB client enumeration and the existing required ordinary explanation regression pass, as do treefmt and scoped warnings-denied Clippy. Fresh CLI, fresh MCP and persistent MCP agree across 29 pages / 4,124 delivered rows per transport, continuing the old generation after pointer movement. Dual-position/incoming-longer coverage is added; source, exact executables and all 27 qualification checksums are frozen. Signed local savepoint: `d42a93c04efca667a8b5b05c4b9324465c26e1ed`; author, committer and signature verified. Parent S02b's ordinary-client gate is complete; S02c owns remaining request cost/path/transport controls.
+Handoff: [report](../../docs/s02b3-ordinary-neighborhood-pages.md) and [receipt](../../docs/s02b3-ordinary-neighborhood-pages.json). 91 affected tests, explicit required TypeDB client enumeration, the existing required ordinary explanation regression, treefmt and scoped warnings-denied Clippy pass. Fresh CLI, fresh MCP and persistent MCP agree across 29 pages / 4,124 delivered rows per transport, continuing the old generation after pointer movement. Dual-position/incoming-longer coverage is new; source, exact executables and all 27 qualification checksums are frozen. Signed local savepoint: `d42a93c04efca667a8b5b05c4b9324465c26e1ed`; author, committer and signature verified. Parent S02b's ordinary-client gate is complete; S02c owns remaining request cost/path/transport controls.
 
 ### [x] S02b.4 — Exact-publication follow-up and recursive historical traversal
 Depends: S02b.3; execute after S02c.4. This review follow-up gates promotion of the reviewed reader/MCP candidate.
@@ -165,7 +165,7 @@ Invariant: reuse preserves per-request build pinning, scope/policy isolation and
 Exit: measured repeated graph reads share existing connections/immutable query work safely.
 Likely scope: shared graph reader/request context and focused tests; reuse existing facilities.
 Verify: before/after query and connection counts, pointer movement, scope changes, cancellation and repeated persistent-MCP memory.
-Handoff: S04a.1 and S04a.2 close the fixture-backed graph reuse gate. One bounded idle driver serves fresh request pins, and each header/fingerprint batch shares one read transaction. Production/whole-stack resource acceptance remains separate.
+Handoff: S04a.1 and S04a.2 close the fixture-backed graph reuse gate. One bounded idle driver serves fresh request pins; each header/fingerprint batch uses one shared read transaction. Production/whole-stack resource acceptance remains separate.
 
 ### [x] S04a.1 — Ordinary MCP graph connection lifetime/reuse
 Depends: S03a, S02c.3.
@@ -256,7 +256,7 @@ Likely scope: existing OpenCode extension/Chaosbox adapter tests and compatibili
 Verify: actual observed and intended runtime/package/adapter/config identities, supported/missing hook behavior, checkpoint/model-bound transmitted context, complete settlement and interruption/cursor recovery in isolation. Capability markers alone are insufficient.
 Handoff: [native capability report](../../docs/s09a-native-custody.md) and [receipt](../../docs/s09a-native-custody.json). The intended production `2.0.22+047c74e` package passes packaged-adapter checkpoint transmission, complete settlement, interrupted custody and restart/Unicode recovery (r10). The actual listener's `2.0.12+f18083c78e` package fails explicitly for missing `compaction.plan` in the same isolated packaged fixture (r11). Native core typing and the Promise-host regression pass against clean `db48c4233c` (1 test, 17 assertions). Live Jev assessment/publication is blocked by HTTP 402. The other worker has committed the cancellation patch; the current immutable consumer build, qualified producer pins and full profile remain pending. Parent S09a/S25b remain open; no serving transition or activation occurred.
 
-Later S09a evidence: the complete five-patch production package also passes the isolated lifecycle and injected-failure cleanup proofs. The [dependency-release blocker](../../docs/s09a-native-custody.md#dependency-release-qualification-blocker) remains distinct: refresh the owning published Pklr repair, then qualify/publish Fleetix and qualify Toolbelt before a fresh exact Canix reconciliation. Toolbelt's successful Nix matrix did not erase its failed dependency audit. Current immutable consumer gates and enabled live assessment/publication remain unqualified; the latter independently needs provider credits.
+Later S09a evidence: the complete five-patch production package passes isolated lifecycle and injected-failure cleanup proofs. The [dependency-release blocker](../../docs/s09a-native-custody.md#dependency-release-qualification-blocker) remains distinct: refresh the owning published Pklr repair, then qualify/publish Fleetix and qualify Toolbelt before a fresh exact Canix reconciliation. Toolbelt's successful Nix matrix did not erase its failed dependency audit. Current immutable consumer gates and enabled live assessment/publication remain unqualified; the latter independently needs provider credits.
 
 ### [ ] S09b — Journal compatibility and recovery
 Depends: S09a, S05.

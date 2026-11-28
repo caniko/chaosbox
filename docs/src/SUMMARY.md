@@ -25,4 +25,3 @@
 - [Reviewed workspace impact pilot](workspace-impact.md)
 - [Source baseline](baseline.md)
 - [Backend cutover record](cutover.md)
-- [Engineering handoff](handoff.md)

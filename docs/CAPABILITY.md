@@ -1,8 +1,8 @@
 # Capability matrix
 
-Living reference for the current source tree, not a released version. The
-proposed session/repository intelligence direction and session migration scope
-described in the new book chapters are not yet implemented.
+This matrix tracks the source tree, not a release. The new book chapters
+describe proposed session/repository intelligence and session migration work
+that is not yet implemented.
 
 ## Implemented in native Rust
 
@@ -17,7 +17,7 @@ described in the new book chapters are not yet implemented.
   imports, containment, explicit refs, headings, links, code mentions, spans).
   Rust/TypeScript/TSX use pinned tree-sitter grammars; Nix uses rnix. Certified
   declaration and file/module containment facts publish without model decisions
-  or candidate slots. Syntax failures withhold direct facts with explicit
+  or candidate slots. Syntax failures withhold direct facts and appear in
   coverage. Rust/TS `declarations-v2` also certifies syntactic nesting and
   marked rationale comments (`NOTE:`/`WHY:`/`TODO:`/`SAFETY:`/`ponytail:`…).
   Rust/TS `calls`, `inherits` and `implements`, plus ADR/RFC citations to
@@ -26,10 +26,10 @@ described in the new book chapters are not yet implemented.
   coverage bucket). Imports and other name matches remain proposals; see
   `STRUCTURAL_FACTS.md` for the exact subset (no compiler resolution or Nix
   evaluation).
-- Exclusion: `.chaosboxignore` (gitignore syntax) is always honored, and
-  repeatable `--exclude` globs on `snapshot`/`extract`/`run` narrow capture.
-  Non-empty exclusions join the snapshot id and policy digest, so narrowing is
-  never silent; unrestricted captures keep their historical ids.
+- Exclusion: capture always honors `.chaosboxignore` (gitignore syntax).
+  Repeatable `--exclude` globs on `snapshot`/`extract`/`run` narrow capture.
+  The snapshot id and policy digest reflect non-empty exclusions; unrestricted
+  captures keep their historical ids.
 - Optional SCIP protobuf ingestion: operator-only capture with source/configuration
   receipts, exact occurrence ranges, package-qualified/global and scoped-local
   anchors, explicit resolved references and implementation links. Compiler facts
@@ -43,9 +43,9 @@ described in the new book chapters are not yet implemented.
   pin mismatch; it is not general automatic workspace inference or calibrated
   memory admission. See `WORKSPACE_IMPACT.md`.
 - Bounded candidate catalog (structural, lexical-import, co-occurrence; capped,
-  never cartesian) with truthful truncation accounting: per-reason
-  selected/omitted counts in `CandidateCatalog`, surfaced by `extract` and
-  `run` output (cap never silently drops candidates)
+  never cartesian). `CandidateCatalog` records per-reason selected/omitted
+  counts, which `extract` and `run` report so the cap never drops candidates
+  silently.
 - Typed Jev `POST /v1/systemone` client: Noul/Choice/Score, pinned `jev-1.13.0`,
   exact requested+returned model enforcement, 64k/32k enforcement (error, never
   silent truncate), sole approved TLS endpoint, redirects disabled, deadlines,
@@ -54,9 +54,9 @@ described in the new book chapters are not yet implemented.
   caps, answer-id reconciliation, finite/range + candidate-membership checks,
   attempt accounting, sanitized diagnostics, cache identity incl. all decision
   inputs (thresholds excluded — materialization identity)
-- Credential-free `jev capabilities` policy report and research preflight;
-  incompatible installed binaries fail before reserving an inference attempt.
-  Offline fixture decisions have their own explicit `fixture-test` identity;
+- Credential-free `jev capabilities` policy report and research preflight.
+  Incompatible installed binaries fail before reserving an inference attempt.
+  Offline fixture decisions carry the explicit `fixture-test` identity;
   the live client never accepts that identity.
 - Evidence classes EXTRACTED/INFERRED/AMBIGUOUS (confidence never upgrades;
   INFERRED comes from accepted decisions or from deterministic name
@@ -66,9 +66,10 @@ described in the new book chapters are not yet implemented.
   copied into evidence); `Failed` rows are supersedable once, other outcomes
   immutable
 - Storage seams: `Pipeline` generic over `Store`, `GraphReader` generic over
-  `GraphQueries` (live `PgReader` + in-memory fake + read and write
-  conformance suites proving parity); all reads scoped to the pinned build
-  (leakage-tested), LIKE wildcards escaped
+  `GraphQueries` (`GraphQueries` has live `PgReader` and in-memory
+  implementations; read and write conformance suites check backend parity).
+  Tests verify that reads stay within the pinned build. LIKE wildcards are
+  escaped.
 - Write path (graph half): `Store::put_*` stages in `MemoryStore`; publication
   writes the build header (digest, node/edge counts), entities, memberships,
   relationships with sealed evidence, audit rows and the pointer upsert in one
@@ -77,10 +78,10 @@ described in the new book chapters are not yet implemented.
   exact retries compare the stored digest; last-good stays active on failure).
   Published rows are immutable (`ON CONFLICT DO NOTHING`); `Store` is async
   end-to-end
-- Decisions, evidence, and claims persist in-pipeline: `decide()` writes each
-  record as produced; `build_and_publish()` assembles one claim per
-  materialized relation (same-triple rejections as contradicting evidence);
-  relation filters validated loudly against the vocabulary
+- The pipeline persists decisions, evidence and claims. `decide()` writes
+  each record as it is produced; `build_and_publish()` assembles one claim
+  per materialized relation, with same-triple rejections as contradicting
+  evidence. Filters outside the relation vocabulary raise an error.
 - Decision cache behavior: skip-on-key-match with shared evidence assembler
   (byte-identical rebuilds); recorded failures always re-asked; per-axis
   invalidation (catalog/model/rubric invalidate, thresholds reuse); stale
@@ -119,9 +120,9 @@ described in the new book chapters are not yet implemented.
   real spend; default stays fixture); HTTP-level mock-service tests cover
   retries, auth-no-retry, and validation over the wire; budget preflight
   (`uncached_decisions`) counts cache misses/recorded failures per candidate
-  and fails before spending when they exceed `max_requests` (default mismatch:
-  200 candidates vs 100 requests now fails fast instead of burning budget and
-  dying at publish)
+  and fails before spending when they exceed `max_requests` (the default
+  mismatch of 200 candidates vs 100 requests now fails at preflight instead of
+  spending budget and failing at publication)
 - Durable-first decisions: `put_decision`/`put_inference` persist each paid
   answer in one statement as produced (decision replaced only when its cache
   key changed or it recorded a failure; inferences first-write-wins), then
@@ -152,10 +153,10 @@ described in the new book chapters are not yet implemented.
   context` fuse word overlap with statement similarity. Any embedding failure
   degrades to lexical retrieval
 - Status freshness/provenance: `query status` (CLI + MCP) reports the pinned
-  build's `status` and `snapshots` (sorted snapshot-id fingerprint, so
-  consumers can detect a build that no longer matches its sources) alongside
-  repo/build/generation/export caps; the in-memory and PostgreSQL backends fill
-  it, readers whose projection predates the field report an empty list
+  build's `status` and `snapshots` alongside repo/build/generation/export caps.
+  The sorted snapshot-id fingerprint lets consumers detect a build that no
+  longer matches its sources. The in-memory and PostgreSQL backends supply the
+  list; older reader projections report an empty list.
 - Schema v3 retains per-file syntax coverage, direct/decision relation counts,
   and parser provenance. Entity projections expose spans; relationship evidence
   exposes snapshot/path/content hash/range. Structural-only builds refresh under
@@ -196,19 +197,19 @@ described in the new book chapters are not yet implemented.
   tag. It runs the package-inventory, release-workspace (treefmt, flake check)
   and release-nix (all nine Nix outputs, evidence retained) gates, then
   per-crate tests, Clippy and docs, and packages the release set. Only a
-  successful build
-  starts the default-branch `trusted-publish-workspace.yaml`, which re-admits
-  each archive and uploads in dependency order
+  successful build starts the default-branch `trusted-publish-workspace.yaml`.
+  It re-admits each archive and uploads in dependency order:
   **`chaosbox-core` → `chaosbox-extract` → `chaosbox-jev` → `chaosbox-store`
-  → `chaosbox-pg` → `chaosbox`**, waiting for exact registry resolution
-  before each dependent. Publishing requires enrollment: `CRATES_IO_API_TOKEN`
-  only in the `simit-crates-io` environment restricted to the protected default
-  branch, no tag-accessible publishing secret, and `vars.SIMIT_PUBLISHER_REVISION`
-  set to a qualified Simit revision. Then create one signed annotated tag
-  matching the workspace version (currently `0.2.0`). To recover a partial
-  release, rerun the original signed-tag run. Already-published versions are
-  accepted only when their registry checksum matches the release archive; a
-  mismatch fails instead of silently resuming a different release.
+  → `chaosbox-pg` → `chaosbox`**. It waits for exact registry resolution
+  before each dependent. To enroll, put `CRATES_IO_API_TOKEN` only in the
+  `simit-crates-io` environment restricted to the protected default branch.
+  Keep publishing secrets inaccessible to tags and set
+  `vars.SIMIT_PUBLISHER_REVISION` to a qualified Simit revision. Then create
+  one signed annotated tag matching the workspace version (currently `0.2.0`).
+  To recover a partial release, rerun the original signed-tag run. It accepts
+  already-published versions only when their registry checksum matches the
+  release archive.
+  A mismatch fails rather than resuming a different release.
 
 ## Intentionally removed (vs Graphify)
 
@@ -216,14 +217,13 @@ described in the new book chapters are not yet implemented.
   `ext::ai`, rerankers, neural OCR/transcription, generative
   summaries/labels/dedup/query-repair, arbitrary query escape hatches,
   single giant graph JSON storage, endpoint-to-endpoint multi-links
-- Hyperedges: Graphify only produces them through LLM semantic extraction;
-  there is no deterministic source, so they stay out (issue #10 closes with
-  deterministic communities instead)
+- Hyperedges stay out: Graphify requires LLM semantic extraction and has no
+  deterministic source for them. Deterministic communities close issue #10 instead.
 
-Embeddings were listed here until 0.2.0. They now rank retrieval only
+Excluded until 0.2.0, embeddings now rank retrieval only
 (search/context seeds and knowledge context); they never create facts,
-evidence or relationships, and publication never depends on them. This
-supersedes the earlier exclusion: TypeDB provided only keyed upserts, joins, a
+evidence or relationships, and publication never depends on them. TypeDB
+provided only keyed upserts, joins, a
 compare-and-swap pointer and one-hop reads while costing 13–14 G RSS plus
 23–25 G swap, about 1 TB written per 43 h and REX1 read failures, so the
 operator chose PostgreSQL + pgvector with semantic retrieval for 0.2.0.
@@ -236,7 +236,10 @@ under an explicit admission policy; it does not turn fluent summaries into facts
 ## Not yet implemented (explicit)
 
 - Live proof: VM test realization (needs a build-capable session),
-  write/read conformance in-guest, cache-reuse demo
+  write/read conformance in-guest, cache-reuse demo. Native live-gate
+  eligibility returns and ignored integration tests are not live-server
+  evidence; exact-source package/VM/consumer qualification and final fleet
+  readiness remain separate gates.
 - Decision-cache reuse/invalidation live proof (the Gel and TypeDB gates were
   removed with their backends; PostgreSQL is the authoritative write path)
 - Live Jev quality runs (adapter + `--live-jev` ready; needs operator key file)

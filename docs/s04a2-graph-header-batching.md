@@ -9,23 +9,22 @@ retrieval and reuse after S03b.1/S03b.2.
 
 ## Shared batch and lifetime
 
-`TypeDbReader::build_header` now opens one read transaction and uses the existing
-`common::read_rows_in` helper for both the selected publication header and that
-build's snapshot fingerprint. Both `active_build` and `published_build` use this
-shared path. A missing header returns after the first query.
+`TypeDbReader::build_header` uses the existing `common::read_rows_in` helper to
+read the selected publication header and its build's snapshot fingerprint in
+one read transaction. Both `active_build` and `published_build` use this path. A
+missing header returns after the first query.
 
-The transaction belongs to that header read and drops on return, error or
-cancellation. It uses the existing 60-second backend transaction timeout for the
-whole batch. Ordinary path requests retain their tighter acquisition-through-search
-deadline. The snapshot query still selects only the exact build ID returned by the
-header query; both reads now observe one backend read snapshot.
+The header read owns the transaction and drops it on return, error or cancellation.
+The existing 60-second backend transaction timeout covers the whole batch.
+Ordinary path requests retain their tighter acquisition-through-search deadline.
+The snapshot query still selects only the exact build ID the header query returns;
+both reads now see the same backend read snapshot.
 
 Fresh per-request pins, historical continuation, repository/credential checks,
 optional coverage/sealing fields, deterministic snapshot ordering and error
-propagation keep their existing contracts. Logical work accounting is unchanged:
-acquisition and the build-header operation each consume their existing operation,
-including when the driver is reused. Native query/transaction counts are separate
-measurements from those logical operations.
+propagation are unchanged. Acquisition and the build-header read still each
+consume one logical operation, even with a reused driver. Native query/transaction
+counts are separate measurements.
 
 S04a.1's single-driver ownership, credential reread, 30-second monotonic idle
 deadline and failure/cancellation eviction continue to apply. The batch retains
@@ -37,8 +36,8 @@ one-transaction-per-query description specifically for the two-query header read
 The retained S04a.1 executable and this candidate read the same fresh fixture
 serially on TypeDB CE 3.13.0. Diagnostics count successful `TRANSACTION_OPEN` and
 `TRANSACTION_QUERY` actions for the selected database. `CONNECTION_OPEN` is
-server-global; the disposable server had no other graph workload in either
-measurement interval.
+server-global; no other graph workload ran on the disposable server during either
+interval.
 
 | Twenty successful lookups | S04a.1 baseline | S04a.2 candidate |
 |---|---:|---:|
@@ -55,7 +54,7 @@ with 60 candidate transaction opens instead of 40 (`red.log`).
 
 The required batch case also passed:
 
-- Zero- and one-snapshot status responses equal the baseline exactly; each uses
+- Zero- and one-snapshot status responses match the baseline exactly; each uses
   one transaction and two queries.
 - After pointer movement, a fresh reader resolves the exact historical header,
   including its original generation, snapshot and evidence-sealed flag.
@@ -99,18 +98,18 @@ including current/historical snapshot and membership-prefix boundaries.
 ## Verification and evidence
 
 **153 affected tests passed**: 148 ordinary/shared tests and five TypeDB library
-tests. Twelve opt-in cases were ignored in that aggregate. The six required
-batch/reuse/lifecycle/path/page/explanation cases then passed explicitly, as did
-the required backend conformance case: **seven passed, zero ignored**. Six other
+tests. The aggregate ignored twelve opt-in cases. Explicit runs then covered the
+six required batch/reuse/lifecycle/path/page/explanation cases and required
+backend conformance: **seven passed, zero ignored**. Six other
 aggregate opt-in cases and the other 18 backend live tests were not run. Scoped
 warnings-denied Clippy for both affected crates, treefmt CI and whitespace checks
 passed.
 
-Evidence is retained at
+Evidence:
 `/data/scratch/tmp/opencode/chaosbox-s04a2-20261018/`: `commands.txt`, exact
 executables, source/archive hashes, raw test logs, native result projections,
-preservation patches and `qualification.sha256`. The commands ledger gives the
-bounded invocations and required fresh database names. The new gate is:
+preservation patches and `qualification.sha256`. The commands ledger lists
+bounded invocations and required fresh database names. Run the new gate with:
 
 ```bash
 cargo test --locked --offline -p chaosbox --test mcp_lifecycle --jobs 2 \
@@ -126,9 +125,9 @@ environment, two Cargo jobs, two Tokio workers, 200% CPU, `MemoryHigh=2G`,
 383,610,880 bytes with zero swap.
 
 Qualification used the dirty canonical checkout at baseline
-`cde0c6e30aaf11fc2d8205aa5e335f90875aa265`, including preserved foreign source
-work. The Git-filtered source archive excludes `docs/` and `tasks/`; report and
-roadmap snapshots are retained separately.
+`cde0c6e30aaf11fc2d8205aa5e335f90875aa265`, including the preserved foreign
+source work. The Git-filtered source archive excludes `docs/` and `tasks/`; the
+evidence retains report and roadmap snapshots separately.
 
 - Tested source archive SHA-256:
   `e8c7e61e21d59d99f49525e2c415f7baf412955d227493ca3c8798b4d75b4287`.
@@ -137,9 +136,9 @@ roadmap snapshots are retained separately.
 - S04a.1 comparison CLI SHA-256:
   `aff30c339f1e8089426c1bfa2ee7f9e71fa996f5f81a2b39328f5431e0f2365c`.
 
-The staged and committed implementation patches compare exactly, and source
-bytes/file inventory compare equal after that savepoint. Foreign Chaosbox tracked
-edits are preserved. Concurrent Canix work added two staged files; all seven
+The staged and committed implementation patches match exactly, as do source
+bytes/file inventory after the savepoint. Foreign Chaosbox tracked edits are
+preserved. Concurrent Canix work added two staged files; all seven
 entry-staged paths still compare byte-identical. This session made no Canix
 source/index writes. Production TypeDB's PID/start identity is unchanged; the
 disposable server stopped with SIGTERM and its listeners are gone. Savepoints

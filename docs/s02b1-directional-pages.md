@@ -3,9 +3,9 @@
 Status: implemented and locally qualified, 2026-10-16.
 
 The reference and TypeDB readers expose `GraphQueries::neighbor_page`.
-Final-source reference and required disposable TypeDB paging, affected library
-tests, existing required backend conformance, treefmt and warnings-denied Clippy
-pass, including exact-size boundaries and genuinely multi-page sparse filters.
+Final-source reference and required disposable TypeDB paging pass, including
+exact-size boundaries and multi-page sparse filters. Affected library tests,
+required backend conformance, treefmt and warnings-denied Clippy also pass.
 S02b.1 is complete; parent S02b retains its S02b.2/S02b.3 gates.
 
 ## Contract and implementation
@@ -27,16 +27,15 @@ This raw backend method is not an authorization or continuation-token API.
 S02b.2 must bind version/scope and resolve exact historical publications;
 S02b.3 must expose complete enumeration through ordinary CLI/MCP requests.
 
-Owned production files: `chaosbox-store/src/{queries,lib,memory_reader}.rs`
-and `chaosbox-typedb/src/reader.rs`, under `crates/`. The focused regression
-is `crates/chaosbox/tests/neighborhood_pages.rs`. Existing foreign changes
-in `chaosbox-store/src/lib.rs` were retained.
+Owned production files under `crates/`: `chaosbox-store/src/{queries,lib,memory_reader}.rs`
+and `chaosbox-typedb/src/reader.rs`. Regression: `crates/chaosbox/tests/neighborhood_pages.rs`.
+Foreign changes in `chaosbox-store/src/lib.rs` remain.
 
 ## Executed checks
 
-Initial commands used the approved project direnv; final commands used its
-unchanged, already-realized GC-rooted profile with explicit operator approval
-(see environment recovery below).
+Initial commands used the approved project direnv. With explicit operator
+approval, final commands reused its unchanged, realized GC-rooted profile
+(see environment recovery).
 Worker scopes bounded memory to 4 GiB, disallowed swap and limited CPU to two
 cores; Cargo used two jobs. These are execution safeguards, not accepted
 production resource targets.
@@ -62,9 +61,9 @@ both endpoints against the complete fixture; they cover self-loops, parallel
 types, empty/repeated/encoded filters and late-sorting rare matches after more
 than 512 excluded relationships.
 
-Complete enumeration alone made 332 page calls, reading 4,432 rows including
-sentinels and 625,277 projected JSON bytes. These totals exclude the other
-boundary/isolation assertions, connection, migration and publication. They are
+Complete enumeration alone: 332 page calls, 4,432 rows including sentinels,
+and 625,277 projected JSON bytes. Totals exclude other boundary/isolation
+assertions, connection, migration and publication. They are
 not MCP wire or whole-request measurements.
 
 The first disposable test reported 21.25 seconds. Its timed Cargo invocation
@@ -91,17 +90,17 @@ row-payload/source-span parity.
 
 ## Environment recovery
 
-Editing the Rust files invalidated nix-direnv's watched-source cache. Harness
-preparation timed out at 600 seconds; bounded direct diagnosis also failed to
-refresh it. The installed Canix CLI lacks `direnv prepare --directory`, so the
-existing canonical `cli/target/debug/canix` was used for the supported route:
+Rust edits invalidated nix-direnv's watched-source cache. Harness preparation
+timed out at 600 seconds; bounded direct diagnosis could not refresh the cache
+either. The installed Canix CLI lacks `direnv prepare --directory`, so the
+refresh used the supported route via the canonical `cli/target/debug/canix`:
 
 ```text
 canix repo direnv prepare --directory /data/nvme0/can/canix/projects/repos/owned/chaosbox --wait-seconds 30
 Error: refusing Nix evaluation: only 17 GiB RAM available (MemAvailable), need at least 24 GiB to start the 32 GiB scope
 ```
 
-The operator authorized a 4 GiB/zero-swap refresh; it timed out after 300 seconds.
+An operator-approved 4 GiB/zero-swap refresh timed out after 300 seconds.
 The operator then separately authorized reuse of the unchanged approved profile:
 
 ```text
@@ -122,8 +121,8 @@ its data and logs remain. Production TypeDB's PID/start identity is unchanged.
 ## Evidence and savepoint
 
 Evidence root: `/data/scratch/tmp/opencode/chaosbox-s02b1-20261016/`.
-`qualification.sha256` hashes the retained initial test executable, logs,
-pending-source archive and production/server observations. Its SHA-256 is
+`qualification.sha256` covers the retained initial test executable, logs,
+pending-source archive and production/server observations. SHA-256:
 `592ef16a1c3ca276999324fcef59479144c09cdf9270b388474204c6d00c46af`.
 The JSON receipt records exact identities and evidence boundaries.
 

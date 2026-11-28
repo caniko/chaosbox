@@ -2,8 +2,8 @@
 
 `workspace capture` creates a private, immutable investigation artifact from
 selected source files, exact local graph builds, quoted endpoints, reviewed
-dependency links and cited constraints. `workspace impact` checks freshness and
-returns a bounded, directed answer to a change question.
+dependency links and cited constraints. `workspace impact` checks freshness
+and returns a bounded, directed answer to a change question.
 
 The first recipe asks:
 
@@ -24,10 +24,9 @@ target/debug/chaosbox workspace impact "$WORK/workspace.json" context-response \
   --scope private:can --max-hops 4 --max-nodes 20
 ```
 
-Recipe member roots are relative to the command's working directory. The sample
-uses `.` for Chaosbox and `../../../..` for Canix. Adjust these in your own recipe
-when using another workspace layout. The plugin prototype is a required local
-input; a missing file fails capture explicitly.
+Recipe member roots are relative to the command's working directory: `.` for
+Chaosbox and `../../../..` for Canix in this sample. Adjust them for other
+layouts. The plugin prototype must be local; a missing file fails capture explicitly.
 
 The recipe is a reviewable JSON contract:
 
@@ -44,9 +43,9 @@ The recipe is a reviewable JSON contract:
 - `constraints`: reviewed statements, applicable endpoint labels and source
   evidence. Admission is reported as `explicit_review`.
 
-Capture publishes zero-model member graphs into the local artifact. It does not
-move the active TypeDB pointers. These are selected-file graphs: new files outside
-the selection are outside this investigation's coverage.
+Capture publishes zero-model member graphs into the local artifact without
+moving active TypeDB pointers. These graphs cover only selected files, not new
+files outside the selection.
 
 ## Freshness, versions and bounds
 
@@ -55,19 +54,19 @@ A changed, missing or unreadable member produces `status: stale` with member
 statuses and withholds impact/constraint results. Committing the same bytes can
 change provenance; capture a new artifact rather than updating an old one.
 
-A cross-repository link is traversable only when the recorded consumer revision
-matches the provider's Git HEAD, its checkout is clean, and **every selected
-provider file matches the Git blob at that revision**. This catches ignored files
-and `assume-unchanged` modifications that a clean `git status` would miss. Missing
-Git provenance blocks the link. Git reads disable optional index locks, fsmonitor
-hooks, replacement objects and lazy object fetching, and include untracked files
-regardless of Git's display preferences. The Nix package supplies Git at runtime;
-native installations need it on `PATH`. A package override needs a separately
-reviewed recipe; a default input pin does not prove an override's version.
+Traversal follows a cross-repository link only if the recorded consumer revision
+matches the provider's Git HEAD, the provider checkout is clean, and **every
+selected provider file matches the Git blob at that revision**. This catches
+ignored files and `assume-unchanged` edits a clean `git status` would miss.
+Missing Git provenance blocks the link. Git reads disable optional index locks,
+fsmonitor hooks, replacement objects and lazy object fetching, and include
+untracked files regardless of display preferences. The Nix package supplies Git
+at runtime; native installations need it on `PATH`. Review a separate recipe
+for a package override: the default input pin does not prove its version.
 
-Version mismatches return a `blocked` link with expected/observed revisions,
-member build IDs, lockfile hash/pointer and source evidence. Other proven local
-paths and applicable constraints are still returned with `status: partial`.
+On version mismatch, the query returns a `blocked` link with expected/observed
+revisions, member build IDs, lockfile hash/pointer and source evidence. It still
+returns other proven local paths and applicable constraints with `status: partial`.
 
 Traversal accepts 1–8 hops and 1–100 endpoints, counting the changed endpoint.
 Recipe limits are 16 members, 128 endpoints, 256 bridges and 64 constraints.
@@ -110,11 +109,10 @@ Chaosbox sources are from a newer, dirty checkout. This is a known packaging
 route requiring a pin update/rebuild, not proof that the current Canix package
 contains this response implementation. No deployment was performed.
 
-The applicable reviewed constraint is
-`context-remains-scoped-historical-evidence`: preserve exact scope checks and
-the interpretation of retrieved records as historical evidence; quoting or
-repeating them does not independently corroborate them. The recipe cites the
-Rust scope check/response and the plugin's historical-evidence preamble.
+The reviewed constraint, `context-remains-scoped-historical-evidence`, requires
+exact scope checks and treating retrieved records as historical evidence.
+Quoting or repeating records does not independently corroborate them. The
+recipe cites the Rust scope check/response and the plugin's historical-evidence preamble.
 
 ## Runtime consumer experiment
 
@@ -128,12 +126,11 @@ actual Rust CLI and TypeScript plugin, replacing only OpenCode's registration,
 storage and session-delivery API with a test harness. A deterministic test
 receipt supplies one record; no inference request is made.
 
-All three consumers retrieved and rendered that record with its citations.
-A shim then renamed `records` to `items` in the actual CLI response. The hook
-stopped injecting, the tool and slash command rendered no records, and plugin
-status remained `degraded: false`. Thus a response-field rename can silently
-remove context from every consumer. This is measured contract sensitivity,
-not a live OpenCode-session or model-admission-quality result.
+All three consumers retrieved and rendered the record with its citations. A shim renamed
+`records` to `items` in the actual CLI response. The hook stopped injecting;
+the tool and slash command rendered no records. Plugin status stayed
+`degraded: false`: a field rename can silently remove context from every
+consumer. This tests the contract, not live OpenCode sessions or model admission quality.
 
 ## Verification and remaining scope
 
@@ -160,8 +157,8 @@ The strict Jev-only retry was also blocked by that lock (holder PID 164642,
 building `.#checks.x86_64-linux.stalwart016-proxy-vmtest`); its log is
 `/data/scratch/tmp/opencode/chaosbox-jev-only-package.log`.
 
-The integration is intentionally reviewed and selected-file based. Compiler
-resolution does not establish these cross-language packaging links. Nix
+The integration uses reviewed links and selected files. Compiler resolution
+does not establish these cross-language packaging links. Nix
 evaluation/deployment, general workspace graph publication, rename continuity,
 incremental compiler resolution, calibrated memory admission and comparative
 coding-agent improvement remain later milestones. The managed Graphify views

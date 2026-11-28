@@ -1,10 +1,10 @@
 # Compiler indexer feasibility — 2026-09-29
 
-Real compiler-indexer smoke runs succeeded for Rust and TypeScript. They provide
-useful resolved references, with important qualifications for the next adapter.
-The fixtures and decoder assertions are in `fixtures/indexer-smoke/`.
-The implemented optional importer and capture contract are documented in
-[COMPILER_EVIDENCE.md](COMPILER_EVIDENCE.md).
+Real Rust and TypeScript compiler-indexer smoke runs succeeded and produced
+useful resolved references, with caveats for the next adapter. See
+`fixtures/indexer-smoke/` for fixtures and decoder assertions, and
+[COMPILER_EVIDENCE.md](COMPILER_EVIDENCE.md) for the implemented optional
+importer and capture contract.
 
 ## Pinned inputs
 
@@ -12,8 +12,8 @@ The implemented optional importer and capture contract are documented in
   `/nix/store/34qiaf1bwi38xg4h282wy6kj9k560lv6-rust-default-1.98.1`.
 - `@sourcegraph/scip-typescript` 0.4.0, package source revision
   `1962a68386220dd669c3839b69d64fb5ce34f2a6`, with TypeScript 5.6.3.
-- Node 24.19.0. This run worked on Node 24; the indexer's README documents
-  supported Node 18/20, so this is feasibility evidence rather than a supported
+- Node 24.19.0. The run worked on Node 24, but the indexer's README lists
+  Node 18/20 as supported. This shows feasibility, not a supported
   runtime matrix.
 - Official SCIP protobuf schema at
   `9c4a0a3a81504a82b00397f9ede47a4ff35321af`, decoded using protobufjs 8.8.0.
@@ -29,10 +29,10 @@ The implemented optional importer and capture contract are documented in
 | TypeScript, valid project | 4 | 37 | 18 | 18 | 2 | 0 |
 | TypeScript, unresolved import | 4 | 34 | 18 | 18 | 2 | 0 |
 
-The valid TypeScript project also passed `tsc --noEmit`. The deliberately
-broken project failed with TS2307 (exit 2), while scip-typescript returned exit 0
-and emitted no diagnostic records. `inspect.cjs` passed all assertions against
-the four binary SCIP files, including these observations:
+The valid TypeScript project also passed `tsc --noEmit`. On the deliberately
+broken project, that check failed with TS2307 (exit 2), but scip-typescript
+returned exit 0 without diagnostic records. `inspect.cjs` passed all assertions
+against the four binary SCIP files, including:
 
 1. **Aliases and shadowing:** imported `renamed` references resolve to the
    provider's `answer`; the shadowed local function has a different,
@@ -40,7 +40,7 @@ the four binary SCIP files, including these observations:
    `rust-analyzer cargo helper 0.2.0 dependency().`.
 2. **References are not calls:** `renamed()` and `const/let reference = renamed`
    have the same symbol roles (0) and syntax kind (0) in both indexers. Calls
-   need syntax classification around a resolved reference.
+   need syntax classification around the resolved reference.
 3. **Coordinate conversion is mandatory:** Rust declares UTF-8 positions.
    TypeScript 0.4.0 leaves `position_encoding` unspecified (0), yet its token
    after `🦀` starts at UTF-16 column 36, UTF-8 column 38. Metadata's UTF-8 file
@@ -53,11 +53,10 @@ the four binary SCIP files, including these observations:
    active-configuration membership.
 5. **Language capabilities differ:** TypeScript emits implementation links for
    `Worker → Work` and `Worker.run → Work.run`. This Rust index emits none,
-   despite indexing a trait implementation. Do not infer parity from the
-   shared format.
+    despite indexing a trait implementation. A shared format does not prove parity.
 6. **Macro evidence can be partial:** Rust resolves the generated function's
    use and emits its symbol record, but provides no definition occurrence for
-   it. A missing source location must remain visible rather than synthesized.
+    it. Show the missing source location; don't synthesize it.
 7. **Unresolved imports remain unresolved:** the broken TS import produces
    local-symbol references without matching definition occurrences. Dropping
    those silently or treating a local ID as a resolved definition would hide
@@ -72,15 +71,16 @@ evaluator-backed Nix result was established in this run.
 
 - Bind an optional index to source hashes, producer/schema version, exact
   invocation, package manifests/locks, effective target/features and compiler
-  configuration. Chaosbox's source-only snapshot does not currently capture
-  TOML/JSON configuration changes, so it cannot serve as this fingerprint alone.
+  configuration. Chaosbox's source-only snapshot tested here does not currently
+  capture TOML/JSON configuration changes, so it cannot supply this fingerprint
+  on its own.
 - Keep immutable source occurrences separate from logical symbol anchors.
   Scope local symbols by document **and index context**. Preserve the full
   package-qualified external symbol and version-bound dependency evidence;
   matching package names/versions alone does not identify a repository build.
 - Expose indexed/omitted files, diagnostics, unresolved occurrences and absent
-  definition locations. Exit status and an empty diagnostics list are
-  insufficient coverage evidence; retain compiler-check outcomes separately.
+   definition locations. Exit status and an empty diagnostics list don't
+   establish coverage; keep compiler-check outcomes separately.
 - Ingest real protobuf with explicit position conversion, current typed-range
   support and legacy range support. scip-typescript's bundled generated schema
   predates position encoding and would discard fields from current Rust output.
@@ -92,9 +92,9 @@ evaluator-backed Nix result was established in this run.
 
 ## Reproduce the bounded probe
 
-Run from this checkout in Bash with rust-analyzer, Cargo, Node and npm available.
-Use the versions above when comparing results. Compiler tools and all generated
-files stay in the scratch copy; normal Chaosbox operation needs none of them.
+From this checkout, run in Bash with rust-analyzer, Cargo, Node and npm. Use the
+versions above to compare results. Compiler tools and all generated files stay
+in the scratch copy; normal Chaosbox operation needs neither.
 
 ```bash
 WORK=$(mktemp -d /data/scratch/tmp/opencode/chaosbox-indexer-spike.XXXXXX)
@@ -132,9 +132,8 @@ target/debug/chaosbox run fixtures/indexer-smoke/nix --repo nix-smoke \
   --no-decisions --max-candidates 0
 ```
 
-The inspector writes `$WORK/summary.json`, including binary hashes. Binary hashes
-vary with `project_root` and are artifact identities, not portable gold values.
-The recorded run's artifacts are at
+The inspector writes binary hashes to `$WORK/summary.json`. They vary with
+`project_root` and identify artifacts, not portable gold values. Recorded artifacts:
 `/data/scratch/tmp/opencode/chaosbox-indexer-spike.BtA52W`.
 
 ## Sources
@@ -144,5 +143,5 @@ The recorded run's artifacts are at
 - [SCIP schema at the decoded revision](https://github.com/scip-code/scip/blob/9c4a0a3a81504a82b00397f9ede47a4ff35321af/scip.proto):
   document encoding, local symbol scope, roles and relationships.
 - [rust-analyzer SCIP implementation](https://github.com/rust-lang/rust-analyzer/blob/03fcb77246f2568adb0e9b2fa60d19c6cc1686f4/crates/rust-analyzer/src/cli/scip.rs):
-  current upstream reference, distinct from the installed binary revision;
-  observations above come from the actual binary, not this source assumption.
+  current upstream reference, not the installed binary revision. The findings
+  come from running the installed binary, not assumptions about this source.

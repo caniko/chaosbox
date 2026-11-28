@@ -37,8 +37,9 @@
 | typedb/typedb | PR #7978 (Nix flake, caniko:nix-flake) | eval-verified; remote build pending |
 | NixOS/nixpkgs | PR #565068 (typedb packages, caniko:typedb-packaging) | review-gha builds pending/iterating |
 
-Driver 3.12.3 ↔ server 3.13.0 interop proven live (connect/define/write/read,
-read-tx rejection). No Gel data ever persisted (fixtures/disposable only).
+Live interop confirmed: driver 3.12.3 ↔ server 3.13.0
+(connect/define/write/read, read-tx rejection). No Gel data persisted
+(fixtures/disposable only).
 
 ## Harbor interfaces consumed
 

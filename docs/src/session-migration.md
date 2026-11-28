@@ -1,11 +1,10 @@
 # First delivery: session migration
 
-Status: partially implemented. The `chaosbox sessions` command surface exists
-today as `status`, `verify`, `adopt`, `install` and `rollback`
-(`crates/chaosbox/src/sessions/cli.rs`); ingestion, reconciliation, checkpoint
-generation and runtime transfer remain the unimplemented part of this scope.
-The goal is to replace migration scratch scripts with one bounded Rust workflow
-inside Chaosbox, while implementing the [selective intelligence
+Status: partially implemented. `chaosbox sessions` offers `status`, `verify`,
+`adopt`, `install` and `rollback` (`crates/chaosbox/src/sessions/cli.rs`).
+Ingestion, reconciliation, checkpoint generation and runtime transfer remain
+unimplemented in this scope. The goal is one bounded Rust workflow in Chaosbox
+that replaces migration scratch scripts and implements the [selective intelligence
 lifecycle](intelligence.md).
 
 ## Capability boundaries
@@ -24,24 +23,24 @@ These are logical modules, not six new crates:
 Start with ingestion and reconciliation. Establish knowledge admission on a
 representative pilot before scaling checkpoint generation and runtime transfer.
 Add at most one focused session-processing crate if needed to isolate SQLite and
-runtime-adapter dependencies from the graph core. No separate service, provider
-framework or UI is required for this delivery. (Until 0.2.0 this also excluded
-an embeddings platform; 0.2.0 ranks retrieval with vectors from an existing
-loopback embedding endpoint stored in PostgreSQL + pgvector, which replaced
-TypeDB. Delivery does not depend on it: retrieval degrades to lexical.)
+runtime-adapter dependencies from the graph core. This delivery needs no
+separate service, provider framework or UI. Before 0.2.0 it also excluded an
+embeddings platform. In 0.2.0, PostgreSQL + pgvector replaced TypeDB and stores
+vectors from an existing loopback embedding endpoint for retrieval ranking.
+Delivery does not depend on embeddings: retrieval falls back to lexical.
 
 ## Adopt evidence already collected
 
-The OpenCode migration has consistent database snapshots, native-conversion
-working copies, reconciliation records and partial compaction results outside
-this repository. Treat them as inputs to verify, not as evidence that the
-migration finished. Validate source hashes, schema versions, parent relationships
-and artifact identities before reusing them.
+Outside this repository, the OpenCode migration has consistent database snapshots,
+native-conversion working copies, reconciliation records and partial compaction
+results. These are inputs to verify, not proof of completion. Before reusing
+them, validate source hashes, schema versions, parent relationships and artifact
+identities.
 
 Do not copy private transcripts, credentials, database files or campaign outputs
 into Git. Commit only sanitized fixtures and reproducible validation logic.
-Avoid recopying the corpus or re-requesting successful inference when input and
-transform identities still match.
+If input and transform identities still match, avoid recopying the corpus or
+repeating successful inference.
 
 ## Reconciliation before interpretation
 
@@ -50,36 +49,35 @@ transform identities still match.
   compatible continuation; timestamps alone do not establish this.
 - Restore truncated text only when the fuller archived value matches the
   retained prefix and the truncation is explicit. Record both source identities.
-- Preserve genuinely divergent histories with provenance rather than choosing
-  one silently or blending contradictory conversations.
-- Preserve and account for interrupted/unsettled operations. Never turn them
-  into completed work to satisfy an import schema.
+- Keep divergent histories with provenance. Don't silently pick one or blend
+  contradictory conversations.
+- Keep and account for interrupted/unsettled operations. Never mark them complete
+  to satisfy an import schema.
 
-Native runtime conversion remains responsible for runtime-specific semantics.
+Native conversion handles runtime-specific semantics.
 Chaosbox owns isolation, reconciliation, provenance, orchestration and
-before/after completeness verification. Do not implement a second OpenCode
-migrator where a supported native facility already covers the operation.
+before/after completeness verification. Use a supported native facility when it
+covers the operation instead of writing a second OpenCode migrator.
 
 ## Intelligence and continuation are separate outputs
 
 Before reducing a session's context, extract candidates from original source
 records and pass them through Jev's bounded assessment/admission policy. Link
-accepted items to repository entities, while retaining time, scope, contrary
-evidence and unresolved questions. A high-value finding can then help a different
-session without importing the original conversation wholesale.
+accepted items to repository entities and retain time, scope, contrary evidence
+and unresolved questions. Other sessions can use high-value findings without
+importing the whole conversation.
 
-Continuation follows the same Jev-only policy as graph decisions, intelligence
-admission and research. Deterministic processing enumerates source records and
+Continuation uses the same Jev-only policy as graph decisions, intelligence
+admission and research. Deterministic processing lists source records and
 coherent tool-call/result groups. Pinned Jev choices classify, select, prioritize
-and relate those supplied records; Rust assembles a fixed-schema packet and
-cited text through deterministic templates. No model generates checkpoint prose
-or invents a task, quotation or evidence reference. Ambiguous decisions retain
-the source and an explicit unresolved state. This replaces the earlier
-generative-model campaign choice. The bounded `checkpoint prepare` and
-`checkpoint assemble` commands implement source-selected rendering and
-persistent spending; see [Source-selected continuation](checkpoints.md).
-Automatic native transfer and the complete continuity/audit workflow remain
-separate implementation milestones.
+and relate those records. Rust uses deterministic templates to assemble a
+fixed-schema packet and cited text. No model writes checkpoint prose or invents
+tasks, quotations or evidence references. For ambiguous decisions, keep the
+source and an explicit unresolved state. This replaces the earlier generative-model
+campaign choice. The bounded `checkpoint prepare` and `checkpoint assemble`
+commands implement source-selected rendering and persistent spending; see
+[Source-selected continuation](checkpoints.md). Automatic native transfer and
+the full continuity/audit workflow remain separate implementation milestones.
 
 Checkpoint generation must:
 
@@ -97,17 +95,17 @@ Checkpoint generation must:
 8. Stream bounded chunks, persist accepted progress, and avoid repeating work
    after a restart. Validate end-to-end continuity as well as local chunks.
 
-Incomplete decisions, malformed JSON, transport termination and failed audits
-retain the original history and remain explicit failures. An abstention on
-intelligence admission is not a failed checkpoint request; keep those outcomes
-separate. A rendered checkpoint never counts as fresh corroborating evidence.
+Keep the original history and record incomplete decisions, malformed JSON,
+transport termination and failed audits as explicit failures. Keep intelligence
+admission abstentions separate from checkpoint failures. A rendered checkpoint
+never counts as fresh corroborating evidence.
 
 ## Operator surface
 
 Extend the existing Rust CLI. A proposed command family is `chaosbox sessions`
 with ingest, reconcile, compact, status, verify, export and resume operations.
-Names and arguments must be finalized against the implementation before they
-are presented as runnable examples.
+Finalize names and arguments against the implementation before publishing
+runnable examples.
 
 Mutating operations need a campaign identity, bounded budgets, restartable state
 and machine-readable reports. Reuse the existing task/publication machinery
@@ -129,7 +127,6 @@ it does not execute commands copied from history. MCP remains read-only.
 - Runtime migration is rehearsed on copies, with a final delta/freeze step and
   executable-and-data rollback before any production switch.
 
-The first delivery is not complete merely because an archive exists, a graph is
-large, summaries look fluent, or a destination database opens. It is complete
-when retained knowledge is grounded, selectively admitted, retrievable and useful
-for reliable continuation.
+The first delivery is complete when retained knowledge is grounded, selectively
+admitted, retrievable and useful for reliable continuation. An archive, a large
+graph, fluent summaries or a destination database that opens do not suffice.

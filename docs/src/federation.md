@@ -1,10 +1,10 @@
 # Project-scoped intelligence federation
 
 Federation builds a temporary read view across independently owned Chaosboxes.
-For a project query, Chaosbox reads the local provider first and then consults
-every configured peer for that project, including when local matches exist.
-It does not publish the combined view, replicate events across users, invoke
-Jev, or change either owner's records.
+Chaosbox reads the local provider first, then every peer configured for the
+queried project, even with local matches. Federation never
+publishes the view, replicates events across users, calls Jev or changes either
+owner's records.
 
 ## Sharing contract
 
@@ -16,18 +16,18 @@ Jev, or change either owner's records.
 - Repository associations express applicability. A grant and explicit project
   mapping establish authorization; matching directory names do not.
 - Each provider preserves its owner, private scope, original record ids,
-  knowledge generation and source citations. The display id is
+  knowledge generation and source citations. Display ids use
   `<provider>::<original-id>`.
-- Queries and evidence reads reload the provider configuration. Removing a
-  grant or record selection denies subsequent reads, including old handles.
+- Queries and evidence reads reload provider configuration. Removing a grant
+  or record selection denies later reads, even with old handles.
 - Peer results have no last-good cache. An unavailable or denied peer returns
   an explicit source status, while usable local results remain available.
 
 Choose shared project keys from verified workspace/Git identity, such as
 `git:github.com/caniko/chaosbox`. Canix's workspace scanner owns identity
-discovery. Both owners explicitly map the key to their own existing intelligence
-repository association. Forks need distinct keys unless the owners deliberately
-agree on a shared applicability boundary. Local paths never appear in requests.
+discovery. Both owners explicitly map the key to their existing intelligence
+repository association. Forks need distinct keys unless owners deliberately
+agree on a shared applicability boundary. Requests never include local paths.
 
 ## Provider configuration
 
@@ -63,7 +63,7 @@ For reciprocal sharing, `dejana` configures her own provider with
 to `can`. Each provider can use a different local `repo` string for the same
 shared key. Neither user shares the same-user sync root key.
 
-A selected-record grant looks like this. Omitting `mode` means `selected`:
+A selected-record grant can omit `mode`; it defaults to `selected`:
 
 ```json
 {
@@ -74,15 +74,13 @@ A selected-record grant looks like this. Omitting `mode` means `selected`:
 }
 ```
 
-`postgres` reads the existing private session-knowledge generations. Its
-`CHAOSBOX_DATABASE_URL` belongs to the provider process (unix socket or loopback;
-peer authentication as the owner). Provision a separate database and role for
-each owner; an installed CLI or Unix account alone is not a provisioned
-provider. Federation uses `PgReader` read-only sessions for both current and
-historical knowledge. A missing database is unavailable and stays absent.
-Federation does not provision database roles or migrate schemas; publisher
-creation and migration remain separate operator operations. Federation ranking
-stays lexical (no embedding queries).
+`postgres` reads private session-knowledge generations. The provider process owns
+`CHAOSBOX_DATABASE_URL` (unix socket or loopback; peer authentication as the owner).
+An installed CLI or Unix account isn't enough: provision a separate database and
+role per owner. Federation reads current and historical knowledge in read-only
+`PgReader` sessions; missing databases stay missing and are reported unavailable.
+Operators create publishers and migrate separately. Federation doesn't provision
+roles or migrate schemas, and ranks lexically without embedding queries.
 
 Reviewed bundle artifacts work without a database:
 
@@ -100,15 +98,15 @@ history, drill-down succeeds only while that exact artifact is still current.
 PostgreSQL historical reads use the original scoped knowledge-build id, without
 advancing the current pointer. Raw session archives are not served.
 
-Update policy files atomically and keep them writable only by their owner or
-the deployment authority. Increment a grant's positive `revision` when changing
-it. Every reply also carries a content digest of the actual policy read.
+Update policy files atomically, and keep them writable only by their owner or
+the deployment authority. Increment the positive `revision` on each grant
+change. Every reply carries a content digest of the policy it read.
 
 ## Query-only SSH endpoints
 
-The recipient is bound by the SSH forced command, never by a field in the
-request. Use a dedicated query key for each recipient/provider route; an
-existing unrestricted login key does not establish a query-only endpoint.
+The SSH forced command binds the recipient, never a request field. Use a
+dedicated query key per recipient/provider route. An unrestricted login key
+doesn't establish a query-only endpoint.
 
 For example, `dejana`'s authorized key entry for `can` runs a store-pinned
 provider-local wrapper:
@@ -152,11 +150,11 @@ For `can`, `~/.config/chaosbox/federation.json` can contain:
 }
 ```
 
-Choose destination aliases and ports from Fleetix/Canix SSH routing. Peer
-selection only chooses which endpoint to consult; the remote grant remains
-authoritative. At most eight peers are permitted. Client routing/identity is
-pinned when an MCP server starts; restart it after changing that configuration.
-Provider grant changes take effect on the next read without a client restart.
+Choose aliases and ports from Fleetix/Canix SSH routing. Peer selection routes
+requests; authorization still requires the remote grant and explicit project
+mapping. Configure at most eight peers. MCP pins client routing/identity at
+startup; restart it after changing those settings. Grant changes take effect on
+the next read without a client restart.
 
 An optional absolute `ssh_config` path selects an isolated SSH configuration
 with `ssh -F`. Existing client files that omit it continue using their configured
@@ -172,34 +170,34 @@ chaosbox federation --config "$HOME/.config/chaosbox/federation.json" evidence \
   --repo git:github.com/caniko/chaosbox --handle '<record.handle JSON from context>'
 ```
 
-The context response includes each consulted source's snapshot, policy digest,
-omissions and error (`denied`, `unavailable` or `invalid_response`). Successful
-empty queries are distinguishable from failures. The total deadline reserves
-time for peers if local retrieval stalls. Peer queries run concurrently after
-the local phase; assembly interleaves local then peer records under one record
-count and serialized record-array character ceiling. Source metadata is outside
-that record budget and bounded by the provider-count limit.
+Context reports each consulted source's snapshot, policy digest, omissions and
+error (`denied`, `unavailable` or `invalid_response`). An empty success is distinct
+from failure. The total deadline reserves peer time if local retrieval stalls.
+Peers run concurrently after the local phase. The response interleaves local
+then peer records under shared limits on record count and serialized record-array
+characters. Source metadata doesn't count toward that budget; the provider-count
+limit bounds it.
 
-Exact matching primary source quote/lineage is marked `same_origin`; both owners'
-attributions remain visible. Different statements and known disputes are
-retained. Repeated sources never become independent votes. Federation performs
-no semantic reconciliation or cross-user winner selection.
+Federation marks exact primary source quote/lineage matches `same_origin` and
+retains both owners' attributions. Different statements and known disputes stay
+visible. Repeated sources aren't independent votes. Federation doesn't reconcile
+meaning or choose a winner across users.
 
 ## Evidence disclosure
 
 `record.handle` contains provider, owner, original scope, project, snapshot and
-original id. It is an address, not a capability. Drill-down checks current
-authorization and current admission before resolving that exact historical
-snapshot. A deleted, unselected or withheld record cannot be resurrected through
-an old handle. Missing history returns `snapshot_unavailable`, never latest data.
+original id. It's an address, not a capability. Drill-down checks current
+authorization and current admission before resolving the exact historical
+snapshot. Old handles can't recover deleted, unselected or withheld records.
+Missing history returns `snapshot_unavailable`, never the latest data.
 
-Evidence responses disclose bounded supporting occurrences for that record and
+Evidence responses disclose bounded supporting occurrences for the record and
 safe receipt metadata. They omit raw assessment state, answers, neighboring
-propositions and unrelated project associations. Relationship ids are qualified
-and permission-filtered; hidden relationships have an explicit omission count.
-Receipt projections identify the untouched original receipt and explicitly say
-`state_omitted: true` and `is_projection: true`. They do not claim to be complete
-or independently verifiable receipts.
+propositions and unrelated project associations. They qualify relationship ids,
+filter them by permission and count hidden relationships explicitly. Receipt
+projections identify the untouched original and report `state_omitted: true`
+and `is_projection: true`; they don't claim completeness or independent
+verifiability.
 
 ## MCP, OpenCode and Canix
 
@@ -234,9 +232,9 @@ OpenCode configuration:
 ```
 
 Injected context retains source statuses, owner scopes and evidence handles.
-The plugin reauthorizes every federation read and never replays an old peer
-packet after denial or an outage. Challenge proposals remain human-reviewed
-local artifacts; they do not mutate a peer's records.
+The plugin reauthorizes every federation read and never replays old peer packets
+after denial or outage. Challenge proposals stay local and human-reviewed; they
+don't change peer records.
 
 Canix exposes `programs.chaosbox.mcp.intelligenceFederation` as an optional
 client-config path. It checks the consumed package's `federationVersion` marker
@@ -292,11 +290,11 @@ Import Fleetix's topology module when using its source/value selection:
 }
 ```
 
-Public-key files must contain a single raw key line; a trailing newline is accepted.
-Credential and private-key options accept runtime absolute string paths outside
-the Nix store. The module never reads their contents during evaluation. The
-example requires an independently provisioned per-owner database and role and
-dedicated query keys; it does not create them.
+Public-key files must contain one raw key line, with an optional trailing newline.
+Set credential and private-key options to runtime absolute string paths outside
+the Nix store. The module never reads those files during evaluation. Before
+using this example, provision each owner's database, role and dedicated query
+keys separately.
 
 For each peer, `host` selects the Fleetix host. `route` selects `network.lanIp`,
 `network.directLinkIp` (with mutual direct-link membership), or a named
@@ -366,9 +364,9 @@ registration on top. Enrollment into code indexing does not automatically enroll
 a project into sharing.
 
 Import both federation modules before enabling this declaration. Apply provider
-policies through Home Manager activation. Existing project grants are rechecked
-on the next request; restart consumers after changing client routes, identities
-or project mappings.
+policies through Home Manager activation. The next request rechecks existing
+project grants. Restart consumers after changing client routes, identities or
+project mappings.
 
 ## Verification
 
@@ -387,13 +385,13 @@ The federation tests cover eligibility-before-ranking, selected defaults,
 unauthorized projects/callers, grant revocation, exact historical drill-down,
 receipt-context isolation, local-first plus peer queries, shared budgets,
 provenance grouping, peer failure, deadlines and actual CLI/MCP wire contracts.
-The `live_pg_` federation test starts its own disposable PostgreSQL cluster. It
-verifies that current and historical reads cannot create missing databases, that
-foreign scopes are invisible, that exact historical evidence resolves without
-advancing the current pointer, and that revoked or withheld records remain
-denied. It is ignored in ordinary unit runs; the hermetic `postgres-live` Nix
-check runs every `live_pg_` test inside the build sandbox, where connection,
-schema and assertion failures fail the gate.
+The `live_pg_` federation test starts a disposable PostgreSQL cluster. It checks
+that current and historical reads can't create missing databases, that foreign
+scopes remain invisible, that revoked or withheld records remain denied, and
+that exact historical evidence resolves without advancing the current pointer.
+Ordinary unit runs skip it.
+The hermetic `postgres-live` Nix check runs every `live_pg_` test in the build
+sandbox and fails on connection, schema or assertion errors.
 
 The `federation-home` check evaluates standalone and integrated Home Manager,
 selected defaults, revocation, rejected routes/grants, and NixOS key installation,
@@ -418,6 +416,6 @@ and process exit, including a partial frame that never reaches a newline.
 
 `simit.toml` declares the package, unit, strict lint, scratch-plugin,
 federation-home, intelligence-plugin, postgres-live, postgres-integration and
-federation-ssh installables in the generated hosted Nix matrix. A completed green matrix
-qualifies that immutable producer source; enrollment and consumer activation need
-their own source/pin and runtime receipts.
+federation-ssh installables in the generated hosted Nix matrix. A completed
+green matrix qualifies that immutable producer source. Enrollment and consumer
+activation need their own source/pin and runtime receipts.

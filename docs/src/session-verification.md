@@ -1,9 +1,8 @@
 # Session verification contract
 
-What `chaosbox sessions verify` checks, what it refuses to check, and what a
-passing run is allowed to claim. The code enforces every rule here; this file
-is the statement of them so a gate can be evaluated against the report
-without reading the source.
+Use this contract to evaluate a gate against the `chaosbox sessions verify`
+report without reading the source. The code enforces these rules: what gets
+checked, what verification refuses to check, and what a pass can claim.
 
 Both subcommands are read-only. Verification opens every database with
 `SQLITE_OPEN_READ_ONLY` and never writes to a campaign directory.
@@ -12,12 +11,11 @@ Both subcommands are read-only. Verification opens every database with
 
 ## 1. The pinned inventory
 
-A pass needs an expectation that does not come from the thing being checked.
-Comparing the destination only to the receipts it discovered makes an empty
-journal pass: there is nothing to disagree with.
+A pass needs an independent inventory. Comparing the destination only to
+discovered receipts lets an empty journal pass by leaving nothing to dispute.
 
-So the expectation comes from `progress.json`, which the migration driver
-writes before and during its run:
+The migration driver writes that inventory to `progress.json` before and
+during its run:
 
 | field | meaning |
 | --- | --- |
@@ -29,77 +27,69 @@ writes before and during its run:
 | `identityDigest` | pins the campaign identity |
 | `driverDigest` | pins the frozen migration script |
 
-`verified` must be an array of objects each naming one distinct session, and
-every id must be a real session id. Anything else is `InvalidProgress`, and
-the pass reports it instead of inventing an inventory.
+`verified` must be an array of objects, each naming a distinct, real session
+id. The pass reports anything else as `InvalidProgress` instead of inventing
+an inventory.
 
-`total`, `deferred` and `errors` are **required**. They are the pass's only
-statement about work it did not do, and they are precisely what a default
-would invent: `total` defaulted to the number of `verified` entries makes an
-inventory that reported no total agree with itself, while the other two
-defaulted to zero report work as never having been reported at all. A
-missing counter is `InvalidProgress`, which leaves `reconciled` false — and
-because `clean()` includes reconciliation, the pass fails even under
-`--allow-partial`.
+`total`, `deferred` and `errors` are **required**: these counters are the
+pass's only account of work not done. Defaulting `total` to the number of
+`verified` entries would make an inventory with no total agree with itself;
+defaulting the other counters to zero would hide unreported work. A missing
+counter is `InvalidProgress`, leaving `reconciled` false. Since `clean()`
+requires reconciliation, the pass fails even under `--allow-partial`.
 
-`deferred` and `errors` may be written either as a bare count or as the
-array of sessions behind them. The elements are counted, not interpreted: a
-non-empty array already fails reconciliation, so their shape never decides
-whether the campaign agrees with itself.
+`deferred` and `errors` can be bare counts or arrays of sessions. The pass
+counts array elements without interpreting them: any non-empty array fails
+reconciliation regardless of element shape.
 
-`complete` may be absent, which reads as "not finished" and is shown as
-`progress_complete: false`; when present it must be a boolean, so a
-mistyped value is refused instead of decaying into `false`. The two digests
-may be absent but must be 64 lowercase hex digits when present.
+An absent `complete` means "not finished" and appears as
+`progress_complete: false`. If present, it must be boolean: a mistyped value
+is rejected, not treated as `false`. The two optional digests must each be
+64 lowercase hex digits when present.
 
-Those digests are **reported, not verified**. The pass echoes what
-`progress.json` pinned; it does not re-derive either one from the artifact
-it names. Comparing `driverDigest` against the frozen
-`assemble-canonical-history.mjs` is therefore a check G1 performs in its own
-evidence — a clean report does not imply it happened.
+The pass **reports but does not verify** the digests pinned in `progress.json`.
+It does not re-derive them from the named artifacts. G1 independently compares
+`driverDigest` against the frozen `assemble-canonical-history.mjs` in its own
+evidence; a clean report does not imply that check ran.
 
-A `total` that does not match `verified`, or a non-zero `deferred` or
-`errors`, is reported and fails reconciliation: they mean the driver left
-work undone.
+The pass reports a `total` that disagrees with `verified` or a nonzero
+`deferred` or `errors`. Each fails reconciliation because the driver left work
+undone.
 
 ### Beyond the canonical run
 
-After the canonical run, two more pins join the expectation — never by
-weakening reconciliation, only by letting each new receipt trace to the pin
-that sanctions it:
+After the canonical run, two more pins extend the inventory without weakening
+reconciliation. Each new receipt must trace to the pin that authorizes it:
 
 - **Variants** (`variants_expected`): `journal-v3/identity-v3.json` pins
   `mappingDigest` over the staged `variants-mapping.json`. The pass
-  recomputes that digest and reads the sanctioned session ids out of the
-  mapping. A variant receipt for a session the mapping does not sanction is
-  `unexpected_receipts`, exactly like a canonical one.
-- **Delta-new** (`delta_expected`): `journal-v3/identity-delta.json` chains
-  onto the campaign's actual `journal-v3/identity-v3.json` — every chain
-  field present must name that file (not an arbitrary path) with the SHA-256
-  it still hashes to, and at least one must be present — and pins
-  `deltaInventory` (path plus SHA-256 over the delta file). The pass verifies
-  all hashes, requires the delta file's `status` be `final` (preliminary
-  inventories move as the stores grow and sanction nothing), requires its
-  `derivedFrom.reconciliation.sha256` equal the variant identity's
-  `reconciliationDigest`, and reads `deltaNew.ids` out of the pinned file,
-  rejecting duplicates and non-session ids. A delta without its variant
-  identity, a chain pointing elsewhere, a tampered file, a preliminary
-  status, a drifting reconciliation, or a duplicated id is a hard `Mapping`
-  error, never a quiet fallback to no delta. Zero until the delta identity
-  lands.
+   recomputes the digest and reads the authorized session ids from the mapping.
+   An unauthorized variant receipt goes in `unexpected_receipts`, just like a
+   canonical one.
+- **Delta-new** (`delta_expected`): `journal-v3/identity-delta.json` must
+  carry at least one chain field. Each must name the campaign's actual
+  `journal-v3/identity-v3.json` with its current SHA-256, not another path.
+  The identity pins `deltaInventory` (path plus SHA-256 over the delta file).
+  Verification checks every hash, requires the pinned delta file's `status` to
+  be `final`, and matches `derivedFrom.reconciliation.sha256` against the
+  variant identity's `reconciliationDigest`. It reads `deltaNew.ids` from the
+  pinned file and rejects duplicates and non-session ids. Preliminary
+  inventories change as stores grow and authorize nothing. A delta identity
+  without its variant identity, wrong chain path, tampered file, preliminary
+  status, reconciliation drift or duplicate id is a hard `Mapping` error, not a
+  fallback to zero. The count is zero until the delta identity lands.
 
-All four set differences are computed against the **union** of the three
-pins. A receipt for a session none of them sanctions is still an error; the
-union only admits receipts that trace to a pin.
+The pass computes all four set differences against the **union** of the three
+pins. A receipt that traces to none of them is still an error.
 
 ---
 
 ## 2. The receipt schema
 
-Receipts are immutable. A base receipt lives in `journal-v2`; a session whose
-contents changed gets a newer record in a later journal with `supersedes`
-naming the one it replaces. Exactly one receipt per session is unreferenced —
-that is the effective receipt verification reads.
+Receipts are immutable. The base receipt lives in `journal-v2`. For a changed
+session, a later journal records a new receipt with `supersedes` naming the
+receipt it replaces. Verification reads the one unreferenced receipt per session
+as the effective receipt.
 
 **Required on every receipt:**
 
@@ -133,14 +123,13 @@ Receipt file names carry a generation: `<id>.json` is generation 1,
 `<id>.<N>.json` is generation N. The suffix must be `[1-9][0-9]*` — no zero,
 no leading zeros — so `<id>.0.json` is not a receipt name at all.
 
-Two failure kinds, deliberately distinct: `MissingField` means *not
-attested*, `InvalidField` means *attested wrongly*. `supersedes` is the case
-that matters most — an absent field and a mistyped one used to be
-indistinguishable, which turned a supersession into a base receipt.
+`MissingField` means *not attested*; `InvalidField` means *attested wrongly*.
+The distinction matters most for `supersedes`: treating a mistyped field as
+absent used to turn a supersession into a base receipt.
 
-`source` is validated as a bare name because [`Campaign::source`] joins it
-into a path. Allowing a separator there would let a receipt point
-verification at any file ending in `.db`.
+Verification requires a bare name for `source` because [`Campaign::source`]
+joins it into a path. A separator could point verification at any file
+ending in `.db`.
 
 Chain rules on top of the schema: a `supersedes` target must exist
 (`DanglingSupersession`) and belong to the same session
@@ -152,25 +141,23 @@ resolution: `journal-v2` receipts never carry `supersedes` — that journal is
 append-immutable. A plain `journal-v3/<id>.json` may target nothing (a head)
 or exactly `journal-v2/<id>.json`. `<id>.<N>.json` (N ≥ 2) must target
 `<id>.<N-1>.json`, where generation 1 is the plain file. A mislinked receipt
-reports `LinkAgreement` rather than the ambiguity its bad link would also
-produce. Consequence, recorded deliberately: cycles and disconnected chains
-cannot form inside `journal-v2`/`journal-v3` anymore, so those rules survive
-as defense-in-depth for any other `journal-*` directory.
+reports `LinkAgreement`, not the resulting ambiguity. These constraints rule
+out cycles and disconnected chains inside `journal-v2`/`journal-v3`; the chain
+rules still protect any other `journal-*` directory.
 
 `supersedes` is a receipt **path**, not a digest: `journal-v2/<file>` or
-`journal-v3/<file>`. Both verifier implementations use addresses, the chain
-fixtures pin that shape, and the R5 rule above is only statable over paths.
+`journal-v3/<file>`. Both verifiers use addresses, the chain fixtures pin that
+shape, and the R5 rule requires paths.
 
 ### Destination and source identities
 
-The same `ses_*` id is the primary key in the destination, in every source
-snapshot, and in `recovered-rows.db` — except for variants. A variant receipt
-attests to a derived session but carries `sourceSessionID` naming the session
-it derives from, and `--sources` recomputes `inputDigest`/`recoveryDigest`
-against that session, not the attested one. There is still no mapping table:
-a session is either present under the id the receipt names or absent, which
-is what makes `missing`, `source_errors`, and `absent_destination`
-meaningful as three separate outcomes.
+Except for variants, the destination, every source snapshot and
+`recovered-rows.db` share the same `ses_*` primary key. A variant receipt
+attests to a derived session but names its original in `sourceSessionID`.
+With `--sources`, verification recomputes `inputDigest`/`recoveryDigest`
+from the original, not the derived session. There is no mapping table:
+a session is present under the named id or absent. This keeps `missing`,
+`source_errors`, and `absent_destination` distinct.
 
 Changed and delta-new sessions attest to frozen boundary snapshots, not to
 the work snapshots. Their `provenance` names the boundary, and
@@ -183,31 +170,28 @@ an unknown boundary or a malformed digest is a `source_error`. Only a
 receipt whose pin is present and well-formed proceeds; under `--sources` its
 value is then compared to the record on disk (mismatch is a `source_error`)
 and its source digests are recomputed against the snapshot the record names.
-That record may carry a converted snapshot alongside the raw one: the raw
-file is the frozen bytes the holder gate cleared, while the converted file
-is the same bytes after the candidate backfilled `session_v2` rows into a
-copy (pinned separately because the copy diverges by design). Both hashes
-are verified when a converted snapshot is present, and recomputation reads
-the converted file — `inputDigest` attests to converted content, never to
-the raw bytes.
+The record can also name a converted snapshot. The raw file holds the frozen
+bytes cleared by the holder gate. The candidate copies it and backfills
+`session_v2` rows; the boundary record pins that converted copy separately
+because it diverges by design. When a converted snapshot is present,
+verification checks both hashes and recomputes from the converted file:
+`inputDigest` attests to converted content, not raw bytes.
 
 ### Tool closure and adoption
 
-`install` and `rollback` resolve their scripts out of the campaign's
-`tools.json` and verify the digest immediately before use. The pin is a
-closure, not a single entrypoint: every file listed is re-hashed on every
-resolution, and the requested tool's relative `./`/`../` imports must
-resolve to pinned files. A tampered transitive import or an unpinned import
-refuses to run.
+`install` and `rollback` resolve scripts from the campaign's `tools.json`
+and verify the digest just before use. The pin covers the full closure:
+every resolution re-hashes every listed file, and the tool's relative
+`./`/`../` imports must resolve to pinned files. Tampered transitive imports
+or unpinned imports prevent execution.
 
-`adopt` pins a store as a digest-addressed input without writing to it. It
-refuses held stores (before hashing and after opening; an unreadable `/proc`
-is a scan failure, not a clear scan), refuses stores with `-wal`/`-shm`/
-`-journal` sidecars (adoption never checkpoints, so a store with sidecars is
-not frozen), requires `v2` stores to carry both `session_v2` and
-`session_message`, and refuses when the file's size or mtime moves between
-the hash and the read view — the hash, counts, and health checks must
-describe the same bytes.
+`adopt` pins a store by digest without writing to it. It rejects held stores
+before hashing and after opening; an unreadable `/proc` fails the scan. It
+rejects `-wal`/`-shm`/`-journal` sidecars because adoption never checkpoints
+and a store with sidecars is not frozen. It requires both `session_v2` and
+`session_message` in `v2` stores. It rejects changes in size or mtime between
+hashing and the read view: hash, counts and health checks must describe the
+same bytes.
 
 ### Variant re-key proofs (`--sources` only)
 
@@ -223,45 +207,40 @@ receipt fields and database row order rather than from the driver's mapping:
 - the receipt's message count against its pinned mapping entry
   (`mapping-entry`).
 
-Failures land in `remap_mismatch` and fail `clean()`. The mapping pin itself
-(`mappingDigest` recomputed over the staged mapping, `mappingFile` required
-to name exactly that path) is verified once per pass, and variant receipts
-without `journal-v3/identity-v3.json` are a hard error rather than a
-skipped check.
+Failures go in `remap_mismatch` and fail `clean()`. Once per pass, verification
+recomputes `mappingDigest` over the staged mapping and requires `mappingFile`
+to name that exact path. Variant receipts without `journal-v3/identity-v3.json`
+are a hard error, not a skipped check.
 
 ---
 
 ## 3. Consistency mode
 
-Each database the pass reads is opened read-only and put inside a read
-transaction before the first query:
+The pass opens each database read-only and starts a read transaction before
+the first query:
 
-- The transaction is opened with one read of `sqlite_master`, because `BEGIN`
-  is deferred and SQLite takes no snapshot until the transaction actually
-  reads. Without that the snapshot would not exist yet at the moment
-  `data_version_before` was recorded.
+- One read of `sqlite_master` opens the transaction: `BEGIN` is deferred, and
+  SQLite takes no snapshot until the first read. Without it the snapshot would
+  not yet exist when `data_version_before` was recorded.
 - `quick_check`, `foreign_key_check`, and all session digests run against
   **one snapshot** of the destination, reported as `consistent_read`.
 - Each source snapshot and `recovered-rows.db` get their own transaction, so
   an `inputDigest` recomputation does not straddle a rewrite of a 27 GB file.
-- `PRAGMA data_version` is read before the transaction opens and again after
-  it commits. It is a **per-connection change counter**, not an identifier
-  for the database: unrelated databases share its values and it resets with
-  the connection. What it can say is whether *this* connection observed
-  another connection commit to this file between those two reads, which is
-  reported as `snapshot.concurrent_write`.
+- The pass reads `PRAGMA data_version` before the transaction opens and after
+  it commits. It is a **per-connection change counter**, not a database
+  identifier: unrelated databases share values, and it resets with the
+  connection. `snapshot.concurrent_write` reports whether this connection
+  observed another connection commit to this file between the two reads.
 - Because `data_version_before` is taken before `BEGIN`, it is not sampled
   atomically with the snapshot. Reads *inside* the transaction all see one
   snapshot; only the bookend comparison is approximate, which is a second
   reason it is reported rather than gated.
 
-`concurrent_write` is reported, not failed. The pass itself stayed
-consistent — every number in the report describes the one snapshot it read —
-but a `true` means the destination has moved since, so the result is stale
-and should be re-run before anyone relies on it. A `false` means no external
-commit was observed on that path and nothing more: it is not a generation
-identity for the database, and it does not travel with the report the way a
-digest does.
+`concurrent_write` is informational. Every result still describes one
+consistent snapshot, but `true` means the destination has since changed.
+Rerun verification before relying on a stale result. `false` means only
+that the reader observed no external commit on that path. It neither
+identifies the database generation nor travels with the report like a digest.
 
 ---
 
@@ -297,25 +276,23 @@ the campaign as a whole does not reconcile.
 | `variants_expected` / `delta_expected` | sessions sanctioned by the variant mapping / delta inventory pins |
 | `driver_digests` | distinct `driverDigest` values found per journal — reported, never compared in-band; the gate compares them against the pinned driver |
 
-`clean()` additionally requires `source_coverage == sessions_checked` whenever
-`--sources` was requested, so a partially covered source pass cannot pass.
-`sources_uncovered` lists any session skipped for want of receipt metadata;
-receipt validation should keep it empty, and it exists so a future schema
-change cannot turn "no metadata" into "not checked".
+With `--sources`, `clean()` also requires `source_coverage == sessions_checked`:
+partial source coverage fails. `sources_uncovered` lists sessions skipped for
+missing receipt metadata. Receipt validation should keep it empty; the list
+prevents future schema changes from turning "no metadata" into "not checked".
 
 ### Failure lists
 
-`chain_errors`, `missing`, `digest_mismatch`, `superseded_unverified`,
-`message_count_mismatch`, `source_mismatch`, `recovery_mismatch`,
-`remap_mismatch`, `source_errors`, and `sources_uncovered` — all must be
-empty, along with `quick_check == "ok"` and `foreign_key_violations == 0`,
-for the pass to be clean.
+For a clean pass, `chain_errors`, `missing`, `digest_mismatch`,
+`superseded_unverified`, `message_count_mismatch`, `source_mismatch`,
+`recovery_mismatch`, `remap_mismatch`, `source_errors`, and `sources_uncovered`
+must all be empty.
+The pass also requires `quick_check == "ok"` and `foreign_key_violations == 0`.
 
-`digest_mismatch` versus `superseded_unverified`: a digest disagreement on a
-session whose chain depth is 1 means its base attestation is broken. The
-same disagreement at depth above 1 means the session changed again since
-its head receipt was written and needs re-verification. Both fail the pass;
-the bucket tells the operator which failure they are looking at.
+`digest_mismatch` versus `superseded_unverified`: at chain depth 1, a digest
+disagreement means the base attestation is broken. Above depth 1, it means
+the session changed again after the head receipt and needs re-verification.
+Both fail the pass; the list tells the operator which occurred.
 
 `clean()` is about *what was checked*. `complete` is about *how much was
 selected*. `succeeded` requires `clean()` plus either `complete` or an
@@ -329,9 +306,9 @@ explicit `--allow-partial`.
 | `1` | clean-but-incomplete without `--allow-partial`, or any failure, or a campaign that could not be read |
 | `2` | the command line itself was rejected |
 
-A campaign that cannot be read at all is an error on stderr with no report,
-not a failing report: the operator needs to know the difference between
-"verification ran and failed" and "verification could not run".
+If verification cannot read the campaign at all, it writes an error to stderr
+and emits no report. That distinguishes a check that could not run from one
+that ran and failed.
 
 ---
 

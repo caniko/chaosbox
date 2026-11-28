@@ -1,9 +1,9 @@
 # Source-custodied session compaction
 
-Chaosbox now has a private, durable custody coordinator, a deferred intelligence
+Chaosbox uses a private, durable custody coordinator, a deferred intelligence
 worker, PostgreSQL publication and an OpenCode V2 adapter. Rust owns capture validation,
 settled-record selection, checkpoint bounds, pruning dispositions and recovery.
-The runtime extension is integrated against Canix's OpenCode pin
+The runtime extension integrates with Canix's OpenCode pin
 `047c74ec64ca6029f93be4bb4d1f5797c8838b9a` on the local `chaosbox-custody` branch.
 
 ## Contract
@@ -36,30 +36,28 @@ The runtime extension is integrated against Canix's OpenCode pin
 6. Publish immutable PostgreSQL knowledge generations through a scope-specific,
    compare-and-swap predecessor pointer. Cross-session readers pin that generation.
 
-The archive keeps exact native JSON values and all captured variants. JSON
-serialization is canonicalized for identity; this is not a byte-for-byte export
-of OpenCode's SQLite pages. Normalized inference sources remain recoverable by
-their separate digests. Provider state, reasoning and generated checkpoints are
-excluded from independent intelligence evidence.
+The archive keeps exact native JSON values and all captured variants. It
+canonicalizes JSON serialization for identity rather than exporting OpenCode's
+SQLite pages byte for byte. Separate digests recover normalized inference sources.
+Provider state, reasoning and generated checkpoints cannot serve as independent
+intelligence evidence.
 
 ## Why custody precedes assessment
 
-Private cross-session visibility, Chaosbox-owned checkpoints and proceeding after
-custody were selected for this integration. Model or database availability must
-not decide whether original sources survive. The capture transaction, deferred
+The integration uses private cross-session visibility and Chaosbox-owned
+checkpoints, and proceeds after custody. Original sources must survive even
+when the model or database is unavailable. The capture transaction, deferred
 assessment journal, database pointer update and runtime checkpoint installation
 are separate durable stages with explicit retry identities.
 
-Knowledge admission and pruning answer different questions. A rejected or
-abstained knowledge proposal never permits deletion of working state. Only a
-validated high-confidence `irrelevant` continuation classification can omit a
-tool-free assistant record; its receipt must match the exact original record and
-the current latest user anchor. A changed anchor conservatively restores it.
+Knowledge rejection or abstention never permits deletion of working state.
+Only a validated high-confidence `irrelevant` continuation classification can
+omit a tool-free assistant record, and its receipt must match the exact original
+record and latest user anchor. An anchor change restores the record.
 
 ## Enable
 
-Build Chaosbox and apply the current packaged schema (version 8) through the
-existing migration command:
+Build Chaosbox and apply the current packaged schema (version 8):
 
 ```sh
 cargo build --locked -p chaosbox
@@ -86,10 +84,10 @@ Set an absolute private `work` directory, `scope`, and the built `chaosboxBin`
 if it is not on PATH. Global configuration omits `repo`: the adapter resolves
 each session's canonical project root through the native runtime, including
 worktrees. An explicit `repo` remains available for project-local configuration.
-Use the same archive root for a private scope
-across sessions and repositories. `liveAssessment: true` authorizes background
-Jev assessment; `publish: true` enables the PostgreSQL outbox. Compaction itself needs
-neither live inference nor database connectivity.
+Use the same archive root across sessions and repositories in a private scope.
+`liveAssessment: true` authorizes background Jev assessment; `publish: true`
+enables the PostgreSQL outbox. Compaction needs neither live inference nor
+database connectivity.
 
 ### OpenCode runtime handoff
 
@@ -165,10 +163,10 @@ Capture stdin has the versioned shape:
   bounds. The adapter supplies the runtime bound; Rust conservatively charges
   UTF-8 bytes. Custody survives a budget refusal.
 - `verify-plan` checks the full plan digest, archived sources, externalization
-  and source-bound omission receipts. Compaction verifies its stored plan before
-  returning it. Later assessments cannot rewrite an issued plan's dispositions.
-  Earlier `session-pruning-v1` plans remain archived; regenerate a plan to obtain
-  the full-payload `session-pruning-v2` identity required by this verifier.
+   and source-bound omission receipts. Compaction verifies the stored plan before
+   returning it. Later assessments cannot change an issued plan's dispositions.
+   Older `session-pruning-v1` plans remain archived; regenerate for the verifier's
+   required full-payload `session-pruning-v2` identity.
 - Workers share a separate SQLite write lease; capture is not blocked by network
   dispatch. Kernel/process cleanup releases the lease after crashes.
 - A publication interrupted after the PostgreSQL commit reconciles by content hash.
@@ -186,18 +184,17 @@ Capture is limited to 64 MiB per native snapshot and 100,000 records; checkpoint
 are limited to 120,000 characters and independently checked against OpenCode's
 remaining context budget. These limits fail closed rather than truncating intent.
 
-Live extraction scans all source lines within the existing 24–1200 byte candidate
-contract. Out-of-contract lines and oversized candidate context remain explicit
-unassessed coverage. Semantic recall is not certified. Every source remains
-recoverable even when it is not admitted, and protected working state remains
-conservative. The initial planner can refuse a sufficiently long session because
-all original user requirements are still protected.
+Live extraction scans all source lines within the 24–1200 byte candidate
+contract. It reports out-of-contract lines and oversized candidate context as
+unassessed. This does not certify semantic recall. Even unadmitted sources
+remain recoverable, and working state remains conservatively protected. All
+original user requirements remain protected, so the initial planner can refuse a
+long session.
 
-The adapter also captures settled context before primary requests and after
-step/job completion events for sessions it has observed locally. This includes
-the final assistant reply even when there is no subsequent primary request.
-Compaction reconciles the original native history independently of those advisory
-event deliveries.
+For sessions it has observed locally, the adapter captures settled context before
+primary requests and after step/job completion events. That includes the final
+assistant reply even without a later primary request. Compaction reconciles
+original native history without relying on those advisory events.
 
 ## Verification
 

@@ -12,10 +12,9 @@ and completed [logical inventory](s01b1-retained-build-inventory.md). The
 
 ## Measurement provenance
 
-The operator supplied output from these commands in this conversation on
-2026-10-19; the agent received it at 06:21:17 UTC. The capture time is unknown.
-Numeric values and paths are transcribed in the evidence bundle; separator
-whitespace may be normalized.
+The operator sent these command outputs in this conversation on 2026-10-19;
+the agent received them at 06:21:17 UTC. The capture time is unknown. The evidence
+bundle transcribes numeric values and paths; separator whitespace may differ.
 
 ```text
 sudo -n cat /proc/4144752/smaps_rollup
@@ -23,11 +22,10 @@ sudo -n cat /proc/4144752/io
 sudo -n du -x -B1 --max-depth=2 /var/lib/typedb/data
 ```
 
-The agent's service observation identifies PID `4144752`, monotonic start
-`158470931838`, the same identity as S01b.1. It is a separate observation, not a
-synchronized sample of the supplied process counters. Full per-mapping `smaps`
-was not supplied. The earlier tool-permission rejection remains a historical
-fact; the supplied outputs now fill the process-total and filesystem-total gaps.
+The agent separately observed PID `4144752`, monotonic start `158470931838`,
+the same identity as S01b.1, without synchronizing with the supplied process
+counters. The earlier tool-permission rejection remains on record. The supplied
+outputs fill the process and filesystem totals, but omit full per-mapping `smaps`.
 
 The running package path names TypeDB 3.13.0. Its executable SHA-256 is
 `f2eda580af8a386f25d68d82bcd2984fa3b03b5f330b12a5c12a6bc88d2db3b8`.
@@ -93,9 +91,8 @@ identities are retained in `source-blob-verification.tsv`.
 
 This trace identifies engine-log retention separately from retained graph
 generations. It does not measure which live WAL records are obsolete or how many
-bytes are safely reclaimable. The active configuration has monitoring and the
-admin socket disabled; simply enabling these inspected interfaces would still
-not supply the missing allocation breakdown.
+bytes are safely reclaimable. The active configuration disables monitoring and
+the admin socket. Enabling them would not supply the missing allocation breakdown.
 
 ## Gate status and next evidence
 
@@ -106,13 +103,12 @@ not supply the missing allocation breakdown.
 | S01b process/filesystem totals | Obtained | Supplied rollup, I/O and directory totals reconcile. |
 | S01b allocator/history attribution | Blocked | No measured ownership split, per-build payload costs or engine-history decomposition. |
 
-The remaining producer is the TypeDB allocation/storage measurement surface.
-Closure requires a receipt separating live allocations from allocator retention,
-cache/pinned-block costs and retained graph/knowledge payloads versus engine
-history. The inspected production interfaces cannot produce that receipt.
-Per-mapping `smaps` could refine mapping attribution but would not provide object
-ownership. A suitable supported measurement route must be established before
-another live collection can close this gate.
+The remaining work is on TypeDB's allocation/storage measurement surface. To
+close the gate, the receipt must distinguish live allocations, allocator
+retention, cache/pinned-block costs, retained graph/knowledge payloads and engine
+history. The inspected production interfaces cannot produce it. Per-mapping
+`smaps` could refine mapping attribution, not identify object owners. Establish
+a supported measurement route before another live collection can close the gate.
 
 The operator's deferred numeric-policy decision still applies. Substantial
 S05 storage/schema work and representation-dependent S03b.2/S04b remain behind
@@ -125,7 +121,7 @@ It contains the transcribed inputs, parsed/derived JSON, source copies, exact
 Git-blob verification, runtime identity/configuration and preservation records.
 Seventeen native jq consistency assertions verify raw parsing, arithmetic,
 receipt equality, prior logical-inventory scope and the unresolved gate. The
-command record retains the complete invocation. To verify custody, in Bash:
+command record retains the full invocation. Verify custody in Bash:
 
 ```bash
 cd /data/scratch/tmp/opencode/chaosbox-s01b3-20261019

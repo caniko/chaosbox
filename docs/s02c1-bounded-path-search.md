@@ -1,7 +1,7 @@
 # S02c.1 — aggregate-bounded path search
 
 The shared, already-pinned path reader is locally qualified. CLI and ordinary
-MCP dispatch already call `GraphReader::path`, so both use this implementation.
+MCP dispatch both use `GraphReader::path`.
 **Parent S02c remains open:** shared request validation, deadlines including
 connection/build acquisition and live TypeDB path qualification belong to S02c.2.
 Transport cancellation/framing, backpressure, cleanup and persistent-MCP retention
@@ -12,13 +12,13 @@ See the [receipt](s02c1-bounded-path-search.json) and the
 
 ## Implementation and contract
 
-Baseline HEAD is `d42a93c04efca667a8b5b05c4b9324465c26e1ed` in the canonical
-Chaosbox checkout. This slice changes `reader.rs`, adds `reader_path.rs`, exports
+Canonical Chaosbox baseline HEAD: `d42a93c04efca667a8b5b05c4b9324465c26e1ed`.
+This slice changes `reader.rs`, adds `reader_path.rs`, exports
 `PathBudget` from `lib.rs`, and adds `tests/path_budgets.rs`. The foreign
 `write_export_json` export in `lib.rs` remains outside the scoped savepoint.
 
-The former BFS requested complete outgoing/incoming neighborhoods before its
-visit guard ran. It now reuses `GraphQueries::neighbor_page`: at most 200 rows per
+The old BFS requested complete outgoing/incoming neighborhoods before checking
+the visit limit. It now reuses `GraphQueries::neighbor_page`: at most 200 rows per
 read, ordered by relationship ID, with exclusive continuation in each direction.
 All operations retain the reader's immutable build ID. No export, evidence load
 or unbounded-neighborhood fallback is used.
@@ -58,9 +58,9 @@ deliberate ceiling; frontier/connection reuse belongs to S04a.
 
 ## Fresh verification
 
-The focused test target passed all 10 cases. The affected aggregate then passed
-**98 tests**, with two disposable TypeDB cases explicitly ignored. That aggregate
-covers library and binary/MCP tests, graph navigation, neighborhood backend and
+All 10 focused cases passed. The aggregate passed **98 tests**, with two
+disposable TypeDB cases explicitly ignored. It covers library and binary/MCP
+tests, graph navigation, neighborhood backend and
 continuation contracts, scoped read views, and the new path target. Ignored cases
 do not qualify the live backend.
 
@@ -78,7 +78,7 @@ jobs and two Tokio workers. The initially attempted nested `nix develop` worker
 was denied; it was not run and is not verification evidence. No pre-change RED
 execution is claimed. No environment refresh or new Nix realization was needed.
 
-Commands, with the systemd scope above applied to Cargo:
+Commands (Cargo uses the systemd scope above):
 
 ```sh
 cargo test --locked -p chaosbox --lib --bin chaosbox --test path_budgets --test reader_navigation --test neighborhood_pages --test neighborhood_continuation --test read_views --jobs 2 -- --test-threads=2

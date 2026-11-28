@@ -1,8 +1,8 @@
 # Agent and git integration
 
 Graphify's operational surface, without its network or model dependencies.
-Every command here edits marked, idempotent blocks or single JSON entries and
-never rewrites content it does not own.
+Commands edit marked, idempotent blocks or single JSON entries. They never
+rewrite content they don't own.
 
 ## Enable a project
 
@@ -12,20 +12,18 @@ chaosbox enable --repo canix --dir src --dry-run
 chaosbox disable                      # removes the marker and both blocks
 ```
 
-A project is enabled where its checkout root holds a `.chaosbox.json`
-(`{"repo": "canix"}`); commit it to share the opt-in, and note that no global
-switch turns one on.
+Projects opt in with `.chaosbox.json` (`{"repo": "canix"}`) at the checkout
+root. Commit it to share the opt-in; no global switch enables a project.
 `enable` records the marker and upserts the managed block into `AGENTS.md`
 (and `CLAUDE.md` when that is the agent file the project already uses). The
-block is imperative and self-contained: ask Chaosbox before Grep, Glob or
+block gives self-contained instructions: ask Chaosbox before Grep, Glob or
 Read for definitions, symbol source, callers/callees, change impact
-(`review` for a diff) or architecture; source Chaosbox returns is the file
-content, so do not read it again; read directly only what Chaosbox did not
-return or marked `stale`; do not re-verify with grep; fall back to normal
-tools when Chaosbox is unavailable or not enabled. Subagents never see MCP
-instructions, so that block is their only steering. `disable` removes the
-marker and both blocks; a marker naming a different repository is refused
-rather than overwritten.
+(`review` for a diff) or architecture. Returned source is file content. Read
+directly only what Chaosbox omitted or marked `stale`, and don't re-verify
+with grep. Use normal tools if Chaosbox is unavailable or not enabled.
+Subagents never see MCP instructions, so only the block guides them.
+`disable` removes the marker and both blocks. Chaosbox rejects a marker naming
+a different repository and leaves it unchanged.
 
 ## Install for an agent (user scope)
 
@@ -45,27 +43,26 @@ without rewriting foreign hook entries. `uninstall` removes only entries
 identical to the ones `install` writes, and also removes a stale global
 guidance block left by older versions.
 
-Targets that are symlinks (for example home-manager managed), read-only, not
-plain JSON, or hand-formatted JSON that a rewrite would reorder are refused;
-the exact snippet to add is printed instead and the command exits 1. Codex
-refuses when `[mcp_servers.chaosbox]` already exists outside the managed
-block. `--dry-run` prints each planned file and its new contents.
+The command refuses symlinks (such as home-manager targets), read-only files,
+files that aren't plain JSON, and hand-formatted JSON that a rewrite would
+reorder. It prints the exact snippet to add and exits 1. For Codex, it refuses
+an existing `[mcp_servers.chaosbox]` outside the managed block.
+`--dry-run` prints each planned file and its new contents.
 
 ## Hints
 
-`chaosbox hint` is the hidden command behind that hook. It reads one harness
-PostToolUse JSON object from stdin and, inside an enabled project, turns a
+The hook calls the hidden `chaosbox hint` command. It reads one harness
+PostToolUse JSON object from stdin. In an enabled project, it turns a
 `Grep`/`Glob` search or a simple `rg`/`grep`/`ag`/`ack` command into at most
 five one-line graph hits (`name kind file:line (N callers)`) plus a pointer to
-`context`/`lookup`. The command is never parsed by a shell. A session gets at
-most five hints and repeated patterns are skipped (state under
-`$XDG_STATE_HOME/chaosbox/hints/<session>`); the whole hook is bounded to
-about 300 ms and any failure prints nothing and exits 0, so it can never block
-the tool that triggered it. OpenCode gets the same hint appended to a tool
-result by its compaction plugin, which waits at most one second; the installed
-Claude Code hook declares a two-second timeout. For `Read`, the hook emits nothing to the
-agent: if the file was served as source by an MCP call in the last 30
-minutes, it appends a `read_after_served` line to the ledger instead.
+`context`/`lookup`. No shell parses the command. The hook skips repeat patterns
+and caps hints at five per session (state under
+`$XDG_STATE_HOME/chaosbox/hints/<session>`). It runs for at most about 300 ms
+and fails silently with exit 0, never blocking the triggering tool. OpenCode's
+compaction plugin waits at most one second and appends the same hint to the
+tool result; the installed Claude Code hook declares a two-second timeout.
+For `Read`, the hook emits nothing to the agent. If an MCP call served the file
+as source in the last 30 minutes, the hook logs `read_after_served` instead.
 
 ## Git hooks
 
@@ -76,10 +73,10 @@ chaosbox hook uninstall
 
 The hooks are `post-commit`, `post-merge`, and `post-checkout` on branch
 switches. The hook directory comes from `git rev-parse --git-path hooks`, so
-`core.hooksPath` and linked worktrees work. Existing shell hooks keep their
-content: the block is appended, and uninstall restores the original bytes or
-deletes a file only this command created. Non-shell hooks are refused.
-Arguments are restricted to a shell-safe character set and single-quoted.
+`core.hooksPath` and linked worktrees work. Installation appends the block to
+existing shell hooks. Uninstall restores the original bytes or deletes only a
+file the installer created. The installer refuses non-shell hooks, restricts
+arguments to a shell-safe character set, and single-quotes them.
 
 Hooks start `chaosbox run . --no-decisions` in the background, so git never
 waits. They do so only when `CHAOSBOX_DB_BACKEND=typedb` and `chaosbox` are
@@ -100,8 +97,8 @@ never republish. Failed runs are reported and watching continues; Ctrl+C stops.
 
 ## Name resolution and exit codes
 
-`query lookup`, `explain`, `neighbors` and `path` (and the same MCP tools)
-accept an entity id or an exact name or qualified name:
+`query lookup`, `explain`, `neighbors` and `path` (and their MCP counterparts)
+accept an entity id, exact name or qualified name:
 
 | Exit | Meaning |
 | --- | --- |
@@ -119,15 +116,15 @@ Every CLI `query` and MCP `tools/call` appends one JSON line to
 `$CHAOSBOX_QUERY_LOG`, or by default `$XDG_STATE_HOME/chaosbox/queries.jsonl`
 (directory 0700, file 0600). A line records time, surface, tool, repo, pinned
 build, duration, exit/error code, response bytes, result count and the
-arguments: cursors are redacted, and arguments over 1 KiB are recorded only by
-size. When a response carried the shared top-level `source` array, the line
-also records the deduped repo-relative `served_files` (up to 50), the
-`served_chars` those sources held, and the enabled `root` when the caller ran
-inside one. `chaosbox hint` appends `surface: "hook"` lines, including
-`read_after_served` when a Read reopened a recently served file. The file
-rotates to `.1` above 64 MiB. Set `CHAOSBOX_QUERY_LOG=off` to disable it; write
-failures never affect the query. The run-bound read-view connector keeps its
-own audit and is not logged here.
+arguments. It redacts cursors and logs only the size of arguments over 1 KiB.
+For a response with the shared top-level `source` array, it also logs deduped,
+repo-relative `served_files` (up to 50), the character count of the returned
+sources (`served_chars`), and the checkout `root` if the caller ran inside an
+enabled one. `chaosbox hint` logs
+`surface: "hook"` lines, including `read_after_served` when a Read reopens a
+recently served file. The log rotates to `.1` above 64 MiB. Set
+`CHAOSBOX_QUERY_LOG=off` to disable it. Write failures never affect queries.
+The run-bound read-view connector uses a separate audit, not this log.
 
 ```sh
 LOG=${XDG_STATE_HOME:-$HOME/.local/state}/chaosbox/queries.jsonl
@@ -149,8 +146,8 @@ tools and answers every graph `tools/call` with "Chaosbox is not enabled for
 this project. Do not call it; use normal file tools."; `--intelligence*` and
 `--workspace` keep exactly their own tools either way.
 
-Inside an enabled project the `repo` argument is optional and defaults to the
-`.chaosbox.json` repository; an explicit `repo` still wins. Every tool takes
+In an enabled project, omit `repo` to use the `.chaosbox.json` repository.
+An explicit `repo` overrides it. Every tool takes
 `max_tokens` (default 8000, maximum 20000, four characters per token). Results
 are trimmed item by item, highest rank first, and report `truncated` counts:
 `{shown, total, next_cursor?}` for one trimmed collection, or

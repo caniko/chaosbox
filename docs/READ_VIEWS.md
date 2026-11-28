@@ -4,11 +4,11 @@
 
 Paperclip owns authorization. Its trusted host connector resolves company,
 project, agent, task, run, execution host, and server policy into a read view.
-`ReadView` is an admission contract, **not a bearer credential**. Deserializing a
-view or passing a CLI flag does not authenticate a worker. Only a trusted
-connector may construct an admitted reader or launch its stdio process. The
-worker must not have the connector's configuration, database credentials,
-producer credentials, writable admission files, or a direct database route.
+`ReadView` is an admission contract, **not a bearer credential**. Neither
+deserializing a view nor passing a CLI flag authenticates a worker. Only a
+trusted connector may construct an admitted reader or launch its stdio process.
+Workers must not have the connector's configuration, database or producer
+credentials, writable admission files, or a direct database route.
 
 The initial reader supports one repository and one explicit published build.
 It never follows the active pointer after admission. The existing query backend
@@ -19,11 +19,11 @@ sealed per build-edge membership. A missing recorded version blocks recovery
 instead of silently switching to a newer build.
 
 The PostgreSQL schema stores publication digests, sealed per-relationship
-evidence and canonical claim payloads; a build row exists only once its complete
-sealed membership committed. `chaosbox db migrate` applies additive schema
-updates, but cannot prove the complete references of a build published without
-them. Publish a new build identity with complete source evidence for run-bound
-reads.
+evidence and canonical claim payloads. A build row exists only after its
+complete sealed membership commits. `chaosbox db migrate` applies additive
+schema updates but cannot prove that a legacy build's publication-time
+references were complete. For run-bound reads, publish a new build identity with
+complete source evidence.
 Sealed evidence has a publication ceiling of 1,000 rows and 1 MiB per relationship.
 The reader additionally applies the admitted graph and evidence budgets.
 
@@ -53,8 +53,8 @@ before any new claim links can be added.
   applicability is `unknown`, never inferred from reproducible graph data.
 - Every retained relationship requires non-empty evidence and complete, allowed
   source citations. Legacy uncited or out-of-scope evidence blocks admission,
-  including when a caller only intended to read neighbors, paths or counts.
-  The reader never silently drops contradicting evidence to make a view pass.
+  even for reads of neighbors, paths or counts. The reader never silently drops
+  contradicting evidence to admit a view.
 - Revocation and cancellation discard in-flight results. Expiry is checked
   before work and before release. Backend errors are redacted at the boundary.
 
@@ -64,8 +64,8 @@ Begin with run-isolated MCP connections and conversations. Reconnect and
 recovery require new authorization for the recorded versions. Narrower scopes
 and different policy revisions require a new conversation; historical model
 context is itself data access. A host connector must settle the connection on
-completion/cancellation and revoke its reader when policy changes. These are
-worker-integration requirements, not guarantees conferred by a JSON document.
+completion/cancellation and revoke its reader when policy changes. Worker
+integration must enforce this; JSON alone cannot.
 
 Capability discovery must distinguish this reader contract from filesystem
 `execution_context` and from operator MCP. A worker lacking a qualified
@@ -103,11 +103,11 @@ For a Linux host connector that supervises subprocesses:
 chaosbox reader --admission /run/connector/approved-run/read-view.json
 ```
 
-The admission JSON is a serialized version-1 `ReadView`. It must be a regular
-file, private to and owned by the connector's process identity, at most 128 KiB.
-The connector must keep the file and all parent directories outside worker
-writes. The process uses its existing `CHAOSBOX_DATABASE_URL` only during
-admission. It loads no Jev credentials and exposes no ingestion tools.
+The admission JSON is a serialized version-1 `ReadView` in a regular file of
+at most 128 KiB, private to and owned by the connector's process identity.
+The connector must prevent worker writes to the file and any parent directory.
+The process uses its existing `CHAOSBOX_DATABASE_URL` only during admission,
+loads no Jev credentials and exposes no ingestion tools.
 
 The Linux connector supplies FIFO stdin/stdout pipes; the launcher uses
 nonblocking descriptors so pending I/O cannot leave blocking read/write threads.
@@ -124,10 +124,10 @@ that exhausts its budget closes the connection rather than releasing a late
 tool result.
 
 This command is a trusted connector primitive, not the Paperclip/Hermes host
-connector itself. The existing operator `chaosbox mcp` is still an operator
-surface and must not be installed as the worker's managed reader. Before worker
-integration, the controller must resolve actual grants, enforce direct-route
-isolation, and provide the conversation/recovery lifecycle described above.
+connector. Do not install the operator's `chaosbox mcp` as a worker's managed
+reader. Before worker integration, the controller must resolve actual grants,
+enforce direct-route isolation, and provide the conversation/recovery lifecycle
+above.
 
 ## Qualification status — 2026-09-30
 
@@ -157,12 +157,11 @@ lease revocation, real-pipe idle expiry and revocation under real-pipe output
 backpressure. The disposable server was stopped and waited for by the gate.
 
 The user-selected independent review found evidence immutability/completeness
-and deadline defects. Its follow-up also found same-ID publication races and
-cross-process claim reuse. The final source review found those blockers closed;
-the requested claim-flush race regression also passed. Native and complete
-disposable-live qualification are green.
+and deadline defects; follow-up found same-ID publication races and cross-process
+claim reuse. The final source review confirmed the fixes. The requested
+claim-flush race regression, native checks and complete disposable-live gate passed.
 
-Source-hashed receipts are retained under
+Source-hashed receipts:
 `/data/scratch/tmp/opencode/chaosbox-reader-state-20260930/evidence/`:
 
 - `reader-review-native-_ys5hehw/receipt.json`: 256 workspace tests, four TypeDB
@@ -170,9 +169,9 @@ Source-hashed receipts are retained under
 - `reader-review-live-6gu9qiv9/receipt.json`: complete disposable integration gate.
 - `source-review-followups.json`: user-selected Sol follow-up verdicts and scope.
 
-The final added live regression was separately compiled and checked by
+The final live regression was compiled and checked separately with
 `cargo clippy --locked -p chaosbox-typedb --all-targets -- -D warnings`.
 These are local source/disposable-backend checks, not package, VM or
 deployed-worker receipts.
-Paperclip grant resolution, authenticated host admission, conversation and
-checkpoint recovery, and direct-route isolation remain the next integration slice.
+Next: Paperclip grant resolution, authenticated host admission, conversation
+and checkpoint recovery, and direct-route isolation.

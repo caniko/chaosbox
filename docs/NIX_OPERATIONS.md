@@ -1,7 +1,7 @@
 # Nix operation provenance
 
-`chaosbox nix add` provides reason-gated local additions, a durable private
-invocation journal, offline operational intelligence and cleanup inspection.
+`chaosbox nix add` requires a reason for each local addition and keeps a durable
+private journal for offline operational intelligence and cleanup inspection.
 It supports NAR additions (`nix-store --add` / `-A`, modern `nix store add`,
 and `add-path`) and flat single-file additions (`--mode flat`, `add-file`).
 It does not evaluate a flake or realise a derivation.
@@ -12,8 +12,8 @@ Configure `CHAOSBOX_NIX_WORK` (private existing parent, journal directory create
 0700), `CHAOSBOX_NIX_SCOPE` (`private:OWNER`), `CHAOSBOX_NIX_HOST` and
 `CHAOSBOX_NIX_BIN` (absolute pinned Nix executable). `CHAOSBOX_NIX_STORE` defaults
 to `daemon`; isolated `local?root=ABSOLUTE` stores are supported for qualification.
-The CLI cannot override these settings. A consumer facade must export them
-authoritatively before granting an automatic shell allowance.
+The CLI cannot override these settings. Before granting an automatic shell
+allowance, the consumer facade must export the authoritative values.
 
 ```nu
 chaosbox nix add --reason "Compare this source candidate with the pinned input" --repo $env.PWD -- ./candidate
@@ -23,25 +23,25 @@ chaosbox nix evidence --repo $env.PWD nix:OPERATION_ID
 chaosbox nix query --path /nix/store/HASH-candidate
 ```
 
-Every addition requires a nonblank reason of at most 4000 UTF-8 bytes, validated
-before opening the journal or launching Nix. Arguments are typed and passed
-without a shell; paths follow `--`. The local store and IFD/build policy are
-fixed in argv, and ambient `NIX_*` variables are removed from the child.
+The CLI validates the required nonblank reason (at most 4000 UTF-8 bytes)
+before opening the journal or launching Nix. It passes typed arguments without
+a shell; paths follow `--`. It fixes the local store and IFD/build policy in
+argv and strips ambient `NIX_*` variables from the child environment.
 
 Optional `--id` provides exact-retry identity. `--session`, `--message` and
 `--tool-call` retain caller-supplied native associations; the standalone CLI
-cannot independently authenticate those assertions. The required repository
-association is explicit. Directory paths are useful when a consumer adapter
-retrieves operational context for the current session location.
+cannot independently authenticate them. Specify the repository explicitly.
+Directory paths let a consumer adapter retrieve operational context for the
+current session location.
 
 ## Evidence, uncertainty and retry
 
 The private SQLite journal uses synchronous FULL transactions, binds to one
 scope/host/store and commits the immutable intent before process creation.
 A unique operation id and canonical request digest arbitrate concurrent retries.
-Observed execution is committed before optional metadata capture; settlement is
-separate and append-only. A failed final write preserves the returned path and
-actual outcome, and an exact retry reconciles those facts without running Nix.
+The journal commits observed execution before optional metadata capture.
+Settlement is separate and append-only. If the final write fails, the returned
+path and actual outcome survive; an exact retry reconciles them without running Nix.
 Exact settled retries return the original receipt, even if the input has since
 changed. Reconciliation can settle observed execution while its original runner
 captures optional metadata; every caller returns the first committed settlement,
@@ -56,11 +56,11 @@ is `not-started`; a native failure is `failed`; process signals are `interrupted
 A timeout or capture failure after launch is `unresolved` because partial store
 effects may exist. Abrupt runner death leaves a durable unsettled intent.
 
-Each child has a bounded lifetime and kill-on-drop ownership. Settlement write
-failure returns an error and leaves the durable intent and any committed
-execution evidence for inspection. The
-ledger and store have no shared transaction; success does not claim exhaustive
-daemon-side effect capture or exclusive object ownership.
+Each child has a bounded lifetime and kill-on-drop ownership. If settlement
+fails to write, the caller gets an error and can inspect the durable intent and
+any committed execution evidence. The ledger and store share no transaction.
+Success does not establish exhaustive daemon-side effect capture or exclusive
+object ownership.
 
 `context` and `evidence` are local read-only operational-intelligence interfaces,
 independent of TypeDB and Jev. Context returns native reasons and versioned
@@ -82,10 +82,10 @@ store, journal, repository or Nix-argument selectors.
 
 ## Cleanup contract v1
 
-Additions preserve native **unrooted** retention. They do not create permanent
-roots, holds, profiles or automatic release obligations. A completed session
-does not imply that an object is disposable. Identical content can have multiple
-invocations with independent reasons; historical receipts survive collection.
+Additions stay natively **unrooted**: no permanent roots, holds, profiles or
+automatic release obligations. Session completion does not make an object
+disposable. Multiple invocations can add identical content, each with its own
+independent reason; receipts survive collection.
 
 `query` returns at most 100 invocations per page, exact-path consumer filtering,
 current filesystem presence (`present` / `absent` / `unknown`), unrooted retention,
@@ -95,16 +95,15 @@ is always false. Doty's `nix-store` command consumes the same versioned contract
 for inspection only. Neither reader initializes the journal or performs store
 writes, assessment, root deletion or GC.
 
-Explicit held retention is a separate capability: it must establish continuous
-temporary-root-to-permanent-root protection and transactional generation-bound
-release before a cleanup consumer can support it. It is not approximated by
-adding a symlink after an unrooted command exits.
+Explicit held retention needs continuous temporary-root-to-permanent-root
+protection and transactional generation-bound release before a cleanup consumer
+can support it. Adding a symlink after an unrooted command exits does not qualify.
 
 ## Other operation candidates
 
-Purpose tracking should follow materialization and lifecycle effects rather than
-whether a command is spelled like a query. The following inventory is an
-expansion guide; only ordinary/flat addition is implemented in contract v1.
+Track purpose by materialization and lifecycle effects, not by whether a command
+looks like a query. This inventory guides future work; contract v1 implements
+only ordinary/flat addition.
 
 | Family | Candidates | Receipt and ownership requirements |
 |---|---|---|
@@ -121,6 +120,6 @@ expansion guide; only ordinary/flat addition is implemented in contract v1.
 | Query-shaped producers | Flake metadata/show/search/path-info, evaluation fetch builtins and `builtins.path` | Sources can be copied/fetched even with IFD disabled or a dry run. Connect guarded producer receipts and state capture; do not infer zero writes from command name. |
 | Maintenance and removal | Repair, verify, GC, optimisation, signing | Separate mutating maintenance/cleanup purposes and measured outcomes. Legacy `nix-store --verify` can repair DB inconsistencies without `--repair`. Store entry count and NAR bytes do not establish reclaimable or physically freed bytes. |
 
-Consumers must check runtime schema versions as well as package capability
+Consumers must check both runtime schema versions and package capability
 metadata. Qualify exact upstream revisions before changing fleet pins or
-allowances. A configured adapter is not proof that it has been activated.
+allowances. Configuration does not prove adapter activation.

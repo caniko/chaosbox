@@ -1,21 +1,20 @@
 # `sessions adopt` / `sessions install` — interface contract
 
-**Status: IMPLEMENTED.** The Rust CLI surface below ships as
+**Status: IMPLEMENTED.** The Rust CLI ships
 `sessions adopt` / `sessions install` / `sessions rollback` in
 `crates/chaosbox/src/sessions/cli.rs`, wrapping the pinned tools
 (`install.mjs`, `rollback.mjs`, `preserve-check.mjs`, `hm-generation.mjs`).
-Every claim this contract makes about their arguments, state schema and exit
-codes has been executed rather than asserted — see §6 and the companion runbook.
+Every documented argument, state-schema and exit-code claim in this contract was
+exercised; see §6 and the runbook.
 
 | Part | Status | Owner |
 |---|---|---|
 | §1–§3 `adopt` / `install` / `rollback` | implemented (Rust CLI) | Session C |
 | §4 `journal-v3` supersession receipts | implemented in `sessions/campaign.rs` | Session A |
 
-Companion document: [`OPENCODE-CUTOVER.md`](./OPENCODE-CUTOVER.md) — the runbook that
-*uses* this interface.
+Runbook: [`OPENCODE-CUTOVER.md`](./OPENCODE-CUTOVER.md).
 
-Existing surface, unchanged by this proposal
+Unchanged interface
 (`crates/chaosbox/src/sessions/cli.rs`):
 
 - `sessions status [--root]`
@@ -27,10 +26,9 @@ Existing surface, unchanged by this proposal
 
 ## 1. `sessions adopt` — register a store as a campaign source
 
-**Purpose.** The migration reasons about several stores (v1 live, canary, staging
-destination, install target). Adoption pins one of them into the campaign as a named,
-digest-addressed input so downstream steps reference `staging` rather than an ad-hoc path
-that may have moved.
+**Purpose.** Pin a store (v1 live, canary, staging destination, or install target)
+as a named, digest-addressed campaign input. Later steps can reference `staging`
+instead of a path that might move.
 
 **Read-only.** Adoption never writes to the adopted database.
 
@@ -64,8 +62,8 @@ chaosbox sessions adopt --name <key> --db <path> [--root <campaign>] [--allow-he
 }
 ```
 
-- `boundaryRecord` is set when the adoption corresponds to a `snapshot.mjs` record, so the
-  adoption and the freeze evidence point at the same digest.
+- If adoption corresponds to a `snapshot.mjs` record, `boundaryRecord` ties the
+  adoption and freeze evidence to the same digest.
 - When `--allow-held` is used, `held` is `true` **and the record is excluded from count
   derivation**: a store with writers open has an unstable digest and must not be summed.
 
@@ -89,11 +87,9 @@ written and the run must not proceed.
 
 **Recommendation: a thin wrapper, not a reimplementation.**
 
-The ten-phase restartable installer already exists as `install.mjs` and has been rehearsed
-**0 failed (51 passes)**, including its interrupted / crashed / already-complete state
-transitions. Writing
-a second implementation in Rust would produce two authorities for one state file and throw
-away that evidence. So:
+Reuse the restartable ten-phase `install.mjs`. Rehearsal covered interrupted,
+crashed and already-complete state transitions: **0 failed (51 passes)**. A Rust
+reimplementation would give the state file two authorities and discard that evidence.
 
 ```
 chaosbox sessions install --dir <target> --source <staged.db> --state <state.json>
@@ -115,13 +111,11 @@ chaosbox sessions install --dir <target> --source <staged.db> --state <state.jso
 | `2` | usage, or a state it will not act on | missing args; a phase left mid-flight (needs `--resume`); a `--expect-*` that **contradicts** the state file; an unknown `--stop-after` |
 | `3` | stopped early on request | `--stop-after` marks the state `interrupted`, which **auto-resumes** |
 
-An *interrupted* state resumes on its own; a state left mid-flight by a failure or a crash
-refuses until `--resume`. The distinction is deliberate: `--stop-after` is a choice the
-operator made, a crash is not.
+An *interrupted* state from an operator's `--stop-after` resumes automatically.
+A failure or crash that leaves a phase mid-flight requires `--resume`.
 
-A resume that supplies a *different* `--expect-*` value is refused (`2`) rather than
-silently adopted — the state file is the authority for that install. Omitting the flag is
-**not** a contradiction: an absent `--expect-*` inherits the recorded value.
+The state file is authoritative on resume: a different `--expect-*` value
+exits `2`. An omitted `--expect-*` inherits the recorded value.
 
 ### 2.2 State-file schema (pinned — both sides depend on it)
 
@@ -155,9 +149,8 @@ Three fields are load-bearing for rollback and must not be dropped or renamed:
   is never inlined here, and a phase that finds it present-but-unparseable **fails** rather
   than overwriting the recorded "before" digests.
 
-A state file whose `steps.backup` carries no digest or no shape is refused by `rollback.mjs`
-outright: there would be nothing to restore *to*, and guessing is the one thing a rollback
-must not do.
+`rollback.mjs` refuses a state file whose `steps.backup` lacks a digest or a
+pre-install shape. It never guesses what to restore.
 
 ### 2.3 Preconditions (hard gates, not warnings)
 
@@ -189,14 +182,13 @@ chaosbox sessions rollback --state <state.json> --record <out.json>
                            [--dry-run]
 ```
 
-All three `--config-*` arguments are **required** (missing any one is exit `2`, checked
-before the freeze stops any writers): restoring the old database while the service still
-pointed at the new package is the mismatched pair this one operation exists to prevent.
+All three `--config-*` arguments are **required**. If any are missing, rollback
+exits `2` before the freeze stops any writers.
 `--config-live` names the live-generation record, `--config-baseline` the pre-cutover
-record taken by `hm-generation.mjs --snapshot` (the thing the restore is asserted
-*against*), and `--config-restore` the single Home Manager command that moves package and
-configuration back together. The post-restore generation is read back by a separate probe
-(`hm-generation.mjs --get`), never trusted from the restore command's own report.
+record from `hm-generation.mjs --snapshot` that the restore must match, and
+`--config-restore` the single Home Manager command that restores package and
+configuration together. A separate probe (`hm-generation.mjs --get`) reads the
+post-restore generation; the restore command's own report is not trusted.
 
 Enforced order:
 
@@ -207,9 +199,8 @@ Enforced order:
    current store aside then the staged copy in, delete the foreign `-wal`/`-shm`, then
    `quick_check` + FK check + counts vs `steps.backup.counts` + fingerprint vs
    `steps.backup.schema`;
-3. **config + package** — run `--config-restore`, probe the live generation, and require it
-   to **equal the baseline generation** — "it changed" is not the claim; "it went back to
-   the one the baseline names" is;
+3. **config + package** — run `--config-restore`, probe the live generation, and
+   require it to **equal the baseline generation**, not merely change;
 4. **verify** — no holders, `quick_check` ok, marker equals the pre-install marker.
 
 **Refuses when:** `state.phase != "done"`; backup or its digest missing; `steps.backup` has
@@ -239,9 +230,8 @@ re-imported**: `journal-v2/`
 keeps the base receipt and `journal-v3/` gains a receipt that supersedes it. Session count is
 unchanged — these sessions are already counted in the canonical 7 644.
 
-`effective_receipts()` already tracks `depth` (`supersessions = Σ(depth − 1)`), so the
-chaining machinery is present. The additions below are what the v3 records need on top of the
-existing shape.
+The chain resolver, `effective_receipts()`, already tracks `depth`
+(`supersessions = Σ(depth − 1)`). V3 adds the fields below.
 
 ### 4.1 Record shape
 
@@ -268,8 +258,8 @@ A `journal-v3/` receipt adds:
 }
 ```
 
-- `supersedes` names a **receipt-file digest**, not a session id — that is what makes a chain
-  walkable and a cycle detectable.
+- `supersedes` names a **receipt-file digest**, not a session id, so the verifier
+  can follow the chain and detect cycles.
 - `transfer.mechanism` is mandatory and must be one the verifier accepts. `native-import`
   is **not** acceptable for a supersession: it would 409, and if it ever succeeded it would
   silently mean "the session did not exist", which contradicts the receipt's claim that it
@@ -326,8 +316,8 @@ The runbook's tools (`freeze.mjs`, `verify-holders.mjs`, `snapshot.mjs`, `instal
 `rollback.mjs`, `preserve-check.mjs`, `hm-generation.mjs`) currently live under
 `/data/scratch/tmp/opencode/cutover-c/` — **scratch storage**.
 
-A runbook that points at scratch is fragile: the tools can vanish while the runbook, state
-files and digests survive. Before any execution:
+Scratch tools can disappear while the runbook, state files and digests survive.
+Before execution:
 
 1. copy the tool set to a durable location (campaign root or the chaosbox tree),
 2. record `path + sha256` for each into the campaign (a `tools.json`, pinned alongside

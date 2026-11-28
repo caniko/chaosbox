@@ -1,24 +1,21 @@
 # Gate G1 — all 7644 existing receipts verify
 
-Recorded outside the campaign directory, because the campaign
-(`2026-09-22-v2/`) is treated as read-only while this gate was evaluated.
-`PLAN-REVISION.md` inside the campaign was left untouched; this file is its
-evidence slot.
+The campaign (`2026-09-22-v2/`) stayed read-only during evaluation. This file is
+the evidence slot outside the campaign; `PLAN-REVISION.md` inside it is unchanged.
 
 ## Executable
 
 Built from branch `session-verifier`, worktree
 `/data/scratch/tmp/opencode/chaosbox-session-verifier`, commit `1123b05`
 plus its `test(sessions)` follow-up on top of trunk `33d7477` (after the
-`feat!` that removed the Gel backend). The branch was originally cut from
-`03339f7` and rebased onto `33d7477`; only `Cargo.lock` conflicted, and this
-gate was re-run in full after the rebase. A further re-run after verifier
-hardening is recorded at the end of this file.
+`feat!` that removed the Gel backend). The branch started at `03339f7` and
+rebased onto `33d7477` with only a `Cargo.lock` conflict. The full gate ran
+again after the rebase. See below for the re-run after verifier hardening.
 
 - Binary: `target/release/chaosbox` (23640520 bytes, built 2026-09-23 15:51)
 - Command: `chaosbox sessions verify --root .../canonical-staging-FP6mrj`
 - Exit code: `0`, wall clock `93 s` (`elapsed_ms 93295`)
-- The campaign was opened read-only; nothing in it was written.
+- The run opened the campaign read-only and wrote nothing to it.
 
 A run from the pre-rebase build also reported `7644 / 7644 / complete`
 (`elapsed_ms 74186`, `/data/scratch/tmp/opencode/verify-7644.json`); the
@@ -80,8 +77,8 @@ Measured shape of all 7644 rows (all `REAL`, all `not-null`):
 | `>= 1` fractional | 769 |
 | `>= 1` integer | 0 |
 
-So 3572 of 7644 rows exercise an encoder path that was previously wrong, and
-all 3572 now reproduce their JavaScript-produced digests byte-for-byte.
+3572 of 7644 rows exercise a previously broken encoder path. All 3572 now
+reproduce their JavaScript-produced digests byte-for-byte.
 
 ## Not covered by this gate
 
@@ -108,10 +105,9 @@ Expected: exit `0`, `sessions_verified: 7644`, `complete: true`,
 
 ## Re-run after verifier hardening
 
-The same gate, re-run after the verification contract
-(`docs/SESSION_VERIFICATION.md`) and the verifier-hardening work landed on
-the same branch. Nothing about the campaign changed; what changed is what the
-pass has to prove before it may answer `0`.
+The gate ran again after the verification contract (`docs/SESSION_VERIFICATION.md`)
+and verifier hardening landed on the same branch. The campaign didn't change;
+the verifier must prove more before it can return `0`.
 
 ### Executable
 
@@ -119,7 +115,7 @@ pass has to prove before it may answer `0`.
 - Command: unchanged — `chaosbox sessions verify --root .../canonical-staging-FP6mrj`
 - Exit code: `0`, `elapsed_ms 102108` (up from `93295`: the pass now also
   reads every `session_v2` id and reconciles the inventory)
-- The campaign was opened read-only; nothing in it was written.
+- The run opened the campaign read-only and wrote nothing to it.
 - Report: `/data/scratch/tmp/opencode/verify-7644-hardened.json`
 
 Then rebased onto trunk `dc30fef` (`fefa183` + `dc30fef`, the jev and
@@ -145,7 +141,7 @@ report `/data/scratch/tmp/opencode/verify-7644-postrebase.json`.
 
 ### What the report can now also state
 
-The pass used to say only what it found. It now says what it measured:
+The pass now reports what it measured, not just what it found:
 
 | field | value | means |
 | --- | --- | --- |
@@ -161,22 +157,21 @@ The pass used to say only what it found. It now says what it measured:
 | `snapshot.concurrent_write` | `false` | nobody committed while it ran |
 | `source_coverage` | `0` | sources were not requested, and the report says so |
 
-G1's original criteria — reconciled totals, `deferred == 0`, `errors == 0`,
-driver digest `62f6fb35…` — are now all *in* the report rather than being
-inferred by a human from `progress.json` alongside it.
+The report now states G1's original criteria directly: reconciled totals,
+`deferred == 0`, `errors == 0` and driver digest `62f6fb35…`. Readers no longer
+have to infer them from `progress.json`.
 
 ### Paths this closed
 
-Each was a way for a pass to answer `0` without having verified what it
-claimed; each now has a test:
+Each let the verifier return `0` without verifying its claims. Each now has a test:
 
 - **Vacuous completeness.** Completeness was measured against the receipts
   the pass discovered, so an empty journal over a populated inventory passed.
   Now reconciled against `progress.json`, and `an_empty_journal_cannot_pass_...`
   shows `--allow-partial` does not rescue it.
-- **Unchecked set directions.** Missing receipts, absent destination rows,
-  and unattested destination rows are now three distinct reported outcomes
-  over the whole inventory, independent of `--limit`.
+- **Unchecked set directions.** The report now distinguishes missing receipts,
+  absent destination rows and unattested destination rows across the whole
+  inventory, regardless of `--limit`.
 - **Mistyped `supersedes`.** A non-string value read as "absent", turning a
   supersession into a base receipt with a competing set of attestation fields.
   Now `InvalidField`.
@@ -185,9 +180,9 @@ claimed; each now has a test:
   verification at any `.db`. Now restricted to a bare database name — a
   pre-existing requirement, since all 7644 real receipts already use
   `primary` / `stable` / `old-backup` / `local` / `quarantine` / `canary`.
-- **`--sources` silently skipping receipts.** Coverage was not counted, so a
-  receipt without usable `source` metadata was skipped without appearing
-  anywhere. Now `source_coverage` must equal `sessions_checked`.
+- **`--sources` silently skipping receipts.** The verifier didn't count coverage,
+  so it skipped receipts without usable `source` metadata without reporting
+  them. Now `source_coverage` must equal `sessions_checked`.
 - **Multi-file consistency.** `quick_check`, the foreign-key walk, and the
   digests each read whatever the database looked like at that moment. Now one
   read transaction per database, with the generation reported.
@@ -208,29 +203,25 @@ claimed; each now has a test:
   (was 70 passed: +27 — inventory reconciliation, receipt schema,
   source coverage, snapshot behaviour, and real-binary exit codes)
 
-Receipt schema conformance was measured against the campaign itself before
-the stricter validation was enforced: all 7644 receipts already carry
+The campaign's receipts passed the stricter schema before enforcement: all 7644 carry
 `sessionID`, `source`, `inputDigest`, `recoveryDigest`, `destinationDigest`,
 `transformation`, `messages`, `drafts` with correct types and 64-lowercase-hex
-digests — **0 contract violations**. So the stricter rules reject no receipt
-that exists today; they only constrain the 204 variants Phase 2 will write.
+digests — **0 contract violations**. The stricter rules reject no existing
+receipt and constrain only the 204 variants Phase 2 will write.
 
 ---
 
 ## Re-run after the inventory closeout
 
-A review found that `total`, `deferred` and `errors` were defaulted when
-absent — `total` to the number of `verified` entries, the other two to zero.
-That defaulting manufactures the very agreement those counters exist to
-measure: an inventory reporting none of them would still have reconciled,
-and `--allow-partial` would have waved it through. They are now required,
-`complete` must be a boolean when present rather than decaying into `false`,
-and `identityDigest`/`driverDigest` must be 64 lowercase hex digits when
-present.
+A review found that missing `total`, `deferred` and `errors` had defaults:
+`total` used the number of `verified` entries; the other two used zero. An
+inventory with no counters could then reconcile and pass with `--allow-partial`.
+All three counters are now required. If present, `complete` must be a boolean
+rather than falling back to `false`; each of `identityDigest`/`driverDigest`, if
+present, must be 64 lowercase hex digits.
 
-The campaign was checked against the new rules *before* they were enforced:
-its `progress.json` carries all six fields with the expected shapes, so the
-tightened parser accepts it.
+The campaign passed the new rules *before* enforcement. Its `progress.json`
+carries all six fields in the forms the tightened parser expects.
 
 The same review also corrected two overstatements in this document and in
 `docs/SESSION_VERIFICATION.md`: `PRAGMA data_version` is a per-connection
@@ -243,7 +234,7 @@ hardened-post-rebase, not against the original pre-hardening run.
 - Binary: `target/release/chaosbox` (23693168 bytes, built 2026-09-23 17:15)
 - Command: unchanged — `chaosbox sessions verify --root .../canonical-staging-FP6mrj`
 - Exit code: `0`, `elapsed_ms 100024`
-- The campaign was opened read-only; nothing in it was written.
+- The run opened the campaign read-only and wrote nothing to it.
 - Report: `/data/scratch/tmp/opencode/verify-7644-closeout.json`
 - **Identical to `verify-7644-postrebase.json` field for field except
   `elapsed_ms 99430 → 100024`** (24 fields compared).

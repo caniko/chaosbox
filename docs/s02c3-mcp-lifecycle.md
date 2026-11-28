@@ -5,15 +5,14 @@ complete across S02c.1, S02c.2 and S02c.3.** Production resource acceptance rema
 a separate gate.
 
 Implementation savepoint: `0050c4631a951015247fe4d6ed947ff5ea19b9dd`.
-The commit containing this report adds the ordinary-client lifecycle test,
+This report's commit adds the ordinary-client lifecycle test,
 updates existing test clients and records the [qualification receipt](s02c3-mcp-lifecycle.json).
 
 ## Transport contract
 
-The ordinary `mcp` command keeps polling input during backend work and output
-writes. A request runs in place; no detached tool task or request queue survives
-its exchange. Existing graph, workspace and intelligence dispatch remains behind
-the same argument and authorization checks.
+Ordinary `mcp` polls input during backend work and output writes. Requests run
+in place; no detached tool task or request queue survives the exchange. Graph,
+workspace and intelligence dispatch keep their argument and authorization checks.
 
 - Input is newline-delimited JSON, capped at **65,536 bytes including newline**.
   A cap-plus-one read detects overflow even without newline or EOF. Partial bytes
@@ -53,15 +52,14 @@ publicly reusable; no read authority is granted by that helper.
 
 ## Required live qualification
 
-TypeDB CE 3.13.0 ran in a disposable test deployment with gRPC at
-`127.0.0.1:24739`; its native monitoring endpoint exposed active transactions.
+Disposable TypeDB CE 3.13.0 served gRPC at `127.0.0.1:24739`; its native
+monitoring endpoint exposed active transactions.
 The fresh `s02c3_qualified_final` database contains 653 nodes / 650 relationships,
 including a 650-edge hub, an isolated node and an entity with a 600,000-byte name
 and qualified name. Build: `build:ddc833021246`.
 
-Before each active-read failure, the test observed a real gRPC read transaction
-in that database. The final run returned to zero reads within the two-second
-assertion window:
+The final run observed a real gRPC read transaction in that database before
+each active-read failure, then zero reads within the two-second assertion window:
 
 | Event | Observed active reads | Reads after cleanup | Measured cleanup |
 |---|---:|---:|---:|
@@ -76,8 +74,8 @@ by an intervening ping and another observed active read. Matching cancellation
 then returned `-32800`; native process-FD/TCP-inode observations found zero
 remaining TCP sockets, and a subsequent ping succeeded.
 
-The wide lookup completed its three backend queries and released its read before
-its large response stalled on an unread OS pipe. EOF ended that process cleanly
+The wide lookup finished three backend queries and released its read before
+the large response stalled on an unread OS pipe. EOF ended the process cleanly
 in 2 ms. With stdin still open, its fixed output deadline ended the process with
 an error after another 9,943 ms. A separate silent-TCP test proves that cancelling
 or ending an acquisition also closes the actual connector socket.
@@ -121,8 +119,8 @@ swap. The final lifecycle worker consumed 34.991 seconds wall time and a native
   tests cover exact frame boundaries, split UTF-8, bounded response overflow,
   local drop guards and a fixed backpressure deadline despite notifications.
 
-Use the commands in `worker-resources.txt`, with a fresh explicitly named
-disposable database, for the required live run:
+For the required live run, follow `worker-resources.txt` and use a fresh,
+explicitly named disposable database:
 
 ```bash
 cargo test --locked --offline -p chaosbox --test mcp_lifecycle --jobs 2 \

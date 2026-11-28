@@ -56,5 +56,5 @@ With the project's docs shell selected, preview with `mdbook serve docs`.
 Rust API documentation remains the separate `checks.<system>.doc` output.
 
 The reference chapters include the existing repository documents rather than
-copying them. Dated handoffs and cutover records describe their original
+copying them. Dated baselines and cutover records describe their original
 verification scope, not necessarily today's deployment state.

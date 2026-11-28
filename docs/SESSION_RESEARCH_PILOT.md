@@ -9,9 +9,9 @@ candidate IDs. The top-eight report limit does not apply to this inventory.
 Historical cwd remains `sourceCwdHint`; ownership starts unresolved.
 
 An optional `--decisions FILE` supplies a JSON object keyed by candidate ID.
-Each decision requires a rationale. Resolving `targetRepository` also requires
-`targetComponent` and exact `ownershipEvidence` citations. Targets can belong to
-repositories outside the sampled three. Intent, implementation, deployment,
+Each decision needs a rationale. Resolving `targetRepository` also requires
+`targetComponent` and exact `ownershipEvidence` citations. Targets can fall
+outside the three sampled repositories. Intent, implementation, deployment,
 action and disposition are separate fields; duplicate links must be acyclic.
 These are review annotations, not proof that a system was deployed. Version 1
 keeps deployment unknown pending an independent deployment-verification path.
@@ -22,9 +22,10 @@ Every opportunity carries its candidate IDs and the reviewed action,
 implementation and deployment fields; validators reject changed statuses or
 invented IDs. Ownership can cross historical cwd boundaries. Out-of-cohort
 owners and all unselected candidates remain in `candidate-ledger.json`.
-Synthesis retries require the same ledger; changed review decisions belong in
-a new work directory. Review annotations guide synthesis but do not establish
-that cited text semantically proves a claim: that remains the reviewer's job.
+Retry synthesis with the same ledger; use a new work directory if review
+decisions change. Annotations guide synthesis and do not establish semantic
+proof; reviewers must still check whether cited text semantically proves the
+claim.
 
 A new synthesis may use `confirmed-gap` only with an independently supplied
 `WORK/reproductions.json` entry and the corresponding `reproductionRef` in the
@@ -33,9 +34,9 @@ as the code evidence), `sourceState: "clean"`, `command` (argument array),
 `expected`, `observed`, `outputSha256`, and `result: "reproduced-defect"`.
 Receipts are operator-reviewed evidence; the model cannot create them. Dirty
 checkout results cannot establish failure of a pinned clean revision. Code
-inspection without a receipt remains partial or unverified. Existing historical
-reports remain evidence of their original run, rather than being rewritten to
-meet the stronger validation contract.
+inspection without a receipt remains partial or unverified. Keep historical
+reports as evidence of their original runs; do not rewrite them to meet the
+stronger validation contract.
 
 `scripts/session_research.py` is a disposable research workflow over the frozen
 OpenCode v1 archive. Its output is a set of **reviewable feature proposals**, not
@@ -53,24 +54,23 @@ not establish the current repository state.
 Extraction and synthesis recheck every exported slice against its pinned native
 part before invoking a model.
 
-This is intentionally **pilot coverage**: child sessions, divergent variants,
-other source databases, image contents, tool-output text and post-freeze deltas
-are not analyzed. Roots with up to 500 messages are eligible; a selected thread
-above 120,000 exported text characters is refused rather than silently
-truncated. Normalized root title and first user request identify repeated fork
-lineages; only one root from a lineage enters a pilot. The cwd is a sampling
-hint, not an inferred repo identity.
+**Pilot coverage** excludes child sessions, divergent variants, other source
+databases, image contents, tool-output text and post-freeze deltas. Roots with
+up to 500 messages are eligible; the pilot rejects selected threads above
+120,000 exported text characters instead of truncating them. Normalized root
+title and first user request identify repeated fork lineages; each pilot takes
+at most one root per lineage. The cwd is a sampling hint, not a repo identity.
 Metrics distinguish `replayedRoots` (same title/request family among primary
 roots) from `reconciliationVariants` (recorded alternate snapshot copies).
 No frequency claim should be made from the pilot alone.
 
 ## Run a disposable pilot
 
-Create a new private work directory outside the repository; it must not exist
+Choose a new private work directory outside the repository; it must not exist
 before `prepare`. `--session` selects operator-curated canonical roots; without
-it, `--per-repo` draws a deterministic, title-stratified sample. Review the
-resulting `plan.json` for unsuitable sessions before exporting. If the sample
-is poor, choose a **new** work directory; files are never overwritten.
+it, `--per-repo` draws a deterministic, title-stratified sample. Check `plan.json`
+for unsuitable sessions before exporting. If the sample is poor, choose a **new**
+work directory; the pilot never overwrites files.
 
 ```sh
 ARCHIVE=/data/nvme0/can/ProjectState/opencode-migration/2026-09-22-v2
@@ -95,19 +95,20 @@ questions in one request, with 2–255 options per question. The model never
 generates quotations, candidate IDs, new plans or report prose.
 
 The contract follows the official [API](https://docs.typesafe.ai/api) and
-[models](https://docs.typesafe.ai/models) documentation, checked 2026-09-30.
-Question keys are not sent to the model: source/candidate selectors are included
-in the instructions and option descriptions. Dependent decisions run in separate
+[models](https://docs.typesafe.ai/models) docs, checked 2026-09-30.
+Question keys are never sent to the model; the runner sends source/candidate
+selectors in instructions and option descriptions. Dependent decisions run in separate
 stages: select exact repository evidence first, then assess status against it.
 
 Build the current CLI or select an installed binary that supports `jev evaluate`.
 It must also support `jev capabilities`, reporting the pinned model, approved
 endpoint, receipt version, strict returned-model identity and disabled redirects.
 The runner checks this credential-free command before persisting a new attempt
-reservation. A missing or incompatible binary leaves the request budget intact;
-successful cached receipts replay without requiring the binary or its preflight.
-Canix's installed revision predates these commands; until package adoption is
-completed, select a current build with `SESSION_RESEARCH_CHAOSBOX_BIN` as below.
+reservation.
+A missing or incompatible binary leaves the request budget intact. Successful
+cached receipts replay without the binary or its preflight. Canix's installed
+revision predates these commands; use `SESSION_RESEARCH_CHAOSBOX_BIN` to select
+a current build until package adoption.
 Credentials come from `CHAOSBOX_JEV_API_KEY_FILE`, falling back to the explicit
 operator `TYPESAFE_API_KEY`. No OpenCode server, provider configuration, model
 session database or copied provider credentials is needed.
@@ -184,9 +185,9 @@ python3 scripts/session_research.py render --work "$WORK"
 python3 scripts/session_research.py audit --work "$WORK"
 ```
 
-The final render rechecks every source slice against the original pinned part
-and validates both session and repository citations. Generated Markdown and
-machine-readable reports live in `$WORK/reports/`. Portfolio opportunities
+Rendering rechecks each source slice against its original pinned part and
+validates session and repository citations. Markdown and machine-readable
+reports live in `$WORK/reports/`. Portfolio opportunities
 require citations associated with at least two reviewed target repositories.
 Pairs from overlapping historical lineages are excluded before inference.
 Jev chooses commonality and ownership only from supplied candidates; report
@@ -205,15 +206,15 @@ reports or reinterpret their model events as typed answers. Candidate IDs can
 change when new extraction uses verbatim statements instead of generated claims;
 review a new ledger rather than reusing old decisions by position.
 
-For source drill-down, copy a report citation verbatim into
+To inspect a source, copy a report citation verbatim into
 `python3 scripts/session_research.py inspect --work "$WORK" --ref 'primary/ses_.../msg_.../prt_...@0:2500'`.
 It rechecks the pinned original parts and prints a bounded neighborhood of
 source text; treat that terminal output as private.
 
-`audit` writes `reports/audit.json`, flagging assistant-only recommendations,
-repeat-lineage citations, obvious pasted tool transcripts and skill templates
-inside user-role text, and distinct historical root counts. The flags are conservative;
-an unflagged user-role quote may still contain an embedded template. Review each
+`audit` writes `reports/audit.json` with distinct historical root counts and flags
+for assistant-only recommendations, repeat-lineage citations, and obvious pasted
+tool transcripts and skill templates in user-role text. Flags are conservative:
+an unflagged user-role quote may still contain an embedded template. Check each
 flag against its original context before considering the reports for tasks.
 
 ## Pilot evaluation
